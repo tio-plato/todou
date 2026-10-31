@@ -1,0 +1,91 @@
+name: Fork deploy image
+
+# This file lives only on a fork's `deploy` branch and never goes into a patch
+# sent upstream. `deploy` is upstream master plus the fork's merged work, and
+# every push to it publishes one image built from the pushed commit.
+#
+# The image name is ghcr.io/<this repository, lowercased>, not
+# scripts/docker-image-ref.sh: that script reads package.json's repository
+# field, which names the upstream repository, and this run's GITHUB_TOKEN can
+# only write the fork's own package.
+#
+# Both tags name the pushed commit (github.sha, usually a merge):
+#   sha-<7 hex>            how a rollout finds the image of a given commit
+#   <commit date>-<7 hex>  upstream's sortable tag: by name is by age
+# No floating tag (latest, edge, deploy): rollouts pin a digest, and with two
+# runs in flight a floating tag lands on whichever finishes last. No
+# concurrency group: cancelling a run would leave a merged commit without an
+# image, and a rollout waiting for it would wait forever. No
+# workflow_dispatch: GitHub only dispatches workflows the default branch
+# carries, which this file never reaches; re-run a failed run instead.
+#
+# One-time setup on the fork: enable Actions, then disable upstream's Docker
+# and Release workflows, which would push to upstream's image name and cut
+# releases on the fork. CI stays enabled.
+
+on:
+  push:
+    branches: [deploy]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history so git describe (the TODOU_BUILD_VERSION below) sees
+          # tags; the build context itself excludes .git.
+          fetch-depth: 0
+      - name: Resolve image ref and version
+        run: |
+          echo "REGISTRY_IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "TODOU_BUILD_VERSION=$(git describe --tags --always --dirty)" >> "$GITHUB_ENV"
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
+          tags: |
+            type=raw,value={{commit_date 'YYYYMMDD-HHmmss'}}-{{sha}}
+            type=sha
+      - uses: docker/setup-buildx-action@v4
+      # Into the runner's daemon only: nothing is published until the check
+      # below has passed.
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          build-args: |
+            TODOU_BUILD_VERSION=${{ env.TODOU_BUILD_VERSION }}
+          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Assert the image reports the version
+        run: |
+          image=$(jq -r '.tags[] | select(test(":sha-[0-9a-f]+$"))' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          reported=$(docker run --rm "$image" todou-server --version)
+          echo "$image reports $reported, expected $TODOU_BUILD_VERSION"
+          [ "$reported" = "$TODOU_BUILD_VERSION" ]
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # The same inputs as the checked build, so every step is a cache hit in
+      # the same builder and this one only pushes what was checked.
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          build-args: |
+            TODOU_BUILD_VERSION=${{ env.TODOU_BUILD_VERSION }}
+          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
