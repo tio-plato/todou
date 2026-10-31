@@ -21,7 +21,8 @@ name: Fork deploy image
 #
 # One-time setup on the fork: enable Actions, then disable upstream's Docker
 # and Release workflows, which would push to upstream's image name and cut
-# releases on the fork. CI stays enabled.
+# releases on the fork. CI stays enabled. After the first run, make the new
+# package public so rollouts can pull it without credentials.
 
 on:
   push:
@@ -76,8 +77,9 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # The same inputs as the checked build, so every step is a cache hit in
-      # the same builder and this one only pushes what was checked.
+      # The same inputs as the checked build, so its cache makes this a push
+      # of the checked layers with the same version baked in. Only a base
+      # image republished in the minutes between would rebuild a stage here.
       - uses: docker/build-push-action@v7
         with:
           context: .
