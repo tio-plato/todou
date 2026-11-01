@@ -199,12 +199,14 @@ export async function submitAnswers(
   const row = await db.transaction(async (tx) => {
     // Answer-once is comment-level and atomic: lock the comment row so two
     // concurrent submissions serialize, then the loser sees the winner's
-    // event and conflicts instead of double-inserting.
-    await tx
+    // event and conflicts instead of double-inserting. A delete that won the
+    // lock leaves no row: answering it would refund the counter again.
+    const [locked] = await tx
       .select({ id: comments.id })
       .from(comments)
       .where(eq(comments.id, commentId))
       .for("update");
+    if (!locked) throw new NotFoundError("comment not found");
     const existing = answerEventFor(
       await tx
         .select()
