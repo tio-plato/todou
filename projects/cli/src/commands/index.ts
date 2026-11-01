@@ -72,6 +72,7 @@ import {
   QuestionAnswerCommand,
   QuestionListCommand,
   QuestionWaitCommand,
+  QuestionWithdrawCommand,
 } from "./question.ts";
 import { SearchCommand } from "./search.ts";
 import {
@@ -142,6 +143,7 @@ export const commands: Array<CommandClass<CliContext>> = [
   QuestionListCommand,
   QuestionWaitCommand,
   QuestionAnswerCommand,
+  QuestionWithdrawCommand,
   SpecPushCommand,
   SpecWithdrawCommand,
   SpecPullCommand,
