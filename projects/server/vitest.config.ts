@@ -1,25 +1,17 @@
-import os from "node:os";
 import { defineConfig } from "vitest/config";
+import { GiB, memoryBoundMaxWorkers } from "../../vitest.workers.ts";
 
 // A fork runs one test file at a time, and a server test file stands up
-// several in-memory PGlite (WASM) instances: measured 2026-08-29 on 24 cores
-// / 31 GiB, the first instance costs ~680 MB RSS and each further one ~230 MB,
-// putting a fork at ~3 GB on average and ~5 GB for the heaviest file. So the
-// cap has to come from "per-worker memory x workers < memory available", not
-// from the core count — vitest's default (one worker per core) would want
-// 72 GB here and gets the whole run OOM-killed instead, with zero assertion
-// failures to show for it. The budget is 60% of total memory; the rest is for
-// the OS, for tmpfs (/tmp is RAM here), and for the other agents sharing this
-// machine. If a future machine OOMs again, the number to re-measure is the
-// 3 GB constant (the suite got heavier) — not the shape of the formula.
-const PEAK_WORKER_BYTES = 3 * 2 ** 30;
-const MEMORY_BUDGET_FRACTION = 0.6;
-const maxWorkers = Math.min(
-  Math.max(
-    1,
-    Math.floor((os.totalmem() * MEMORY_BUDGET_FRACTION) / PEAK_WORKER_BYTES),
-  ),
-  os.availableParallelism(),
+// several in-memory PGlite (WASM) instances: measured 2026-08-29, the first
+// instance costs ~680 MB RSS and each further one ~230 MB. That makes the
+// server's files the heaviest of any package: 0.88 GiB at the median,
+// 2.16 GiB at p90 and 5.51 GiB for test/projects.test.ts. If a run OOMs
+// again, re-measure these peaks (the suite got heavier) the way
+// vitest.workers.ts describes, not the formula.
+// Peak memory of each test file, the 8 heaviest, rounded up to 0.1 GiB;
+// measured 2026-11-01.
+const heaviestPeaks = [5.6, 4.7, 3.4, 2.9, 2.8, 2.7, 2.6, 2.5].map(
+  (g) => g * GiB,
 );
 
 // The 20s timeouts stay even with the worker cap: they defend against other
@@ -29,7 +21,7 @@ const maxWorkers = Math.min(
 // failed, yet it timed out" flake this cap exists to kill.
 export default defineConfig({
   test: {
-    maxWorkers,
+    maxWorkers: memoryBoundMaxWorkers("server", heaviestPeaks),
     testTimeout: 20_000,
     hookTimeout: 20_000,
     setupFiles: ["./test/setup.ts"],

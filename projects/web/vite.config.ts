@@ -6,6 +6,7 @@ import react from "@vitejs/plugin-react";
 import type { Plugin } from "vite";
 import svgr from "vite-plugin-svgr";
 import { defineConfig } from "vitest/config";
+import { GiB, memoryBoundMaxWorkers } from "../../vitest.workers.ts";
 
 // The browser can't ask git, so the version is baked in at build time.
 // TODOU_BUILD_VERSION comes from environments without a .git directory (the
@@ -126,5 +127,11 @@ export default defineConfig({
     // for names on its own list, which `localStorage` is not on, so without
     // this flag every test touching storage reads `undefined`.
     execArgv: ["--no-experimental-webstorage"],
+    // Peak memory of each test file, the 8 heaviest, rounded up to 0.1 GiB;
+    // measured 2026-11-01.
+    maxWorkers: memoryBoundMaxWorkers(
+      "web",
+      [1.7, 0.9, 0.8, 0.8, 0.8, 0.7, 0.7, 0.6].map((g) => g * GiB),
+    ),
   },
 });
