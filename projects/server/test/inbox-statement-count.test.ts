@@ -176,8 +176,9 @@ describe("/api/me/inbox statement count", () => {
 
   it("regression watchdog (dedicated): the system bucket and the per-project constant do not grow with N", async () => {
     // N=2 and N=4 rather than 4 and 8: under `dedicated` N=8 means nine
-    // PGlite instances, well past the 3 GB per fork that vitest.config.ts
-    // budgets. The slope being measured is the same either way.
+    // PGlite instances, enough to put this file among the heaviest whose
+    // peaks vitest.config.ts budgets with. The slope being measured is the
+    // same either way.
     const small = await measure("dedicated", 2);
     const big = await measure("dedicated", 4);
     for (const m of [small, big]) {
