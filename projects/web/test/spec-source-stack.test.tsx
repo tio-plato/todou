@@ -50,9 +50,17 @@ vi.mock("@pierre/diffs/react", async () => {
     MultiFileDiff: ({
       oldFile,
       newFile,
+      lineAnnotations,
+      renderAnnotation,
     }: {
       oldFile: { contents: string };
       newFile: { contents: string };
+      lineAnnotations?: Array<{
+        side: string;
+        lineNumber: number;
+        metadata: unknown;
+      }>;
+      renderAnnotation?: (a: { metadata: unknown }) => ReactNode;
     }) => {
       const rows: MockRow[] = [];
       let old = 1;
@@ -72,6 +80,17 @@ vi.mock("@pierre/diffs/react", async () => {
       return (
         <div data-testid="diff">
           <Rows rows={rows} />
+          {(lineAnnotations ?? []).map((annotation, index) => (
+            <div
+              // biome-ignore lint/suspicious/noArrayIndexKey: several annotations can share a line
+              key={index}
+              data-testid="diff-annotation"
+              data-side={annotation.side}
+              data-annotation-line={annotation.lineNumber}
+            >
+              {renderAnnotation?.(annotation)}
+            </div>
+          ))}
         </div>
       );
     },
@@ -590,5 +609,79 @@ describe("selecting text in the source view", () => {
     );
     await waitFor(() => expect(fileOptions.length).toBeGreaterThan(drawn));
     expect(fileOptions.at(-1)).toBe(before);
+  });
+});
+
+const DRAFTS_KEY = "todou-spec-review:demo:1";
+
+function stageDraft(
+  id: string,
+  path: string,
+  version: number,
+  line: number,
+  body: string,
+) {
+  const stored = JSON.parse(localStorage.getItem(DRAFTS_KEY) ?? "[]");
+  stored.push({
+    id,
+    anchor: {
+      path,
+      version,
+      line_start: line,
+      line_end: line,
+      col_start: null,
+      col_end: null,
+    },
+    quote: "",
+    body,
+  });
+  localStorage.setItem(DRAFTS_KEY, JSON.stringify(stored));
+  // As another tab's write arrives: the drafts module drops what it cached
+  // for this bucket in an earlier test.
+  window.dispatchEvent(new StorageEvent("storage", { key: DRAFTS_KEY }));
+}
+
+describe("staged drafts in the source view", () => {
+  it("hangs a draft under its line, and Discard takes it away", async () => {
+    stageDraft("d1", "drift.md", 1, 2, "say it plainer");
+    mockSpec();
+    const view = await singleSource("drift.md");
+    const note = await waitFor(() => {
+      const el = view.container.querySelector(
+        '[data-testid="file-annotation"][data-annotation-line="2"]',
+      );
+      if (el === null) throw new Error("no draft drawn");
+      return el as HTMLElement;
+    });
+    expect(note.textContent).toContain("say it plainer");
+    expect(note.textContent).toContain("Edit");
+    fireEvent.click(
+      [...note.querySelectorAll("button")].find(
+        (button) => button.textContent === "Discard",
+      ) as HTMLElement,
+    );
+    await waitFor(() => expect(view.queryByText("say it plainer")).toBeNull());
+    expect(JSON.parse(localStorage.getItem(DRAFTS_KEY) ?? "[]")).toEqual([]);
+  });
+
+  it("hangs a baseline draft on the old side and a new one on the new", async () => {
+    stageDraft("d1", "drift.md", 1, 4, "why drop delta?");
+    stageDraft("d2", "drifted.md", 2, 4, "omega reads well");
+    mockSpec();
+    const view = await stack("?v=2&compare=1");
+    const entry = view.container.querySelector(
+      '[data-file-diff="drifted.md"]',
+    ) as HTMLElement;
+    const notes = await waitFor(() => {
+      const els = entry.querySelectorAll('[data-testid="diff-annotation"]');
+      expect(els).toHaveLength(2);
+      return [...els];
+    });
+    const sideOf = (text: string) =>
+      notes
+        .find((el) => el.textContent?.includes(text))
+        ?.getAttribute("data-side");
+    expect(sideOf("why drop delta?")).toBe("deletions");
+    expect(sideOf("omega reads well")).toBe("additions");
   });
 });
