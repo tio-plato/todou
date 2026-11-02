@@ -52,9 +52,12 @@ export function specStatusLabel(status: string): string {
 
 export function SpecStatusBadge({
   status,
+  version,
   className,
 }: {
   status: SpecReviewStatus;
+  /** Names the version the status belongs to, where that is not the one on screen. */
+  version?: number;
   className?: string;
 }) {
   return (
@@ -65,6 +68,7 @@ export function SpecStatusBadge({
         className,
       )}
     >
+      {version !== undefined && `v${version} · `}
       {specStatusLabel(status)}
     </span>
   );

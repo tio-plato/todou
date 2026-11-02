@@ -705,4 +705,19 @@ describe("the spec page reads the version its URL names", () => {
     );
     expect(page.writes).toHaveLength(0);
   });
+
+  it("leads from an older version to the current one by its status", async () => {
+    await mountPage({ version: 2, viewedVersion: 1 });
+    const link = screen.getByRole("link", { name: "v2 · awaiting review" });
+    const href = new URL(link.getAttribute("href") ?? "", "http://localhost");
+    expect(href.searchParams.get("v")).toBe("2");
+    expect(href.searchParams.get("file")).toBe("design.md");
+
+    fireEvent.click(link);
+    await waitFor(() => expect(router.state.location.search.v).toBe(2));
+    await waitFor(() => expect(shownTitle()).toBe("Version 2"));
+    expect(screen.queryByRole("link", { name: /awaiting review/ })).toBeNull();
+    const slot = document.querySelector('[data-toolbar-slot="review-status"]');
+    expect(slot?.textContent).toBe("awaiting review");
+  });
 });

@@ -1275,9 +1275,26 @@ function SpecViewBody({
       omitRef={mergedBack}
     />
   );
+  // The status is the current version's. Beside an older one it would read
+  // as that version's own, so it names its version and leads there.
   const reviewStatus = (
     <ToolbarSlot name="review-status">
-      <SpecStatusBadge status={spec.review_status} />
+      {isCurrent ? (
+        <SpecStatusBadge status={spec.review_status} />
+      ) : (
+        <Link
+          to="/projects/$slug/issues/$number/spec"
+          params={params}
+          search={versionSearch(spec.current_version)}
+          state={returnState}
+          className="rounded-full hover:underline"
+        >
+          <SpecStatusBadge
+            status={spec.review_status}
+            version={spec.current_version}
+          />
+        </Link>
+      )}
     </ToolbarSlot>
   );
   /* Below lg the file rail is gone from the flow; this is where it went. In
