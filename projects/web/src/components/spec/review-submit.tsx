@@ -120,10 +120,12 @@ export function ReviewSubmitDialog({
     currentVersion,
   );
   const spec = useQuery(specQuery(slug, issueNumber)).data;
+  // Behind the version under review is the cache lagging behind a push, not
+  // a newer version having replaced it.
   const staleVersion =
     spec !== undefined &&
     spec !== null &&
-    spec.current_version !== currentVersion;
+    spec.current_version > currentVersion;
   const withdrawn = spec?.review_status === "withdrawn";
   const summary = controlledSummary ?? localSummary;
   const latestSummary = useRef(summary);

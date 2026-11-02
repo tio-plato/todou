@@ -706,6 +706,21 @@ describe("the spec page reads the version its URL names", () => {
     expect(page.writes).toHaveLength(0);
   });
 
+  it("takes a version ahead of the cached spec for the current one", async () => {
+    // Opened from a version card before the push's refetch has landed.
+    await mountPage({ version: 2, cached: 1, viewedVersion: 2 });
+    await waitFor(() => expect(shownTitle()).toBe("Version 2"));
+    const finish = screen.getByRole("button", { name: /finish review/i });
+    expectDisabled(finish, false);
+    expect(screen.queryByRole("link", { name: /awaiting review/ })).toBeNull();
+    const dialog = await openReview(2);
+    expect(within(dialog).queryByRole("status")).toBeNull();
+    expectDisabled(
+      within(dialog).getByRole("button", { name: "Approve" }),
+      false,
+    );
+  });
+
   it("leads from an older version to the current one by its status", async () => {
     await mountPage({ version: 2, viewedVersion: 1 });
     const link = screen.getByRole("link", { name: "v2 · awaiting review" });
