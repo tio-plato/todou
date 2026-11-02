@@ -174,7 +174,9 @@ export function ReviewSubmitDialog({
   const commentDisabled = pending || staleVersion || saysNothing;
   const verdictDisabled = pending || staleVersion || withdrawn || isPusher;
   const approveDisabled = verdictDisabled || approvedInCurrentRound;
-  const staleTitle = `Spec v${currentVersion} is no longer current. Your review draft has been kept.`;
+  const staleTitle = saysNothing
+    ? `Spec v${currentVersion} is no longer current.`
+    : `Spec v${currentVersion} is no longer current. Your review draft has been kept.`;
   const verdictTitle = staleVersion
     ? staleTitle
     : withdrawn
