@@ -1,10 +1,6 @@
 import { formatAnchorRange, type SpecCommentItem } from "@todou/shared";
-import {
-  CheckIcon,
-  MessageSquarePlusIcon,
-  MessageSquareTextIcon,
-} from "lucide-react";
-import type { ComponentProps, CSSProperties } from "react";
+import { CheckIcon, MessageSquareTextIcon } from "lucide-react";
+import type { ComponentProps } from "react";
 import {
   memo,
   type MouseEvent as ReactMouseEvent,
@@ -28,6 +24,11 @@ import {
   useMarkdownRemarkPlugins,
 } from "@/components/shared/markdown-view.tsx";
 import { displayNameOf, UserChip } from "@/components/shared/user-chip.tsx";
+import {
+  type AnchorRange,
+  SelectionEntry,
+  useSelectionEntry,
+} from "@/components/spec/selection-entry.tsx";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -54,6 +55,11 @@ import {
   SOURCE_LINE_ATTR,
 } from "@/lib/rehype-source-lines.ts";
 import { holdRevealed, revealBlock, useOwnHold } from "@/lib/scroll-insets.ts";
+import {
+  composedContains,
+  elementNear,
+  type SelectionEndpoints,
+} from "@/lib/selection-endpoints.ts";
 import { buildBaselineTree } from "@/lib/spec-baseline-tree.ts";
 import { type LineRange, rangesIntersect } from "@/lib/spec-changes.ts";
 import {
@@ -70,7 +76,6 @@ import {
   segmentsInLines,
   sourceOffsetOfRendered,
 } from "@/lib/spec-source-index.ts";
-import { POINTER_FINE, useMediaQuery } from "@/lib/use-media-query.ts";
 import { cn } from "@/lib/utils";
 
 type RehypePlugins = ComponentProps<typeof Markdown>["rehypePlugins"];
@@ -112,27 +117,7 @@ function labelOf(item: DisplayedAnnotation): string {
   });
 }
 
-export type AnchorRange = {
-  lineStart: number;
-  lineEnd: number;
-  colStart: number | null;
-  colEnd: number | null;
-};
-
-type PendingSelection = AnchorRange & { top: number };
-
-/**
- * How long a press on the entry keeps its anchor alive without a `click` to
- * close the window. Long enough for a touch's own click to arrive, short
- * enough that a press which slid off the entry does not strand a dead
- * anchor on screen.
- */
-const PRESS_WINDOW_MS = 300;
-
-/** The element a node is, or the one holding it. */
-function elementNear(node: Node): Element | null {
-  return node instanceof Element ? node : node.parentElement;
-}
+export type { AnchorRange };
 
 /** Restored old structure and explicit old list numbers have no current source. */
 function isOldEndpoint(node: Node): boolean {
@@ -336,76 +321,6 @@ export function anchorRangeForNode(
   return null;
 }
 
-/** `container.contains` that sees through open shadow roots. */
-function composedContains(container: Element, node: Node): boolean {
-  let current: Node | null = node;
-  while (current !== null) {
-    if (container.contains(current)) return true;
-    const root = current.getRootNode();
-    current = root instanceof ShadowRoot ? root.host : null;
-  }
-  return false;
-}
-
-/** Every open shadow root under `root`, nested ones included. */
-function openShadowRoots(root: Element | ShadowRoot): ShadowRoot[] {
-  const found: ShadowRoot[] = [];
-  for (const el of root.querySelectorAll("*")) {
-    if (el.shadowRoot === null) continue;
-    found.push(el.shadowRoot, ...openShadowRoots(el.shadowRoot));
-  }
-  return found;
-}
-
-export type SelectionEndpoints = {
-  start: { node: Node; offset: number };
-  end: { node: Node; offset: number };
-  collapsed: boolean;
-};
-
-/**
- * Both ends of a selection, seen through open shadow roots (T-164). pierre
- * renders code inside one, and the legacy endpoints misreport anything that
- * lands in there: dragging from prose *into* a code line puts the focus on
- * the shadow host, which costs the anchor its line precision, and dragging
- * the other way collapses the whole selection to one empty div — while
- * `toString()` still returns the selected code. The collapse is why a
- * backwards drag out of a fence offered no comment button at all.
- *
- * `getComposedRanges` answers with the real endpoints. Where it does not
- * exist (jsdom, older browsers) the legacy ones stand exactly as before.
- */
-export function selectionEndpoints(
-  selection: Selection,
-  container: Element,
-): SelectionEndpoints | null {
-  if (typeof selection.getComposedRanges === "function") {
-    const composed = selection.getComposedRanges({
-      shadowRoots: openShadowRoots(container),
-    })[0];
-    if (composed !== undefined) {
-      return {
-        start: { node: composed.startContainer, offset: composed.startOffset },
-        end: { node: composed.endContainer, offset: composed.endOffset },
-        collapsed: composed.collapsed,
-      };
-    }
-  }
-  if (selection.rangeCount === 0) return null;
-  const range = selection.getRangeAt(0);
-  return {
-    start: {
-      node: selection.anchorNode ?? range.startContainer,
-      offset: selection.anchorOffset,
-    },
-    end: {
-      node: selection.focusNode ?? range.endContainer,
-      offset: selection.focusOffset,
-    },
-    collapsed: selection.isCollapsed,
-  };
-}
-
 /** Where an endpoint falls relative to the rendered file. */
 type Side = "inside" | "before" | "after";
 
@@ -558,33 +473,6 @@ export function visibleAnchor(el: HTMLElement): HTMLElement {
 }
 
 /**
- * Where the floating entry sits, in container coordinates.
- *
- * The legacy range is what has a rect — but when the browser clamped it
- * onto a shadow host it is an empty box there, and the endpoint's own
- * element is then what says where to sit (T-164).
- */
-function entryTop(
-  container: Element,
-  selection: Selection,
-  ends: SelectionEndpoints,
-): number {
-  const legacy = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
-  const rect =
-    (legacy === null || legacy.collapsed
-      ? elementNear(ends.end.node)?.getBoundingClientRect()
-      : null) ?? legacy?.getBoundingClientRect();
-  const containerRect = container.getBoundingClientRect();
-  const below = (rect?.bottom ?? 0) - containerRect.top + 6;
-  // A selection that reaches past the file — ⌘/Ctrl-A, or a drag on into
-  // the page below it — has a rect as tall as the page, and that bottom
-  // would put the button hundreds of pixels under the prose it points at,
-  // off screen. Clamping to the file's own box is what keeps "the entry
-  // appeared" and "the reader can reach it" the same statement.
-  return Math.min(Math.max(below, 0), containerRect.bottom - containerRect.top);
-}
-
-/**
  * Rendered markdown with the annotation layer of the spec review view:
  * selecting text floats a "comment" button (the anchor is derived from the
  * blocks' stamped source lines), staged drafts and submitted comments hang
@@ -637,18 +525,16 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [chips, setChips] = useState<Chip[]>([]);
-  const [pending, setPending] = useState<PendingSelection | null>(null);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(NO_FOLDS);
-  /** A drag is in flight: its selection is not final until the pointer lifts. */
-  const draggingRef = useRef(false);
-  /** The entry is being pressed: the selection may vanish, the anchor stays. */
-  const pressingUiRef = useRef(false);
-  const pressTimerRef = useRef<number | null>(null);
-  const pendingRef = useRef<PendingSelection | null>(null);
-  const pointerFine = useMediaQuery(POINTER_FINE);
   const remarkPlugins = useMarkdownRemarkPlugins(slug);
 
   const index = useMemo(() => buildSegmentIndex(body), [body]);
+  const resolveSelection = useCallback(
+    (container: Element, ends: SelectionEndpoints) =>
+      anchorForSelection(container, index, ends),
+    [index],
+  );
+  const { pending, clear } = useSelectionEntry(containerRef, resolveSelection);
   const baselineIndex = useMemo(
     () => (baselineBody === undefined ? null : buildSegmentIndex(baselineBody)),
     [baselineBody],
@@ -734,50 +620,8 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
   // biome-ignore lint/correctness/useExhaustiveDependencies: a different document, or folding switched, invalidates both which folds are open and where a pending selection sat
   useEffect(() => {
     setExpanded(NO_FOLDS);
-    setPending(null);
+    clear();
   }, [body, baselineBody, foldUnchanged]);
-
-  /**
-   * Read the live selection and place the entry.
-   *
-   * `keepOnEmpty` is the window-resize path: a resize is not a reason to
-   * drop an entry, and the selection may well have survived it untouched.
-   */
-  const decide = useCallback(
-    (keepOnEmpty = false) => {
-      const container = containerRef.current;
-      if (!container) return;
-      const selection = window.getSelection();
-      // The cheap branch. `selectionchange` arrives every frame of a drag,
-      // while a full recompute walks every open shadow root under the
-      // container, so emptiness is settled before anything is measured —
-      // by `toString()` rather than `isCollapsed`, which lies about shadow
-      // selections (T-164) and would take a live selection's entry with it.
-      if (selection === null || selection.toString() === "") {
-        // A press on the entry itself collapses the selection before the
-        // click lands. The anchor is already stored in `pending`, and the
-        // click reads it from there, so the press window keeps it (T-60).
-        if (!keepOnEmpty && !pressingUiRef.current) setPending(null);
-        return;
-      }
-      // Mid-drag the entry would sit under the words still being selected,
-      // and every frame would pay for a recompute. `pointerup` schedules
-      // the one that counts.
-      if (draggingRef.current) return;
-      const ends = selectionEndpoints(selection, container);
-      if (ends === null || ends.collapsed) {
-        setPending(null);
-        return;
-      }
-      const anchor = anchorForSelection(container, index, ends);
-      if (anchor === null) {
-        setPending(null);
-        return;
-      }
-      setPending({ top: entryTop(container, selection, ends), ...anchor });
-    },
-    [index],
-  );
 
   const layout = useCallback(() => {
     const container = containerRef.current;
@@ -858,23 +702,13 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     });
   }, [annotations, changedRanges]);
 
-  useEffect(() => {
-    pendingRef.current = pending;
-  }, [pending]);
-
   useLayoutEffect(() => {
     layout();
-    // A resize moves the chips and the entry alike, and the entry's `top`
-    // was measured against a selection rect that has since moved. Recompute
-    // it from the live selection, or leave it where it is when there is no
-    // selection left to measure.
-    const onResize = () => {
-      layout();
-      if (pendingRef.current !== null) decide(true);
-    };
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, [layout, decide]);
+    // A resize moves the chips; the entry's own recompute is the selection
+    // layer's.
+    window.addEventListener("resize", layout);
+    return () => window.removeEventListener("resize", layout);
+  }, [layout]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: folding moves the blocks the chips are measured against
   useLayoutEffect(() => {
@@ -911,108 +745,19 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     [keepHold],
   );
 
-  /**
-   * Every path that changes a selection, which is the point of T-384: the
-   * old container `mouseup` heard mouse drags that ended inside the prose
-   * and nothing else — not the keyboard, not a drag released outside, and
-   * on a touchscreen not the long-press gesture, for which no compatibility
-   * mouse event is ever synthesised.
-   */
-  useEffect(() => {
-    const controller = new AbortController();
-    const { signal } = controller;
-    let frame: number | null = null;
-    const schedule = () => {
-      if (typeof requestAnimationFrame !== "function") {
-        decide();
-        return;
-      }
-      if (frame !== null) return;
-      frame = requestAnimationFrame(() => {
-        frame = null;
-        decide();
-      });
-    };
-    const clearPressWindow = () => {
-      pressingUiRef.current = false;
-      if (pressTimerRef.current !== null) {
-        window.clearTimeout(pressTimerRef.current);
-        pressTimerRef.current = null;
-      }
-    };
-    // Closing the press window re-reads the selection, because what the
-    // window held back is exactly the "the selection is gone" verdict: a
-    // press that ended on something other than the entry — a chip, or the
-    // prose beside it — has to leave the entry pointing at nothing.
-    const releaseUi = () => {
-      clearPressWindow();
-      schedule();
-    };
-    document.addEventListener("selectionchange", schedule, { signal });
-    document.addEventListener(
-      "pointerdown",
-      (event) => {
-        const onUi =
-          event.target instanceof Element &&
-          event.target.closest("[data-annotation-ui]") !== null;
-        if (!onUi) {
-          draggingRef.current = true;
-          return;
-        }
-        pressingUiRef.current = true;
-        // The window has to close by itself too: a press that slides off
-        // the entry fires neither `click` nor `pointercancel`, and leaving
-        // it open would keep a dead anchor on screen indefinitely.
-        pressTimerRef.current = window.setTimeout(releaseUi, PRESS_WINDOW_MS);
-      },
-      { capture: true, signal },
-    );
-    document.addEventListener(
-      "pointerup",
-      () => {
-        draggingRef.current = false;
-        schedule();
-      },
-      { signal },
-    );
-    document.addEventListener(
-      "pointercancel",
-      () => {
-        draggingRef.current = false;
-        releaseUi();
-      },
-      { signal },
-    );
-    document.addEventListener("click", releaseUi, { signal });
-    return () => {
-      controller.abort();
-      if (frame !== null) cancelAnimationFrame(frame);
-      clearPressWindow();
-    };
-  }, [decide]);
-
   /** The fold placeholders are markdown-side nodes, so React never sees them. */
-  const onClick = useCallback((event: ReactMouseEvent) => {
-    if (!(event.target instanceof Element)) return;
-    const key = event.target
-      .closest(`.${FOLD_CLASS}`)
-      ?.getAttribute(FOLD_KEY_ATTR);
-    if (key === null || key === undefined) return;
-    setExpanded((prev) => new Set([...prev, key]));
-    setPending(null);
-  }, []);
-
-  const stagePending = useCallback(() => {
-    if (pending === null) return;
-    onStage({
-      lineStart: pending.lineStart,
-      lineEnd: pending.lineEnd,
-      colStart: pending.colStart,
-      colEnd: pending.colEnd,
-    });
-    setPending(null);
-    window.getSelection()?.removeAllRanges();
-  }, [pending, onStage]);
+  const onClick = useCallback(
+    (event: ReactMouseEvent) => {
+      if (!(event.target instanceof Element)) return;
+      const key = event.target
+        .closest(`.${FOLD_CLASS}`)
+        ?.getAttribute(FOLD_KEY_ATTR);
+      if (key === null || key === undefined) return;
+      setExpanded((prev) => new Set([...prev, key]));
+      clear();
+    },
+    [clear],
+  );
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: click only delegates to the fold placeholders; blocks stay natively selectable
@@ -1047,81 +792,10 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         />
       ))}
 
-      {pending !== null &&
-        (pointerFine ? (
-          <StageButton
-            size="sm"
-            className="absolute right-0 z-10 shadow-md"
-            style={{ top: pending.top }}
-            anchor={pending}
-            onStage={stagePending}
-          />
-        ) : (
-          // Touch selection comes with the platform's own bubble, floating
-          // against the selection, which we can neither move nor dismiss.
-          // Pinned to the bottom of the viewport is the one place the two
-          // cannot claim at once — and the one place a thumb always reaches.
-          // No `env(safe-area-inset-bottom)`: without `viewport-fit=cover`
-          // iOS has already inset the page, and a second one would show.
-          <div
-            className="fixed inset-x-0 bottom-0 z-30 border-t bg-background/95 p-2 backdrop-blur"
-            data-annotation-ui=""
-            data-testid="annotation-action-bar"
-          >
-            <StageButton
-              size="lg"
-              className="w-full"
-              anchor={pending}
-              onStage={stagePending}
-            />
-          </div>
-        ))}
+      <SelectionEntry pending={pending} clear={clear} onStage={onStage} />
     </div>
   );
 });
-
-/** The entry itself, in both of the shapes it takes. */
-function StageButton({
-  anchor,
-  size,
-  className,
-  style,
-  onStage,
-}: {
-  anchor: AnchorRange;
-  size: "sm" | "lg";
-  className: string;
-  style?: CSSProperties;
-  onStage: () => void;
-}) {
-  return (
-    <Button
-      size={size}
-      className={className}
-      style={style}
-      data-annotation-ui=""
-      // A mouse press would collapse the selection under the button (and
-      // move focus) before click fires, and the selection has to outlive
-      // the press (T-60). A touch press is left alone: cancelling it has no
-      // agreed effect on whether `click` follows, and the press window
-      // holds the anchor either way.
-      onPointerDown={(e) => {
-        if (e.pointerType === "mouse") e.preventDefault();
-      }}
-      onMouseDown={(e) => e.preventDefault()}
-      onClick={onStage}
-    >
-      <MessageSquarePlusIcon className="size-4" />
-      Comment{" "}
-      {formatAnchorRange({
-        line_start: anchor.lineStart,
-        line_end: anchor.lineEnd,
-        col_start: anchor.colStart,
-        col_end: anchor.colEnd,
-      })}
-    </Button>
-  );
-}
 
 const AnnotationChip = memo(function AnnotationChip({
   slug,
