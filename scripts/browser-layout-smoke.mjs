@@ -3,7 +3,7 @@
  * Manual real-Chromium layout smoke for board overlay scrollbars and collapsed
  * assignee badge clipping. It is intentionally independent of `pnpm test`/CI.
  *
- * Usage: node scripts/browser-layout-smoke.mjs [--self-test|--self-test-cdp] [--keep] [--help]
+ * Usage: node scripts/browser-layout-smoke.mjs [--self-test|--self-test-cdp|--self-test-frames] [--keep] [--help]
  * Preconditions: the devshell's Node 24+, installed workspace dependencies,
  * `flock`, and CHROMIUM (default /usr/bin/chromium). The runner starts one
  * isolated API/Vite stack and one browser, then gives each sequential case a
@@ -12,8 +12,8 @@
  * CLI input, missing prerequisite, startup failure, or cleanup failure.
  * Limitations: headless Chromium measures CSS geometry/opacity, not painted
  * pixel antialiasing, platform scrollbar themes, touch, or mobile browser UI.
- * After editing scripts/lib/, run --self-test-cdp, then all three browser
- * self-tests: pnpm test:browser --self-test;
+ * After editing scripts/lib/, run --self-test-cdp and --self-test-frames, then
+ * all three browser self-tests: pnpm test:browser --self-test;
  * pnpm test:browser:overlay --self-test;
  * pnpm exec node scripts/user-baseline-smoke.mjs --self-test.
  */
@@ -22,7 +22,11 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runBadgeClip } from "./browser/badge-clip.mjs";
 import { runBoardScrollbars } from "./browser/board-scrollbars.mjs";
-import { selfCheckCdpPipe, startBrowser } from "./lib/browser-cdp.mjs";
+import {
+  selfCheckCdpPipe,
+  selfCheckHeadlessFrames,
+  startBrowser,
+} from "./lib/browser-cdp.mjs";
 import { createBrowserStack } from "./lib/browser-stack.mjs";
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -32,15 +36,18 @@ Usage:
   node scripts/browser-layout-smoke.mjs
   pnpm test:browser --self-test
   pnpm test:browser --self-test-cdp
+  pnpm test:browser --self-test-frames
 
 Options:
   --self-test  Prove each checker with an injected fault and a fresh clean page.
   --self-test-cdp  Check CDP pipe framing, failures, timeouts, and sessions without Chromium.
+  --self-test-frames  Check that pages draw frames while WAYLAND_DISPLAY names an unresponsive compositor; starts Chromium only.
   --keep       Keep the complete isolated stack directory after the run.
   --help       Print this help and exit.
 
 After changing scripts/lib/:
   pnpm test:browser --self-test-cdp
+  pnpm test:browser --self-test-frames
   pnpm test:browser --self-test
   pnpm test:browser:overlay --self-test
   pnpm exec node scripts/user-baseline-smoke.mjs --self-test
@@ -62,19 +69,27 @@ function parseArgs(argv) {
   const options = {
     selfTest: false,
     selfTestCdp: false,
+    selfTestFrames: false,
     keep: false,
     help: false,
   };
   for (const arg of argv) {
     if (arg === "--self-test") options.selfTest = true;
     else if (arg === "--self-test-cdp") options.selfTestCdp = true;
+    else if (arg === "--self-test-frames") options.selfTestFrames = true;
     else if (arg === "--keep") options.keep = true;
     else if (arg === "--help") options.help = true;
     else throw new Error(`unknown argument: ${arg}`);
   }
-  if (options.selfTestCdp && (options.selfTest || options.keep))
+  const modes = [
+    options.selfTest,
+    options.selfTestCdp,
+    options.selfTestFrames,
+    options.keep,
+  ].filter(Boolean).length;
+  if ((options.selfTestCdp || options.selfTestFrames) && modes > 1)
     throw new Error(
-      "--self-test-cdp cannot be combined with --self-test or --keep",
+      "--self-test-cdp and --self-test-frames each run alone, without --self-test or --keep",
     );
   return options;
 }
@@ -151,6 +166,18 @@ async function main() {
     } catch (error) {
       console.error(
         `browser-layout-smoke CDP self-test: ${error.stack ?? error}`,
+      );
+      return 2;
+    }
+  }
+  if (options.selfTestFrames) {
+    try {
+      const result = await selfCheckHeadlessFrames();
+      console.log(`FRAMES ${JSON.stringify(result)}`);
+      return result.frame === "fail" || result.screenshot === "fail" ? 1 : 0;
+    } catch (error) {
+      console.error(
+        `browser-layout-smoke frames self-test: ${error.stack ?? error}`,
       );
       return 2;
     }

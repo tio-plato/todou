@@ -1,18 +1,28 @@
 /** CDP pipe transport shared by the manual browser smokes.
- * After changing scripts/lib/, run `pnpm test:browser --self-test-cdp`
- * and all three browser self-tests listed in `pnpm test:browser --help`.
+ * After changing scripts/lib/, run `pnpm test:browser --self-test-cdp`,
+ * `pnpm test:browser --self-test-frames` and all three browser self-tests
+ * listed in `pnpm test:browser --help`.
  */
 import { spawn } from "node:child_process";
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const REQUEST_TIMEOUT_MS = 10_000;
+const FRAME_TIMEOUT_MS = 5_000;
 const STDERR_LIMIT = 8_000;
+// Headless Chromium still connects to the compositor WAYLAND_DISPLAY names;
+// when that compositor does not answer, pages draw no frames, so
+// requestAnimationFrame and Page.captureScreenshot both hang.
 function sanitizedEnvironment() {
   return Object.fromEntries(
-    Object.entries(process.env).filter(([name]) => !name.startsWith("TODOU_")),
+    Object.entries(process.env).filter(
+      ([name]) => !name.startsWith("TODOU_") && name !== "WAYLAND_DISPLAY",
+    ),
   );
 }
 
@@ -670,4 +680,66 @@ export async function selfCheckCdpPipe() {
     sessionRouting: "pass",
     unsubscribe: "pass",
   };
+}
+
+/**
+ * Check that a page still draws frames and takes screenshots while
+ * WAYLAND_DISPLAY names a compositor that accepts connections and never
+ * answers. Launches Chromium.
+ */
+export async function selfCheckHeadlessFrames({
+  chromium = process.env.CHROMIUM ?? "/usr/bin/chromium",
+} = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "todou-frames-"));
+  const sockets = new Set();
+  let compositorConnections = 0;
+  const server = createServer((socket) => {
+    compositorConnections++;
+    sockets.add(socket);
+    socket.on("error", () => {});
+    socket.on("close", () => sockets.delete(socket));
+  });
+  let browser;
+  try {
+    const socketPath = join(dir, "wayland-0");
+    server.listen(socketPath);
+    await once(server, "listening");
+    const previous = process.env.WAYLAND_DISPLAY;
+    process.env.WAYLAND_DISPLAY = socketPath;
+    try {
+      browser = await startBrowser({ dir, chromium });
+    } finally {
+      if (previous === undefined) delete process.env.WAYLAND_DISPLAY;
+      else process.env.WAYLAND_DISPLAY = previous;
+    }
+    const page = await browser.newPage();
+    // The page's own timer decides: with no frames, the CDP request timeout
+    // would turn a failed check into a startup error.
+    const frame = await evaluate(
+      page,
+      (timeoutMs) =>
+        Promise.race([
+          new Promise((resolve) =>
+            requestAnimationFrame(() => resolve("pass")),
+          ),
+          new Promise((resolve) => setTimeout(resolve, timeoutMs, "fail")),
+        ]),
+      FRAME_TIMEOUT_MS,
+    );
+    const screenshot = await page
+      .send("Page.captureScreenshot", {}, FRAME_TIMEOUT_MS)
+      .then(
+        () => "pass",
+        () => "fail",
+      );
+    return { frame, screenshot, compositorConnections };
+  } finally {
+    try {
+      await browser?.close();
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise((resolve) => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
 }
