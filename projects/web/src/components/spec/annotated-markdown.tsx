@@ -36,12 +36,19 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  type CodeHighlightRanges,
+  supportsCodeHighlights,
+  useCodeHighlights,
+} from "@/lib/code-highlights.ts";
 import { codeRowSource } from "@/lib/code-rows.ts";
 import {
   DELETION_LINE_TYPE,
   LINE_TYPE_ATTR,
   offsetInRow,
+  rangeInRow,
   rowAt,
+  rowText,
 } from "@/lib/pierre-rows.ts";
 import {
   INS_BLOCK_CLASS,
@@ -80,6 +87,7 @@ import {
   buildSegmentIndex,
   columnsOfOffsets,
   lineColAt,
+  offsetAt,
   type SegmentIndex,
   segmentsInLines,
   sourceOffsetOfRendered,
@@ -126,6 +134,12 @@ function labelOf(item: DisplayedAnnotation): string {
 }
 
 export type { AnchorRange };
+
+/**
+ * Worn by a code block whose annotated characters are painted inside it, so
+ * that its whole-block wash can step aside for them (styles.css).
+ */
+const CODE_PAINTED_CLASS = "spec-code-painted";
 
 /** Restored old structure and explicit old list numbers have no current source. */
 function isOldEndpoint(node: Node): boolean {
@@ -751,6 +765,85 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         : kept;
     });
   }, [annotations, changedRanges]);
+
+  /**
+   * The characters of code that column anchors cover, painted as ranges over
+   * pierre's own rows (T-31 keeps marks out of a code block). Each row is
+   * placed in the source by `codeRowSource`, the mapping a selection there
+   * is anchored by, so what gets painted is what was selected; a row it
+   * cannot place keeps its block's wash instead.
+   */
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new set of decorations rewrites the wrappers' classes, taking the painted class off them
+  const paintCode = useCallback(
+    (container: HTMLElement): CodeHighlightRanges => {
+      const ranges: CodeHighlightRanges = { comment: [], draft: [] };
+      const marks = supportsCodeHighlights()
+        ? annotations.flatMap((a) => {
+            if (a.colStart == null || a.colEnd == null) return [];
+            const start = offsetAt(index, a.start, a.colStart);
+            const last = offsetAt(index, a.end, a.colEnd);
+            if (start === null || last === null) return [];
+            return [
+              { key: a.key, kind: a.kind, start, end: last + 1, lines: a },
+            ];
+          })
+        : [];
+      for (const wrapper of container.querySelectorAll(
+        `[${CODE_CONTENT_START_ATTR}]`,
+      )) {
+        const loc = parseSourceLoc(wrapper.getAttribute(SOURCE_LINE_ATTR));
+        const here =
+          loc === null
+            ? []
+            : marks.filter(
+                (mark) =>
+                  mark.lines.start <= loc.end && mark.lines.end >= loc.start,
+              );
+        // The wash steps aside only once every annotation reaching into the
+        // block has characters of its own painted here: a whole-line one has
+        // none, and a column one on rows that could not be placed has none.
+        const painted = new Set<string>();
+        for (const host of here.length === 0
+          ? []
+          : wrapper.querySelectorAll("diffs-container")) {
+          for (const row of host.shadowRoot?.querySelectorAll("[data-line]") ??
+            []) {
+            const source = codeRowSource(index, row);
+            if (source === null || source.textStart === null) continue;
+            const rowEnd = source.textStart + rowText(row).length;
+            for (const mark of here) {
+              const from = Math.max(mark.start, source.textStart);
+              const to = Math.min(mark.end, rowEnd);
+              if (to <= from) continue;
+              const range = rangeInRow(
+                row,
+                from - source.textStart,
+                to - source.textStart,
+              );
+              if (range === null) continue;
+              (mark.kind === "comment" ? ranges.comment : ranges.draft).push(
+                range,
+              );
+              painted.add(mark.key);
+            }
+          }
+        }
+        const touching =
+          loc === null
+            ? []
+            : annotations.filter(
+                (a) => a.start <= loc.end && a.end >= loc.start,
+              );
+        wrapper.classList.toggle(
+          CODE_PAINTED_CLASS,
+          touching.length > 0 && touching.every((a) => painted.has(a.key)),
+        );
+      }
+      return ranges;
+    },
+    [annotations, index, decorations],
+  );
+  useCodeHighlights(containerRef, paintCode);
 
   useLayoutEffect(() => {
     layout();
