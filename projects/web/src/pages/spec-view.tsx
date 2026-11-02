@@ -79,6 +79,15 @@ import {
   type DisplayedAnnotation,
 } from "@/components/spec/annotated-markdown.tsx";
 import { ReviewSubmitDialog } from "@/components/spec/review-submit.tsx";
+import {
+  SelectionEntry,
+  useSelectionEntry,
+} from "@/components/spec/selection-entry.tsx";
+import {
+  type SourceAnchor,
+  type SourceFiles,
+  sourceAnchorForSelection,
+} from "@/components/spec/source-selection.ts";
 import { SpecBaselinePicker } from "@/components/spec/spec-baseline-picker.tsx";
 import { SpecCompareToggle } from "@/components/spec/spec-compare-toggle.tsx";
 import {
@@ -113,6 +122,7 @@ import {
   useOwnHold,
   useScrollInsets,
 } from "@/lib/scroll-insets.ts";
+import type { SelectionEndpoints } from "@/lib/selection-endpoints.ts";
 import {
   acceptsShortcut,
   currentIndex,
@@ -646,8 +656,15 @@ function SpecViewBody({
   const issue = useQuery(issueQuery(slug, issueNumber));
   const navigate = useNavigate();
 
-  /** Every anchor gesture — selection, line drag, "Comment file". */
-  const stage = (next: ComposerStaging) => session.retarget(next);
+  /**
+   * Every anchor gesture — selection, line drag, "Comment file". Stable: it
+   * reaches the options pierre draws the source with, and a new options
+   * object redraws every row, taking a live selection with it (T-60).
+   */
+  const stage = useCallback(
+    (next: ComposerStaging) => session.retarget(next),
+    [session],
+  );
   const editDraft = useCallback(
     (draft: SpecReviewDraft) => session.editDraft(draft),
     [session],
@@ -2184,42 +2201,105 @@ function SpecDiff({
   );
   const differing = entries.filter(isDifference);
 
+  // One selection layer over the whole stack: a file's wrapper names it, and
+  // its deletion rows belong to the baseline, under the path it had there.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const filesAt = useCallback(
+    (element: Element): SourceFiles | null => {
+      const wrapper = element.closest(
+        "[data-file-diff], [data-file-unchanged]",
+      );
+      const path =
+        wrapper?.getAttribute("data-file-diff") ??
+        wrapper?.getAttribute("data-file-unchanged");
+      const entry = entries.find((e) => e.path === path);
+      if (entry === undefined) return null;
+      return {
+        current: { path: entry.path, version: toVersion, body: entry.newBody },
+        old: {
+          path: entry.from ?? entry.path,
+          version: fromVersion,
+          body: entry.oldBody,
+        },
+      };
+    },
+    [entries, fromVersion, toVersion],
+  );
+  const resolveSelection = useCallback(
+    (container: Element, ends: SelectionEndpoints) =>
+      sourceAnchorForSelection(container, ends, filesAt),
+    [filesAt],
+  );
+  const { pending, clear } = useSelectionEntry(containerRef, resolveSelection);
+  const stageSelection = useCallback(
+    (anchor: SourceAnchor) => {
+      const entry =
+        anchor.version === toVersion
+          ? entries.find((e) => e.path === anchor.path)
+          : undefined;
+      const body =
+        entry?.newBody ??
+        entries.find((e) => (e.from ?? e.path) === anchor.path)?.oldBody ??
+        "";
+      onStage({
+        ...anchor,
+        quote: quoteOf(
+          body,
+          anchor.lineStart,
+          anchor.lineEnd,
+          anchor.colStart,
+          anchor.colEnd,
+        ),
+      });
+    },
+    [entries, toVersion, onStage],
+  );
+
+  // The entry sits beside the stack, not in it: as the last child of a
+  // `space-y` box it would hand the last file a margin while it shows.
   return (
-    <div className="space-y-4">
-      {differing.length === 0 ? (
-        <p className="text-center text-sm text-muted-foreground">
-          v{fromVersion} and v{toVersion} are identical.
-        </p>
-      ) : (
-        <p className="text-xs text-muted-foreground">
-          Drag across line numbers to comment on a range (old side anchors to v
-          {fromVersion}, new side to v{toVersion}).
-        </p>
-      )}
-      {entries.map((entry) => (
-        <div
-          key={entry.path}
-          // ↑↓ step over `data-file-diff`, so a file with nothing to show for
-          // itself is marked apart rather than joining the rotation.
-          {...(entry.kind === "unchanged"
-            ? { "data-file-unchanged": entry.path }
-            : { "data-file-diff": entry.path })}
-          ref={entry.path === focusPath ? focusRef : undefined}
-        >
-          <SpecStackEntry
-            slug={slug}
-            issueNumber={issueNumber}
-            entry={entry}
-            fromVersion={fromVersion}
-            toVersion={toVersion}
-            comments={comments}
-            onStage={onStage}
-            focused={entry.path === focusPath}
-            wrap={wrap}
-            stickyTop={stickyTop}
-          />
-        </div>
-      ))}
+    <div ref={containerRef} className="relative">
+      <div className="space-y-4">
+        {differing.length === 0 ? (
+          <p className="text-center text-sm text-muted-foreground">
+            v{fromVersion} and v{toVersion} are identical.
+          </p>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Select text or drag across line numbers to comment (old side anchors
+            to v{fromVersion}, new side to v{toVersion}).
+          </p>
+        )}
+        {entries.map((entry) => (
+          <div
+            key={entry.path}
+            // ↑↓ step over `data-file-diff`, so a file with nothing to show for
+            // itself is marked apart rather than joining the rotation.
+            {...(entry.kind === "unchanged"
+              ? { "data-file-unchanged": entry.path }
+              : { "data-file-diff": entry.path })}
+            ref={entry.path === focusPath ? focusRef : undefined}
+          >
+            <SpecStackEntry
+              slug={slug}
+              issueNumber={issueNumber}
+              entry={entry}
+              fromVersion={fromVersion}
+              toVersion={toVersion}
+              comments={comments}
+              onStage={onStage}
+              focused={entry.path === focusPath}
+              wrap={wrap}
+              stickyTop={stickyTop}
+            />
+          </div>
+        ))}
+      </div>
+      <SelectionEntry
+        pending={pending}
+        clear={clear}
+        onStage={stageSelection}
+      />
     </div>
   );
 }
@@ -2706,23 +2786,57 @@ function SpecSourceFile({
     [annotations],
   );
 
+  const containerRef = useRef<HTMLDivElement>(null);
+  const resolveSelection = useCallback(
+    (container: Element, ends: SelectionEndpoints) =>
+      sourceAnchorForSelection(container, ends, () => ({
+        current: { path, version, body },
+      })),
+    [path, version, body],
+  );
+  const { pending, clear } = useSelectionEntry(containerRef, resolveSelection);
+  const stageSelection = useCallback(
+    (anchor: SourceAnchor) =>
+      onStage({
+        ...anchor,
+        quote: quoteOf(
+          body,
+          anchor.lineStart,
+          anchor.lineEnd,
+          anchor.colStart,
+          anchor.colEnd,
+        ),
+      }),
+    [body, onStage],
+  );
+
+  // The entry sits beside the frame, not in the `space-y` flow, or it would
+  // hand the frame a margin while it shows.
   return (
-    <div className="space-y-4">
-      <p className="text-xs text-muted-foreground">
-        Drag across line numbers to comment on a range (anchors to v{version}).
-      </p>
-      <SpecStackFrame header={path} stickyTop={stickyTop}>
-        <SpecFileSource
-          slug={slug}
-          issueNumber={issueNumber}
-          path={path}
-          body={body}
-          version={version}
-          lineAnnotations={lineAnnotations}
-          onStage={onStage}
-          wrap={wrap}
-        />
-      </SpecStackFrame>
+    <div ref={containerRef} className="relative">
+      <div className="space-y-4">
+        <p className="text-xs text-muted-foreground">
+          Select text or drag across line numbers to comment (anchors to v
+          {version}).
+        </p>
+        <SpecStackFrame header={path} stickyTop={stickyTop}>
+          <SpecFileSource
+            slug={slug}
+            issueNumber={issueNumber}
+            path={path}
+            body={body}
+            version={version}
+            lineAnnotations={lineAnnotations}
+            onStage={onStage}
+            wrap={wrap}
+          />
+        </SpecStackFrame>
+      </div>
+      <SelectionEntry
+        pending={pending}
+        clear={clear}
+        onStage={stageSelection}
+      />
     </div>
   );
 }
