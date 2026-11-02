@@ -34,9 +34,9 @@ async function pin(queryClient: QueryClient) {
 }
 
 /** A spec cached by an earlier visit, still fresh as far as the cache knows. */
-function clientCaching(version: number) {
+function clientCaching(version: number, retry = true) {
   const client = new QueryClient({
-    defaultOptions: { queries: { staleTime: Number.POSITIVE_INFINITY } },
+    defaultOptions: { queries: { staleTime: Number.POSITIVE_INFINITY, retry } },
   });
   client.setQueryData(["spec", "demo", 7], specAt(version));
   return client;
@@ -59,12 +59,20 @@ describe("pinning an address without a version", () => {
     });
   });
 
-  it("falls back to the cached version when the server cannot be reached, offline too", async () => {
+  it("pins the cached version offline instead of waiting to be back online", async () => {
     onlineManager.setOnline(false);
+    const read = vi.spyOn(api, "getSpec");
+    expect(await pin(clientCaching(2))).toMatchObject({
+      search: { file: "design.md", v: 2 },
+    });
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the cached version when the server cannot answer", async () => {
     vi.spyOn(api, "getSpec").mockRejectedValue(
       new TodouNetworkError(new TypeError("Failed to fetch")),
     );
-    expect(await pin(clientCaching(2))).toMatchObject({
+    expect(await pin(clientCaching(2, false))).toMatchObject({
       search: { file: "design.md", v: 2 },
     });
   });

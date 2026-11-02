@@ -1,4 +1,4 @@
-import type { QueryClient } from "@tanstack/react-query";
+import { onlineManager, type QueryClient } from "@tanstack/react-query";
 import { type ParsedLocation, redirect } from "@tanstack/react-router";
 import { GoneError, MovedError, type SpecInfo } from "@todou/shared";
 import { specQuery } from "@/api/spec.ts";
@@ -34,26 +34,23 @@ export async function pinSpecVersion({
   if (search.v !== undefined) return;
   const query = specQuery(params.slug, Number(params.number));
   const cached = context.queryClient.getQueryData(query.queryKey);
-  let spec: SpecInfo | null;
-  try {
-    spec = await context.queryClient.fetchQuery({
-      ...query,
-      staleTime: 0,
-      // Offline, a query would pause until the browser is back online, and
-      // the navigation with it; this one fails instead and falls back.
-      networkMode: "always",
-      ...(cached == null ? {} : { retry: false }),
-    });
-  } catch (error) {
-    if (
-      cached == null ||
-      error instanceof MovedError ||
-      error instanceof GoneError
-    ) {
-      throw error;
-    }
-    spec = cached;
-  }
+  const spec: SpecInfo | null =
+    cached != null && !onlineManager.isOnline()
+      ? // A fetch would pause until the browser is back online, and the
+        // navigation with it.
+        cached
+      : await context.queryClient
+          .fetchQuery({ ...query, staleTime: 0 })
+          .catch((error: unknown) => {
+            if (
+              cached == null ||
+              error instanceof MovedError ||
+              error instanceof GoneError
+            ) {
+              throw error;
+            }
+            return cached;
+          });
   if (spec === null) return;
   throw redirect({
     to: "/projects/$slug/issues/$number/spec",
