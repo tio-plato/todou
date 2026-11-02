@@ -1,4 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
+import type { HistoryState } from "@tanstack/react-router";
 import {
   act,
   fireEvent,
@@ -81,6 +82,8 @@ type FixtureOptions = {
    * page is opened, as a visit earlier in the session would have left it.
    */
   cached?: number;
+  /** History state the page is opened with, as a link's return state is. */
+  state?: Record<string, unknown>;
 };
 
 function pageFixture(options: FixtureOptions = {}) {
@@ -307,6 +310,9 @@ async function mountPage(options: FixtureOptions = {}) {
         search: { file: "design.md", v: options.viewedVersion },
         replace: true,
         ignoreBlocker: true,
+        ...(options.state === undefined
+          ? {}
+          : { state: options.state as HistoryState }),
       })
       .catch(() => undefined);
   // The route pins a missing `v` from the router context's client, which
@@ -671,12 +677,16 @@ describe("the spec page reads the version its URL names", () => {
   });
 
   it("pins the first version of a spec pushed while the empty state is open", async () => {
-    const page = await mountPage({ absent: true });
+    const page = await mountPage({ absent: true, state: { origin: "kept" } });
     expect(router.state.location.search.v).toBeUndefined();
+    const entries = window.history.length;
 
     await pushNext(page);
     await waitFor(() => expect(router.state.location.search.v).toBe(1));
     await waitFor(() => expect(shownTitle()).toBe("Version 1"));
+    // In place: no entry to step back onto, and the way back kept.
+    expect(window.history.length).toBe(entries);
+    expect(router.state.location.state).toMatchObject({ origin: "kept" });
   });
 
   it("offers Finish review on the current version only", async () => {
@@ -689,6 +699,12 @@ describe("the spec page reads the version its URL names", () => {
     expect(stale.getAttribute("aria-label")).toContain(
       "Only the current version can be reviewed",
     );
+    // A disabled button gets no hover, so the reason is on its wrapper too.
+    expect(
+      stale
+        .closest('[data-toolbar-slot="finish-review"]')
+        ?.getAttribute("title"),
+    ).toBe("Only the current version can be reviewed");
     fireEvent.click(stale);
     await act(async () => {});
     expect(screen.queryByRole("dialog")).toBeNull();
