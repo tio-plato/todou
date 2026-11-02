@@ -1149,13 +1149,20 @@ export class TodouClient {
     this.request<Attachment[]>("GET", `/projects/${slug}/attachments`, {
       query: { issue_number: issueNumber },
     });
+  /**
+   * `issueNumber` null uploads a draft before its card exists; the card that
+   * the uploader then creates with a body linking it claims it.
+   */
   uploadAttachment = async (
     slug: string,
-    issueNumber: number,
+    issueNumber: number | null,
     file: File,
     opts: { draft?: boolean } = {},
   ): Promise<Attachment> => {
     const draft = opts.draft === true;
+    if (issueNumber === null && !draft) {
+      throw new Error("an upload without an issue number must be a draft");
+    }
     if (!this.#directUploadUnavailable) {
       const direct = await this.#tryDirectUpload(
         slug,
@@ -1167,7 +1174,7 @@ export class TodouClient {
     }
     const form = new FormData();
     form.set("file", file);
-    form.set("issue_number", String(issueNumber));
+    if (issueNumber !== null) form.set("issue_number", String(issueNumber));
     if (draft) form.set("draft", "true");
     return this.request<Attachment>("POST", `/projects/${slug}/attachments`, {
       form,
@@ -1205,7 +1212,7 @@ export class TodouClient {
    */
   #tryDirectUpload = async (
     slug: string,
-    issueNumber: number,
+    issueNumber: number | null,
     file: File,
     draft: boolean,
   ): Promise<Attachment | null> => {
@@ -1217,7 +1224,7 @@ export class TodouClient {
         `/projects/${slug}/attachments/direct-uploads`,
         {
           json: {
-            issue_number: issueNumber,
+            ...(issueNumber === null ? {} : { issue_number: issueNumber }),
             filename: file.name,
             content_type: file.type || "application/octet-stream",
             size: file.size,
