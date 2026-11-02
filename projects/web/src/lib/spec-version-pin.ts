@@ -14,11 +14,13 @@ import type { SpecSearch } from "@/lib/spec-search.ts";
  *
  * Fetched rather than read from the cache: a spec cached by an earlier visit
  * can be a push behind, and pinning that would open an old version as if it
- * were the latest. When the server cannot answer, the cached spec is the
- * newest version known, and pinning it is what the page showed before. A
- * card with no spec stays as it is and shows its empty state; a move, or a
- * failure with nothing cached, is left to the route's error boundary, which
- * is what follows a moved card to its new address.
+ * were the latest. When the server cannot answer once the query's own
+ * retries are spent, or the browser is offline, the cached spec is the
+ * newest version known, and pinning it is what the page showed before.
+ * Offline with nothing cached, the fetch waits for the network like every
+ * other query. A card with no spec stays as it is and shows its empty state;
+ * a move, or a failure with nothing cached, is left to the route's error
+ * boundary, which is what follows a moved card to its new address.
  */
 export async function pinSpecVersion({
   context,
