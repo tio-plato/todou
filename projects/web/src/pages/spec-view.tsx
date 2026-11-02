@@ -90,7 +90,9 @@ import {
 import {
   type SourceAnchor,
   type SourceFiles,
+  type SourceMark,
   sourceAnchorForSelection,
+  sourceHighlightRanges,
 } from "@/components/spec/source-selection.ts";
 import { SpecBaselinePicker } from "@/components/spec/spec-baseline-picker.tsx";
 import { SpecCompareToggle } from "@/components/spec/spec-compare-toggle.tsx";
@@ -117,6 +119,11 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  announceCodeRendered,
+  CODE_HIGHLIGHT_CSS,
+  useCodeHighlights,
+} from "@/lib/code-highlights.ts";
 import {
   holdRevealed,
   type RevealMode,
@@ -2246,6 +2253,42 @@ function SpecDiff({
     [filesAt],
   );
   const { pending, clear } = useSelectionEntry(containerRef, resolveSelection);
+  // Only what hangs on a line here can be painted on it: an anchor to the
+  // exact version and path one side of a file draws.
+  const marks = useMemo(
+    () =>
+      [
+        ...comments.map((c) => ({
+          kind: "comment" as const,
+          anchor: c.anchor,
+        })),
+        ...drafts.map((d) => ({ kind: "draft" as const, anchor: d.anchor })),
+      ].flatMap(({ kind, anchor }): SourceMark[] =>
+        anchor.line_start === null ||
+        anchor.line_end === null ||
+        anchor.col_start == null ||
+        anchor.col_end == null
+          ? []
+          : [
+              {
+                kind,
+                path: anchor.path,
+                version: anchor.version,
+                lineStart: anchor.line_start,
+                lineEnd: anchor.line_end,
+                colStart: anchor.col_start,
+                colEnd: anchor.col_end,
+              },
+            ],
+      ),
+    [comments, drafts],
+  );
+  const paintCode = useCallback(
+    (container: HTMLElement) =>
+      sourceHighlightRanges(container, filesAt, marks),
+    [filesAt, marks],
+  );
+  useCodeHighlights(containerRef, paintCode);
   const stageSelection = useCallback(
     (anchor: SourceAnchor) => {
       const entry =
@@ -2615,7 +2658,15 @@ function AnnotatedFileDiff({
       diffStyle: "unified" as const,
       overflow: wrap ? ("wrap" as const) : ("scroll" as const),
       preferredHighlighter: PIERRE_HIGHLIGHTER,
-      onPostRender: redrawOnRemount,
+      onPostRender: (
+        node: HTMLElement,
+        instance: { rerender: () => void },
+        phase: "mount" | "update" | "unmount",
+      ) => {
+        redrawOnRemount(node, instance, phase);
+        announceCodeRendered(node, phase);
+      },
+      unsafeCSS: CODE_HIGHLIGHT_CSS,
       enableLineSelection: true,
       onLineSelectionEnd: (range: SelectedLineRange | null) => {
         if (!range) return;
@@ -2781,11 +2832,13 @@ function SpecFileSource({
         instance: { rerender: () => void },
         phase: "mount" | "update" | "unmount",
       ) => {
+        announceCodeRendered(node, phase);
         if (phase === "unmount" || body.length === 0) return;
         const pre = node.shadowRoot?.querySelector("pre");
         if (pre == null || pre.childElementCount > 0) return;
         instance.rerender();
       },
+      unsafeCSS: CODE_HIGHLIGHT_CSS,
       enableLineSelection: true,
       onLineSelectionEnd: (range: SelectedLineRange | null) => {
         if (!range) return;
@@ -2874,14 +2927,41 @@ function SpecSourceFile({
   );
 
   const containerRef = useRef<HTMLDivElement>(null);
-  const resolveSelection = useCallback(
-    (container: Element, ends: SelectionEndpoints) =>
-      sourceAnchorForSelection(container, ends, () => ({
-        current: { path, version, body },
-      })),
+  const filesAt = useCallback(
+    (): SourceFiles => ({ current: { path, version, body } }),
     [path, version, body],
   );
+  const resolveSelection = useCallback(
+    (container: Element, ends: SelectionEndpoints) =>
+      sourceAnchorForSelection(container, ends, filesAt),
+    [filesAt],
+  );
   const { pending, clear } = useSelectionEntry(containerRef, resolveSelection);
+  const marks = useMemo(
+    () =>
+      annotations.flatMap((a): SourceMark[] =>
+        a.colStart == null || a.colEnd == null
+          ? []
+          : [
+              {
+                kind: a.kind,
+                path,
+                version,
+                lineStart: a.start,
+                lineEnd: a.end,
+                colStart: a.colStart,
+                colEnd: a.colEnd,
+              },
+            ],
+      ),
+    [annotations, path, version],
+  );
+  const paintCode = useCallback(
+    (container: HTMLElement) =>
+      sourceHighlightRanges(container, filesAt, marks),
+    [filesAt, marks],
+  );
+  useCodeHighlights(containerRef, paintCode);
   const stageSelection = useCallback(
     (anchor: SourceAnchor) =>
       onStage({
