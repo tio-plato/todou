@@ -1042,6 +1042,19 @@ describe("spec review", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("refuses a --version that is not a version number, before any request", async () => {
+    const { fetchImpl, calls } = fakeFetch([]);
+    const run = await runCli(
+      ["spec", "review", "23", "--version", "v3", "--approve"],
+      { fetchImpl, env: ENV },
+    );
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toContain(
+      '--version must be a positive integer, got "v3"',
+    );
+    expect(calls).toHaveLength(0);
+  });
+
   it("submits the verdict on the version given", async () => {
     const { fetchImpl, calls } = fakeFetch([
       [

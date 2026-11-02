@@ -29,7 +29,12 @@ import { readBody } from "../body.ts";
 import { CliError } from "../errors.ts";
 import { makePainter, personName, plural, table } from "../format.ts";
 import { drainPaged } from "../paginate.ts";
-import { parseChoice, parseCommentId, parseSeconds } from "../parse.ts";
+import {
+  parseChoice,
+  parseCommentId,
+  parsePositiveInt,
+  parseSeconds,
+} from "../parse.ts";
 import { refFormat, withRef } from "../refs.ts";
 import { fetchRefPrefix } from "../resolve.ts";
 import { waitForSpecReview } from "../spec-wait.ts";
@@ -684,12 +689,13 @@ export class SpecReviewCommand extends ProjectCommand {
     // Before any request: reviewing whatever is current when the command
     // runs would land a verdict on a version pushed after the reading.
     if (this.version === undefined) {
+      const project = this.project === undefined ? "" : ` -p ${this.project}`;
       throw new CliError(
         "--version is required",
-        `pass the version you read; \`todou spec status ${this.number}\` shows the current one`,
+        `pass the version you read, as \`spec pull\` printed it; \`todou spec status ${this.number}${project}\` shows the current one`,
       );
     }
-    const version = Number(this.version);
+    const version = parsePositiveInt(this.version, "--version");
     const { project, number } = await this.resolveIssueRef(client, this.number);
     if (this.bodyFile === "-" && this.annotations === "-") {
       throw new CliError(
