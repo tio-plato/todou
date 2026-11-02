@@ -12,7 +12,10 @@ export type SpecView = "rendered" | "source";
 
 export type SpecSearch = {
   file?: string;
-  /** Absent only on the way in: the route pins it to the current version. */
+  /**
+   * Absent only until the current version is pinned: on the way in, or while
+   * the card has no spec yet.
+   */
   v?: number;
   compare?: number;
   view?: SpecView;
