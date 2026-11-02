@@ -20,6 +20,7 @@ import {
   issueEvents,
   issues,
   labels,
+  pendingUploads,
   projectMeta,
   refFormats,
   statuses,
@@ -582,6 +583,11 @@ export async function deleteProject(
       await db.delete(comments).where(eq(comments.projectId, project.id));
       await db.delete(issueEvents).where(eq(issueEvents.projectId, project.id));
       await db.delete(attachments).where(eq(attachments.projectId, project.id));
+      // A direct upload of a draft with no card yet has no issue to cascade
+      // from, and `gcPendingUploads` walks live projects only.
+      await db
+        .delete(pendingUploads)
+        .where(eq(pendingUploads.projectId, project.id));
       await db.delete(labels).where(eq(labels.projectId, project.id));
       await db
         .delete(insightsSettings)
