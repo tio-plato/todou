@@ -117,7 +117,11 @@ function SessionOwner({
         );
         return;
       }
-      if (latest?.review_status === "withdrawn" && verdict !== "comment") {
+      if (
+        latest?.current_version === version &&
+        latest.review_status === "withdrawn" &&
+        verdict !== "comment"
+      ) {
         toast.error(`Spec v${version} has been withdrawn.`);
         return;
       }

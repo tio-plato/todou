@@ -126,7 +126,11 @@ export function ReviewSubmitDialog({
     spec !== undefined &&
     spec !== null &&
     spec.current_version > currentVersion;
-  const withdrawn = spec?.review_status === "withdrawn";
+  // The cached status is the cached version's, which a version ahead of it
+  // does not share.
+  const withdrawn =
+    spec?.current_version === currentVersion &&
+    spec.review_status === "withdrawn";
   const summary = controlledSummary ?? localSummary;
   const latestSummary = useRef(summary);
   latestSummary.current = summary;

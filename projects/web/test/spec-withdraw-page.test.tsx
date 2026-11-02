@@ -723,18 +723,24 @@ describe("the spec page reads the version its URL names", () => {
   });
 
   it("takes a version ahead of the cached spec for the current one", async () => {
-    // Opened from a version card before the push's refetch has landed.
-    await mountPage({ version: 2, cached: 1, viewedVersion: 2 });
+    // Opened from a version card before the refetch of the push that
+    // replaced a withdrawn v1 has landed.
+    const page = await mountPage({ version: 2, cached: 1, viewedVersion: 2 });
+    act(() => {
+      page.client.setQueryData(["spec", "demo", page.issueNumber], {
+        ...page.specAt(1),
+        review_status: "withdrawn",
+      });
+    });
     await waitFor(() => expect(shownTitle()).toBe("Version 2"));
     const finish = screen.getByRole("button", { name: /finish review/i });
     expectDisabled(finish, false);
     expect(screen.queryByRole("link", { name: /awaiting review/ })).toBeNull();
     const dialog = await openReview(2);
     expect(within(dialog).queryByRole("status")).toBeNull();
-    expectDisabled(
-      within(dialog).getByRole("button", { name: "Approve" }),
-      false,
-    );
+    const approve = within(dialog).getByRole("button", { name: "Approve" });
+    expectDisabled(approve, false);
+    expect(approve.title).toBe("");
   });
 
   it("leads from an older version to the current one by its status", async () => {
