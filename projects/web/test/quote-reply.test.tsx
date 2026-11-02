@@ -1,13 +1,20 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { render, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { CommentItem } from "../src/components/timeline/comment-item.tsx";
 import { Composer } from "../src/components/timeline/composer.tsx";
 import {
   QuoteReplyProvider,
   useQuoteReply,
 } from "../src/components/timeline/quote-reply.tsx";
 import { cmGetValue, cmSetValue } from "./cm.ts";
-import { testQueryClient } from "./render.tsx";
+import { renderWithProviders, testQueryClient } from "./render.tsx";
 
 type QuoteApi = { quote: (markdown: string) => void; available: boolean };
 
@@ -87,5 +94,67 @@ describe("Quote reply channel", () => {
     await waitFor(() => expect(api().available).toBe(false));
     // Nothing to write into, and asking anyway is not an error.
     expect(() => api().quote("anything")).not.toThrow();
+  });
+
+  it("leaves the caret in the comment box after Quote reply from an entry's menu", async () => {
+    const view = renderWithProviders(
+      <QuoteReplyProvider>
+        <CommentItem
+          slug="p"
+          issueNumber={7}
+          comment={{
+            type: "comment",
+            id: 1234,
+            author: {
+              id: 2,
+              login: "alice",
+              display_name: "Alice",
+              kind: "human",
+              avatar_url: null,
+              owner: null,
+            },
+            body: "the finding",
+            component: null,
+            created_at: "2026-08-11T00:00:00Z",
+            edited_at: null,
+            resolved_at: null,
+            hidden_at: null,
+            agent_context: null,
+          }}
+          viewer={null}
+        />
+        <Composer
+          slug="p"
+          issueNumber={1}
+          onSend={() => {}}
+          onSendWithCommands={async () => undefined}
+          failed={[]}
+          onRetry={() => {}}
+        />
+      </QuoteReplyProvider>,
+    );
+    const trigger = await waitFor(() =>
+      within(view.container).getByRole("button", { name: "comment actions" }),
+    );
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: "mouse" });
+    await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
+    const editor = view.container.querySelector(
+      '[aria-label="Write a comment"]',
+    );
+    expect(editor).not.toBeNull();
+
+    fireEvent.click(
+      within(screen.getByRole("menu")).getByRole("menuitem", {
+        name: "Quote reply",
+      }),
+    );
+    // Within the press itself, with nothing awaited: iOS raises the keyboard
+    // for no focus made later.
+    expect(editor?.contains(document.activeElement)).toBe(true);
+
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    // Radix hands the focus back from a timer once the menu has unmounted.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(editor?.contains(document.activeElement)).toBe(true);
   });
 });

@@ -265,6 +265,42 @@ describe("EntryActionsMenu on a comment", () => {
     );
   });
 
+  it("reads the selection afresh when the menu next opens from the keyboard", async () => {
+    const onQuote = vi.fn();
+    const view = renderComment({ onQuote });
+    await selectSecondParagraph(view);
+    const trigger = await openMenu(view, { collapseSelection: true });
+    fireEvent.click(menuItem("Quote reply"));
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+
+    // The keyboard fires no pointerdown, so only a capture left over from the
+    // last press could bring the second paragraph back.
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
+    fireEvent.click(menuItem("Quote reply"));
+    await waitFor(() => expect(onQuote).toHaveBeenCalledTimes(2));
+    expect(onQuote).toHaveBeenLastCalledWith(BODY);
+  });
+
+  it("hands the focus back to the button on the close after a Quote reply", async () => {
+    const view = renderComment({ onQuote: () => {} });
+    const trigger = await openMenu(view);
+    fireEvent.click(menuItem("Quote reply"));
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    // Radix's restore runs from a timer once the menu has unmounted.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    const menu = await waitFor(() => screen.getByRole("menu"));
+    await waitFor(() =>
+      expect(menu.contains(document.activeElement)).toBe(true),
+    );
+    fireEvent.keyDown(menu, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+  });
+
   it("drops Quote reply when the card has no comment box", async () => {
     const view = renderComment();
     await openMenu(view);
