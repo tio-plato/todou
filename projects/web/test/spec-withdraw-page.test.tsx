@@ -1,4 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
+import type { HistoryState } from "@tanstack/react-router";
 import {
   act,
   fireEvent,
@@ -74,6 +75,15 @@ type FixtureOptions = {
   version?: number;
   viewedVersion?: number;
   staged?: boolean;
+  /** `GET …/spec` answers 404 until the first `advance()`, which pushes v1. */
+  absent?: boolean;
+  /**
+   * The test client's cache already holds the spec at this version when the
+   * page is opened, as a visit earlier in the session would have left it.
+   */
+  cached?: number;
+  /** History state the page is opened with, as a link's return state is. */
+  state?: Record<string, unknown>;
 };
 
 function pageFixture(options: FixtureOptions = {}) {
@@ -89,8 +99,7 @@ function pageFixture(options: FixtureOptions = {}) {
     viewer_role: options.role ?? "writer",
     former_slugs: [],
   };
-  const version = options.version ?? 1;
-  let spec: SpecInfo = {
+  const specAt = (version: number): SpecInfo => ({
     current_version: version,
     current_version_cursor: `c${version}`,
     review_status: options.status ?? "unreviewed",
@@ -103,22 +112,30 @@ function pageFixture(options: FixtureOptions = {}) {
       message: null,
       created_at: "2026-01-01T00:00:00Z",
     })),
-  };
+  });
+  let spec = specAt(options.version ?? 1);
+  let absent = options.absent ?? false;
   const reads: string[] = [];
   const writes: Array<{ path: string; body: unknown }> = [];
   const reviews: SpecReviewSubmitInput[] = [];
   let reviewConflict: "withdrawn" | "newer" | null = null;
 
+  /** An agent pushes the next version. */
   function advance() {
+    if (absent) {
+      absent = false;
+      return;
+    }
+    const next = spec.current_version + 1;
     spec = {
       ...spec,
-      current_version: 2,
-      current_version_cursor: "c2",
+      current_version: next,
+      current_version_cursor: `c${next}`,
       review_status: "unreviewed",
       versions: [
         ...spec.versions,
         {
-          number: 2,
+          number: next,
           author: AUTHOR,
           message: null,
           created_at: "2026-01-02T00:00:00Z",
@@ -198,7 +215,15 @@ function pageFixture(options: FixtureOptions = {}) {
         spec_version: spec.current_version,
       });
     }
-    if (path === `${base}/spec`) return Response.json(spec);
+    if (path === `${base}/spec`) {
+      if (absent) {
+        return Response.json(
+          { error: { code: "not_found", message: "no spec" } },
+          { status: 404 },
+        );
+      }
+      return Response.json(spec);
+    }
     if (path === `${base}/spec/comments`) {
       return Response.json({
         current_version: spec.current_version,
@@ -232,6 +257,7 @@ function pageFixture(options: FixtureOptions = {}) {
     reads,
     writes,
     reviews,
+    specAt,
     advance,
     setStatus(review_status: SpecInfo["review_status"]) {
       spec = { ...spec, review_status };
@@ -276,35 +302,73 @@ async function mountPage(options: FixtureOptions = {}) {
   });
   // The singleton app router can leave navigate pending between unmounted
   // trees. As in startAtDraftPage, mount first and await the rendered page.
-  void router
-    .navigate({
-      to: "/projects/$slug/issues/$number/spec",
-      params: { slug: "demo", number: String(fixture.issueNumber) },
-      search: { file: "design.md", v: options.viewedVersion },
-      replace: true,
-      ignoreBlocker: true,
-    })
-    .catch(() => undefined);
+  const open = () =>
+    void router
+      .navigate({
+        to: "/projects/$slug/issues/$number/spec",
+        params: { slug: "demo", number: String(fixture.issueNumber) },
+        search: { file: "design.md", v: options.viewedVersion },
+        replace: true,
+        ignoreBlocker: true,
+        ...(options.state === undefined
+          ? {}
+          : { state: options.state as HistoryState }),
+      })
+      .catch(() => undefined);
+  // The route pins a missing `v` from the router context's client, which
+  // RouterProvider installs only as it renders: opened first, the page would
+  // be pinned through the previous test's client and never meet this cache.
+  if (options.cached === undefined) open();
+  else {
+    client.setQueryData(
+      ["spec", "demo", fixture.issueNumber],
+      fixture.specAt(options.cached),
+    );
+  }
   const mounted = renderOnTheAppRouter(client);
+  if (options.cached !== undefined) open();
   mountedPages.push({
     unmount: mounted.unmount,
     clear: () => client.clear(),
     storageKey: fixture.storageKey,
   });
-  await screen.findByRole(
-    "button",
-    { name: /finish review/i },
-    { timeout: 4000 },
-  );
+  if (options.absent) {
+    await screen.findByText(
+      "This issue has no spec yet.",
+      {},
+      { timeout: 4000 },
+    );
+  } else {
+    await screen.findByRole(
+      "button",
+      { name: /finish review/i },
+      { timeout: 4000 },
+    );
+  }
   await waitFor(() =>
     expect(client.getQueryState(["project", "demo"])?.status).toBe("success"),
   );
   return { ...fixture, client };
 }
 
-async function openReview() {
+async function openReview(version = 1) {
   fireEvent.click(screen.getByRole("button", { name: /finish review/i }));
-  return screen.findByRole("dialog", { name: "Finish review — spec v1" });
+  return screen.findByRole("dialog", {
+    name: `Finish review — spec v${version}`,
+  });
+}
+
+/** Switches the page to another version, as the version picker does. */
+async function viewVersion(page: { issueNumber: number }, v: number) {
+  void router
+    .navigate({
+      to: "/projects/$slug/issues/$number/spec",
+      params: { slug: "demo", number: String(page.issueNumber) },
+      search: { file: "design.md", v },
+    })
+    .catch(() => undefined);
+  await waitFor(() => expect(router.state.location.search.v).toBe(v));
+  await waitFor(() => expect(shownTitle()).toBe(`Version ${v}`));
 }
 
 function expectDrafts(dialog: HTMLElement, storageKey: string) {
@@ -486,7 +550,7 @@ describe("withdrawal on the actual SpecViewPage and review session", () => {
       expect(within(empty).queryByText(DRAFT.body.split("\n")[0])).toBeNull();
     });
 
-    it(`at ${width}px a newer-version 409 cannot retarget retained drafts, even after close/reopen`, async () => {
+    it(`at ${width}px after a newer-version 409 the page stays on v1 and a review reopened on v2 keeps the drafts`, async () => {
       reviewViewport(width);
       const page = await mountPage({ staged: true });
       const errorToast = vi.spyOn(toast, "error");
@@ -497,18 +561,10 @@ describe("withdrawal on the actual SpecViewPage and review session", () => {
       fireEvent.click(controls(width).approve);
       await expectRefreshed(page, before, 2, "unreviewed");
       expect(errorToast).toHaveBeenCalledWith("Spec changed during review");
-      // Without a pinned session version the refreshed page silently offers a
-      // v2 review with the v1 summary and annotation; closing must not reset it.
+      // The page stays on v1, so the open form still reviews v1 and is stale.
       dialog = await screen.findByRole("dialog", {
         name: "Finish review — spec v1",
       });
-      expectDrafts(dialog, page.storageKey);
-      expect(within(dialog).getByRole("status").textContent).toContain(
-        "Spec v1 is no longer current",
-      );
-      fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
-      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-      dialog = await openReview();
       expectDrafts(dialog, page.storageKey);
       expect(within(dialog).getByRole("status").textContent).toContain(
         "Spec v1 is no longer current",
@@ -527,8 +583,25 @@ describe("withdrawal on the actual SpecViewPage and review session", () => {
       expect(page.reviews).toEqual([
         { version: 1, verdict: "approve", body: SUMMARY, comments: COMMENTS },
       ]);
-      expect(page.writes).toHaveLength(1);
+      fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expectDisabled(
+        screen.getByRole("button", { name: /finish review/i }),
+        true,
+      );
+
+      await viewVersion(page, 2);
+      dialog = await openReview(2);
       expectDrafts(dialog, page.storageKey);
+      expectDisabled(
+        within(dialog).getByRole("button", { name: "Comment" }),
+        false,
+      );
+      expectDisabled(
+        within(dialog).getByRole("button", { name: "Approve" }),
+        false,
+      );
+      expect(page.writes).toHaveLength(1);
     });
 
     it(`at ${width}px a live newer-version refresh disables an open review before any submission`, async () => {
@@ -563,4 +636,125 @@ describe("withdrawal on the actual SpecViewPage and review session", () => {
       expect(page.writes).toHaveLength(0);
     });
   }
+});
+
+/**
+ * The document's heading as the version on screen spells it. A version past
+ * the first is compared with the one before, and its heading carries that
+ * one's text as a deletion.
+ */
+function shownTitle() {
+  const heading = document.querySelector("main h1");
+  if (heading === null) return null;
+  const shown = heading.cloneNode(true) as HTMLElement;
+  for (const removed of shown.querySelectorAll("del")) removed.remove();
+  return shown.textContent;
+}
+
+/** An agent pushes, and the SSE feed invalidates the spec as it would. */
+async function pushNext(page: RefreshedPage & { advance: () => void }) {
+  const before = page.specReads();
+  page.advance();
+  await act(async () => {
+    await page.client.invalidateQueries({
+      queryKey: ["spec", "demo", page.issueNumber],
+    });
+  });
+  return before;
+}
+
+describe("the spec page reads the version its URL names", () => {
+  it("pins an address without a version to the server's current one, and keeps it through a push", async () => {
+    const page = await mountPage({ version: 2, cached: 1 });
+    await waitFor(() => expect(router.state.location.search.v).toBe(2));
+    await waitFor(() => expect(shownTitle()).toBe("Version 2"));
+
+    const before = await pushNext(page);
+    await expectRefreshed(page, before, 3, "unreviewed");
+    expect(shownTitle()).toBe("Version 2");
+    expect(page.reads).not.toContain(`${page.base}/spec/files?version=3`);
+    expect(router.state.location.search.v).toBe(2);
+  });
+
+  it("pins the first version of a spec pushed while the empty state is open", async () => {
+    const page = await mountPage({ absent: true, state: { origin: "kept" } });
+    expect(router.state.location.search.v).toBeUndefined();
+    const entries = window.history.length;
+
+    await pushNext(page);
+    await waitFor(() => expect(router.state.location.search.v).toBe(1));
+    await waitFor(() => expect(shownTitle()).toBe("Version 1"));
+    // In place: no entry to step back onto, and the way back kept.
+    expect(window.history.length).toBe(entries);
+    expect(router.state.location.state).toMatchObject({ origin: "kept" });
+  });
+
+  it("offers Finish review on the current version only", async () => {
+    reviewViewport(640);
+    const page = await mountPage({ viewedVersion: 1 });
+    const before = await pushNext(page);
+    await expectRefreshed(page, before, 2, "unreviewed");
+    const stale = screen.getByRole("button", { name: /finish review/i });
+    expectDisabled(stale, true);
+    expect(stale.getAttribute("aria-label")).toContain(
+      "Only the current version can be reviewed",
+    );
+    // A disabled button gets no hover, so the reason is on its wrapper too.
+    expect(
+      stale
+        .closest('[data-toolbar-slot="finish-review"]')
+        ?.getAttribute("title"),
+    ).toBe("Only the current version can be reviewed");
+    fireEvent.click(stale);
+    await act(async () => {});
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    await viewVersion(page, 2);
+    expectDisabled(
+      screen.getByRole("button", { name: /finish review/i }),
+      false,
+    );
+    const dialog = await openReview(2);
+    expectDisabled(
+      within(dialog).getByRole("button", { name: "Approve" }),
+      false,
+    );
+    expect(page.writes).toHaveLength(0);
+  });
+
+  it("takes a version ahead of the cached spec for the current one", async () => {
+    // Opened from a version card before the refetch of the push that
+    // replaced a withdrawn v1 has landed.
+    const page = await mountPage({ version: 2, cached: 1, viewedVersion: 2 });
+    act(() => {
+      page.client.setQueryData(["spec", "demo", page.issueNumber], {
+        ...page.specAt(1),
+        review_status: "withdrawn",
+      });
+    });
+    await waitFor(() => expect(shownTitle()).toBe("Version 2"));
+    const finish = screen.getByRole("button", { name: /finish review/i });
+    expectDisabled(finish, false);
+    expect(screen.queryByRole("link", { name: /awaiting review/ })).toBeNull();
+    const dialog = await openReview(2);
+    expect(within(dialog).queryByRole("status")).toBeNull();
+    const approve = within(dialog).getByRole("button", { name: "Approve" });
+    expectDisabled(approve, false);
+    expect(approve.title).toBe("");
+  });
+
+  it("leads from an older version to the current one by its status", async () => {
+    await mountPage({ version: 2, viewedVersion: 1 });
+    const link = screen.getByRole("link", { name: "v2 · awaiting review" });
+    const href = new URL(link.getAttribute("href") ?? "", "http://localhost");
+    expect(href.searchParams.get("v")).toBe("2");
+    expect(href.searchParams.get("file")).toBe("design.md");
+
+    fireEvent.click(link);
+    await waitFor(() => expect(router.state.location.search.v).toBe(2));
+    await waitFor(() => expect(shownTitle()).toBe("Version 2"));
+    expect(screen.queryByRole("link", { name: /awaiting review/ })).toBeNull();
+    const slot = document.querySelector('[data-toolbar-slot="review-status"]');
+    expect(slot?.textContent).toBe("awaiting review");
+  });
 });

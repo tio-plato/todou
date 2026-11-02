@@ -395,8 +395,33 @@ export function SpecViewPage() {
   const { slug, number: numberParam } = useParams({
     from: "/authed/projects/$slug/issues/$number/spec",
   });
+  const search = useSearch({
+    from: "/authed/projects/$slug/issues/$number/spec",
+  });
   const issueNumber = Number(numberParam);
   const spec = useSuspenseQuery(specQuery(slug, issueNumber));
+  const navigate = useNavigate();
+  // The route pins `v` before this renders (`pinSpecVersion`). What reaches
+  // here without one is a spec that appeared while the reader sat on the
+  // empty state below: no version was on screen, so the current one is pinned
+  // in place, the way the route would have.
+  const unpinned =
+    spec.data === null || search.v !== undefined
+      ? undefined
+      : spec.data.current_version;
+  useEffect(() => {
+    if (unpinned === undefined) return;
+    void navigate({
+      to: "/projects/$slug/issues/$number/spec",
+      params: { slug, number: numberParam },
+      search: { ...search, v: unpinned },
+      replace: true,
+      resetScroll: false,
+      hashScrollIntoView: false,
+      ignoreBlocker: true,
+      state: (prev) => prev,
+    });
+  }, [unpinned, navigate, slug, numberParam, search]);
 
   if (spec.data === null) {
     return (
@@ -412,9 +437,15 @@ export function SpecViewPage() {
       </div>
     );
   }
+  if (search.v === undefined) return null;
   return (
     <SpecReviewSessionScope slug={slug} issueNumber={issueNumber}>
-      <SpecViewBody slug={slug} issueNumber={issueNumber} spec={spec.data} />
+      <SpecViewBody
+        slug={slug}
+        issueNumber={issueNumber}
+        spec={spec.data}
+        version={search.v}
+      />
     </SpecReviewSessionScope>
   );
 }
@@ -490,10 +521,13 @@ function SpecViewBody({
   slug,
   issueNumber,
   spec,
+  version,
 }: {
   slug: string;
   issueNumber: number;
   spec: SpecInfo;
+  /** The version on screen: the URL's, never whatever is current. */
+  version: number;
 }) {
   const search = useSearch({
     from: "/authed/projects/$slug/issues/$number/spec",
@@ -520,7 +554,6 @@ function SpecViewBody({
   // its hit area.
   const refLeads = useRefPlacement("detail") === "before";
   const mergedBack = toolbarCarriesBack && refLeads;
-  const version = search.v ?? spec.current_version;
   const files = useSuspenseQuery(specFilesQuery(slug, issueNumber, version));
   const comments = useSuspenseQuery(specCommentsQuery(slug, issueNumber));
   const drafts = useSpecReviewDrafts(slug, issueNumber);
@@ -532,10 +565,6 @@ function SpecViewBody({
     issueNumber,
   );
   const staging = useSpecReviewSessionValue(session, (s) => s.staging);
-  const reviewVersion = useSpecReviewSessionValue(
-    session,
-    (s) => s.reviewVersion,
-  );
   const finishOpen = useSpecReviewSessionValue(session, (s) => s.finishOpen);
   const pendingVerdict = useSpecReviewSessionValue(
     session,
@@ -663,11 +692,10 @@ function SpecViewBody({
   const params = { slug, number: String(issueNumber) };
 
   const fileSearch = (path: string): SpecSearch =>
-    specSearchFor({ file: path, v: search.v, version, baseline, view });
+    specSearchFor({ file: path, version, baseline, view });
   const baselineSearch = (next: number | null): SpecSearch =>
     specSearchFor({
       file: search.file,
-      v: search.v,
       version,
       baseline: next,
       view,
@@ -676,7 +704,6 @@ function SpecViewBody({
   const viewSearch = (next: SpecView): SpecSearch =>
     specSearchFor({
       file: search.file,
-      v: search.v,
       version,
       baseline,
       view: next,
@@ -699,7 +726,6 @@ function SpecViewBody({
         // found" with no way back (T-203).
         search: specSearchFor({
           file: selected === undefined ? undefined : search.file,
-          v: search.v,
           version,
           baseline: null,
           view,
@@ -732,7 +758,6 @@ function SpecViewBody({
           : target - 1;
     return specSearchFor({
       file: search.file,
-      v: target,
       version: target,
       baseline: next,
       view,
@@ -1023,6 +1048,12 @@ function SpecViewBody({
     : selected === undefined
       ? `This file is not part of v${version}`
       : undefined;
+  // Ahead of the cached current version is the cache lagging behind a push,
+  // not an old version.
+  const isCurrent = version >= spec.current_version;
+  const finishReviewReason = isCurrent
+    ? undefined
+    : "Only the current version can be reviewed";
 
   /**
    * The counter beside ↑↓, measured the way they measure. The total comes off
@@ -1244,9 +1275,26 @@ function SpecViewBody({
       omitRef={mergedBack}
     />
   );
+  // The status is the current version's. Beside an older one it would read
+  // as that version's own, so it names its version and leads there.
   const reviewStatus = (
     <ToolbarSlot name="review-status">
-      <SpecStatusBadge status={spec.review_status} />
+      {isCurrent ? (
+        <SpecStatusBadge status={spec.review_status} />
+      ) : (
+        <Link
+          to="/projects/$slug/issues/$number/spec"
+          params={params}
+          search={versionSearch(spec.current_version)}
+          state={returnState}
+          className="rounded-full hover:underline"
+        >
+          <SpecStatusBadge
+            status={spec.review_status}
+            version={spec.current_version}
+          />
+        </Link>
+      )}
     </ToolbarSlot>
   );
   /* Below lg the file rail is gone from the flow; this is where it went. In
@@ -1310,38 +1358,38 @@ function SpecViewBody({
       </Button>
     </ToolbarSlot>
   );
+  const finishLabel =
+    drafts.drafts.length > 0
+      ? `Finish review (${drafts.drafts.length} staged)`
+      : "Finish review";
   const finishReview = (
-    <Button
-      size="sm"
-      data-toolbar-slot="finish-review"
-      className="shrink-0"
-      aria-label={
-        drafts.drafts.length > 0
-          ? `Finish review (${drafts.drafts.length} staged)`
-          : "Finish review"
-      }
-      onClick={() =>
-        session.setFinishOpen(
-          true,
-          spec.current_version,
-          drafts.drafts.length > 0,
-        )
-      }
-    >
-      Finish review
-      {/* T-190 reserved this box so staging the first draft would not
-          widen the button — at the cost of 24px of hollow beside
-          `Finish review` on every page with no drafts, which is every
-          page most of the time. T-200 takes the one-off shift. */}
-      {drafts.drafts.length > 0 && (
-        <span
-          aria-hidden
-          className="inline-flex min-w-6 justify-center rounded-full bg-primary-foreground/20 px-1 tabular-nums"
-        >
-          {drafts.drafts.length}
-        </span>
-      )}
-    </Button>
+    <ToolbarSlot name="finish-review" title={finishReviewReason}>
+      <Button
+        size="sm"
+        className="shrink-0"
+        disabled={finishReviewReason !== undefined}
+        aria-label={
+          finishReviewReason === undefined
+            ? finishLabel
+            : `${finishLabel} — ${finishReviewReason}`
+        }
+        onClick={() => session.setFinishOpen(true)}
+      >
+        Finish review
+        {/* T-190 reserved this box so staging the first draft would not
+            widen the button — at the cost of 24px of hollow beside
+            `Finish review` on every page with no drafts, which is every
+            page most of the time. T-200 takes the one-off shift. */}
+        {drafts.drafts.length > 0 && (
+          <span
+            aria-hidden
+            className="inline-flex min-w-6 justify-center rounded-full bg-primary-foreground/20 px-1 tabular-nums"
+          >
+            {drafts.drafts.length}
+          </span>
+        )}
+      </Button>
+    </ToolbarSlot>
   );
   const viewToggle = (
     <ToolbarSlot name="view-toggle">
@@ -1772,7 +1820,6 @@ function SpecViewBody({
                         params={params}
                         search={specSearchFor({
                           file: selectedPath,
-                          v: search.v,
                           version,
                           baseline,
                           view: "source",
@@ -1859,7 +1906,7 @@ function SpecViewBody({
         session={session}
         slug={slug}
         issueNumber={issueNumber}
-        currentVersion={reviewVersion ?? spec.current_version}
+        currentVersion={version}
         drafts={drafts.drafts}
         open={finishOpen}
         pendingVerdict={pendingVerdict}
@@ -1867,7 +1914,7 @@ function SpecViewBody({
         onClose={() => session.setFinishOpen(false)}
         onSubmit={(verdict) =>
           submitReview({
-            currentVersion: reviewVersion ?? spec.current_version,
+            version,
             verdict,
             drafts: drafts.drafts,
           })
