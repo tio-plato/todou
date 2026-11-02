@@ -1490,6 +1490,13 @@ html[data-header-settling] [data-header-follow] {
       var(--color-amber-500)
     );
   }
+  /* Where the annotated characters themselves are painted inside the block
+     (CSS Custom Highlight API, lib/code-highlights.ts), the bar alone says
+     the block carries one, and a wash would only blur which characters. */
+  .markdown-body .spec-code-painted.spec-mark-comment-block,
+  .markdown-body .spec-code-painted.spec-mark-draft-block {
+    background-color: transparent;
+  }
 
   /* The stand-in for a folded run of blocks (T-222). Both colours are the
      formula behind pierre's --diffs-bg-separator and --diffs-fg-number, so the

@@ -1,10 +1,6 @@
 import { formatAnchorRange, type SpecCommentItem } from "@todou/shared";
-import {
-  CheckIcon,
-  MessageSquarePlusIcon,
-  MessageSquareTextIcon,
-} from "lucide-react";
-import type { ComponentProps, CSSProperties } from "react";
+import { CheckIcon, MessageSquareTextIcon } from "lucide-react";
+import type { ComponentProps } from "react";
 import {
   memo,
   type MouseEvent as ReactMouseEvent,
@@ -28,6 +24,11 @@ import {
   useMarkdownRemarkPlugins,
 } from "@/components/shared/markdown-view.tsx";
 import { displayNameOf, UserChip } from "@/components/shared/user-chip.tsx";
+import {
+  type AnchorRange,
+  SelectionEntry,
+  useSelectionEntry,
+} from "@/components/spec/selection-entry.tsx";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -35,6 +36,20 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  type CodeHighlightRanges,
+  supportsCodeHighlights,
+  useCodeHighlights,
+} from "@/lib/code-highlights.ts";
+import { codeRowSource } from "@/lib/code-rows.ts";
+import {
+  DELETION_LINE_TYPE,
+  LINE_TYPE_ATTR,
+  offsetInRow,
+  rangeInRow,
+  rowAt,
+  rowText,
+} from "@/lib/pierre-rows.ts";
 import {
   INS_BLOCK_CLASS,
   MARK_KEY_ATTR,
@@ -54,6 +69,11 @@ import {
   SOURCE_LINE_ATTR,
 } from "@/lib/rehype-source-lines.ts";
 import { holdRevealed, revealBlock, useOwnHold } from "@/lib/scroll-insets.ts";
+import {
+  composedContains,
+  elementNear,
+  type SelectionEndpoints,
+} from "@/lib/selection-endpoints.ts";
 import { buildBaselineTree } from "@/lib/spec-baseline-tree.ts";
 import { type LineRange, rangesIntersect } from "@/lib/spec-changes.ts";
 import {
@@ -65,12 +85,13 @@ import {
 import type { SpecReviewDraft } from "@/lib/spec-drafts.ts";
 import {
   buildSegmentIndex,
+  columnsOfOffsets,
   lineColAt,
+  offsetAt,
   type SegmentIndex,
   segmentsInLines,
   sourceOffsetOfRendered,
 } from "@/lib/spec-source-index.ts";
-import { POINTER_FINE, useMediaQuery } from "@/lib/use-media-query.ts";
 import { cn } from "@/lib/utils";
 
 type RehypePlugins = ComponentProps<typeof Markdown>["rehypePlugins"];
@@ -112,27 +133,13 @@ function labelOf(item: DisplayedAnnotation): string {
   });
 }
 
-export type AnchorRange = {
-  lineStart: number;
-  lineEnd: number;
-  colStart: number | null;
-  colEnd: number | null;
-};
-
-type PendingSelection = AnchorRange & { top: number };
+export type { AnchorRange };
 
 /**
- * How long a press on the entry keeps its anchor alive without a `click` to
- * close the window. Long enough for a touch's own click to arrive, short
- * enough that a press which slid off the entry does not strand a dead
- * anchor on screen.
+ * Worn by a code block whose annotated characters are painted inside it, so
+ * that its whole-block wash can step aside for them (styles.css).
  */
-const PRESS_WINDOW_MS = 300;
-
-/** The element a node is, or the one holding it. */
-function elementNear(node: Node): Element | null {
-  return node instanceof Element ? node : node.parentElement;
-}
+const CODE_PAINTED_CLASS = "spec-code-painted";
 
 /** Restored old structure and explicit old list numbers have no current source. */
 function isOldEndpoint(node: Node): boolean {
@@ -148,10 +155,12 @@ function isOldEndpoint(node: Node): boolean {
 }
 
 /**
- * The block a selection endpoint sits in, when that block can carry column
- * precision. Code blocks are excluded on purpose: their text reaches the
- * DOM through pierre's own renderer (T-31/T-52), so DOM offsets there say
- * nothing about the markdown source and the anchor stays line-level.
+ * The prose block a selection endpoint sits in, when the segment mapping can
+ * carry it to columns. Code blocks are not among them: their text reaches the
+ * DOM through pierre's own renderer (T-31/T-52), one row per line in a shadow
+ * root, and `codeRowSource` maps those rows instead. What is left of a code
+ * block outside its rows — the plain text shown before highlighting, a
+ * mermaid picture — maps to nothing and keeps the line anchor.
  */
 function columnBlockOf(
   node: Node,
@@ -237,173 +246,160 @@ function sourceOffsetOfEndpoint(
 }
 
 /**
- * Narrow a selection to source columns (T-142). Returns null whenever the
- * mapping is not provably right, and the caller keeps the whole-block line
- * anchor that spec review has always produced.
+ * Source offset one endpoint maps to, wherever it is: a code row's text maps
+ * by where `codeRowSource` puts the row, prose through the segment index.
+ * `edge` only matters to prose, for which segment a boundary between two
+ * belongs to.
  */
-export function columnsOfSelection(
+function endpointOffset(
   index: SegmentIndex,
-  range: Range,
-): AnchorRange | null {
-  const start = sourceOffsetOfEndpoint(
-    index,
-    range.startContainer,
-    range.startOffset,
-    "start",
-  );
-  const end = sourceOffsetOfEndpoint(
-    index,
-    range.endContainer,
-    range.endOffset,
-    "end",
-  );
-  if (start === null || end === null || end <= start) return null;
-  // Columns name a real character, inclusively (the contract lives in
-  // shared/schemas/spec.ts), so `len + 1` is never one — the server measures
-  // lines without their newline. Both ends therefore step off a newline they
-  // landed on, which makes a selection starting at a line end mean column 1
-  // of the next line rather than one past the end of this one.
-  let first = start;
-  let last = end - 1;
-  while (first < last && index.source[first] === "\n") first++;
-  while (last > first && index.source[last] === "\n") last--;
-  // Newlines only: no column can name that, so the whole-line anchor stands.
-  if (index.source[first] === "\n") return null;
-  const from = lineColAt(index, first);
-  const to = lineColAt(index, last);
-  if (to.line < from.line || (to.line === from.line && to.col < from.col)) {
-    return null;
-  }
-  return {
-    lineStart: from.line,
-    lineEnd: to.line,
-    colStart: from.col,
-    colEnd: to.col,
+  node: Node,
+  offset: number,
+  edge: "start" | "end",
+): number | null {
+  const row = rowAt(node);
+  if (row === null) return sourceOffsetOfEndpoint(index, node, offset, edge);
+  const source = codeRowSource(index, row);
+  if (source === null || source.textStart === null) return null;
+  const at = offsetInRow(row, node, offset);
+  return at === null ? null : source.textStart + at;
+}
+
+/**
+ * Source offsets of code the reader cannot have selected. In a block pierre
+ * has drawn rows for, that is every line no row shows — the fence markers, a
+ * patch's headers — and, on a line a row does show, the part in front of the
+ * row's text: a list item's indent, a quote's `> `, a patch line's prefix. A
+ * selection that stops at the edge of a row reaches into them only in the
+ * source. A block with no rows yet hides nothing: its plain text is what is
+ * on screen; nor does a block with a row that could not be placed hide any
+ * line whole, since that row shows one of them. Worked out per block on
+ * first ask, since only the blocks next to a selection's two ends are ever
+ * asked about.
+ */
+function hiddenInCode(
+  container: Element,
+  index: SegmentIndex,
+): (offset: number) => boolean {
+  let blocks: Array<{
+    el: Element;
+    loc: { start: number; end: number };
+  }> | null = null;
+  const hidden = new Map<Element, Map<number, [number, number]> | null>();
+  const hiddenOf = (el: Element, loc: { start: number; end: number }) => {
+    if (hidden.has(el)) return hidden.get(el) ?? null;
+    // Each drawn line, with where its row's text starts; null where the
+    // row does not read as its line, which hides nothing of it.
+    const drawn = new Map<number, number | null>();
+    let unplaced = false;
+    for (const host of el.querySelectorAll("diffs-container")) {
+      for (const row of host.shadowRoot?.querySelectorAll("[data-line]") ??
+        []) {
+        const source = codeRowSource(index, row);
+        if (source?.line != null) drawn.set(source.line, source.textStart);
+        // A deletion in a compared fence has no current line to show.
+        else if (row.getAttribute(LINE_TYPE_ATTR) !== DELETION_LINE_TYPE) {
+          unplaced = true;
+        }
+      }
+    }
+    let spans: Map<number, [number, number]> | null = null;
+    if (drawn.size > 0) {
+      spans = new Map();
+      for (let line = loc.start; line <= loc.end; line++) {
+        const start = index.lineStarts[line - 1];
+        if (start === undefined) continue;
+        const next = index.lineStarts[line];
+        const end = next === undefined ? index.source.length : next - 1;
+        const textStart = drawn.has(line)
+          ? drawn.get(line)
+          : unplaced
+            ? null
+            : end;
+        if (textStart != null && textStart > start) {
+          spans.set(line, [start, textStart]);
+        }
+      }
+    }
+    hidden.set(el, spans);
+    return spans;
+  };
+  return (offset) => {
+    blocks ??= [
+      ...container.querySelectorAll(`[${CODE_CONTENT_START_ATTR}]`),
+    ].flatMap((el) => {
+      const loc = parseSourceLoc(el.getAttribute(SOURCE_LINE_ATTR));
+      return loc === null ? [] : [{ el, loc }];
+    });
+    const { line } = lineColAt(index, offset);
+    return blocks.some(({ el, loc }) => {
+      if (line < loc.start || line > loc.end) return false;
+      const span = hiddenOf(el, loc)?.get(line);
+      return span !== undefined && offset >= span[0] && offset < span[1];
+    });
   };
 }
 
-/** Which side of a diff one of pierre's line rows numbers itself on. */
-const LINE_TYPE_ATTR = "data-line-type";
-const DELETION_LINE_TYPE = "change-deletion";
+/**
+ * Narrow a selection to source columns (T-142). Returns null whenever the
+ * mapping is not provably right, and the caller keeps the whole-block line
+ * anchor that spec review has always produced.
+ *
+ * Each endpoint maps on its own and the source offsets order them, so the two
+ * need not share a tree: a drag from prose into a code line has one end on
+ * either side of pierre's shadow root, where no DOM range can span them. A
+ * backwards selection is mapped again once its order is known, so that each
+ * end is read under its own edge.
+ */
+function columnsOfEndpoints(
+  container: Element,
+  index: SegmentIndex,
+  ends: SelectionEndpoints,
+): AnchorRange | null {
+  const { start: a, end: b } = ends;
+  let start = endpointOffset(index, a.node, a.offset, "start");
+  let end = endpointOffset(index, b.node, b.offset, "end");
+  if (start === null || end === null) return null;
+  if (start > end) {
+    start = endpointOffset(index, b.node, b.offset, "start");
+    end = endpointOffset(index, a.node, a.offset, "end");
+    if (start === null || end === null) return null;
+  }
+  return columnsOfOffsets(index, start, end, hiddenInCode(container, index));
+}
 
 /**
  * Source-line range for the block a selection endpoint sits in (T-52).
  * pierre renders code blocks inside an open shadow root, so the walk hops
  * shadow boundaries host by host until a stamped ancestor appears. When
- * the endpoint is on one of pierre's line rows (`data-line`, 1-based
- * within the code contents), the whole-block range narrows down to that
- * exact source line via the stamped content start.
+ * the endpoint is on one of pierre's line rows, the whole-block range
+ * narrows down to the source line `codeRowSource` names for it, and stays
+ * the whole block when it names none.
+ *
+ * `index` is what a patch fence's rows are matched against; without it they
+ * keep the whole block, while a plain block's rows still narrow.
  */
 export function anchorRangeForNode(
   node: Node,
+  index: SegmentIndex | null = null,
 ): { start: number; end: number } | null {
   if (isOldEndpoint(node)) return null;
-  let el = elementNear(node);
-  let row: Element | null = null;
-  while (el !== null) {
-    row ??= el.closest("[data-line]");
+  for (let el = elementNear(node); el !== null; ) {
+    const row = el.closest("[data-line]");
+    const source = row === null ? null : codeRowSource(index, row);
+    if (source !== null) {
+      return source.line === null
+        ? source.loc
+        : { start: source.line, end: source.line };
+    }
     const stamped = el.closest(`[${SOURCE_LINE_ATTR}]`);
     if (stamped !== null) {
-      const loc = parseSourceLoc(stamped.getAttribute(SOURCE_LINE_ATTR));
-      if (loc === null) return null;
-      if (row !== null) {
-        // A deletion row numbers itself on the OLD side, so the current
-        // source has no line for it and `contentStart + rowLine - 1` names
-        // an unrelated one — silently, and plausibly (T-343). The whole
-        // block is the honest answer; the other three line types pierre
-        // emits, `context-expanded` included, all number the new side and
-        // go down the formula below.
-        if (row.getAttribute(LINE_TYPE_ATTR) === DELETION_LINE_TYPE) return loc;
-        const contentStart = Number(
-          stamped.getAttribute(CODE_CONTENT_START_ATTR),
-        );
-        const rowLine = Number(row.getAttribute("data-line"));
-        if (
-          Number.isInteger(contentStart) &&
-          Number.isInteger(rowLine) &&
-          rowLine >= 1
-        ) {
-          // Clamp: an unclosed fence can stamp an end before start+rows.
-          const line = Math.min(contentStart + rowLine - 1, loc.end);
-          return { start: line, end: line };
-        }
-      }
-      return loc;
+      return parseSourceLoc(stamped.getAttribute(SOURCE_LINE_ATTR));
     }
     const root = el.getRootNode();
     el = root instanceof ShadowRoot ? root.host : null;
   }
   return null;
-}
-
-/** `container.contains` that sees through open shadow roots. */
-function composedContains(container: Element, node: Node): boolean {
-  let current: Node | null = node;
-  while (current !== null) {
-    if (container.contains(current)) return true;
-    const root = current.getRootNode();
-    current = root instanceof ShadowRoot ? root.host : null;
-  }
-  return false;
-}
-
-/** Every open shadow root under `root`, nested ones included. */
-function openShadowRoots(root: Element | ShadowRoot): ShadowRoot[] {
-  const found: ShadowRoot[] = [];
-  for (const el of root.querySelectorAll("*")) {
-    if (el.shadowRoot === null) continue;
-    found.push(el.shadowRoot, ...openShadowRoots(el.shadowRoot));
-  }
-  return found;
-}
-
-export type SelectionEndpoints = {
-  start: { node: Node; offset: number };
-  end: { node: Node; offset: number };
-  collapsed: boolean;
-};
-
-/**
- * Both ends of a selection, seen through open shadow roots (T-164). pierre
- * renders code inside one, and the legacy endpoints misreport anything that
- * lands in there: dragging from prose *into* a code line puts the focus on
- * the shadow host, which costs the anchor its line precision, and dragging
- * the other way collapses the whole selection to one empty div — while
- * `toString()` still returns the selected code. The collapse is why a
- * backwards drag out of a fence offered no comment button at all.
- *
- * `getComposedRanges` answers with the real endpoints. Where it does not
- * exist (jsdom, older browsers) the legacy ones stand exactly as before.
- */
-export function selectionEndpoints(
-  selection: Selection,
-  container: Element,
-): SelectionEndpoints | null {
-  if (typeof selection.getComposedRanges === "function") {
-    const composed = selection.getComposedRanges({
-      shadowRoots: openShadowRoots(container),
-    })[0];
-    if (composed !== undefined) {
-      return {
-        start: { node: composed.startContainer, offset: composed.startOffset },
-        end: { node: composed.endContainer, offset: composed.endOffset },
-        collapsed: composed.collapsed,
-      };
-    }
-  }
-  if (selection.rangeCount === 0) return null;
-  const range = selection.getRangeAt(0);
-  return {
-    start: {
-      node: selection.anchorNode ?? range.startContainer,
-      offset: selection.anchorOffset,
-    },
-    end: {
-      node: selection.focusNode ?? range.endContainer,
-      offset: selection.focusOffset,
-    },
-    collapsed: selection.isCollapsed,
-  };
 }
 
 /** Where an endpoint falls relative to the rendered file. */
@@ -424,32 +420,14 @@ function sideOf(container: Element, node: Node, offset: number): Side | null {
   }
 }
 
-/**
- * The endpoints as a forward range, or null when they cannot make one.
- *
- * Endpoints arrive in whatever order the user dragged, and `setEnd` before
- * the start silently collapses the range onto that point rather than
- * complaining — so a collapsed result is the signal to try the other way
- * round. Ends in two different trees collapse both ways, which is the null.
- */
-function orderedRange(ends: SelectionEndpoints): Range | null {
-  const forward = document.createRange();
-  forward.setStart(ends.start.node, ends.start.offset);
-  forward.setEnd(ends.end.node, ends.end.offset);
-  if (!forward.collapsed) return forward;
-  const backward = document.createRange();
-  backward.setStart(ends.end.node, ends.end.offset);
-  backward.setEnd(ends.start.node, ends.start.offset);
-  return backward.collapsed ? null : backward;
-}
-
 /** The block one endpoint anchors to, clamped to the container's edges. */
 function blockOfEndpoint(
+  index: SegmentIndex,
   node: Node,
   side: Side,
   blocks: Element[],
 ): { start: number; end: number } | null {
-  if (side === "inside") return anchorRangeForNode(node);
+  if (side === "inside") return anchorRangeForNode(node, index);
   const edge = side === "before" ? blocks[0] : blocks[blocks.length - 1];
   return edge === undefined
     ? null
@@ -482,14 +460,15 @@ export function anchorForSelection(
   if (startSide === null || endSide === null) return null;
   if (startSide === endSide && startSide !== "inside") return null;
   const blocks = [...container.querySelectorAll(`[${SOURCE_LINE_ATTR}]`)];
-  const from = blockOfEndpoint(ends.start.node, startSide, blocks);
-  const to = blockOfEndpoint(ends.end.node, endSide, blocks);
+  const from = blockOfEndpoint(index, ends.start.node, startSide, blocks);
+  const to = blockOfEndpoint(index, ends.end.node, endSide, blocks);
   if (from === null || to === null) return null;
   // A clamped endpoint names a block, not a character in it, so columns are
   // only ever narrowed while both ends are in the rendered file.
-  const range =
-    startSide === "inside" && endSide === "inside" ? orderedRange(ends) : null;
-  const columns = range === null ? null : columnsOfSelection(index, range);
+  const columns =
+    startSide === "inside" && endSide === "inside"
+      ? columnsOfEndpoints(container, index, ends)
+      : null;
   // Direction doesn't matter to the lines; the min/max absorbs it.
   return (
     columns ?? {
@@ -558,33 +537,6 @@ export function visibleAnchor(el: HTMLElement): HTMLElement {
 }
 
 /**
- * Where the floating entry sits, in container coordinates.
- *
- * The legacy range is what has a rect — but when the browser clamped it
- * onto a shadow host it is an empty box there, and the endpoint's own
- * element is then what says where to sit (T-164).
- */
-function entryTop(
-  container: Element,
-  selection: Selection,
-  ends: SelectionEndpoints,
-): number {
-  const legacy = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
-  const rect =
-    (legacy === null || legacy.collapsed
-      ? elementNear(ends.end.node)?.getBoundingClientRect()
-      : null) ?? legacy?.getBoundingClientRect();
-  const containerRect = container.getBoundingClientRect();
-  const below = (rect?.bottom ?? 0) - containerRect.top + 6;
-  // A selection that reaches past the file — ⌘/Ctrl-A, or a drag on into
-  // the page below it — has a rect as tall as the page, and that bottom
-  // would put the button hundreds of pixels under the prose it points at,
-  // off screen. Clamping to the file's own box is what keeps "the entry
-  // appeared" and "the reader can reach it" the same statement.
-  return Math.min(Math.max(below, 0), containerRect.bottom - containerRect.top);
-}
-
-/**
  * Rendered markdown with the annotation layer of the spec review view:
  * selecting text floats a "comment" button (the anchor is derived from the
  * blocks' stamped source lines), staged drafts and submitted comments hang
@@ -637,18 +589,16 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [chips, setChips] = useState<Chip[]>([]);
-  const [pending, setPending] = useState<PendingSelection | null>(null);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(NO_FOLDS);
-  /** A drag is in flight: its selection is not final until the pointer lifts. */
-  const draggingRef = useRef(false);
-  /** The entry is being pressed: the selection may vanish, the anchor stays. */
-  const pressingUiRef = useRef(false);
-  const pressTimerRef = useRef<number | null>(null);
-  const pendingRef = useRef<PendingSelection | null>(null);
-  const pointerFine = useMediaQuery(POINTER_FINE);
   const remarkPlugins = useMarkdownRemarkPlugins(slug);
 
   const index = useMemo(() => buildSegmentIndex(body), [body]);
+  const resolveSelection = useCallback(
+    (container: Element, ends: SelectionEndpoints) =>
+      anchorForSelection(container, index, ends),
+    [index],
+  );
+  const { pending, clear } = useSelectionEntry(containerRef, resolveSelection);
   const baselineIndex = useMemo(
     () => (baselineBody === undefined ? null : buildSegmentIndex(baselineBody)),
     [baselineBody],
@@ -734,50 +684,8 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
   // biome-ignore lint/correctness/useExhaustiveDependencies: a different document, or folding switched, invalidates both which folds are open and where a pending selection sat
   useEffect(() => {
     setExpanded(NO_FOLDS);
-    setPending(null);
+    clear();
   }, [body, baselineBody, foldUnchanged]);
-
-  /**
-   * Read the live selection and place the entry.
-   *
-   * `keepOnEmpty` is the window-resize path: a resize is not a reason to
-   * drop an entry, and the selection may well have survived it untouched.
-   */
-  const decide = useCallback(
-    (keepOnEmpty = false) => {
-      const container = containerRef.current;
-      if (!container) return;
-      const selection = window.getSelection();
-      // The cheap branch. `selectionchange` arrives every frame of a drag,
-      // while a full recompute walks every open shadow root under the
-      // container, so emptiness is settled before anything is measured —
-      // by `toString()` rather than `isCollapsed`, which lies about shadow
-      // selections (T-164) and would take a live selection's entry with it.
-      if (selection === null || selection.toString() === "") {
-        // A press on the entry itself collapses the selection before the
-        // click lands. The anchor is already stored in `pending`, and the
-        // click reads it from there, so the press window keeps it (T-60).
-        if (!keepOnEmpty && !pressingUiRef.current) setPending(null);
-        return;
-      }
-      // Mid-drag the entry would sit under the words still being selected,
-      // and every frame would pay for a recompute. `pointerup` schedules
-      // the one that counts.
-      if (draggingRef.current) return;
-      const ends = selectionEndpoints(selection, container);
-      if (ends === null || ends.collapsed) {
-        setPending(null);
-        return;
-      }
-      const anchor = anchorForSelection(container, index, ends);
-      if (anchor === null) {
-        setPending(null);
-        return;
-      }
-      setPending({ top: entryTop(container, selection, ends), ...anchor });
-    },
-    [index],
-  );
 
   const layout = useCallback(() => {
     const container = containerRef.current;
@@ -858,23 +766,92 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     });
   }, [annotations, changedRanges]);
 
-  useEffect(() => {
-    pendingRef.current = pending;
-  }, [pending]);
+  /**
+   * The characters of code that column anchors cover, painted as ranges over
+   * pierre's own rows (T-31 keeps marks out of a code block). Each row is
+   * placed in the source by `codeRowSource`, the mapping a selection there
+   * is anchored by, so what gets painted is what was selected; a row it
+   * cannot place keeps its block's wash instead.
+   */
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new set of decorations rewrites the wrappers' classes, taking the painted class off them
+  const paintCode = useCallback(
+    (container: HTMLElement): CodeHighlightRanges => {
+      const ranges: CodeHighlightRanges = { comment: [], draft: [] };
+      const marks = supportsCodeHighlights()
+        ? annotations.flatMap((a) => {
+            if (a.colStart == null || a.colEnd == null) return [];
+            const start = offsetAt(index, a.start, a.colStart);
+            const last = offsetAt(index, a.end, a.colEnd);
+            if (start === null || last === null) return [];
+            return [
+              { key: a.key, kind: a.kind, start, end: last + 1, lines: a },
+            ];
+          })
+        : [];
+      for (const wrapper of container.querySelectorAll(
+        `[${CODE_CONTENT_START_ATTR}]`,
+      )) {
+        const loc = parseSourceLoc(wrapper.getAttribute(SOURCE_LINE_ATTR));
+        const here =
+          loc === null
+            ? []
+            : marks.filter(
+                (mark) =>
+                  mark.lines.start <= loc.end && mark.lines.end >= loc.start,
+              );
+        // The wash steps aside only once every annotation reaching into the
+        // block has characters of its own painted here: a whole-line one has
+        // none, and a column one on rows that could not be placed has none.
+        const painted = new Set<string>();
+        for (const host of here.length === 0
+          ? []
+          : wrapper.querySelectorAll("diffs-container")) {
+          for (const row of host.shadowRoot?.querySelectorAll("[data-line]") ??
+            []) {
+            const source = codeRowSource(index, row);
+            if (source === null || source.textStart === null) continue;
+            const rowEnd = source.textStart + rowText(row).length;
+            for (const mark of here) {
+              const from = Math.max(mark.start, source.textStart);
+              const to = Math.min(mark.end, rowEnd);
+              if (to <= from) continue;
+              const range = rangeInRow(
+                row,
+                from - source.textStart,
+                to - source.textStart,
+              );
+              if (range === null) continue;
+              (mark.kind === "comment" ? ranges.comment : ranges.draft).push(
+                range,
+              );
+              painted.add(mark.key);
+            }
+          }
+        }
+        const touching =
+          loc === null
+            ? []
+            : annotations.filter(
+                (a) => a.start <= loc.end && a.end >= loc.start,
+              );
+        wrapper.classList.toggle(
+          CODE_PAINTED_CLASS,
+          touching.length > 0 && touching.every((a) => painted.has(a.key)),
+        );
+      }
+      return ranges;
+    },
+    [annotations, index, decorations],
+  );
+  useCodeHighlights(containerRef, paintCode);
 
   useLayoutEffect(() => {
     layout();
-    // A resize moves the chips and the entry alike, and the entry's `top`
-    // was measured against a selection rect that has since moved. Recompute
-    // it from the live selection, or leave it where it is when there is no
-    // selection left to measure.
-    const onResize = () => {
-      layout();
-      if (pendingRef.current !== null) decide(true);
-    };
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, [layout, decide]);
+    // A resize moves the chips; the entry's own recompute is the selection
+    // layer's.
+    window.addEventListener("resize", layout);
+    return () => window.removeEventListener("resize", layout);
+  }, [layout]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: folding moves the blocks the chips are measured against
   useLayoutEffect(() => {
@@ -911,108 +888,19 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     [keepHold],
   );
 
-  /**
-   * Every path that changes a selection, which is the point of T-384: the
-   * old container `mouseup` heard mouse drags that ended inside the prose
-   * and nothing else — not the keyboard, not a drag released outside, and
-   * on a touchscreen not the long-press gesture, for which no compatibility
-   * mouse event is ever synthesised.
-   */
-  useEffect(() => {
-    const controller = new AbortController();
-    const { signal } = controller;
-    let frame: number | null = null;
-    const schedule = () => {
-      if (typeof requestAnimationFrame !== "function") {
-        decide();
-        return;
-      }
-      if (frame !== null) return;
-      frame = requestAnimationFrame(() => {
-        frame = null;
-        decide();
-      });
-    };
-    const clearPressWindow = () => {
-      pressingUiRef.current = false;
-      if (pressTimerRef.current !== null) {
-        window.clearTimeout(pressTimerRef.current);
-        pressTimerRef.current = null;
-      }
-    };
-    // Closing the press window re-reads the selection, because what the
-    // window held back is exactly the "the selection is gone" verdict: a
-    // press that ended on something other than the entry — a chip, or the
-    // prose beside it — has to leave the entry pointing at nothing.
-    const releaseUi = () => {
-      clearPressWindow();
-      schedule();
-    };
-    document.addEventListener("selectionchange", schedule, { signal });
-    document.addEventListener(
-      "pointerdown",
-      (event) => {
-        const onUi =
-          event.target instanceof Element &&
-          event.target.closest("[data-annotation-ui]") !== null;
-        if (!onUi) {
-          draggingRef.current = true;
-          return;
-        }
-        pressingUiRef.current = true;
-        // The window has to close by itself too: a press that slides off
-        // the entry fires neither `click` nor `pointercancel`, and leaving
-        // it open would keep a dead anchor on screen indefinitely.
-        pressTimerRef.current = window.setTimeout(releaseUi, PRESS_WINDOW_MS);
-      },
-      { capture: true, signal },
-    );
-    document.addEventListener(
-      "pointerup",
-      () => {
-        draggingRef.current = false;
-        schedule();
-      },
-      { signal },
-    );
-    document.addEventListener(
-      "pointercancel",
-      () => {
-        draggingRef.current = false;
-        releaseUi();
-      },
-      { signal },
-    );
-    document.addEventListener("click", releaseUi, { signal });
-    return () => {
-      controller.abort();
-      if (frame !== null) cancelAnimationFrame(frame);
-      clearPressWindow();
-    };
-  }, [decide]);
-
   /** The fold placeholders are markdown-side nodes, so React never sees them. */
-  const onClick = useCallback((event: ReactMouseEvent) => {
-    if (!(event.target instanceof Element)) return;
-    const key = event.target
-      .closest(`.${FOLD_CLASS}`)
-      ?.getAttribute(FOLD_KEY_ATTR);
-    if (key === null || key === undefined) return;
-    setExpanded((prev) => new Set([...prev, key]));
-    setPending(null);
-  }, []);
-
-  const stagePending = useCallback(() => {
-    if (pending === null) return;
-    onStage({
-      lineStart: pending.lineStart,
-      lineEnd: pending.lineEnd,
-      colStart: pending.colStart,
-      colEnd: pending.colEnd,
-    });
-    setPending(null);
-    window.getSelection()?.removeAllRanges();
-  }, [pending, onStage]);
+  const onClick = useCallback(
+    (event: ReactMouseEvent) => {
+      if (!(event.target instanceof Element)) return;
+      const key = event.target
+        .closest(`.${FOLD_CLASS}`)
+        ?.getAttribute(FOLD_KEY_ATTR);
+      if (key === null || key === undefined) return;
+      setExpanded((prev) => new Set([...prev, key]));
+      clear();
+    },
+    [clear],
+  );
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: click only delegates to the fold placeholders; blocks stay natively selectable
@@ -1047,81 +935,10 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         />
       ))}
 
-      {pending !== null &&
-        (pointerFine ? (
-          <StageButton
-            size="sm"
-            className="absolute right-0 z-10 shadow-md"
-            style={{ top: pending.top }}
-            anchor={pending}
-            onStage={stagePending}
-          />
-        ) : (
-          // Touch selection comes with the platform's own bubble, floating
-          // against the selection, which we can neither move nor dismiss.
-          // Pinned to the bottom of the viewport is the one place the two
-          // cannot claim at once — and the one place a thumb always reaches.
-          // No `env(safe-area-inset-bottom)`: without `viewport-fit=cover`
-          // iOS has already inset the page, and a second one would show.
-          <div
-            className="fixed inset-x-0 bottom-0 z-30 border-t bg-background/95 p-2 backdrop-blur"
-            data-annotation-ui=""
-            data-testid="annotation-action-bar"
-          >
-            <StageButton
-              size="lg"
-              className="w-full"
-              anchor={pending}
-              onStage={stagePending}
-            />
-          </div>
-        ))}
+      <SelectionEntry pending={pending} clear={clear} onStage={onStage} />
     </div>
   );
 });
-
-/** The entry itself, in both of the shapes it takes. */
-function StageButton({
-  anchor,
-  size,
-  className,
-  style,
-  onStage,
-}: {
-  anchor: AnchorRange;
-  size: "sm" | "lg";
-  className: string;
-  style?: CSSProperties;
-  onStage: () => void;
-}) {
-  return (
-    <Button
-      size={size}
-      className={className}
-      style={style}
-      data-annotation-ui=""
-      // A mouse press would collapse the selection under the button (and
-      // move focus) before click fires, and the selection has to outlive
-      // the press (T-60). A touch press is left alone: cancelling it has no
-      // agreed effect on whether `click` follows, and the press window
-      // holds the anchor either way.
-      onPointerDown={(e) => {
-        if (e.pointerType === "mouse") e.preventDefault();
-      }}
-      onMouseDown={(e) => e.preventDefault()}
-      onClick={onStage}
-    >
-      <MessageSquarePlusIcon className="size-4" />
-      Comment{" "}
-      {formatAnchorRange({
-        line_start: anchor.lineStart,
-        line_end: anchor.lineEnd,
-        col_start: anchor.colStart,
-        col_end: anchor.colEnd,
-      })}
-    </Button>
-  );
-}
 
 const AnnotationChip = memo(function AnnotationChip({
   slug,

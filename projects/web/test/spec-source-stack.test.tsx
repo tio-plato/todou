@@ -6,47 +6,138 @@ import {
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import type { SpecComments, SpecFiles, SpecInfo } from "@todou/shared";
 import type { ReactNode } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../src/api/queries.ts";
 import { parseSpecSearch } from "../src/lib/spec-search.ts";
 import { SpecViewPage } from "../src/pages/spec-view.tsx";
 import { testQueryClient } from "./render.tsx";
 
-// The real diff renders in a shadow root happy-dom cannot lay out; this
-// suite only asks which entry the stack drew for which file. `File` does
-// render its annotations, which is the one thing about an unfolded block
-// that is not visible from the outside.
-vi.mock("@pierre/diffs/react", () => ({
-  MultiFileDiff: () => <div data-testid="diff" />,
-  File: ({
-    lineAnnotations,
-    renderAnnotation,
-  }: {
-    lineAnnotations?: Array<{ lineNumber: number; metadata: unknown }>;
-    renderAnnotation?: (a: { metadata: unknown }) => ReactNode;
-  }) => (
-    <div data-testid="file-view">
-      {(lineAnnotations ?? []).map((annotation, index) => (
+/** Every options object the mocked `File` was handed, in render order. */
+const fileOptions = vi.hoisted(() => [] as unknown[]);
+
+type MockRow = { line: number; alt?: number; text: string; type: string };
+
+// The real diff renders in a shadow root happy-dom cannot lay out. These draw
+// what the page reads back: a `[data-line]` row per line, typed as pierre
+// types it, and the annotations it was handed. The rows are light DOM; what
+// changes inside a shadow root is the source-selection unit's to cover.
+vi.mock("@pierre/diffs/react", async () => {
+  const { diffLines } = await import("diff");
+  const lines = (text: string) => text.replace(/\n$/, "").split("\n");
+  const Rows = ({ rows }: { rows: MockRow[] }) => (
+    <code>
+      {rows.map((row) => (
         <div
-          // biome-ignore lint/suspicious/noArrayIndexKey: several annotations can share a line
-          key={index}
-          data-testid="file-annotation"
-          data-line={annotation.lineNumber}
+          key={`${row.type}-${row.line}`}
+          data-line={row.line}
+          data-alt-line={row.alt}
+          data-line-type={row.type}
         >
-          {renderAnnotation?.(annotation)}
+          <span>{row.text}</span>
         </div>
       ))}
-    </div>
-  ),
-  CodeView: () => null,
-}));
+    </code>
+  );
+  return {
+    MultiFileDiff: ({
+      oldFile,
+      newFile,
+      lineAnnotations,
+      renderAnnotation,
+    }: {
+      oldFile: { contents: string };
+      newFile: { contents: string };
+      lineAnnotations?: Array<{
+        side: string;
+        lineNumber: number;
+        metadata: unknown;
+      }>;
+      renderAnnotation?: (a: { metadata: unknown }) => ReactNode;
+    }) => {
+      const rows: MockRow[] = [];
+      let old = 1;
+      let neu = 1;
+      for (const part of diffLines(oldFile.contents, newFile.contents)) {
+        for (const text of lines(part.value)) {
+          if (part.removed) {
+            rows.push({ line: old++, text, type: "change-deletion" });
+          } else if (part.added) {
+            rows.push({ line: neu++, text, type: "change-addition" });
+          } else {
+            rows.push({ line: neu++, alt: old++, text, type: "context" });
+          }
+        }
+      }
+      return (
+        <div data-testid="diff">
+          <Rows rows={rows} />
+          {(lineAnnotations ?? []).map((annotation, index) => (
+            <div
+              // biome-ignore lint/suspicious/noArrayIndexKey: several annotations can share a line
+              key={index}
+              data-testid="diff-annotation"
+              data-side={annotation.side}
+              data-annotation-line={annotation.lineNumber}
+            >
+              {renderAnnotation?.(annotation)}
+            </div>
+          ))}
+        </div>
+      );
+    },
+    File: ({
+      file,
+      options,
+      lineAnnotations,
+      renderAnnotation,
+    }: {
+      file: { contents: string };
+      options: unknown;
+      lineAnnotations?: Array<{ lineNumber: number; metadata: unknown }>;
+      renderAnnotation?: (a: { metadata: unknown }) => ReactNode;
+    }) => {
+      fileOptions.push(options);
+      return (
+        <div data-testid="file-view">
+          <Rows
+            rows={lines(file.contents).map((text, i) => ({
+              line: i + 1,
+              text,
+              type: "context",
+            }))}
+          />
+          {(lineAnnotations ?? []).map((annotation, index) => (
+            <div
+              // biome-ignore lint/suspicious/noArrayIndexKey: several annotations can share a line
+              key={index}
+              data-testid="file-annotation"
+              data-annotation-line={annotation.lineNumber}
+            >
+              {renderAnnotation?.(annotation)}
+            </div>
+          ))}
+        </div>
+      );
+    },
+    CodeView: () => null,
+  };
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
   localStorage.clear();
+  fileOptions.length = 0;
+  window.getSelection()?.removeAllRanges();
 });
 
 const AUTHOR = {
@@ -186,12 +277,13 @@ function renderSpecView(search: string) {
     }),
     defaultPendingMs: 0,
   });
+  const client = testQueryClient();
   const view = render(
-    <QueryClientProvider client={testQueryClient()}>
+    <QueryClientProvider client={client}>
       <RouterProvider router={router} />
     </QueryClientProvider>,
   );
-  return { ...view, router };
+  return { ...view, router, client };
 }
 
 /** The stack has rendered once the first entry box is on screen. */
@@ -418,5 +510,265 @@ describe("the paths out of a removed file (T-203)", () => {
       expect(view.router.state.location.search).toEqual({ v: 2 }),
     );
     expect(view.queryByText(/File not found/)).toBeNull();
+  });
+});
+
+/** Select `[from, to)` of one row's text, the way a reader's drag would. */
+function selectInRow(row: Element, from: number, to: number) {
+  const text = row.querySelector("span")?.firstChild;
+  if (!text) throw new Error("no text in the row");
+  const range = document.createRange();
+  range.setStart(text, from);
+  range.setEnd(text, to);
+  const selection = window.getSelection();
+  if (!selection) throw new Error("no selection support");
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+/**
+ * One version's whole source, which no URL opens: v1 has nothing to compare
+ * against, and "source" while not comparing is the reader's session stance.
+ */
+async function singleSource(file: string) {
+  const view = renderSpecView(`?v=1&file=${file}`);
+  await view.findByRole("button", { name: /finish review/i });
+  fireEvent.click(await view.findByRole("button", { name: "source" }));
+  await view.findByTestId("file-view");
+  return view;
+}
+
+describe("selecting text in the source view", () => {
+  it("offers the selected words and stages them with their quote", async () => {
+    mockSpec();
+    const view = await singleSource("drift.md");
+    const row = await waitFor(() => {
+      const el = view.container.querySelector(
+        '[data-testid="file-view"] [data-line="2"]',
+      );
+      if (el === null) throw new Error("not drawn");
+      return el;
+    });
+    // drift.md v1 line 2 is "beta"; "eta" is columns 2 through 4.
+    selectInRow(row, 1, 4);
+    fireEvent.click(await view.findByText(/Comment L2:2–4/));
+    expect(await view.findByText("L2:2–4 · v1")).toBeTruthy();
+    expect(view.getByText("eta", { selector: "div" })).toBeTruthy();
+  });
+
+  it("offers it in a file unfolded in the source diff", async () => {
+    mockSpec();
+    const view = renderSpecView("?v=2&view=source&file=new-name.md");
+    const row = await waitFor(() => {
+      const el = view.container.querySelector(
+        '[data-testid="file-view"] [data-line="2"]',
+      );
+      if (el === null) throw new Error("not drawn");
+      return el;
+    });
+    // "line two": the word "two" is columns 6 through 8 of line 2.
+    selectInRow(row, 5, 8);
+    fireEvent.click(await view.findByText(/Comment L2:6–8/));
+    expect(await view.findByText("L2:6–8 · v2")).toBeTruthy();
+    expect(view.getByText("two", { selector: "div" })).toBeTruthy();
+  });
+
+  it("anchors a deletion's words to the baseline", async () => {
+    mockSpec();
+    const view = await stack("?v=2&compare=1");
+    const row = await waitFor(() => {
+      const el = view.container.querySelector(
+        '[data-file-diff="drifted.md"] [data-line-type="change-deletion"]',
+      );
+      if (el === null) throw new Error("not drawn");
+      return el;
+    });
+    // drift.md in v1 ends "delta"; "elt" is columns 2 through 4 of line 4.
+    selectInRow(row, 1, 4);
+    fireEvent.click(await view.findByText(/Comment L4:2–4/));
+    const label = await view.findByText("L4:2–4 · v1");
+    // The composer's header names the file the anchor lives in.
+    expect(label.parentElement?.textContent).toContain("drift.md");
+    expect(view.getByText("elt", { selector: "div" })).toBeTruthy();
+  });
+
+  it("keeps pierre's options when the page re-renders around the file", async () => {
+    mockSpec();
+    const view = await singleSource("drift.md");
+    await waitFor(() => expect(fileOptions.length).toBeGreaterThan(0));
+    const before = fileOptions.at(-1);
+    const drawn = fileOptions.length;
+    // A refetch that brings something new, as a reviewer elsewhere would.
+    vi.spyOn(api, "getSpecComments").mockResolvedValue({
+      current_version: 5,
+      items: [comment("keep.md", 2, 1, "elsewhere")],
+    });
+    await act(() =>
+      view.client.invalidateQueries({
+        queryKey: ["spec", "demo", 1, "comments"],
+      }),
+    );
+    await waitFor(() => expect(fileOptions.length).toBeGreaterThan(drawn));
+    expect(fileOptions.at(-1)).toBe(before);
+  });
+});
+
+const DRAFTS_KEY = "todou-spec-review:demo:1";
+
+function stageDraft(
+  id: string,
+  path: string,
+  version: number,
+  line: number,
+  body: string,
+) {
+  const stored = JSON.parse(localStorage.getItem(DRAFTS_KEY) ?? "[]");
+  stored.push({
+    id,
+    anchor: {
+      path,
+      version,
+      line_start: line,
+      line_end: line,
+      col_start: null,
+      col_end: null,
+    },
+    quote: "",
+    body,
+  });
+  localStorage.setItem(DRAFTS_KEY, JSON.stringify(stored));
+  // As another tab's write arrives: the drafts module drops what it cached
+  // for this bucket in an earlier test.
+  window.dispatchEvent(new StorageEvent("storage", { key: DRAFTS_KEY }));
+}
+
+describe("staged drafts in the source view", () => {
+  it("hangs a draft under its line, and Discard takes it away", async () => {
+    stageDraft("d1", "drift.md", 1, 2, "say it plainer");
+    mockSpec();
+    const view = await singleSource("drift.md");
+    const note = await waitFor(() => {
+      const el = view.container.querySelector(
+        '[data-testid="file-annotation"][data-annotation-line="2"]',
+      );
+      if (el === null) throw new Error("no draft drawn");
+      return el as HTMLElement;
+    });
+    expect(note.textContent).toContain("say it plainer");
+    expect(note.textContent).toContain("Edit");
+    fireEvent.click(
+      [...note.querySelectorAll("button")].find(
+        (button) => button.textContent === "Discard",
+      ) as HTMLElement,
+    );
+    await waitFor(() => expect(view.queryByText("say it plainer")).toBeNull());
+    expect(JSON.parse(localStorage.getItem(DRAFTS_KEY) ?? "[]")).toEqual([]);
+  });
+
+  it("hangs a baseline draft on the old side and a new one on the new", async () => {
+    stageDraft("d1", "drift.md", 1, 4, "why drop delta?");
+    stageDraft("d2", "drifted.md", 2, 4, "omega reads well");
+    mockSpec();
+    const view = await stack("?v=2&compare=1");
+    const entry = view.container.querySelector(
+      '[data-file-diff="drifted.md"]',
+    ) as HTMLElement;
+    const notes = await waitFor(() => {
+      const els = entry.querySelectorAll('[data-testid="diff-annotation"]');
+      expect(els).toHaveLength(2);
+      return [...els];
+    });
+    const sideOf = (text: string) =>
+      notes
+        .find((el) => el.textContent?.includes(text))
+        ?.getAttribute("data-side");
+    expect(sideOf("why drop delta?")).toBe("deletions");
+    expect(sideOf("omega reads well")).toBe("additions");
+  });
+});
+
+/** A stand-in for the browser's `Highlight`: the ranges it was built from. */
+class FakeHighlight {
+  ranges: Range[];
+  priority = 0;
+  constructor(...ranges: Range[]) {
+    this.ranges = ranges;
+  }
+  add(range: Range): this {
+    this.ranges.push(range);
+    return this;
+  }
+}
+
+describe("code highlights in the source view", () => {
+  let registry = new Map<string, FakeHighlight>();
+  beforeEach(() => {
+    registry = new Map();
+    vi.stubGlobal("Highlight", FakeHighlight);
+    vi.stubGlobal(
+      "CSS",
+      Object.assign(Object.create(globalThis.CSS), { highlights: registry }),
+    );
+  });
+  afterEach(() => {
+    // Unmounted first, while the API is still there to take the ranges back.
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  const withColumns = (
+    item: ReturnType<typeof comment>,
+    colStart: number,
+    colEnd: number,
+  ) => ({
+    ...item,
+    anchor: { ...item.anchor, col_start: colStart, col_end: colEnd },
+  });
+
+  it("paints a column comment on the version it is anchored to", async () => {
+    // drift.md v1 line 2 is "beta"; columns 2–4 are "eta".
+    mockSpec([withColumns(comment("drift.md", 1, 2, "why beta?"), 2, 4)]);
+    await singleSource("drift.md");
+    await waitFor(() =>
+      expect((registry.get("spec-comment")?.ranges ?? []).map(String)).toEqual([
+        "eta",
+      ]),
+    );
+  });
+
+  it("paints a baseline comment on the unchanged row it hangs under", async () => {
+    // drift.md v1 line 2 is "beta", unchanged in drifted.md v2; columns 2–4
+    // are "eta". pierre numbers the row 2 on both sides here.
+    mockSpec([withColumns(comment("drift.md", 1, 2, "why beta?"), 2, 4)]);
+    await stack("?v=2&compare=1");
+    const ranges = await waitFor(() => {
+      const found = registry.get("spec-comment")?.ranges ?? [];
+      expect(found).toHaveLength(1);
+      return found;
+    });
+    expect(ranges[0]?.toString()).toBe("eta");
+    expect(
+      ranges[0]?.startContainer.parentElement
+        ?.closest("[data-line]")
+        ?.getAttribute("data-line-type"),
+    ).toBe("context");
+  });
+
+  it("paints a baseline comment on the deletion side only", async () => {
+    // drift.md v1 line 4 is "delta"; columns 2–4 are "elt". v2's line 4,
+    // "omega", is the addition beside it.
+    mockSpec([withColumns(comment("drift.md", 1, 4, "why drop it?"), 2, 4)]);
+    await stack("?v=2&compare=1");
+    const ranges = await waitFor(() => {
+      const found = registry.get("spec-comment")?.ranges ?? [];
+      expect(found).toHaveLength(1);
+      return found;
+    });
+    expect(ranges[0]?.toString()).toBe("elt");
+    expect(
+      ranges[0]?.startContainer.parentElement
+        ?.closest("[data-line]")
+        ?.getAttribute("data-line-type"),
+    ).toBe("change-deletion");
   });
 });

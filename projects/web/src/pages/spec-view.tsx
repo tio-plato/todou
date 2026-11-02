@@ -1,4 +1,8 @@
-import type { SelectedLineRange } from "@pierre/diffs";
+import type {
+  DiffLineAnnotation,
+  LineAnnotation,
+  SelectedLineRange,
+} from "@pierre/diffs";
 // Imported directly rather than through the lazy wrapper in pierre.tsx: this
 // whole page is route-lazy, so pierre never reaches the main bundle through
 // it anyway (T-31).
@@ -79,6 +83,17 @@ import {
   type DisplayedAnnotation,
 } from "@/components/spec/annotated-markdown.tsx";
 import { ReviewSubmitDialog } from "@/components/spec/review-submit.tsx";
+import {
+  SelectionEntry,
+  useSelectionEntry,
+} from "@/components/spec/selection-entry.tsx";
+import {
+  type SourceAnchor,
+  type SourceFiles,
+  type SourceMark,
+  sourceAnchorForSelection,
+  sourceHighlightRanges,
+} from "@/components/spec/source-selection.ts";
 import { SpecBaselinePicker } from "@/components/spec/spec-baseline-picker.tsx";
 import { SpecCompareToggle } from "@/components/spec/spec-compare-toggle.tsx";
 import {
@@ -105,6 +120,11 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import {
+  announceCodeRendered,
+  CODE_HIGHLIGHT_CSS,
+  useCodeHighlights,
+} from "@/lib/code-highlights.ts";
+import {
   holdRevealed,
   type RevealMode,
   restingScrollY,
@@ -113,6 +133,7 @@ import {
   useOwnHold,
   useScrollInsets,
 } from "@/lib/scroll-insets.ts";
+import type { SelectionEndpoints } from "@/lib/selection-endpoints.ts";
 import {
   acceptsShortcut,
   currentIndex,
@@ -675,8 +696,15 @@ function SpecViewBody({
   const issue = useQuery(issueQuery(slug, issueNumber));
   const navigate = useNavigate();
 
-  /** Every anchor gesture — selection, line drag, "Comment file". */
-  const stage = (next: ComposerStaging) => session.retarget(next);
+  /**
+   * Every anchor gesture — selection, line drag, "Comment file". Stable: it
+   * reaches the options pierre draws the source with, and a new options
+   * object redraws every row, taking a live selection with it (T-60).
+   */
+  const stage = useCallback(
+    (next: ComposerStaging) => session.retarget(next),
+    [session],
+  );
   const editDraft = useCallback(
     (draft: SpecReviewDraft) => session.editDraft(draft),
     [session],
@@ -1738,7 +1766,10 @@ function SpecViewBody({
               toFiles={files.data.files}
               toVersion={version}
               comments={comments.data.items}
+              drafts={drafts.drafts}
               onStage={stage}
+              onEditDraft={editDraft}
+              onRemoveDraft={drafts.remove}
               focusPath={search.file}
               wrap={wrap}
               stickyTop={stickyTop}
@@ -1805,6 +1836,8 @@ function SpecViewBody({
                   version={version}
                   annotations={displayed}
                   onStage={stage}
+                  onEditDraft={editDraft}
+                  onRemoveDraft={drafts.remove}
                   wrap={wrap}
                   stickyTop={stickyTop}
                 />
@@ -2193,7 +2226,10 @@ function SpecDiff({
   toFiles,
   toVersion,
   comments,
+  drafts,
   onStage,
+  onEditDraft,
+  onRemoveDraft,
   focusPath,
   wrap,
   stickyTop,
@@ -2204,7 +2240,10 @@ function SpecDiff({
   toFiles: SpecFile[];
   toVersion: number;
   comments: SpecCommentItem[];
+  drafts: SpecReviewDraft[];
   onStage: (staging: ComposerStaging) => void;
+  onEditDraft: (draft: SpecReviewDraft) => void;
+  onRemoveDraft: (id: string) => void;
   /** Scroll this file's diff into view — the version card's per-file link (T-59). */
   focusPath?: string;
   wrap: boolean;
@@ -2231,42 +2270,144 @@ function SpecDiff({
   );
   const differing = entries.filter(isDifference);
 
+  // One selection layer over the whole stack: a file's wrapper names it, and
+  // its deletion rows belong to the baseline, under the path it had there.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const filesAt = useCallback(
+    (element: Element): SourceFiles | null => {
+      const wrapper = element.closest(
+        "[data-file-diff], [data-file-unchanged]",
+      );
+      const path =
+        wrapper?.getAttribute("data-file-diff") ??
+        wrapper?.getAttribute("data-file-unchanged");
+      const entry = entries.find((e) => e.path === path);
+      if (entry === undefined) return null;
+      return {
+        current: { path: entry.path, version: toVersion, body: entry.newBody },
+        old: {
+          path: entry.from ?? entry.path,
+          version: fromVersion,
+          body: entry.oldBody,
+        },
+      };
+    },
+    [entries, fromVersion, toVersion],
+  );
+  const resolveSelection = useCallback(
+    (container: Element, ends: SelectionEndpoints) =>
+      sourceAnchorForSelection(container, ends, filesAt),
+    [filesAt],
+  );
+  const { pending, clear } = useSelectionEntry(containerRef, resolveSelection);
+  // Only what hangs on a line here can be painted on it: an anchor to the
+  // exact version and path one side of a file draws.
+  const marks = useMemo(
+    () =>
+      [
+        ...comments.map((c) => ({
+          kind: "comment" as const,
+          anchor: c.anchor,
+        })),
+        ...drafts.map((d) => ({ kind: "draft" as const, anchor: d.anchor })),
+      ].flatMap(({ kind, anchor }): SourceMark[] =>
+        anchor.line_start === null ||
+        anchor.line_end === null ||
+        anchor.col_start == null ||
+        anchor.col_end == null
+          ? []
+          : [
+              {
+                kind,
+                path: anchor.path,
+                version: anchor.version,
+                lineStart: anchor.line_start,
+                lineEnd: anchor.line_end,
+                colStart: anchor.col_start,
+                colEnd: anchor.col_end,
+              },
+            ],
+      ),
+    [comments, drafts],
+  );
+  const paintCode = useCallback(
+    (container: HTMLElement) =>
+      sourceHighlightRanges(container, filesAt, marks),
+    [filesAt, marks],
+  );
+  useCodeHighlights(containerRef, paintCode);
+  const stageSelection = useCallback(
+    (anchor: SourceAnchor) => {
+      const entry =
+        anchor.version === toVersion
+          ? entries.find((e) => e.path === anchor.path)
+          : undefined;
+      const body =
+        entry?.newBody ??
+        entries.find((e) => (e.from ?? e.path) === anchor.path)?.oldBody ??
+        "";
+      onStage({
+        ...anchor,
+        quote: quoteOf(
+          body,
+          anchor.lineStart,
+          anchor.lineEnd,
+          anchor.colStart,
+          anchor.colEnd,
+        ),
+      });
+    },
+    [entries, toVersion, onStage],
+  );
+
+  // The entry sits beside the stack, not in it: as the last child of a
+  // `space-y` box it would hand the last file a margin while it shows.
   return (
-    <div className="space-y-4">
-      {differing.length === 0 ? (
-        <p className="text-center text-sm text-muted-foreground">
-          v{fromVersion} and v{toVersion} are identical.
-        </p>
-      ) : (
-        <p className="text-xs text-muted-foreground">
-          Drag across line numbers to comment on a range (old side anchors to v
-          {fromVersion}, new side to v{toVersion}).
-        </p>
-      )}
-      {entries.map((entry) => (
-        <div
-          key={entry.path}
-          // ↑↓ step over `data-file-diff`, so a file with nothing to show for
-          // itself is marked apart rather than joining the rotation.
-          {...(entry.kind === "unchanged"
-            ? { "data-file-unchanged": entry.path }
-            : { "data-file-diff": entry.path })}
-          ref={entry.path === focusPath ? focusRef : undefined}
-        >
-          <SpecStackEntry
-            slug={slug}
-            issueNumber={issueNumber}
-            entry={entry}
-            fromVersion={fromVersion}
-            toVersion={toVersion}
-            comments={comments}
-            onStage={onStage}
-            focused={entry.path === focusPath}
-            wrap={wrap}
-            stickyTop={stickyTop}
-          />
-        </div>
-      ))}
+    <div ref={containerRef} className="relative">
+      <div className="space-y-4">
+        {differing.length === 0 ? (
+          <p className="text-center text-sm text-muted-foreground">
+            v{fromVersion} and v{toVersion} are identical.
+          </p>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Select text or drag across line numbers to comment (old side anchors
+            to v{fromVersion}, new side to v{toVersion}).
+          </p>
+        )}
+        {entries.map((entry) => (
+          <div
+            key={entry.path}
+            // ↑↓ step over `data-file-diff`, so a file with nothing to show for
+            // itself is marked apart rather than joining the rotation.
+            {...(entry.kind === "unchanged"
+              ? { "data-file-unchanged": entry.path }
+              : { "data-file-diff": entry.path })}
+            ref={entry.path === focusPath ? focusRef : undefined}
+          >
+            <SpecStackEntry
+              slug={slug}
+              issueNumber={issueNumber}
+              entry={entry}
+              fromVersion={fromVersion}
+              toVersion={toVersion}
+              comments={comments}
+              drafts={drafts}
+              onStage={onStage}
+              onEditDraft={onEditDraft}
+              onRemoveDraft={onRemoveDraft}
+              focused={entry.path === focusPath}
+              wrap={wrap}
+              stickyTop={stickyTop}
+            />
+          </div>
+        ))}
+      </div>
+      <SelectionEntry
+        pending={pending}
+        clear={clear}
+        onStage={stageSelection}
+      />
     </div>
   );
 }
@@ -2279,7 +2420,10 @@ function SpecStackEntry({
   fromVersion,
   toVersion,
   comments,
+  drafts,
   onStage,
+  onEditDraft,
+  onRemoveDraft,
   focused,
   wrap,
   stickyTop,
@@ -2291,7 +2435,10 @@ function SpecStackEntry({
   fromVersion: number;
   toVersion: number;
   comments: SpecCommentItem[];
+  drafts: SpecReviewDraft[];
   onStage: (staging: ComposerStaging) => void;
+  onEditDraft: (draft: SpecReviewDraft) => void;
+  onRemoveDraft: (id: string) => void;
   /** The rail or a link pointed here: open a collapsed file on arrival. */
   focused: boolean;
   wrap: boolean;
@@ -2315,7 +2462,10 @@ function SpecStackEntry({
         fromVersion={fromVersion}
         toVersion={toVersion}
         comments={comments}
+        drafts={drafts}
         onStage={onStage}
+        onEditDraft={onEditDraft}
+        onRemoveDraft={onRemoveDraft}
         openOnMount={focused}
         wrap={wrap}
         stickyTop={stickyTop}
@@ -2347,7 +2497,10 @@ function SpecStackEntry({
       fromVersion={fromVersion}
       toVersion={toVersion}
       comments={comments}
+      drafts={drafts}
       onStage={onStage}
+      onEditDraft={onEditDraft}
+      onRemoveDraft={onRemoveDraft}
       wrap={wrap}
       stickyTop={stickyTop}
     />
@@ -2399,7 +2552,10 @@ function SpecUnfoldableFile({
   fromVersion,
   toVersion,
   comments,
+  drafts,
   onStage,
+  onEditDraft,
+  onRemoveDraft,
   openOnMount,
   wrap,
   stickyTop,
@@ -2415,7 +2571,10 @@ function SpecUnfoldableFile({
   fromVersion: number;
   toVersion: number;
   comments: SpecCommentItem[];
+  drafts: SpecReviewDraft[];
   onStage: (staging: ComposerStaging) => void;
+  onEditDraft: (draft: SpecReviewDraft) => void;
+  onRemoveDraft: (id: string) => void;
   openOnMount: boolean;
   wrap: boolean;
   stickyTop: number;
@@ -2427,18 +2586,25 @@ function SpecUnfoldableFile({
     if (openOnMount) setOpen(true);
   }, [openOnMount]);
 
-  const lineAnnotations = useMemo(
-    () =>
-      comments
-        .filter(
-          (c) =>
-            (c.anchor.path === path && c.anchor.version === toVersion) ||
-            (c.anchor.path === (oldPath ?? path) &&
-              c.anchor.version === fromVersion),
-        )
-        .map((c) => ({ lineNumber: c.anchor.line_start ?? 0, metadata: c })),
-    [comments, path, oldPath, fromVersion, toVersion],
-  );
+  const lineAnnotations = useMemo(() => {
+    const here = (anchor: { path: string; version: number }) =>
+      (anchor.path === path && anchor.version === toVersion) ||
+      (anchor.path === (oldPath ?? path) && anchor.version === fromVersion);
+    return [
+      ...comments
+        .filter((c) => here(c.anchor))
+        .map((c) => ({
+          lineNumber: c.anchor.line_start ?? 0,
+          metadata: { kind: "comment" as const, item: c },
+        })),
+      ...drafts
+        .filter((d) => here(d.anchor))
+        .map((d) => ({
+          lineNumber: d.anchor.line_start ?? 0,
+          metadata: { kind: "draft" as const, draft: d },
+        })),
+    ];
+  }, [comments, drafts, path, oldPath, fromVersion, toVersion]);
 
   return (
     <SpecStackFrame
@@ -2479,6 +2645,8 @@ function SpecUnfoldableFile({
           version={toVersion}
           lineAnnotations={lineAnnotations}
           onStage={onStage}
+          onEditDraft={onEditDraft}
+          onRemoveDraft={onRemoveDraft}
           wrap={wrap}
         />
       )}
@@ -2496,7 +2664,10 @@ function AnnotatedFileDiff({
   fromVersion,
   toVersion,
   comments,
+  drafts,
   onStage,
+  onEditDraft,
+  onRemoveDraft,
   wrap,
   stickyTop,
 }: {
@@ -2511,7 +2682,10 @@ function AnnotatedFileDiff({
   fromVersion: number;
   toVersion: number;
   comments: SpecCommentItem[];
+  drafts: SpecReviewDraft[];
   onStage: (staging: ComposerStaging) => void;
+  onEditDraft: (draft: SpecReviewDraft) => void;
+  onRemoveDraft: (id: string) => void;
   wrap: boolean;
   stickyTop: number;
 }) {
@@ -2531,7 +2705,15 @@ function AnnotatedFileDiff({
       diffStyle: "unified" as const,
       overflow: wrap ? ("wrap" as const) : ("scroll" as const),
       preferredHighlighter: PIERRE_HIGHLIGHTER,
-      onPostRender: redrawOnRemount,
+      onPostRender: (
+        node: HTMLElement,
+        instance: { rerender: () => void },
+        phase: "mount" | "update" | "unmount",
+      ) => {
+        redrawOnRemount(node, instance, phase);
+        announceCodeRendered(node, phase);
+      },
+      unsafeCSS: CODE_HIGHLIGHT_CSS,
       enableLineSelection: true,
       onLineSelectionEnd: (range: SelectedLineRange | null) => {
         if (!range) return;
@@ -2567,26 +2749,41 @@ function AnnotatedFileDiff({
       wrap,
     ],
   );
-  const lineAnnotations = useMemo(
-    () =>
-      comments
-        .filter(
-          (c) =>
-            (c.anchor.path === oldPath && c.anchor.version === fromVersion) ||
-            (c.anchor.path === newPath && c.anchor.version === toVersion),
-        )
-        .map((c) => ({
-          side:
-            c.anchor.version === fromVersion
-              ? ("deletions" as const)
-              : ("additions" as const),
-          // pierre's contract: lineNumber 0 renders a side-level annotation
-          // above the first hunk — exactly where file-level comments belong.
-          lineNumber: c.anchor.line_start ?? 0,
-          metadata: c,
-        })),
-    [comments, oldPath, newPath, fromVersion, toVersion],
-  );
+  const lineAnnotations = useMemo(() => {
+    type Anchor = { path: string; version: number; line_start: number | null };
+    const here = (anchor: Anchor) =>
+      (anchor.path === oldPath && anchor.version === fromVersion) ||
+      (anchor.path === newPath && anchor.version === toVersion);
+    const at = (anchor: Anchor) => ({
+      side:
+        anchor.version === fromVersion
+          ? ("deletions" as const)
+          : ("additions" as const),
+      // pierre's contract: lineNumber 0 renders a side-level annotation
+      // above the first hunk — exactly where file-level comments belong.
+      lineNumber: anchor.line_start ?? 0,
+    });
+    return [
+      ...comments
+        .filter((c) => here(c.anchor))
+        .map(
+          (c): DiffLineAnnotation<LineNote> => ({
+            ...at(c.anchor),
+            metadata: { kind: "comment", item: c },
+          }),
+        ),
+      // A draft hangs where a comment at the same anchor would, so staging
+      // one leaves it on screen rather than only in the Finish review dialog.
+      ...drafts
+        .filter((d) => here(d.anchor))
+        .map(
+          (d): DiffLineAnnotation<LineNote> => ({
+            ...at(d.anchor),
+            metadata: { kind: "draft", draft: d },
+          }),
+        ),
+    ];
+  }, [comments, drafts, oldPath, newPath, fromVersion, toVersion]);
 
   return (
     <SpecStackFrame
@@ -2601,16 +2798,18 @@ function AnnotatedFileDiff({
       }
       stickyTop={stickyTop}
     >
-      <MultiFileDiff<SpecCommentItem>
+      <MultiFileDiff<LineNote>
         oldFile={oldFile}
         newFile={newFile}
         options={options}
         lineAnnotations={lineAnnotations}
         renderAnnotation={(annotation) => (
-          <DiffAnnotation
+          <LineNoteView
             slug={slug}
             issueNumber={issueNumber}
-            item={annotation.metadata}
+            note={annotation.metadata}
+            onEditDraft={onEditDraft}
+            onRemoveDraft={onRemoveDraft}
           />
         )}
       />
@@ -2637,6 +2836,8 @@ function SpecFileSource({
   version,
   lineAnnotations,
   onStage,
+  onEditDraft,
+  onRemoveDraft,
   wrap,
 }: {
   /** Carried only for the annotation headers `renderAnnotation` draws. */
@@ -2646,8 +2847,10 @@ function SpecFileSource({
   body: string;
   /** What a line selection here anchors to. */
   version: number;
-  lineAnnotations: Array<{ lineNumber: number; metadata: SpecCommentItem }>;
+  lineAnnotations: LineAnnotation<LineNote>[];
   onStage: (staging: ComposerStaging) => void;
+  onEditDraft: (draft: SpecReviewDraft) => void;
+  onRemoveDraft: (id: string) => void;
   wrap: boolean;
 }) {
   const file = useMemo(() => ({ name: path, contents: body }), [path, body]);
@@ -2676,11 +2879,13 @@ function SpecFileSource({
         instance: { rerender: () => void },
         phase: "mount" | "update" | "unmount",
       ) => {
+        announceCodeRendered(node, phase);
         if (phase === "unmount" || body.length === 0) return;
         const pre = node.shadowRoot?.querySelector("pre");
         if (pre == null || pre.childElementCount > 0) return;
         instance.rerender();
       },
+      unsafeCSS: CODE_HIGHLIGHT_CSS,
       enableLineSelection: true,
       onLineSelectionEnd: (range: SelectedLineRange | null) => {
         if (!range) return;
@@ -2703,15 +2908,17 @@ function SpecFileSource({
   );
 
   return (
-    <PierreFile<SpecCommentItem>
+    <PierreFile<LineNote>
       file={file}
       options={options}
       lineAnnotations={lineAnnotations}
       renderAnnotation={(annotation) => (
-        <DiffAnnotation
+        <LineNoteView
           slug={slug}
           issueNumber={issueNumber}
-          item={annotation.metadata}
+          note={annotation.metadata}
+          onEditDraft={onEditDraft}
+          onRemoveDraft={onRemoveDraft}
         />
       )}
     />
@@ -2727,6 +2934,8 @@ function SpecSourceFile({
   version,
   annotations,
   onStage,
+  onEditDraft,
+  onRemoveDraft,
   wrap,
   stickyTop,
 }: {
@@ -2739,37 +2948,182 @@ function SpecSourceFile({
   /** As remapped for the rendered view — the same comments, same lines. */
   annotations: DisplayedAnnotation[];
   onStage: (staging: ComposerStaging) => void;
+  onEditDraft: (draft: SpecReviewDraft) => void;
+  onRemoveDraft: (id: string) => void;
   wrap: boolean;
   /** Height of the shell header plus the page toolbar (T-178). */
   stickyTop: number;
 }) {
-  // Drafts stay out, as they do in the source diff; file-level comments have
-  // their own strip above and never reach `annotations`.
+  // File-level comments and drafts have their own strip above and never
+  // reach `annotations`.
   const lineAnnotations = useMemo(
     () =>
-      annotations
-        .filter((a) => a.kind === "comment")
-        .map((a) => ({ lineNumber: a.start, metadata: a.item })),
+      annotations.map(
+        (a): LineAnnotation<LineNote> =>
+          a.kind === "comment"
+            ? {
+                lineNumber: a.start,
+                metadata: { kind: "comment", item: a.item },
+              }
+            : {
+                lineNumber: a.start,
+                metadata: { kind: "draft", draft: a.draft },
+              },
+      ),
     [annotations],
   );
 
+  const containerRef = useRef<HTMLDivElement>(null);
+  const filesAt = useCallback(
+    (): SourceFiles => ({ current: { path, version, body } }),
+    [path, version, body],
+  );
+  const resolveSelection = useCallback(
+    (container: Element, ends: SelectionEndpoints) =>
+      sourceAnchorForSelection(container, ends, filesAt),
+    [filesAt],
+  );
+  const { pending, clear } = useSelectionEntry(containerRef, resolveSelection);
+  const marks = useMemo(
+    () =>
+      annotations.flatMap((a): SourceMark[] =>
+        a.colStart == null || a.colEnd == null
+          ? []
+          : [
+              {
+                kind: a.kind,
+                path,
+                version,
+                lineStart: a.start,
+                lineEnd: a.end,
+                colStart: a.colStart,
+                colEnd: a.colEnd,
+              },
+            ],
+      ),
+    [annotations, path, version],
+  );
+  const paintCode = useCallback(
+    (container: HTMLElement) =>
+      sourceHighlightRanges(container, filesAt, marks),
+    [filesAt, marks],
+  );
+  useCodeHighlights(containerRef, paintCode);
+  const stageSelection = useCallback(
+    (anchor: SourceAnchor) =>
+      onStage({
+        ...anchor,
+        quote: quoteOf(
+          body,
+          anchor.lineStart,
+          anchor.lineEnd,
+          anchor.colStart,
+          anchor.colEnd,
+        ),
+      }),
+    [body, onStage],
+  );
+
+  // The entry sits beside the frame, not in the `space-y` flow, or it would
+  // hand the frame a margin while it shows.
   return (
-    <div className="space-y-4">
-      <p className="text-xs text-muted-foreground">
-        Drag across line numbers to comment on a range (anchors to v{version}).
-      </p>
-      <SpecStackFrame header={path} stickyTop={stickyTop}>
-        <SpecFileSource
-          slug={slug}
-          issueNumber={issueNumber}
-          path={path}
-          body={body}
-          version={version}
-          lineAnnotations={lineAnnotations}
-          onStage={onStage}
-          wrap={wrap}
-        />
-      </SpecStackFrame>
+    <div ref={containerRef} className="relative">
+      <div className="space-y-4">
+        <p className="text-xs text-muted-foreground">
+          Select text or drag across line numbers to comment (anchors to v
+          {version}).
+        </p>
+        <SpecStackFrame header={path} stickyTop={stickyTop}>
+          <SpecFileSource
+            slug={slug}
+            issueNumber={issueNumber}
+            path={path}
+            body={body}
+            version={version}
+            lineAnnotations={lineAnnotations}
+            onStage={onStage}
+            onEditDraft={onEditDraft}
+            onRemoveDraft={onRemoveDraft}
+            wrap={wrap}
+          />
+        </SpecStackFrame>
+      </div>
+      <SelectionEntry
+        pending={pending}
+        clear={clear}
+        onStage={stageSelection}
+      />
+    </div>
+  );
+}
+
+/** What hangs under a source line: a submitted comment, or a staged draft. */
+type LineNote =
+  | { kind: "comment"; item: SpecCommentItem }
+  | { kind: "draft"; draft: SpecReviewDraft };
+
+function LineNoteView({
+  slug,
+  issueNumber,
+  note,
+  onEditDraft,
+  onRemoveDraft,
+}: {
+  slug: string;
+  issueNumber: number;
+  note: LineNote;
+  onEditDraft: (draft: SpecReviewDraft) => void;
+  onRemoveDraft: (id: string) => void;
+}) {
+  return note.kind === "comment" ? (
+    <DiffAnnotation slug={slug} issueNumber={issueNumber} item={note.item} />
+  ) : (
+    <DraftAnnotation
+      draft={note.draft}
+      onEdit={onEditDraft}
+      onRemove={onRemoveDraft}
+    />
+  );
+}
+
+/** A staged draft under its line, as the rendered view's chip lists one. */
+function DraftAnnotation({
+  draft,
+  onEdit,
+  onRemove,
+}: {
+  draft: SpecReviewDraft;
+  onEdit: (draft: SpecReviewDraft) => void;
+  onRemove: (id: string) => void;
+}) {
+  return (
+    <div className="border-y border-indigo-500/40 bg-background px-3 py-2 text-sm">
+      <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
+        <span className="font-medium text-indigo-700 dark:text-indigo-400">
+          draft
+        </span>
+        <span>
+          {formatAnchorRange(draft.anchor)} · v{draft.anchor.version}
+        </span>
+        <span className="ml-auto" />
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-6 px-2 text-xs"
+          onClick={() => onEdit(draft)}
+        >
+          Edit
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-6 px-2 text-xs"
+          onClick={() => onRemove(draft.id)}
+        >
+          Discard
+        </Button>
+      </div>
+      <p className="whitespace-pre-wrap">{draft.body}</p>
     </div>
   );
 }
