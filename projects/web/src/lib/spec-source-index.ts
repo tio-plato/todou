@@ -188,7 +188,8 @@ export type SegmentIndex = {
   fences: Map<number, SourceFence>;
 };
 
-function lineStartsOf(source: string): number[] {
+/** Absolute offset each 1-based line of `source` starts at. */
+export function lineStartsOf(source: string): number[] {
   const starts = [0];
   for (let i = 0; i < source.length; i++) {
     if (source[i] === "\n") starts.push(i + 1);
@@ -714,7 +715,7 @@ export function sourceOffsetOfRendered(
 
 /** 1-based line and UTF-16 code-unit column of a source offset. */
 export function lineColAt(
-  index: SegmentIndex,
+  index: Pick<SegmentIndex, "lineStarts">,
   offset: number,
 ): { line: number; col: number } {
   let low = 0;
@@ -739,4 +740,53 @@ export function offsetAt(
   const end = nextLine === undefined ? index.source.length : nextLine - 1;
   const offset = start + col - 1;
   return offset > end ? null : offset;
+}
+
+/** A selection's source columns: 1-based lines, 1-based inclusive columns. */
+export type SourceColumns = {
+  lineStart: number;
+  lineEnd: number;
+  colStart: number;
+  colEnd: number;
+};
+
+/**
+ * The columns the half-open source range `[start, end)` names, or null when
+ * no column can (T-142). Columns name a real character, inclusively (the
+ * contract lives in shared/schemas/spec.ts), so `len + 1` is never one — the
+ * server measures lines without their newline. Both ends therefore step off
+ * a newline they landed on, which makes a selection starting at a line end
+ * mean column 1 of the next line rather than one past the end of this one.
+ *
+ * `hidden` names any other offsets the reader could not have selected: the
+ * part of a code line in front of what its row shows. Both ends step off
+ * those too, or a selection ending at the start of an indented row would end
+ * on its indent.
+ */
+export function columnsOfOffsets(
+  text: Pick<SegmentIndex, "source" | "lineStarts">,
+  start: number,
+  end: number,
+  hidden: (offset: number) => boolean = () => false,
+): SourceColumns | null {
+  if (end <= start) return null;
+  const skip = (offset: number) =>
+    text.source[offset] === "\n" || hidden(offset);
+  let first = start;
+  let last = end - 1;
+  while (first < last && skip(first)) first++;
+  while (last > first && skip(last)) last--;
+  // Nothing visible: no column can name that, so the whole-line anchor stands.
+  if (skip(first)) return null;
+  const from = lineColAt(text, first);
+  const to = lineColAt(text, last);
+  if (to.line < from.line || (to.line === from.line && to.col < from.col)) {
+    return null;
+  }
+  return {
+    lineStart: from.line,
+    lineEnd: to.line,
+    colStart: from.col,
+    colEnd: to.col,
+  };
 }
