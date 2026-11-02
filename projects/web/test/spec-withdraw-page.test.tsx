@@ -345,9 +345,24 @@ async function mountPage(options: FixtureOptions = {}) {
   return { ...fixture, client };
 }
 
-async function openReview() {
+async function openReview(version = 1) {
   fireEvent.click(screen.getByRole("button", { name: /finish review/i }));
-  return screen.findByRole("dialog", { name: "Finish review — spec v1" });
+  return screen.findByRole("dialog", {
+    name: `Finish review — spec v${version}`,
+  });
+}
+
+/** Switches the page to another version, as the version picker does. */
+async function viewVersion(page: { issueNumber: number }, v: number) {
+  void router
+    .navigate({
+      to: "/projects/$slug/issues/$number/spec",
+      params: { slug: "demo", number: String(page.issueNumber) },
+      search: { file: "design.md", v },
+    })
+    .catch(() => undefined);
+  await waitFor(() => expect(router.state.location.search.v).toBe(v));
+  await waitFor(() => expect(shownTitle()).toBe(`Version ${v}`));
 }
 
 function expectDrafts(dialog: HTMLElement, storageKey: string) {
@@ -551,6 +566,7 @@ describe("withdrawal on the actual SpecViewPage and review session", () => {
       );
       fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
       await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      await viewVersion(page, 2);
       dialog = await openReview();
       expectDrafts(dialog, page.storageKey);
       expect(within(dialog).getByRole("status").textContent).toContain(
@@ -653,5 +669,32 @@ describe("the spec page reads the version its URL names", () => {
     await pushNext(page);
     await waitFor(() => expect(router.state.location.search.v).toBe(1));
     await waitFor(() => expect(shownTitle()).toBe("Version 1"));
+  });
+
+  it("offers Finish review on the current version only", async () => {
+    reviewViewport(640);
+    const page = await mountPage({ viewedVersion: 1 });
+    const before = await pushNext(page);
+    await expectRefreshed(page, before, 2, "unreviewed");
+    const stale = screen.getByRole("button", { name: /finish review/i });
+    expectDisabled(stale, true);
+    expect(stale.getAttribute("aria-label")).toContain(
+      "Only the current version can be reviewed",
+    );
+    fireEvent.click(stale);
+    await act(async () => {});
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    await viewVersion(page, 2);
+    expectDisabled(
+      screen.getByRole("button", { name: /finish review/i }),
+      false,
+    );
+    const dialog = await openReview(2);
+    expectDisabled(
+      within(dialog).getByRole("button", { name: "Approve" }),
+      false,
+    );
+    expect(page.writes).toHaveLength(0);
   });
 });
