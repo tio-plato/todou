@@ -74,6 +74,13 @@ type FixtureOptions = {
   version?: number;
   viewedVersion?: number;
   staged?: boolean;
+  /** `GET …/spec` answers 404 until the first `advance()`, which pushes v1. */
+  absent?: boolean;
+  /**
+   * The test client's cache already holds the spec at this version when the
+   * page is opened, as a visit earlier in the session would have left it.
+   */
+  cached?: number;
 };
 
 function pageFixture(options: FixtureOptions = {}) {
@@ -89,8 +96,7 @@ function pageFixture(options: FixtureOptions = {}) {
     viewer_role: options.role ?? "writer",
     former_slugs: [],
   };
-  const version = options.version ?? 1;
-  let spec: SpecInfo = {
+  const specAt = (version: number): SpecInfo => ({
     current_version: version,
     current_version_cursor: `c${version}`,
     review_status: options.status ?? "unreviewed",
@@ -103,22 +109,30 @@ function pageFixture(options: FixtureOptions = {}) {
       message: null,
       created_at: "2026-01-01T00:00:00Z",
     })),
-  };
+  });
+  let spec = specAt(options.version ?? 1);
+  let absent = options.absent ?? false;
   const reads: string[] = [];
   const writes: Array<{ path: string; body: unknown }> = [];
   const reviews: SpecReviewSubmitInput[] = [];
   let reviewConflict: "withdrawn" | "newer" | null = null;
 
+  /** An agent pushes the next version. */
   function advance() {
+    if (absent) {
+      absent = false;
+      return;
+    }
+    const next = spec.current_version + 1;
     spec = {
       ...spec,
-      current_version: 2,
-      current_version_cursor: "c2",
+      current_version: next,
+      current_version_cursor: `c${next}`,
       review_status: "unreviewed",
       versions: [
         ...spec.versions,
         {
-          number: 2,
+          number: next,
           author: AUTHOR,
           message: null,
           created_at: "2026-01-02T00:00:00Z",
@@ -198,7 +212,15 @@ function pageFixture(options: FixtureOptions = {}) {
         spec_version: spec.current_version,
       });
     }
-    if (path === `${base}/spec`) return Response.json(spec);
+    if (path === `${base}/spec`) {
+      if (absent) {
+        return Response.json(
+          { error: { code: "not_found", message: "no spec" } },
+          { status: 404 },
+        );
+      }
+      return Response.json(spec);
+    }
     if (path === `${base}/spec/comments`) {
       return Response.json({
         current_version: spec.current_version,
@@ -232,6 +254,7 @@ function pageFixture(options: FixtureOptions = {}) {
     reads,
     writes,
     reviews,
+    specAt,
     advance,
     setStatus(review_status: SpecInfo["review_status"]) {
       spec = { ...spec, review_status };
@@ -276,26 +299,46 @@ async function mountPage(options: FixtureOptions = {}) {
   });
   // The singleton app router can leave navigate pending between unmounted
   // trees. As in startAtDraftPage, mount first and await the rendered page.
-  void router
-    .navigate({
-      to: "/projects/$slug/issues/$number/spec",
-      params: { slug: "demo", number: String(fixture.issueNumber) },
-      search: { file: "design.md", v: options.viewedVersion },
-      replace: true,
-      ignoreBlocker: true,
-    })
-    .catch(() => undefined);
+  const open = () =>
+    void router
+      .navigate({
+        to: "/projects/$slug/issues/$number/spec",
+        params: { slug: "demo", number: String(fixture.issueNumber) },
+        search: { file: "design.md", v: options.viewedVersion },
+        replace: true,
+        ignoreBlocker: true,
+      })
+      .catch(() => undefined);
+  // The route pins a missing `v` from the router context's client, which
+  // RouterProvider installs only as it renders: opened first, the page would
+  // be pinned through the previous test's client and never meet this cache.
+  if (options.cached === undefined) open();
+  else {
+    client.setQueryData(
+      ["spec", "demo", fixture.issueNumber],
+      fixture.specAt(options.cached),
+    );
+  }
   const mounted = renderOnTheAppRouter(client);
+  if (options.cached !== undefined) open();
   mountedPages.push({
     unmount: mounted.unmount,
     clear: () => client.clear(),
     storageKey: fixture.storageKey,
   });
-  await screen.findByRole(
-    "button",
-    { name: /finish review/i },
-    { timeout: 4000 },
-  );
+  if (options.absent) {
+    await screen.findByText(
+      "This issue has no spec yet.",
+      {},
+      { timeout: 4000 },
+    );
+  } else {
+    await screen.findByRole(
+      "button",
+      { name: /finish review/i },
+      { timeout: 4000 },
+    );
+  }
   await waitFor(() =>
     expect(client.getQueryState(["project", "demo"])?.status).toBe("success"),
   );
@@ -563,4 +606,52 @@ describe("withdrawal on the actual SpecViewPage and review session", () => {
       expect(page.writes).toHaveLength(0);
     });
   }
+});
+
+/**
+ * The document's heading as the version on screen spells it. A version past
+ * the first is compared with the one before, and its heading carries that
+ * one's text as a deletion.
+ */
+function shownTitle() {
+  const heading = document.querySelector("main h1");
+  if (heading === null) return null;
+  const shown = heading.cloneNode(true) as HTMLElement;
+  for (const removed of shown.querySelectorAll("del")) removed.remove();
+  return shown.textContent;
+}
+
+/** An agent pushes, and the SSE feed invalidates the spec as it would. */
+async function pushNext(page: RefreshedPage & { advance: () => void }) {
+  const before = page.specReads();
+  page.advance();
+  await act(async () => {
+    await page.client.invalidateQueries({
+      queryKey: ["spec", "demo", page.issueNumber],
+    });
+  });
+  return before;
+}
+
+describe("the spec page reads the version its URL names", () => {
+  it("pins an address without a version to the server's current one, and keeps it through a push", async () => {
+    const page = await mountPage({ version: 2, cached: 1 });
+    await waitFor(() => expect(router.state.location.search.v).toBe(2));
+    await waitFor(() => expect(shownTitle()).toBe("Version 2"));
+
+    const before = await pushNext(page);
+    await expectRefreshed(page, before, 3, "unreviewed");
+    expect(shownTitle()).toBe("Version 2");
+    expect(page.reads).not.toContain(`${page.base}/spec/files?version=3`);
+    expect(router.state.location.search.v).toBe(2);
+  });
+
+  it("pins the first version of a spec pushed while the empty state is open", async () => {
+    const page = await mountPage({ absent: true });
+    expect(router.state.location.search.v).toBeUndefined();
+
+    await pushNext(page);
+    await waitFor(() => expect(router.state.location.search.v).toBe(1));
+    await waitFor(() => expect(shownTitle()).toBe("Version 1"));
+  });
 });

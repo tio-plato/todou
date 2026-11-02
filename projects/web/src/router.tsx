@@ -1,6 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
+import { type QueryClient, useQuery } from "@tanstack/react-query";
 import {
-  createRootRoute,
+  createRootRouteWithContext,
   createRoute,
   createRouter,
   Link,
@@ -12,7 +12,7 @@ import {
 } from "@tanstack/react-router";
 import { useState } from "react";
 import { issueSearchSchema, newIssueSearchSchema } from "@/api/issues.ts";
-import { meQuery } from "@/api/queries.ts";
+import { meQuery, queryClient } from "@/api/queries.ts";
 import { searchPageSchema } from "@/api/search.ts";
 import { userSearchParams, userSearchSchema } from "@/api/users.ts";
 import { ConnectionBanner } from "@/components/connection-banner.tsx";
@@ -39,6 +39,7 @@ import { statusOf } from "@/lib/http-status.ts";
 import { parseInsightsSearch } from "@/lib/insights-search.ts";
 import { INBOX_TABS, type InboxTab } from "@/lib/return-view.ts";
 import { parseSpecSearch } from "@/lib/spec-search.ts";
+import { pinSpecVersion } from "@/lib/spec-version-pin.ts";
 import { hasUnsavedWork } from "@/lib/unsaved-guard.ts";
 import { AgentsSettingsPage } from "@/pages/agents-settings.tsx";
 import { BoardPage } from "@/pages/board.tsx";
@@ -72,7 +73,7 @@ import { TokensSettingsPage } from "@/pages/tokens-settings.tsx";
 import { UserProfilePage } from "@/pages/user-profile.tsx";
 import { UserSettingsLayout } from "@/pages/user-settings-layout.tsx";
 
-const rootRoute = createRootRoute({
+const rootRoute = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   component: () => (
     <>
       <TitleController />
@@ -394,6 +395,7 @@ const specViewRoute = createRoute({
     "SpecViewPage",
   ),
   validateSearch: parseSpecSearch,
+  beforeLoad: pinSpecVersion,
   // Not lazy, unlike the component above: an error boundary that arrived in
   // the spec page's own chunk could not answer for a spec that is not here.
   errorComponent: SpecRouteError,
@@ -637,7 +639,7 @@ const routeTree = rootRoute.addChildren([
  * (T-265). The router's root-route one (`Match.js:144`) wraps the
  * `<Outlet/>` and outranks anything declared here.
  */
-export const router = createRouter({ routeTree });
+export const router = createRouter({ routeTree, context: { queryClient } });
 
 declare module "@tanstack/react-router" {
   interface Register {
