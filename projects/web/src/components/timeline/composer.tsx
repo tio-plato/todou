@@ -463,9 +463,10 @@ export function Composer({
     const trailing = (/\n*$/.exec(current)?.[0] ?? "").length;
     const lead = current === "" ? "" : "\n".repeat(Math.max(0, 2 - trailing));
     handle.append(`${lead}${blockquote(markdown)}\n\n`);
-    // Radix hands focus back to the menu trigger as it closes, and a
-    // synchronous focus here loses to that restore.
-    requestAnimationFrame(() => handle.focus());
+    // Focused inside the press that asked for the quote, or iOS raises no
+    // keyboard; the menu it came from has already closed and let go of the
+    // focus (see `entry-actions-menu.tsx`).
+    open();
   });
 
   // The extensions must keep one identity for the editor's lifetime: the
@@ -555,8 +556,9 @@ export function Composer({
   });
 
   /**
-   * Unfold, then focus, inside the button's own tap: iOS raises the keyboard
-   * only for a focus the tap itself makes. The unfold has to reach the DOM
+   * Unfold, then focus, inside the press that asks for the box, the floating
+   * button's tap or a Quote reply: iOS raises the keyboard only for a focus
+   * the press itself makes. The unfold has to reach the DOM
    * first — folded on a phone the box is static at the end of the page, and
    * focusing it there would scroll the page down to it. Unfolded, the dock is
    * sticky and the box is already at the bottom of the screen. `opening`
