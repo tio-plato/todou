@@ -1,8 +1,10 @@
 import type { AnchorRange } from "@/components/spec/selection-entry.tsx";
+import type { CodeHighlightRanges } from "@/lib/code-highlights.ts";
 import {
   DELETION_LINE_TYPE,
   LINE_TYPE_ATTR,
   offsetInRow,
+  rangeInRow,
   rowAt,
   rowText,
 } from "@/lib/pierre-rows.ts";
@@ -250,4 +252,113 @@ export function sourceAnchorForSelection(
     colStart: null,
     colEnd: null,
   };
+}
+
+/** A comment or draft anchored to columns of one version of a file. */
+export type SourceMark = {
+  kind: "comment" | "draft";
+  path: string;
+  version: number;
+  lineStart: number;
+  lineEnd: number;
+  colStart: number;
+  colEnd: number;
+};
+
+/**
+ * Every line row under `container`: those pierre draws in its hosts' shadow
+ * roots, and any drawn in the light DOM. Hosts only, rather than every open
+ * shadow root below: the source diff holds the whole stack, and each of its
+ * rows carries a span per token that a search for nested roots would visit.
+ */
+function rowsUnder(container: Element): Element[] {
+  const roots: ParentNode[] = [container];
+  for (const host of container.querySelectorAll("diffs-container")) {
+    if (host.shadowRoot !== null) roots.push(host.shadowRoot);
+  }
+  return roots.flatMap((root) => [...root.querySelectorAll("[data-line]")]);
+}
+
+/**
+ * The versions a row shows, each with the line it is there: a deletion the
+ * baseline's, an addition the viewed version's, and an unchanged row both —
+ * pierre numbers it on the viewed side and keeps the baseline's number as
+ * `data-alt-line`, and a baseline annotation hangs under it by that number.
+ * A row of a whole file has no alt line; its two sides read the same.
+ */
+function placesOf(
+  row: Element,
+  files: SourceFiles,
+): Array<{ side: SourceSide; line: number }> {
+  const line = Number(row.getAttribute("data-line"));
+  const type = row.getAttribute(LINE_TYPE_ATTR);
+  const alt = Number(row.getAttribute("data-alt-line") ?? line);
+  const places =
+    type === DELETION_LINE_TYPE
+      ? [{ side: files.old, line }]
+      : type === "change-addition"
+        ? [{ side: files.current, line }]
+        : [
+            { side: files.current, line },
+            { side: files.old, line: alt },
+          ];
+  return places.filter(
+    (place): place is { side: SourceSide; line: number } =>
+      place.side !== undefined && Number.isInteger(place.line),
+  );
+}
+
+/**
+ * The ranges that paint `marks` over the rows of the files `filesAt` names:
+ * on each row of the version a mark is anchored to, within its lines, the
+ * columns it covers on that line. A row that does not read as its source line
+ * is left unpainted rather than painted somewhere near.
+ */
+export function sourceHighlightRanges(
+  container: Element,
+  filesAt: (element: Element) => SourceFiles | null,
+  marks: SourceMark[],
+): CodeHighlightRanges {
+  const ranges: CodeHighlightRanges = { comment: [], draft: [] };
+  if (marks.length === 0) return ranges;
+  const starts = new Map<string, number[]>();
+  // Every row of one host names the same file.
+  const filesByHost = new Map<Element, SourceFiles | null>();
+  for (const row of rowsUnder(container)) {
+    const root = row.getRootNode();
+    const host = root instanceof ShadowRoot ? root.host : row;
+    let files = filesByHost.get(host);
+    if (files === undefined) {
+      files = filesAt(host);
+      filesByHost.set(host, files);
+    }
+    if (files === null) continue;
+    for (const { side, line } of placesOf(row, files)) {
+      const here = marks.filter(
+        (mark) =>
+          mark.path === side.path &&
+          mark.version === side.version &&
+          mark.lineStart <= line &&
+          line <= mark.lineEnd,
+      );
+      if (here.length === 0) continue;
+      let lineStarts = starts.get(side.body);
+      if (lineStarts === undefined) {
+        lineStarts = lineStartsOf(side.body);
+        starts.set(side.body, lineStarts);
+      }
+      const source = lineOf(side.body, lineStarts, line);
+      if (source === null || rowText(row) !== source.text) continue;
+      for (const mark of here) {
+        const range = rangeInRow(
+          row,
+          line === mark.lineStart ? mark.colStart - 1 : 0,
+          line === mark.lineEnd ? mark.colEnd : source.text.length,
+        );
+        if (range !== null)
+          (mark.kind === "comment" ? ranges.comment : ranges.draft).push(range);
+      }
+    }
+  }
+  return ranges;
 }
