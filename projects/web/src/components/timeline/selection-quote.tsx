@@ -182,9 +182,12 @@ export function SelectionQuote() {
   if (!available || pending === null) return null;
 
   const onQuote = () => {
-    quote(pending.markdown);
+    // The selection goes first: the comment box takes the focus and the
+    // caret inside this press, and clearing the selection after that would
+    // take the caret back out of it.
     setPending(null);
     window.getSelection()?.removeAllRanges();
+    quote(pending.markdown);
   };
 
   return createPortal(
