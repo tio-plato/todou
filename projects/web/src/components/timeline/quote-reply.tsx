@@ -21,6 +21,11 @@ type QuoteReply = {
   register: (sink: (markdown: string) => void) => () => void;
   /** Whether there is a box to write into — a trashed card has none. */
   available: boolean;
+  /**
+   * The box takes the focus inside the caller's own press, the only focus iOS
+   * raises the keyboard for. A caller holding a focus trap, an open menu or
+   * popover, lets go of it first, or the trap pulls the focus straight back.
+   */
   quote: (markdown: string) => void;
 };
 
