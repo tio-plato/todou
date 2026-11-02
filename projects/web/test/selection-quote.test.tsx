@@ -39,14 +39,56 @@ function Sink({ onQuote }: { onQuote: (markdown: string) => void }) {
   return null;
 }
 
-function mount({ withBox = true } = {}) {
+/**
+ * The comment box as it takes a quote: focused, the caret inside it, both
+ * set while the quote is being handed over, the way a tap has to for iOS to
+ * open the keyboard.
+ */
+function FocusingSink({ onQuote }: { onQuote: (markdown: string) => void }) {
+  const box = useRef<HTMLDivElement>(null);
+  useQuoteSink((markdown) => {
+    onQuote(markdown);
+    const el = box.current;
+    if (el === null) return;
+    el.focus();
+    const caret = document.createRange();
+    caret.selectNodeContents(el);
+    caret.collapse(false);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(caret);
+  });
+  return (
+    <div
+      ref={box}
+      contentEditable
+      suppressContentEditableWarning
+      tabIndex={-1}
+      data-testid="box"
+    >
+      draft
+    </div>
+  );
+}
+
+function mount({
+  withBox = true,
+  focusing = false,
+}: {
+  withBox?: boolean;
+  focusing?: boolean;
+} = {}) {
   const onQuote = vi.fn();
   const view = render(
     <QueryClientProvider client={testQueryClient()}>
       <QuoteReplyProvider>
         <Entry id="first" body={"Alpha *beta* gamma.\n\nDelta epsilon."} />
         <Entry id="second" body="Zeta eta." />
-        {withBox && <Sink onQuote={onQuote} />}
+        {withBox &&
+          (focusing ? (
+            <FocusingSink onQuote={onQuote} />
+          ) : (
+            <Sink onQuote={onQuote} />
+          ))}
         <SelectionQuote />
       </QuoteReplyProvider>
     </QueryClientProvider>,
@@ -148,6 +190,20 @@ describe("floating Quote reply (T-723)", () => {
     await settle();
     fireEvent.click(button);
     expect(onQuote).toHaveBeenCalledWith("Delta epsilon.");
+  });
+
+  it("leaves the caret where the comment box put it", async () => {
+    const { view, onQuote } = mount({ focusing: true });
+    const first = await rendered(view, "first");
+    const alpha = textOf(first, "p[data-loc]");
+    select(alpha, 0, alpha, 5);
+    fireEvent.click(await view.findByRole("button", { name: "Quote reply" }));
+    expect(onQuote).toHaveBeenCalledOnce();
+    const box = view.getByTestId("box");
+    expect(document.activeElement).toBe(box);
+    const caret = window.getSelection();
+    expect(caret?.rangeCount).toBe(1);
+    expect(caret?.anchorNode && box.contains(caret.anchorNode)).toBe(true);
   });
 
   it("goes once the selection does", async () => {
