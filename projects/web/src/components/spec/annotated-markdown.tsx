@@ -36,6 +36,13 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { codeRowSource } from "@/lib/code-rows.ts";
+import {
+  DELETION_LINE_TYPE,
+  LINE_TYPE_ATTR,
+  offsetInRow,
+  rowAt,
+} from "@/lib/pierre-rows.ts";
 import {
   INS_BLOCK_CLASS,
   MARK_KEY_ATTR,
@@ -71,6 +78,7 @@ import {
 import type { SpecReviewDraft } from "@/lib/spec-drafts.ts";
 import {
   buildSegmentIndex,
+  columnsOfOffsets,
   lineColAt,
   type SegmentIndex,
   segmentsInLines,
@@ -133,10 +141,12 @@ function isOldEndpoint(node: Node): boolean {
 }
 
 /**
- * The block a selection endpoint sits in, when that block can carry column
- * precision. Code blocks are excluded on purpose: their text reaches the
- * DOM through pierre's own renderer (T-31/T-52), so DOM offsets there say
- * nothing about the markdown source and the anchor stays line-level.
+ * The prose block a selection endpoint sits in, when the segment mapping can
+ * carry it to columns. Code blocks are not among them: their text reaches the
+ * DOM through pierre's own renderer (T-31/T-52), one row per line in a shadow
+ * root, and `codeRowSource` maps those rows instead. What is left of a code
+ * block outside its rows — the plain text shown before highlighting, a
+ * mermaid picture — maps to nothing and keeps the line anchor.
  */
 function columnBlockOf(
   node: Node,
@@ -222,98 +232,155 @@ function sourceOffsetOfEndpoint(
 }
 
 /**
- * Narrow a selection to source columns (T-142). Returns null whenever the
- * mapping is not provably right, and the caller keeps the whole-block line
- * anchor that spec review has always produced.
+ * Source offset one endpoint maps to, wherever it is: a code row's text maps
+ * by where `codeRowSource` puts the row, prose through the segment index.
+ * `edge` only matters to prose, for which segment a boundary between two
+ * belongs to.
  */
-export function columnsOfSelection(
+function endpointOffset(
   index: SegmentIndex,
-  range: Range,
-): AnchorRange | null {
-  const start = sourceOffsetOfEndpoint(
-    index,
-    range.startContainer,
-    range.startOffset,
-    "start",
-  );
-  const end = sourceOffsetOfEndpoint(
-    index,
-    range.endContainer,
-    range.endOffset,
-    "end",
-  );
-  if (start === null || end === null || end <= start) return null;
-  // Columns name a real character, inclusively (the contract lives in
-  // shared/schemas/spec.ts), so `len + 1` is never one — the server measures
-  // lines without their newline. Both ends therefore step off a newline they
-  // landed on, which makes a selection starting at a line end mean column 1
-  // of the next line rather than one past the end of this one.
-  let first = start;
-  let last = end - 1;
-  while (first < last && index.source[first] === "\n") first++;
-  while (last > first && index.source[last] === "\n") last--;
-  // Newlines only: no column can name that, so the whole-line anchor stands.
-  if (index.source[first] === "\n") return null;
-  const from = lineColAt(index, first);
-  const to = lineColAt(index, last);
-  if (to.line < from.line || (to.line === from.line && to.col < from.col)) {
-    return null;
-  }
-  return {
-    lineStart: from.line,
-    lineEnd: to.line,
-    colStart: from.col,
-    colEnd: to.col,
+  node: Node,
+  offset: number,
+  edge: "start" | "end",
+): number | null {
+  const row = rowAt(node);
+  if (row === null) return sourceOffsetOfEndpoint(index, node, offset, edge);
+  const source = codeRowSource(index, row);
+  if (source === null || source.textStart === null) return null;
+  const at = offsetInRow(row, node, offset);
+  return at === null ? null : source.textStart + at;
+}
+
+/**
+ * Source offsets of code the reader cannot have selected. In a block pierre
+ * has drawn rows for, that is every line no row shows — the fence markers, a
+ * patch's headers — and, on a line a row does show, the part in front of the
+ * row's text: a list item's indent, a quote's `> `, a patch line's prefix. A
+ * selection that stops at the edge of a row reaches into them only in the
+ * source. A block with no rows yet hides nothing: its plain text is what is
+ * on screen; nor does a block with a row that could not be placed hide any
+ * line whole, since that row shows one of them. Worked out per block on
+ * first ask, since only the blocks next to a selection's two ends are ever
+ * asked about.
+ */
+function hiddenInCode(
+  container: Element,
+  index: SegmentIndex,
+): (offset: number) => boolean {
+  let blocks: Array<{
+    el: Element;
+    loc: { start: number; end: number };
+  }> | null = null;
+  const hidden = new Map<Element, Map<number, [number, number]> | null>();
+  const hiddenOf = (el: Element, loc: { start: number; end: number }) => {
+    if (hidden.has(el)) return hidden.get(el) ?? null;
+    // Each drawn line, with where its row's text starts; null where the
+    // row does not read as its line, which hides nothing of it.
+    const drawn = new Map<number, number | null>();
+    let unplaced = false;
+    for (const host of el.querySelectorAll("diffs-container")) {
+      for (const row of host.shadowRoot?.querySelectorAll("[data-line]") ??
+        []) {
+        const source = codeRowSource(index, row);
+        if (source?.line != null) drawn.set(source.line, source.textStart);
+        // A deletion in a compared fence has no current line to show.
+        else if (row.getAttribute(LINE_TYPE_ATTR) !== DELETION_LINE_TYPE) {
+          unplaced = true;
+        }
+      }
+    }
+    let spans: Map<number, [number, number]> | null = null;
+    if (drawn.size > 0) {
+      spans = new Map();
+      for (let line = loc.start; line <= loc.end; line++) {
+        const start = index.lineStarts[line - 1];
+        if (start === undefined) continue;
+        const next = index.lineStarts[line];
+        const end = next === undefined ? index.source.length : next - 1;
+        const textStart = drawn.has(line)
+          ? drawn.get(line)
+          : unplaced
+            ? null
+            : end;
+        if (textStart != null && textStart > start) {
+          spans.set(line, [start, textStart]);
+        }
+      }
+    }
+    hidden.set(el, spans);
+    return spans;
+  };
+  return (offset) => {
+    blocks ??= [
+      ...container.querySelectorAll(`[${CODE_CONTENT_START_ATTR}]`),
+    ].flatMap((el) => {
+      const loc = parseSourceLoc(el.getAttribute(SOURCE_LINE_ATTR));
+      return loc === null ? [] : [{ el, loc }];
+    });
+    const { line } = lineColAt(index, offset);
+    return blocks.some(({ el, loc }) => {
+      if (line < loc.start || line > loc.end) return false;
+      const span = hiddenOf(el, loc)?.get(line);
+      return span !== undefined && offset >= span[0] && offset < span[1];
+    });
   };
 }
 
-/** Which side of a diff one of pierre's line rows numbers itself on. */
-const LINE_TYPE_ATTR = "data-line-type";
-const DELETION_LINE_TYPE = "change-deletion";
+/**
+ * Narrow a selection to source columns (T-142). Returns null whenever the
+ * mapping is not provably right, and the caller keeps the whole-block line
+ * anchor that spec review has always produced.
+ *
+ * Each endpoint maps on its own and the source offsets order them, so the two
+ * need not share a tree: a drag from prose into a code line has one end on
+ * either side of pierre's shadow root, where no DOM range can span them. A
+ * backwards selection is mapped again once its order is known, so that each
+ * end is read under its own edge.
+ */
+function columnsOfEndpoints(
+  container: Element,
+  index: SegmentIndex,
+  ends: SelectionEndpoints,
+): AnchorRange | null {
+  const { start: a, end: b } = ends;
+  let start = endpointOffset(index, a.node, a.offset, "start");
+  let end = endpointOffset(index, b.node, b.offset, "end");
+  if (start === null || end === null) return null;
+  if (start > end) {
+    start = endpointOffset(index, b.node, b.offset, "start");
+    end = endpointOffset(index, a.node, a.offset, "end");
+    if (start === null || end === null) return null;
+  }
+  return columnsOfOffsets(index, start, end, hiddenInCode(container, index));
+}
 
 /**
  * Source-line range for the block a selection endpoint sits in (T-52).
  * pierre renders code blocks inside an open shadow root, so the walk hops
  * shadow boundaries host by host until a stamped ancestor appears. When
- * the endpoint is on one of pierre's line rows (`data-line`, 1-based
- * within the code contents), the whole-block range narrows down to that
- * exact source line via the stamped content start.
+ * the endpoint is on one of pierre's line rows, the whole-block range
+ * narrows down to the source line `codeRowSource` names for it, and stays
+ * the whole block when it names none.
+ *
+ * `index` is what a patch fence's rows are matched against; without it they
+ * keep the whole block, while a plain block's rows still narrow.
  */
 export function anchorRangeForNode(
   node: Node,
+  index: SegmentIndex | null = null,
 ): { start: number; end: number } | null {
   if (isOldEndpoint(node)) return null;
-  let el = elementNear(node);
-  let row: Element | null = null;
-  while (el !== null) {
-    row ??= el.closest("[data-line]");
+  for (let el = elementNear(node); el !== null; ) {
+    const row = el.closest("[data-line]");
+    const source = row === null ? null : codeRowSource(index, row);
+    if (source !== null) {
+      return source.line === null
+        ? source.loc
+        : { start: source.line, end: source.line };
+    }
     const stamped = el.closest(`[${SOURCE_LINE_ATTR}]`);
     if (stamped !== null) {
-      const loc = parseSourceLoc(stamped.getAttribute(SOURCE_LINE_ATTR));
-      if (loc === null) return null;
-      if (row !== null) {
-        // A deletion row numbers itself on the OLD side, so the current
-        // source has no line for it and `contentStart + rowLine - 1` names
-        // an unrelated one — silently, and plausibly (T-343). The whole
-        // block is the honest answer; the other three line types pierre
-        // emits, `context-expanded` included, all number the new side and
-        // go down the formula below.
-        if (row.getAttribute(LINE_TYPE_ATTR) === DELETION_LINE_TYPE) return loc;
-        const contentStart = Number(
-          stamped.getAttribute(CODE_CONTENT_START_ATTR),
-        );
-        const rowLine = Number(row.getAttribute("data-line"));
-        if (
-          Number.isInteger(contentStart) &&
-          Number.isInteger(rowLine) &&
-          rowLine >= 1
-        ) {
-          // Clamp: an unclosed fence can stamp an end before start+rows.
-          const line = Math.min(contentStart + rowLine - 1, loc.end);
-          return { start: line, end: line };
-        }
-      }
-      return loc;
+      return parseSourceLoc(stamped.getAttribute(SOURCE_LINE_ATTR));
     }
     const root = el.getRootNode();
     el = root instanceof ShadowRoot ? root.host : null;
@@ -339,32 +406,14 @@ function sideOf(container: Element, node: Node, offset: number): Side | null {
   }
 }
 
-/**
- * The endpoints as a forward range, or null when they cannot make one.
- *
- * Endpoints arrive in whatever order the user dragged, and `setEnd` before
- * the start silently collapses the range onto that point rather than
- * complaining — so a collapsed result is the signal to try the other way
- * round. Ends in two different trees collapse both ways, which is the null.
- */
-function orderedRange(ends: SelectionEndpoints): Range | null {
-  const forward = document.createRange();
-  forward.setStart(ends.start.node, ends.start.offset);
-  forward.setEnd(ends.end.node, ends.end.offset);
-  if (!forward.collapsed) return forward;
-  const backward = document.createRange();
-  backward.setStart(ends.end.node, ends.end.offset);
-  backward.setEnd(ends.start.node, ends.start.offset);
-  return backward.collapsed ? null : backward;
-}
-
 /** The block one endpoint anchors to, clamped to the container's edges. */
 function blockOfEndpoint(
+  index: SegmentIndex,
   node: Node,
   side: Side,
   blocks: Element[],
 ): { start: number; end: number } | null {
-  if (side === "inside") return anchorRangeForNode(node);
+  if (side === "inside") return anchorRangeForNode(node, index);
   const edge = side === "before" ? blocks[0] : blocks[blocks.length - 1];
   return edge === undefined
     ? null
@@ -397,14 +446,15 @@ export function anchorForSelection(
   if (startSide === null || endSide === null) return null;
   if (startSide === endSide && startSide !== "inside") return null;
   const blocks = [...container.querySelectorAll(`[${SOURCE_LINE_ATTR}]`)];
-  const from = blockOfEndpoint(ends.start.node, startSide, blocks);
-  const to = blockOfEndpoint(ends.end.node, endSide, blocks);
+  const from = blockOfEndpoint(index, ends.start.node, startSide, blocks);
+  const to = blockOfEndpoint(index, ends.end.node, endSide, blocks);
   if (from === null || to === null) return null;
   // A clamped endpoint names a block, not a character in it, so columns are
   // only ever narrowed while both ends are in the rendered file.
-  const range =
-    startSide === "inside" && endSide === "inside" ? orderedRange(ends) : null;
-  const columns = range === null ? null : columnsOfSelection(index, range);
+  const columns =
+    startSide === "inside" && endSide === "inside"
+      ? columnsOfEndpoints(container, index, ends)
+      : null;
   // Direction doesn't matter to the lines; the min/max absorbs it.
   return (
     columns ?? {
