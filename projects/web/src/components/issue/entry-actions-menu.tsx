@@ -16,6 +16,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import type Markdown from "react-markdown";
 import { projectQuery, projectsQuery } from "@/api/queries.ts";
 import { useProjectOrder } from "@/api/useProjectOrder.ts";
@@ -125,6 +126,8 @@ export function EntryActionsMenu({
   // the document clears it silently (T-60). Reading before either happens
   // means never having to argue about which of them opening a menu performs.
   const selected = useRef<{ start: number; end: number } | null>(null);
+  /** Set when Quote reply closed the menu: the comment box keeps the focus. */
+  const quoted = useRef(false);
 
   const readSelection = (): { start: number; end: number } | null => {
     const container = bodyRef.current;
@@ -147,6 +150,14 @@ export function EntryActionsMenu({
     const range = selected.current ?? readSelection();
     const picked =
       range === null ? "" : sourceLines(body, range.start, range.end);
+    // The comment box takes the focus inside this press, the only focus iOS
+    // raises the keyboard for, and an open menu traps the focus and would pull
+    // it straight back. So the menu closes first, by hand, which leaves Radix
+    // no change to report: `onOpenChange` never runs for this close, and the
+    // capture is dropped here instead.
+    quoted.current = true;
+    selected.current = null;
+    flushSync(() => setOpen(false));
     quote(picked === "" ? body : picked);
   };
 
@@ -155,7 +166,10 @@ export function EntryActionsMenu({
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
-        if (!next) selected.current = null;
+        // Reopened before the last close finished: this one hands the focus
+        // back as usual.
+        if (next) quoted.current = false;
+        else selected.current = null;
       }}
     >
       <DropdownMenuTrigger asChild>
@@ -176,7 +190,15 @@ export function EntryActionsMenu({
       <DropdownMenuContent
         className="w-auto"
         align="end"
-        onCloseAutoFocus={onCloseAutoFocus}
+        onCloseAutoFocus={(event) => {
+          if (quoted.current) {
+            // The comment box has the focus now, not the trigger.
+            quoted.current = false;
+            event.preventDefault();
+            return;
+          }
+          onCloseAutoFocus?.(event);
+        }}
       >
         <DropdownMenuItem
           onSelect={() => void copyToClipboard(permalink, "Link copied")}
