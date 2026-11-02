@@ -217,7 +217,7 @@ todou spec list -p <proj> [--state open|closed|all]        # which cards have sp
 todou spec status <n> -p <proj>                            # versions, verdict, unresolved count
 todou spec comments <n> --unresolved                       # inline annotations (file + anchor)
 todou spec resolve <n> <commentIds…>
-todou spec review <n> --approve | --request-changes | --comment [--body …] [--annotations <file|->]
+todou spec review <n> --version <v> --approve | --request-changes | --comment [--body …] [--annotations <file|->]
 ```
 
 `--comment` records the summary and annotations while preserving the current review status, including
@@ -233,9 +233,9 @@ locally, must match the file exactly once — this also derives the columns), `l
 anchor is always the version being reviewed. Write them against a `spec pull` of that version:
 
 ```bash
-todou spec pull 23 ./spec -p <proj>
+todou spec pull 23 ./spec -p <proj> --version 3
 printf '%s' '[{"path":"design.md","quote":"one read-time count","body":"why not a column?"}]' \
-  | todou spec review 23 -p <proj> --comment --annotations - --body "three spots"
+  | todou spec review 23 -p <proj> --version 3 --comment --annotations - --body "three spots"
 ```
 
 ### Withdrawal and resubmission

@@ -591,8 +591,10 @@ export class SpecReviewCommand extends ProjectCommand {
     details: `
       Exactly one of \`--approve\` / \`--request-changes\` / \`--comment\`
       is required, and \`--body\`/\`--body-file\` becomes a summary
-      comment. \`--version\` defaults to the current version; either way
-      the server rejects a review of anything but the latest.
+      comment. \`--version\` is required too and names the version you
+      read: the server takes a review of the latest version only, so a push
+      made after you read it fails the review instead of landing it on a
+      version you have not read.
 
       \`--comment\` is a review that **judges nothing**: it records the
       summary and annotations and preserves the current review status,
@@ -625,15 +627,15 @@ export class SpecReviewCommand extends ProjectCommand {
     examples: [
       [
         "Request changes with a note",
-        '$0 spec review 23 --request-changes --body "rework §2"',
+        '$0 spec review 23 --version 3 --request-changes --body "rework §2"',
       ],
       [
         "Read the spec, then annotate it without judging",
-        '$0 spec pull 23 ./spec && $0 spec review 23 --comment --annotations ann.json --body "three spots"',
+        '$0 spec pull 23 ./spec --version 3 && $0 spec review 23 --version 3 --comment --annotations ann.json --body "three spots"',
       ],
       [
         "One annotation, anchored by the text it quotes",
-        `printf '%s' '[{"path":"design.md","quote":"one read-time count","body":"why not a column?"}]' | $0 spec review 23 --comment --annotations -`,
+        `printf '%s' '[{"path":"design.md","quote":"one read-time count","body":"why not a column?"}]' | $0 spec review 23 --version 3 --comment --annotations -`,
       ],
     ],
   });
@@ -661,11 +663,10 @@ export class SpecReviewCommand extends ProjectCommand {
     description: "Post a --body that is a path as literal text",
   });
   version = Option.String("--version", {
-    description: "Version being reviewed (default: current)",
+    description: "Version being reviewed: the one you read",
   });
 
   protected async run(client: TodouClient): Promise<void> {
-    const { project, number } = await this.resolveIssueRef(client, this.number);
     const picked = (
       [
         ["approve", this.approve],
@@ -680,6 +681,16 @@ export class SpecReviewCommand extends ProjectCommand {
       );
     }
     const verdict = picked[0]?.[0] ?? "comment";
+    // Before any request: reviewing whatever is current when the command
+    // runs would land a verdict on a version pushed after the reading.
+    if (this.version === undefined) {
+      throw new CliError(
+        "--version is required",
+        `pass the version you read; \`todou spec status ${this.number}\` shows the current one`,
+      );
+    }
+    const version = Number(this.version);
+    const { project, number } = await this.resolveIssueRef(client, this.number);
     if (this.bodyFile === "-" && this.annotations === "-") {
       throw new CliError(
         "--body-file and --annotations cannot both read stdin",
@@ -698,8 +709,9 @@ export class SpecReviewCommand extends ProjectCommand {
         note: (line) => this.note(line),
       });
     }
-    // Read and validate before resolving the version, so a malformed file
-    // costs no round trip — and before the POST, so it cannot half-submit.
+    // Read and validate before reading the version's files, so a malformed
+    // file costs no round trip — and before the POST, so it cannot
+    // half-submit.
     const staged =
       this.annotations === undefined
         ? []
@@ -710,10 +722,6 @@ export class SpecReviewCommand extends ProjectCommand {
         "add --body/--body-file, --annotations, or a verdict",
       );
     }
-    const version =
-      this.version === undefined
-        ? (await client.getSpec(project, number)).current_version
-        : Number(this.version);
     const comments =
       staged.length === 0
         ? []
