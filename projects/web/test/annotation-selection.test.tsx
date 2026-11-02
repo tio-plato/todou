@@ -15,8 +15,8 @@ import {
   AnnotatedMarkdown,
   anchorForSelection,
   anchorRangeForNode,
-  selectionEndpoints,
 } from "../src/components/spec/annotated-markdown.tsx";
+import { selectionEndpoints } from "../src/lib/selection-endpoints.ts";
 import { buildSegmentIndex } from "../src/lib/spec-source-index.ts";
 import { POINTER_FINE } from "../src/lib/use-media-query.ts";
 import { renderWithProviders, testQueryClient } from "./render.tsx";
