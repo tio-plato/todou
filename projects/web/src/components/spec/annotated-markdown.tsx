@@ -38,6 +38,8 @@ import {
 } from "@/components/ui/popover";
 import {
   type CodeHighlightRanges,
+  type LineMark,
+  markRows,
   supportsCodeHighlights,
   useCodeHighlights,
 } from "@/lib/code-highlights.ts";
@@ -930,10 +932,11 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
 
   /**
    * The characters of code that column anchors cover, painted as ranges over
-   * pierre's own rows (T-31 keeps marks out of a code block). Each row is
-   * placed in the source by `codeRowSource`, the mapping a selection there
-   * is anchored by, so what gets painted is what was selected; a row it
-   * cannot place keeps its block's wash instead.
+   * pierre's own rows (T-31 keeps marks out of a code block), and the rows
+   * that anchors on whole lines cover, marked as such. Each row is placed in
+   * the source by `codeRowSource`, the mapping a selection there is anchored
+   * by, so what gets painted is what was selected; a row it cannot place
+   * keeps its block's wash instead.
    */
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new set of decorations rewrites the wrappers' classes, taking the painted class off them
   const paintCode = useCallback(
@@ -950,10 +953,15 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
             ];
           })
         : [];
+      // Marked whatever the browser: an attribute needs no highlight API.
+      const wholeLines = annotations.filter(
+        (a) => (a.colStart ?? null) === null,
+      );
       for (const wrapper of container.querySelectorAll(
         `[${CODE_CONTENT_START_ATTR}]`,
       )) {
         const loc = parseSourceLoc(wrapper.getAttribute(SOURCE_LINE_ATTR));
+        const body = codeBodyLines(index, wrapper);
         const here =
           loc === null
             ? []
@@ -961,16 +969,31 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
                 (mark) =>
                   mark.lines.start <= loc.end && mark.lines.end >= loc.start,
               );
+        const wholeHere =
+          body === null
+            ? []
+            : wholeLines.filter((a) => rangesIntersect(a, body));
         // The wash steps aside only once every annotation reaching into the
-        // block has characters of its own painted here: a whole-line one has
-        // none, and a column one on rows that could not be placed has none.
+        // block has something of its own painted here: characters for one on
+        // columns, a row for one on whole lines. Rows that could not be
+        // placed leave theirs with nothing.
         const painted = new Set<string>();
-        for (const host of here.length === 0
-          ? []
-          : wrapper.querySelectorAll("diffs-container")) {
-          for (const row of host.shadowRoot?.querySelectorAll("[data-line]") ??
-            []) {
+        for (const host of wrapper.querySelectorAll("diffs-container")) {
+          const shadow = host.shadowRoot;
+          if (shadow === null) continue;
+          const wanted = new Map<Element, LineMark>();
+          for (const row of here.length === 0 && wholeHere.length === 0
+            ? []
+            : shadow.querySelectorAll("[data-line]")) {
             const source = codeRowSource(index, row);
+            const line = source?.line ?? null;
+            if (line !== null) {
+              for (const a of wholeHere) {
+                if (line < a.start || line > a.end) continue;
+                if (wanted.get(row) !== "comment") wanted.set(row, a.kind);
+                painted.add(a.key);
+              }
+            }
             if (source === null || source.textStart === null) continue;
             const rowEnd = source.textStart + rowText(row).length;
             for (const mark of here) {
@@ -989,13 +1012,12 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
               painted.add(mark.key);
             }
           }
+          markRows(shadow, wanted);
         }
         const touching =
-          loc === null
+          body === null
             ? []
-            : annotations.filter(
-                (a) => a.start <= loc.end && a.end >= loc.start,
-              );
+            : annotations.filter((a) => rangesIntersect(a, body));
         wrapper.classList.toggle(
           CODE_PAINTED_CLASS,
           touching.length > 0 && touching.every((a) => painted.has(a.key)),
