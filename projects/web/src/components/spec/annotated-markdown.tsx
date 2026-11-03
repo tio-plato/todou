@@ -1028,7 +1028,28 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     // A resize moves the chips; the entry's own recompute is the selection
     // layer's.
     window.addEventListener("resize", layout);
-    return () => window.removeEventListener("resize", layout);
+    // So does whatever changes the document's height with no resize: a
+    // mermaid diagram taking its source's place, pierre drawing a block, an
+    // image or a font arriving. Folded into one layout per frame. The wash
+    // a layout toggles changes the height once more, and the next layout
+    // toggles nothing, so it settles there.
+    const container = containerRef.current;
+    let frame: number | null = null;
+    let observer: ResizeObserver | null = null;
+    if (container !== null && typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(() => {
+        frame ??= requestAnimationFrame(() => {
+          frame = null;
+          layout();
+        });
+      });
+      observer.observe(container);
+    }
+    return () => {
+      window.removeEventListener("resize", layout);
+      observer?.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
   }, [layout]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: folding moves the blocks the chips are measured against
