@@ -207,18 +207,23 @@ const comment = (
   current_line_end: end,
 });
 
-function mockSpec(items: SpecComments["items"] = []) {
+function mockSpec(
+  items: SpecComments["items"] = [],
+  bodies: Record<number, Record<string, string>> = BODIES,
+) {
+  const versions = Object.keys(bodies).map(Number);
+  const current = Math.max(...versions);
   const info: SpecInfo = {
-    current_version: 5,
-    current_version_cursor: "c5",
+    current_version: current,
+    current_version_cursor: `c${current}`,
     review_status: "unreviewed",
     unresolved_comments: 0,
     unresolved_carried_comments: 0,
-    files: Object.entries(BODIES[5] ?? {}).map(([path, body]) => ({
+    files: Object.entries(bodies[current] ?? {}).map(([path, body]) => ({
       path,
       size: body.length,
     })),
-    versions: [1, 2, 3, 4, 5].map((number) => ({
+    versions: versions.map((number) => ({
       number,
       author: AUTHOR,
       message: `v${number}`,
@@ -228,10 +233,10 @@ function mockSpec(items: SpecComments["items"] = []) {
   vi.spyOn(api, "getSpec").mockResolvedValue(info);
   vi.spyOn(api, "getSpecFiles").mockImplementation(
     (_slug, _number, version): Promise<SpecFiles> => {
-      const v = version ?? 5;
+      const v = version ?? current;
       return Promise.resolve({
         version: v,
-        files: Object.entries(BODIES[v] ?? {}).map(([path, body]) => ({
+        files: Object.entries(bodies[v] ?? {}).map(([path, body]) => ({
           path,
           body,
           size: body.length,
@@ -239,7 +244,7 @@ function mockSpec(items: SpecComments["items"] = []) {
       });
     },
   );
-  const comments: SpecComments = { current_version: 5, items };
+  const comments: SpecComments = { current_version: current, items };
   vi.spyOn(api, "getSpecComments").mockResolvedValue(comments);
   vi.spyOn(api, "getReferenceConfig").mockResolvedValue({
     format: { prefix: "T-", history: [] },
@@ -686,6 +691,79 @@ describe("staged drafts in the source view", () => {
         ?.getAttribute("data-side");
     expect(sideOf("why drop delta?")).toBe("deletions");
     expect(sideOf("omega reads well")).toBe("additions");
+  });
+});
+
+/** The line each note under `selector` hangs on, by the text it carries. */
+async function hungLines(
+  view: { container: HTMLElement },
+  selector: string,
+  texts: string[],
+) {
+  return waitFor(() => {
+    const notes = [...view.container.querySelectorAll(selector)];
+    return texts.map((text) => {
+      const note = notes.find((el) => el.textContent?.includes(text));
+      if (note === undefined) throw new Error(`${text} not drawn`);
+      return note.getAttribute("data-annotation-line");
+    });
+  });
+}
+
+/**
+ * Twenty lines, two of them edited sixteen lines apart: pierre's hunks cover
+ * lines 1–6 and 15–20, and the eight unchanged lines between them collapse.
+ */
+const LONG_V1 = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`);
+const LONG_BODIES: Record<number, Record<string, string>> = {
+  1: { "long.md": `${LONG_V1.join("\n")}\n` },
+  2: {
+    "long.md": `${LONG_V1.map((text, i) =>
+      i === 1 ? "line two" : i === 18 ? "line nineteen" : text,
+    ).join("\n")}\n`,
+  },
+};
+
+describe("notes over several lines hang under their last line", () => {
+  it("in one version's source", async () => {
+    stageDraft("d1", "drift.md", 1, 1, "three lines here", 3);
+    mockSpec([comment("drift.md", 1, 2, "and these three", 4)]);
+    const view = await singleSource("drift.md");
+    expect(
+      await hungLines(view, '[data-testid="file-annotation"]', [
+        "three lines here",
+        "and these three",
+      ]),
+    ).toEqual(["3", "4"]);
+  });
+
+  it("in the source diff, and in a file unfolded there", async () => {
+    stageDraft("d1", "drifted.md", 2, 1, "these kept lines", 3);
+    stageDraft("d2", "new-name.md", 2, 1, "the whole move", 2);
+    mockSpec();
+    const view = await stack("?v=2&compare=1&file=new-name.md");
+    expect(
+      await hungLines(view, '[data-testid="diff-annotation"]', [
+        "these kept lines",
+      ]),
+    ).toEqual(["3"]);
+    expect(
+      await hungLines(view, '[data-testid="file-annotation"]', [
+        "the whole move",
+      ]),
+    ).toEqual(["2"]);
+  });
+
+  it("on the last line the source diff shows when the end is collapsed", async () => {
+    // Lines 5–10 run from the first hunk into the collapsed 7–14.
+    stageDraft("d1", "long.md", 2, 5, "into the fold", 10);
+    mockSpec([], LONG_BODIES);
+    const view = await stack("?v=2&compare=1");
+    expect(
+      await hungLines(view, '[data-testid="diff-annotation"]', [
+        "into the fold",
+      ]),
+    ).toEqual(["6"]);
   });
 });
 
