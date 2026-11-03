@@ -2270,10 +2270,7 @@ function SpecDiff({
         })),
         ...drafts.map((d) => ({ kind: "draft" as const, anchor: d.anchor })),
       ].flatMap(({ kind, anchor }): SourceMark[] =>
-        anchor.line_start === null ||
-        anchor.line_end === null ||
-        anchor.col_start == null ||
-        anchor.col_end == null
+        anchor.line_start === null || anchor.line_end === null
           ? []
           : [
               {
@@ -2282,8 +2279,8 @@ function SpecDiff({
                 version: anchor.version,
                 lineStart: anchor.line_start,
                 lineEnd: anchor.line_end,
-                colStart: anchor.col_start,
-                colEnd: anchor.col_end,
+                colStart: anchor.col_start ?? null,
+                colEnd: anchor.col_end ?? null,
               },
             ],
       ),
@@ -2974,20 +2971,16 @@ function SpecSourceFile({
   const { pending, clear } = useSelectionEntry(containerRef, resolveSelection);
   const marks = useMemo(
     () =>
-      annotations.flatMap((a): SourceMark[] =>
-        a.colStart == null || a.colEnd == null
-          ? []
-          : [
-              {
-                kind: a.kind,
-                path,
-                version,
-                lineStart: a.start,
-                lineEnd: a.end,
-                colStart: a.colStart,
-                colEnd: a.colEnd,
-              },
-            ],
+      annotations.map(
+        (a): SourceMark => ({
+          kind: a.kind,
+          path,
+          version,
+          lineStart: a.start,
+          lineEnd: a.end,
+          colStart: a.colStart ?? null,
+          colEnd: a.colEnd ?? null,
+        }),
       ),
     [annotations, path, version],
   );
