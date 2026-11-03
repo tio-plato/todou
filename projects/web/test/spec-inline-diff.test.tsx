@@ -2,7 +2,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import type { SpecCommentItem } from "@todou/shared";
 import { useState } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { FENCE_DIFF_CLASS } from "../src/components/shared/markdown-view.tsx";
 import {
   AnnotatedMarkdown,
@@ -1589,6 +1589,70 @@ describe("whole-line annotations wash every block they cover", () => {
       wholeLines("comment", 1, 3),
     ]);
     expect(washed(container)).toEqual(["1-1"]);
+  });
+});
+
+/**
+ * happy-dom has no ResizeObserver; this one is driven by hand, as the size
+ * change a mermaid diagram or a late-drawn code block makes would drive it.
+ */
+class FakeResizeObserver {
+  static instances: FakeResizeObserver[] = [];
+  observed: Element[] = [];
+  disconnected = false;
+  private readonly callback: ResizeObserverCallback;
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+    FakeResizeObserver.instances.push(this);
+  }
+  observe(el: Element) {
+    this.observed.push(el);
+  }
+  unobserve() {}
+  disconnect() {
+    this.disconnected = true;
+  }
+  fire() {
+    // The real one never fires past disconnect().
+    if (this.disconnected) return;
+    this.callback([], this as unknown as ResizeObserver);
+  }
+}
+
+describe("chips follow the document's height", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    FakeResizeObserver.instances = [];
+  });
+
+  it("moves a chip when its block moves without a window resize", async () => {
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    // The paragraph sits 100px down the container until something above it
+    // grows by 61px.
+    let top = 100;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        return DOMRect.fromRect({ y: this.tagName === "P" ? top : 0 });
+      },
+    );
+    const body = "One paragraph.\n";
+    const { view, container } = await renderDiff(body, body, [
+      wholeLines("comment", 1, 1),
+    ]);
+    const chip = await view.findByRole("button", {
+      name: /comment\(s\) on this block/,
+    });
+    expect(chip.style.top).toBe("100px");
+
+    top = 161;
+    await act(async () => {
+      for (const observer of FakeResizeObserver.instances) {
+        if (observer.observed.includes(container)) observer.fire();
+      }
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+    expect(chip.style.top).toBe("161px");
   });
 });
 
