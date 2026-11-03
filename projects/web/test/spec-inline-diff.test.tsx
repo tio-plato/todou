@@ -1,6 +1,7 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { render, waitFor } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import type { SpecCommentItem } from "@todou/shared";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { FENCE_DIFF_CLASS } from "../src/components/shared/markdown-view.tsx";
 import {
@@ -1422,6 +1423,172 @@ describe("precise annotation highlights (T-142)", () => {
     ]);
     expect(container.querySelector("mark.spec-mark-comment")).toBeNull();
     expect(container.querySelector("p.spec-annotated")).not.toBeNull();
+  });
+});
+
+/** A comment or draft on whole lines `start`–`end`. */
+function wholeLines(
+  kind: "comment" | "draft",
+  start: number,
+  end: number,
+): DisplayedAnnotation {
+  const key = `${kind}${start}-${end}`;
+  return kind === "comment"
+    ? {
+        key,
+        kind,
+        item: comment(start * 100 + end, { line_start: start, line_end: end }),
+        start,
+        end,
+      }
+    : {
+        key,
+        kind,
+        draft: {
+          id: key,
+          anchor: {
+            path: "design.md",
+            version: 1,
+            line_start: start,
+            line_end: end,
+            col_start: null,
+            col_end: null,
+          },
+          quote: "",
+          body: "staged",
+        },
+        start,
+        end,
+      };
+}
+
+describe("whole-line annotations wash every block they cover", () => {
+  const washed = (container: HTMLElement) =>
+    [...container.querySelectorAll(".spec-annotated")].map((el) =>
+      el.getAttribute("data-loc"),
+    );
+
+  it("washes each table row in the range, and not the table", async () => {
+    const table = [
+      "| k | v |",
+      "| --- | --- |",
+      "| a | 1 |",
+      "| b | 2 |",
+      "| c | 3 |",
+      "| d | 4 |",
+      "| e | 5 |",
+      "",
+    ].join("\n");
+    // Lines 4–6 are the body's second to fourth rows.
+    const { container } = await renderDiff(table, table, [
+      wholeLines("comment", 4, 6),
+    ]);
+    expect(washed(container)).toEqual(["4-4", "5-5", "6-6"]);
+  });
+
+  it("washes a block in the draft colour only while drafts alone cover it", async () => {
+    const body = "One paragraph.\n";
+    // The same document gains a comment, as a submitted review brings one.
+    let annotate: (next: DisplayedAnnotation[]) => void = () => {};
+    function Live() {
+      const [annotations, setAnnotations] = useState([
+        wholeLines("draft", 1, 1),
+      ]);
+      annotate = setAnnotations;
+      return (
+        <AnnotatedMarkdown
+          slug="p"
+          issueNumber={1}
+          body={body}
+          annotations={annotations}
+          onStage={() => {}}
+          onEditDraft={() => {}}
+          onRemoveDraft={() => {}}
+          onResolve={() => {}}
+        />
+      );
+    }
+    const view = renderWithProviders(<Live />);
+    const p = await waitFor(() => {
+      const el = view.container.querySelector("p");
+      if (el === null) throw new Error("not rendered yet");
+      return el;
+    });
+    expect(p.classList.contains("spec-annotated")).toBe(true);
+    expect(p.classList.contains("spec-annotated-draft")).toBe(true);
+
+    act(() =>
+      annotate([wholeLines("draft", 1, 1), wholeLines("comment", 1, 1)]),
+    );
+    expect(view.container.querySelector("p")).toBe(p);
+    expect(p.classList.contains("spec-annotated")).toBe(true);
+    expect(p.classList.contains("spec-annotated-draft")).toBe(false);
+  });
+
+  it("washes every row and not the table when the range covers it whole", async () => {
+    const table = "| k | v |\n| --- | --- |\n| a | 1 |\n| b | 2 |\n";
+    // The header row, stamped inside the table's head rather than straight
+    // under the table, holds the table's first line.
+    const { container } = await renderDiff(table, table, [
+      wholeLines("comment", 1, 4),
+    ]);
+    expect(washed(container)).toEqual(["1-1", "3-3", "4-4"]);
+  });
+
+  it("washes nested items, and their parent only from its own first line", async () => {
+    const list = "- outer\n  - inner one\n  - inner two\n- next\n";
+    const inner = await renderDiff(list, list, [wholeLines("comment", 2, 3)]);
+    expect(washed(inner.container)).toEqual(["2-2", "3-3"]);
+    inner.view.unmount();
+
+    const fromOuter = await renderDiff(list, list, [
+      wholeLines("comment", 1, 2),
+    ]);
+    expect(washed(fromOuter.container)).toEqual(["1-3", "2-2"]);
+  });
+
+  it("washes a container for a line of its own text, not for one showing nothing", async () => {
+    // Lines 1–2 render as the outer item's one line of text; line 3 is the
+    // item nested in it. The range starts on the continuation line.
+    const list =
+      "- outer first\n  outer continuation\n  - inner item\n- next item\n";
+    const listed = await renderDiff(list, list, [wholeLines("comment", 2, 3)]);
+    expect(washed(listed.container)).toEqual(["1-3", "3-3"]);
+    listed.view.unmount();
+
+    // Line 2 is the delimiter row, which shows nothing of the table's own.
+    const table = "| k | v |\n| --- | --- |\n| a | 1 |\n| b | 2 |\n";
+    const rows = await renderDiff(table, table, [wholeLines("comment", 2, 3)]);
+    expect(washed(rows.container)).toEqual(["3-3"]);
+  });
+
+  it("reads a line's HTML as the reader sees it", async () => {
+    // Only details and summary markers are drawn as HTML; a comment reaches
+    // the reader as its source, so line 2 is the outer item's own text.
+    const list = "- outer first\n  <!-- a note -->\n  - inner item\n";
+    const listed = await renderDiff(list, list, [wholeLines("comment", 2, 3)]);
+    expect(listed.container.querySelector("li")?.textContent).toContain(
+      "<!-- a note -->",
+    );
+    expect(washed(listed.container)).toEqual(["1-3", "3-3"]);
+    listed.view.unmount();
+
+    // Line 2's summary shows; line 3 is blank and line 1 a marker alone.
+    const fold =
+      "<details>\n<summary>More</summary>\n\nInside paragraph.\n\n</details>\n";
+    const summary = await renderDiff(fold, fold, [wholeLines("comment", 2, 4)]);
+    expect(washed(summary.container)).toEqual(["1-6", "4-4"]);
+    summary.view.unmount();
+    const blank = await renderDiff(fold, fold, [wholeLines("comment", 3, 4)]);
+    expect(washed(blank.container)).toEqual(["4-4"]);
+  });
+
+  it("leaves out a code block the range reaches by its opening fence only", async () => {
+    const body = "Para line.\n\n```ts\nconst a = 1;\n```\n";
+    const { container } = await renderDiff(body, body, [
+      wholeLines("comment", 1, 3),
+    ]);
+    expect(washed(container)).toEqual(["1-1"]);
   });
 });
 
