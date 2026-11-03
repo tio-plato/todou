@@ -8,6 +8,8 @@ import {
 import {
   announceCodeRendered,
   clearCodeHighlights,
+  LINE_MARK_ATTR,
+  markRows,
   setCodeHighlights,
 } from "../src/lib/code-highlights.ts";
 import { renderWithProviders } from "./render.tsx";
@@ -325,6 +327,63 @@ describe("code highlights in the rendered view", () => {
     await drawRows(wrapper, TS_ROWS);
     expect(wrapper.classList.contains("spec-mark-comment-block")).toBe(true);
     expect(wrapper.classList.contains("spec-code-painted")).toBe(false);
+  });
+});
+
+/** Two of pierre's rows and their line numbers, in a shadow root of their own. */
+function rowsWithNumbers(): ShadowRoot {
+  const host = document.createElement("div");
+  const shadow = host.attachShadow({ mode: "open" });
+  shadow.innerHTML = `
+    <code data-gutter="">
+      <div data-column-number="1" data-line-index="0">1</div>
+      <div data-column-number="2" data-line-index="1">2</div>
+    </code>
+    <code data-content="">
+      <div data-line="1" data-line-index="0">alpha</div>
+      <div data-line="2" data-line-index="1">bravo</div>
+    </code>`;
+  return shadow;
+}
+
+describe("whole-line marks", () => {
+  const marksOf = (shadow: ShadowRoot, selector: string) =>
+    [...shadow.querySelectorAll(selector)].map((el) =>
+      el.getAttribute(LINE_MARK_ATTR),
+    );
+
+  it("marks each row and its line number with the kind that covers it", () => {
+    const shadow = rowsWithNumbers();
+    const [one, two] = shadow.querySelectorAll("[data-line]");
+    if (one === undefined || two === undefined) throw new Error("no rows");
+    markRows(
+      shadow,
+      new Map([
+        [one, "draft"],
+        [two, "comment"],
+      ]),
+    );
+    expect(marksOf(shadow, "[data-line]")).toEqual(["draft", "comment"]);
+    expect(marksOf(shadow, "[data-column-number]")).toEqual([
+      "draft",
+      "comment",
+    ]);
+  });
+
+  it("unmarks the rows and numbers it is no longer handed", () => {
+    const shadow = rowsWithNumbers();
+    const [one, two] = shadow.querySelectorAll("[data-line]");
+    if (one === undefined || two === undefined) throw new Error("no rows");
+    markRows(
+      shadow,
+      new Map([
+        [one, "draft"],
+        [two, "comment"],
+      ]),
+    );
+    markRows(shadow, new Map([[two, "comment"]]));
+    expect(marksOf(shadow, "[data-line]")).toEqual([null, "comment"]);
+    expect(marksOf(shadow, "[data-column-number]")).toEqual([null, "comment"]);
   });
 });
 

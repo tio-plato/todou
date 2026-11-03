@@ -851,4 +851,67 @@ describe("code highlights in the source view", () => {
         ?.getAttribute("data-line-type"),
     ).toBe("change-deletion");
   });
+  const lineMarks = (view: { container: HTMLElement }, selector: string) =>
+    [...view.container.querySelectorAll(selector)].map((row) =>
+      row.getAttribute("data-spec-line"),
+    );
+
+  it("marks the rows a draft without columns covers, until it is discarded", async () => {
+    stageDraft("d1", "drift.md", 1, 1, "first two lines", 2);
+    mockSpec();
+    const view = await singleSource("drift.md");
+    const rows = '[data-testid="file-view"] [data-line]';
+    await waitFor(() =>
+      expect(lineMarks(view, rows)).toEqual(["draft", "draft", null, null]),
+    );
+    const note = view.container.querySelector(
+      '[data-testid="file-annotation"]',
+    ) as HTMLElement;
+    fireEvent.click(
+      [...note.querySelectorAll("button")].find(
+        (button) => button.textContent === "Discard",
+      ) as HTMLElement,
+    );
+    await waitFor(() =>
+      expect(lineMarks(view, rows)).toEqual([null, null, null, null]),
+    );
+  });
+
+  it("marks a baseline line on the row that shows that version", async () => {
+    // drift.md v1 line 4, "delta", is the deletion beside v2's "omega"; line
+    // 2, "beta", is the unchanged row pierre numbers 2 on both sides.
+    mockSpec([
+      comment("drift.md", 1, 4, "why drop it?"),
+      comment("drift.md", 1, 2, "why beta?"),
+    ]);
+    const view = await stack("?v=2&compare=1");
+    const entry = '[data-file-diff="drifted.md"]';
+    await waitFor(() =>
+      expect(
+        lineMarks(view, `${entry} [data-line-type="change-deletion"]`),
+      ).toEqual(["comment"]),
+    );
+    expect(
+      lineMarks(view, `${entry} [data-line-type="change-addition"]`),
+    ).toEqual([null]);
+    expect(lineMarks(view, `${entry} [data-alt-line]`)).toEqual([
+      null,
+      "comment",
+      null,
+    ]);
+  });
+
+  it("marks a line a comment and a draft share as the comment's", async () => {
+    stageDraft("d1", "drift.md", 1, 2, "staged over two", 3);
+    mockSpec([comment("drift.md", 1, 2, "submitted on one")]);
+    const view = await singleSource("drift.md");
+    await waitFor(() =>
+      expect(lineMarks(view, '[data-testid="file-view"] [data-line]')).toEqual([
+        null,
+        "comment",
+        "draft",
+        null,
+      ]),
+    );
+  });
 });
