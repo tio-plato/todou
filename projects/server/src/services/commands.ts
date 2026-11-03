@@ -230,6 +230,24 @@ export async function executeCommands(
   let listRow: IssueListRow | undefined;
 
   const applied = await db.transaction(async (tx) => {
+    // Answering, hiding and resolving all lock the comment rows before they
+    // write the issue row. `insertCommentInTx` writes the issue row, so the
+    // comments this submission hides are locked ahead of it, or an answer to
+    // one of them deadlocks against this transaction on PostgreSQL. Same
+    // predicate as `hideCommentsInTx`, so several rows lock in the order it
+    // and the hide endpoint take them; its own lock later finds them held.
+    if (hideIds.length > 0) {
+      await tx
+        .select({ id: comments.id })
+        .from(comments)
+        .where(
+          and(
+            eq(comments.issueId, issue.id),
+            inArray(comments.id, [...new Set(hideIds)]),
+          ),
+        )
+        .for("update");
+    }
     let hide: HideInTxResult | null = null;
     const addEvent = async (
       type: (typeof issueEvents.$inferInsert)["type"],
