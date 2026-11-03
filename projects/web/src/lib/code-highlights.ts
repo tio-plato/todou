@@ -17,7 +17,10 @@ import { type RefObject, useEffect, useLayoutEffect, useRef } from "react";
 
 export type CodeHighlightRanges = { comment: Range[]; draft: Range[] };
 
-/** Fired, bubbling, on a pierre host each time it has drawn its rows. */
+/**
+ * Fired, bubbling, on a pierre host each time it has drawn its rows, and on
+ * a code block whose rows something else has replaced.
+ */
 export const CODE_RENDERED_EVENT = "todou:code-rendered";
 
 const COMMENT_HIGHLIGHT = "spec-comment";
