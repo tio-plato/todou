@@ -1,5 +1,12 @@
+import { TextQuoteIcon } from "lucide-react";
 import { type RefCallback, type RefObject, useCallback } from "react";
-import type { AnchorRange } from "@/components/spec/selection-entry.tsx";
+import {
+  type AnchorRange,
+  SelectionEntry,
+  useSelectionEntry,
+} from "@/components/spec/selection-entry.tsx";
+import { useQuoteReply } from "@/components/timeline/quote-reply.tsx";
+import { quoteOfSelection } from "@/lib/quote-markdown.ts";
 import { anchorForSelection } from "@/lib/selection-anchor.ts";
 import {
   composedContains,
@@ -156,4 +163,45 @@ export function quotableSelection(
   entry.index ??= buildSegmentIndex(entry.source);
   const anchor = anchorForSelection(body, entry.index, ends);
   return anchor === null ? null : { body, source: entry.source, anchor };
+}
+
+/** An anchor the floating entry offers, with the body it quotes. */
+type QuoteAnchor = AnchorRange & { body: Element; source: string };
+
+/**
+ * The floating Quote reply for whatever the reader selects in one entry
+ * under `containerRef`, which has to be `relative`. One for the page rather
+ * than one per entry: each listens on the whole document.
+ */
+export function SelectionQuote({
+  containerRef,
+}: {
+  containerRef: RefObject<HTMLElement | null>;
+}) {
+  const { available, quote } = useQuoteReply();
+  const resolve = useCallback(
+    (container: Element): QuoteAnchor | null => {
+      // A trashed card has no comment box to quote into.
+      if (!available) return null;
+      const picked = quotableSelection(window.getSelection(), container);
+      return picked === null
+        ? null
+        : { ...picked.anchor, body: picked.body, source: picked.source };
+    },
+    [available],
+  );
+  const { pending, clear } = useSelectionEntry(containerRef, resolve);
+  return (
+    <SelectionEntry
+      pending={pending}
+      clear={clear}
+      // Over the comment box, which docks at z-10 and comes later in the
+      // page: a selection just above it would put the button under it.
+      className="z-20"
+      onStage={(anchor) => quote(quoteOfSelection(anchor.source, anchor))}
+    >
+      <TextQuoteIcon className="size-4" />
+      Quote reply
+    </SelectionEntry>
+  );
 }
