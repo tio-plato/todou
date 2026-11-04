@@ -80,6 +80,10 @@ import {
 import { QuoteReplyProvider } from "@/components/timeline/quote-reply.tsx";
 import { RevealAllEye } from "@/components/timeline/reveal-all-eye.tsx";
 import { RevealedRunsProvider } from "@/components/timeline/revealed-runs.tsx";
+import {
+  SelectionQuote,
+  useQuotableBody,
+} from "@/components/timeline/selection-quote.tsx";
 import { Timeline } from "@/components/timeline/timeline.tsx";
 import { TimelineDivider } from "@/components/timeline/timeline-divider.tsx";
 import { Button } from "@/components/ui/button";
@@ -123,6 +127,9 @@ export function IssueDetailPage() {
   const rowRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   useScrollInsets({ top: [rowRef], bottom: [composerRef] });
+  // What a selection is quoted from, and what the floating Quote reply is
+  // placed in.
+  const contentRef = useRef<HTMLDivElement>(null);
   const [end, setEnd] = useState<HTMLDivElement | null>(null);
   const atEnd = useInView(end);
   // Which of the three homes the back control takes (T-461). The header's nav
@@ -167,7 +174,7 @@ export function IssueDetailPage() {
               rowRef={rowRef}
               mirror={<RevealAllEye />}
             />
-            <div className="space-y-4">
+            <div ref={contentRef} className="relative space-y-4">
               {trashed && <TrashBanner slug={slug} issue={issue.data} />}
               {/* The back control rides with the heading rather than with the
                   sticky row above, so it scrolls away with the title it
@@ -226,6 +233,7 @@ export function IssueDetailPage() {
                 pendingComments={composer.pending.filter((p) => !p.failed)}
                 viewer={viewer}
               />
+              <SelectionQuote containerRef={contentRef} />
               {/* Out of flow, so it adds no gap, yet it sits where the dock's
                   own slot begins. Above the dock rather than inside or below
                   it, because the dock's height changes with what it shows: a
@@ -468,6 +476,7 @@ export function BodyBlock({
   const [editing, setEditing] = useState(false);
   const editor = useRef<MarkdownEditorHandle>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const quotableRef = useQuotableBody(bodyRef, issue.body);
   const opened = useOpenedEvent(slug, issue.number);
   const refCompletion = useRefCompletion(slug);
   const [uploading, setUploading] = useState(false);
@@ -642,7 +651,7 @@ export function BodyBlock({
             No description.
           </p>
         ) : (
-          <div ref={bodyRef}>
+          <div ref={quotableRef} data-quote-body="">
             <MarkdownView
               slug={slug}
               issueNumber={issue.number}
