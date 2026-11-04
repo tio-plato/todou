@@ -253,6 +253,82 @@ describe("EntryActionsMenu on a comment", () => {
     );
   });
 
+  it("quotes only the words selected, their formatting made whole", async () => {
+    const onQuote = vi.fn();
+    const view = renderComment({ onQuote });
+    const bold = await waitFor(() => {
+      const text =
+        view.container.querySelector("p[data-loc] strong")?.firstChild;
+      if (!text) throw new Error("body not stamped yet");
+      return text;
+    });
+    const range = document.createRange();
+    range.selectNodeContents(bold);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+
+    await openMenu(view);
+    fireEvent.click(menuItem("Quote reply"));
+    await waitFor(() =>
+      expect(onQuote).toHaveBeenCalledExactlyOnceWith("**paragraph**"),
+    );
+  });
+
+  it("opens and quotes the whole body where getComposedRanges rejects the call", async () => {
+    // Browsers that know only the API's older signature throw on this one,
+    // and the press that opens the menu is what reads the selection.
+    const onQuote = vi.fn();
+    const view = renderComment({ onQuote });
+    await selectSecondParagraph(view);
+    const selection = window.getSelection();
+    if (selection === null) throw new Error("no selection support");
+    Object.defineProperty(selection, "getComposedRanges", {
+      configurable: true,
+      value: () => {
+        throw new TypeError("Failed to execute 'getComposedRanges'");
+      },
+    });
+    try {
+      await openMenu(view);
+      fireEvent.click(menuItem("Quote reply"));
+      await waitFor(() =>
+        expect(onQuote).toHaveBeenCalledExactlyOnceWith(BODY),
+      );
+    } finally {
+      delete (selection as { getComposedRanges?: unknown }).getComposedRanges;
+    }
+  });
+
+  it("cuts an action line's quote from the source the line renders", async () => {
+    // The line renders `- checks …` from an escaped `\- checks …`, and a
+    // cut made in the stored text would land one character off.
+    const onQuote = vi.fn();
+    const view = renderComment({
+      onQuote,
+      comment: comment({ kind: "action", body: "- checks the list" }),
+    });
+    const text = await waitFor(() => {
+      const node = view.container.querySelector("p[data-loc]")?.firstChild;
+      if (!node) throw new Error("line not stamped yet");
+      return node;
+    });
+    const range = document.createRange();
+    range.setStart(text, 2);
+    range.setEnd(text, 8);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+
+    const trigger = await waitFor(() =>
+      within(view.container).getByRole("button", { name: "action actions" }),
+    );
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: "mouse" });
+    await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
+    fireEvent.click(menuItem("Quote reply"));
+    await waitFor(() =>
+      expect(onQuote).toHaveBeenCalledExactlyOnceWith("\\- checks the list"),
+    );
+  });
+
   it("keeps the selection the press underneath it drops", async () => {
     const onQuote = vi.fn();
     const view = renderComment({ onQuote });
