@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import type { AnchorRange } from "@/components/spec/selection-entry.tsx";
 import {
   type QuoteTarget,
   useQuoteReply,
@@ -14,7 +15,159 @@ import {
 import { Button } from "@/components/ui/button";
 import { sourceLines } from "@/lib/quote-markdown.ts";
 import { selectedSourceRange } from "@/lib/quote-selection.ts";
+import { anchorForSelection } from "@/lib/selection-anchor.ts";
+import {
+  composedContains,
+  type SelectionEndpoints,
+  selectionEndpoints,
+} from "@/lib/selection-endpoints.ts";
+import {
+  buildSegmentIndex,
+  type SegmentIndex,
+} from "@/lib/spec-source-index.ts";
 import { POINTER_FINE, useMediaQuery } from "@/lib/use-media-query.ts";
+
+/**
+ * Each body's markdown as it was last indexed: a body is indexed the first
+ * time a selection in it is read, and again once it renders something else.
+ */
+const INDEXES = new WeakMap<Element, { source: string; index: SegmentIndex }>();
+
+function segmentIndexOf(body: Element, source: string): SegmentIndex {
+  const known = INDEXES.get(body);
+  if (known !== undefined && known.source === source) return known.index;
+  const index = buildSegmentIndex(source);
+  INDEXES.set(body, { source, index });
+  return index;
+}
+
+/** A selection inside one quotable body, anchored in what it renders. */
+export type QuotableSelection = {
+  body: Element;
+  source: string;
+  anchor: AnchorRange;
+};
+
+/**
+ * A point in the light DOM standing for `node`: an endpoint inside a shadow
+ * root becomes its outermost host, from before it or after it, since a range
+ * cannot hold a point in another tree.
+ */
+function lightPoint(
+  node: Node,
+  offset: number,
+  side: "before" | "after",
+): { node: Node; offset: number } {
+  let host: Element | null = null;
+  for (
+    let root = node.getRootNode();
+    root instanceof ShadowRoot;
+    root = root.host.getRootNode()
+  ) {
+    host = root.host;
+  }
+  const parent = host?.parentNode;
+  if (host === null || parent == null) return { node, offset };
+  const at = Array.prototype.indexOf.call(parent.childNodes, host);
+  return { node: parent, offset: side === "before" ? at : at + 1 };
+}
+
+/** The selection's endpoints as a light-DOM range, in document order. */
+function lightRange(ends: SelectionEndpoints): Range {
+  const range = document.createRange();
+  let start = lightPoint(ends.start.node, ends.start.offset, "before");
+  let end = lightPoint(ends.end.node, ends.end.offset, "after");
+  range.setStart(start.node, start.offset);
+  // The legacy endpoints are anchor and focus, which a backwards drag
+  // hands over backwards.
+  if (range.comparePoint(end.node, end.offset) < 0) {
+    start = lightPoint(ends.end.node, ends.end.offset, "before");
+    end = lightPoint(ends.start.node, ends.start.offset, "after");
+    range.setStart(start.node, start.offset);
+  }
+  range.setEnd(end.node, end.offset);
+  return range;
+}
+
+/** Whether `range` covers any text of `body` but whitespace. */
+function coversText(range: Range, body: Element): boolean {
+  const inBody = document.createRange();
+  inBody.selectNodeContents(body);
+  const from = inBody.comparePoint(range.startContainer, range.startOffset);
+  const to = inBody.comparePoint(range.endContainer, range.endOffset);
+  if (from > 0 || to < 0) return false;
+  if (from === 0) inBody.setStart(range.startContainer, range.startOffset);
+  if (to === 0) inBody.setEnd(range.endContainer, range.endOffset);
+  return inBody.toString().trim() !== "";
+}
+
+/**
+ * `selectionEndpoints`, or null where it throws: some browsers know
+ * `getComposedRanges` only by an older signature, and reject this one. No
+ * selection is no reason to break the caller — the menu reads this on the
+ * press that opens it, and a throw there keeps the menu shut.
+ */
+function endpointsOf(
+  selection: Selection,
+  container: Element,
+): SelectionEndpoints | null {
+  try {
+    return selectionEndpoints(selection, container);
+  } catch {
+    return null;
+  }
+}
+
+/** Whether `range` starts before the contents of `body`. */
+function startsBefore(range: Range, body: Element): boolean {
+  const inBody = document.createRange();
+  inBody.selectNodeContents(body);
+  return inBody.comparePoint(range.startContainer, range.startOffset) < 0;
+}
+
+/** Whether one of the endpoints is in a shadow root under `body`. */
+function endsInShadowOf(ends: SelectionEndpoints, body: Element): boolean {
+  return [ends.start.node, ends.end.node].some(
+    (node) =>
+      node.getRootNode() instanceof ShadowRoot && composedContains(body, node),
+  );
+}
+
+/**
+ * The quote target the selection selects text in, and where in the markdown
+ * it renders; null unless that is exactly one body. A selection reaching
+ * into a second body is about two of them, so it quotes neither — but one
+ * that merely ends at the very start of the next, as a triple-click does,
+ * selects no text there and still counts. An end past the body is clamped
+ * to its last block, which makes "from here to the end" quotable; a start
+ * before it, in the entry's header say, quotes nothing.
+ */
+export function quotableSelection(
+  selection: Selection | null,
+  targets: ReadonlyMap<Element, QuoteTarget>,
+): QuotableSelection | null {
+  if (selection === null) return null;
+  const all = endpointsOf(selection, document.documentElement);
+  if (all === null || all.collapsed) return null;
+  const range = lightRange(all);
+  const selected = selection.toString() !== "";
+  const bodies = [...targets.keys()].filter(
+    (body) =>
+      // Code rows sit in pierre's shadow root, where a light range sees
+      // only an empty host: that the selection ends in one says it more
+      // reliably than any text the range could find.
+      (selected && endsInShadowOf(all, body)) || coversText(range, body),
+  );
+  const body = bodies.length === 1 ? bodies[0] : undefined;
+  const target = body && targets.get(body);
+  if (body === undefined || target === undefined) return null;
+  if (startsBefore(range, body)) return null;
+  const ends = endpointsOf(selection, body);
+  if (ends === null || ends.collapsed) return null;
+  const source = target.body();
+  const anchor = anchorForSelection(body, segmentIndexOf(body, source), ends);
+  return anchor === null ? null : { body, source, anchor };
+}
 
 /** Marks the floating entry, so a press on it is not a new selection. */
 const UI_ATTR = "data-selection-quote";
