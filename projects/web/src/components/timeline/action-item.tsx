@@ -25,6 +25,7 @@ import {
   type Target,
   useCommentWrites,
 } from "@/components/timeline/comment-item.tsx";
+import { useQuotableBody } from "@/components/timeline/selection-quote.tsx";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
@@ -56,6 +57,8 @@ export function ActionItem({
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const source = inlineActionSource(comment.body);
+  const quotableRef = useQuotableBody(bodyRef, source);
   const editInput = useRef<HTMLInputElement>(null);
   /** Set by Edit action, so closing the menu hands the focus to the input. */
   const openingEditor = useRef(false);
@@ -155,7 +158,8 @@ export function ActionItem({
         </form>
       ) : (
         <div
-          ref={bodyRef}
+          ref={quotableRef}
+          data-quote-body=""
           // The prose line height a markdown body brings along would make
           // this line taller than an event's.
           className="inline min-w-0 flex-1 wrap-anywhere text-foreground [&_.markdown-body]:inline [&_.markdown-body]:leading-[inherit] [&_p]:inline"
@@ -165,7 +169,7 @@ export function ActionItem({
             issueNumber={issueNumber}
             rehypePlugins={QUOTE_REHYPE_PLUGINS}
           >
-            {inlineActionSource(comment.body)}
+            {source}
           </MarkdownView>
         </div>
       )}{" "}
