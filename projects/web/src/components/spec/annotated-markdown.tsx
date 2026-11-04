@@ -26,6 +26,7 @@ import {
 import { displayNameOf, UserChip } from "@/components/shared/user-chip.tsx";
 import {
   type AnchorRange,
+  CommentEntryLabel,
   SelectionEntry,
   useSelectionEntry,
 } from "@/components/spec/selection-entry.tsx";
@@ -787,7 +788,9 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         />
       ))}
 
-      <SelectionEntry pending={pending} clear={clear} onStage={onStage} />
+      <SelectionEntry pending={pending} clear={clear} onStage={onStage}>
+        {pending !== null && <CommentEntryLabel anchor={pending} />}
+      </SelectionEntry>
     </div>
   );
 });
