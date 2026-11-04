@@ -27,6 +27,10 @@ import {
   type ProjectListboxOption,
 } from "@/components/project-listbox.tsx";
 import { useQuoteReply } from "@/components/timeline/quote-reply.tsx";
+import {
+  type QuotableSelection,
+  quotableSelection,
+} from "@/components/timeline/selection-quote.tsx";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -40,8 +44,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { copyToClipboard } from "@/lib/clipboard.ts";
-import { sourceLines } from "@/lib/quote-markdown.ts";
-import { selectedSourceRange } from "@/lib/quote-selection.ts";
+import { quoteOfSelection } from "@/lib/quote-markdown.ts";
 import { rehypeSourceLines } from "@/lib/rehype-source-lines.ts";
 import { commentAnchor } from "@/lib/timeline-anchors.ts";
 
@@ -94,7 +97,7 @@ export function EntryActionsMenu({
   commentId?: number;
   /** The stored markdown, which is what gets copied and quoted. */
   body: string;
-  /** The rendered body, for reading which blocks the reader selected. */
+  /** The rendered body, to tell a selection in it from one anywhere else. */
   bodyRef: RefObject<HTMLElement | null>;
   label: string;
   /** For callers whose own dialogs have to hand focus back here on close. */
@@ -121,7 +124,7 @@ export function EntryActionsMenu({
   const pointer = useRef<string | null>(null);
   /** Drops the one submenu-open Radix runs behind a modified click. */
   const suppressOpen = useRef(false);
-  const { available, quote } = useQuoteReply();
+  const { available, quote, targets: quoteTargets } = useQuoteReply();
   // Memoized because it is a dependency of the submenu's own memo, and a
   // fresh literal per render would rebuild every row on every keystroke.
   const quoteSource = useMemo<QuoteSource>(
@@ -136,7 +139,7 @@ export function EntryActionsMenu({
   // collapses the selection, and `markdown-view.tsx` warns that re-rendering
   // the document clears it silently (T-60). Reading before either happens
   // means never having to argue about which of them opening a menu performs.
-  const selected = useRef<{ start: number; end: number } | null>(null);
+  const selected = useRef<QuotableSelection | null>(null);
   const editing = useRef(false);
   /**
    * Set when Quote reply closed the menu, so that the comment box keeps the
@@ -144,11 +147,6 @@ export function EntryActionsMenu({
    * trigger.
    */
   const [quoted, setQuoted] = useState(false);
-
-  const readSelection = (): { start: number; end: number } | null => {
-    const container = bodyRef.current;
-    return container === null ? null : selectedSourceRange(container);
-  };
 
   const permalink = `${window.location.origin}/projects/${slug}/issues/${issueNumber}${
     commentId === undefined ? "" : `#${commentAnchor(commentId)}`
@@ -163,9 +161,14 @@ export function EntryActionsMenu({
   const quoteSelected = () => {
     // Opening with the keyboard fires no pointerdown, so nothing was captured
     // and the live selection is still the one to read.
-    const range = selected.current ?? readSelection();
     const picked =
-      range === null ? "" : sourceLines(body, range.start, range.end);
+      selected.current ??
+      quotableSelection(window.getSelection(), quoteTargets);
+    // A selection in some other entry's body says nothing about this one.
+    const cut =
+      picked === null || picked.body !== bodyRef.current
+        ? ""
+        : quoteOfSelection(picked.source, picked.anchor);
     // The comment box takes the focus inside this press, the only focus iOS
     // raises the keyboard for, and an open menu traps the focus and would pull
     // it straight back. So the menu closes first, by hand, which leaves Radix
@@ -183,7 +186,7 @@ export function EntryActionsMenu({
       setOpen(false);
       setQuoted(true);
     });
-    quote(picked === "" ? body : picked);
+    quote(cut.trim() === "" ? body : cut);
   };
 
   return (
@@ -205,7 +208,10 @@ export function EntryActionsMenu({
           aria-label={label}
           className={triggerClassName}
           onPointerDown={() => {
-            selected.current = readSelection();
+            selected.current = quotableSelection(
+              window.getSelection(),
+              quoteTargets,
+            );
           }}
         >
           <EllipsisIcon className="size-3.5" />
