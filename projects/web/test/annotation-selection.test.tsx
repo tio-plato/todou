@@ -11,12 +11,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { issueRefQuery } from "../src/api/issue-refs.ts";
 import { projectsQuery } from "../src/api/queries.ts";
 import { MarkdownView } from "../src/components/shared/markdown-view.tsx";
+import { AnnotatedMarkdown } from "../src/components/spec/annotated-markdown.tsx";
+import { rehypeSourceLines } from "../src/lib/rehype-source-lines.ts";
 import {
-  AnnotatedMarkdown,
   anchorForSelection,
   anchorRangeForNode,
-} from "../src/components/spec/annotated-markdown.tsx";
-import { rehypeSourceLines } from "../src/lib/rehype-source-lines.ts";
+} from "../src/lib/selection-anchor.ts";
 import { selectionEndpoints } from "../src/lib/selection-endpoints.ts";
 import {
   buildSegmentIndex,

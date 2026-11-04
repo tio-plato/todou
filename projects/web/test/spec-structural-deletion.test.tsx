@@ -20,9 +20,9 @@ import {
 import { MarkdownView } from "../src/components/shared/markdown-view.tsx";
 import {
   AnnotatedMarkdown,
-  anchorForSelection,
   type DisplayedAnnotation,
 } from "../src/components/spec/annotated-markdown.tsx";
+import { anchorForSelection } from "../src/lib/selection-anchor.ts";
 import type * as BaselineTreeModule from "../src/lib/spec-baseline-tree.ts";
 import { buildSegmentIndex } from "../src/lib/spec-source-index.ts";
 import { renderWithProviders, testQueryClient } from "./render.tsx";
