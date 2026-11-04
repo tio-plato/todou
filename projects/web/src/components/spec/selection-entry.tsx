@@ -2,6 +2,7 @@ import { formatAnchorRange } from "@todou/shared";
 import { MessageSquarePlusIcon } from "lucide-react";
 import {
   type CSSProperties,
+  type ReactNode,
   type RefObject,
   useCallback,
   useEffect,
@@ -16,6 +17,7 @@ import {
   selectionEndpoints,
 } from "@/lib/selection-endpoints.ts";
 import { POINTER_FINE, useMediaQuery } from "@/lib/use-media-query.ts";
+import { cn } from "@/lib/utils";
 
 export type AnchorRange = {
   lineStart: number;
@@ -63,8 +65,8 @@ function entryTop(
 }
 
 /**
- * The selection → floating "Comment" entry layer, shared by the rendered and
- * the source views. `resolve` turns the live selection's endpoints into an
+ * The selection → floating entry layer: the spec views' Comment and the card
+ * page's Quote reply. `resolve` turns the live selection's endpoints into an
  * anchor, or null when they point at nothing it can anchor; it has to be
  * stable, since every document listener hangs on it.
  */
@@ -230,27 +232,37 @@ export function SelectionEntry<A extends AnchorRange>({
   pending,
   clear,
   onStage,
+  className,
+  children,
 }: {
   pending: PendingSelection<A> | null;
   clear: () => void;
   onStage: (anchor: A) => void;
+  /** Merged into the floating button's classes. */
+  className?: string;
+  /** What the entry says, in both of its shapes. */
+  children: ReactNode;
 }) {
   const pointerFine = useMediaQuery(POINTER_FINE);
   if (pending === null) return null;
   const stage = () => {
     const { top: _top, ...anchor } = pending;
-    onStage(anchor as unknown as A);
+    // The selection goes first: `onStage` may put the caret somewhere — a
+    // quote lands in the comment box and focuses it — and clearing the
+    // selection after that would take the caret with it.
     clear();
     window.getSelection()?.removeAllRanges();
+    onStage(anchor as unknown as A);
   };
   return pointerFine ? (
     <StageButton
       size="sm"
-      className="absolute right-0 z-10 shadow-md"
+      className={cn("absolute right-0 z-10 shadow-md", className)}
       style={{ top: pending.top }}
-      anchor={pending}
       onStage={stage}
-    />
+    >
+      {children}
+    </StageButton>
   ) : (
     // Touch selection comes with the platform's own bubble, floating
     // against the selection, which we can neither move nor dismiss.
@@ -263,29 +275,42 @@ export function SelectionEntry<A extends AnchorRange>({
       data-annotation-ui=""
       data-testid="annotation-action-bar"
     >
-      <StageButton
-        size="lg"
-        className="w-full"
-        anchor={pending}
-        onStage={stage}
-      />
+      <StageButton size="lg" className="w-full" onStage={stage}>
+        {children}
+      </StageButton>
     </div>
+  );
+}
+
+/** What the spec views' entry says: the lines and columns it will comment on. */
+export function CommentEntryLabel({ anchor }: { anchor: AnchorRange }) {
+  return (
+    <>
+      <MessageSquarePlusIcon className="size-4" />
+      Comment{" "}
+      {formatAnchorRange({
+        line_start: anchor.lineStart,
+        line_end: anchor.lineEnd,
+        col_start: anchor.colStart,
+        col_end: anchor.colEnd,
+      })}
+    </>
   );
 }
 
 /** The entry itself, in both of the shapes it takes. */
 function StageButton({
-  anchor,
   size,
   className,
   style,
   onStage,
+  children,
 }: {
-  anchor: AnchorRange;
   size: "sm" | "lg";
   className: string;
   style?: CSSProperties;
   onStage: () => void;
+  children: ReactNode;
 }) {
   return (
     <Button
@@ -304,14 +329,7 @@ function StageButton({
       onMouseDown={(e) => e.preventDefault()}
       onClick={onStage}
     >
-      <MessageSquarePlusIcon className="size-4" />
-      Comment{" "}
-      {formatAnchorRange({
-        line_start: anchor.lineStart,
-        line_end: anchor.lineEnd,
-        col_start: anchor.colStart,
-        col_end: anchor.colEnd,
-      })}
+      {children}
     </Button>
   );
 }
