@@ -1,12 +1,16 @@
-import { act, waitFor } from "@testing-library/react";
+import { act, fireEvent, waitFor } from "@testing-library/react";
 import type { TimelineComment } from "@todou/shared";
-import { useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CommentItem } from "../src/components/timeline/comment-item.tsx";
-import { QuoteReplyProvider } from "../src/components/timeline/quote-reply.tsx";
+import {
+  QuoteReplyProvider,
+  useQuoteSink,
+} from "../src/components/timeline/quote-reply.tsx";
 import {
   QUOTE_BODY_ATTR,
   quotableSelection,
+  SelectionQuote,
 } from "../src/components/timeline/selection-quote.tsx";
 import { inlineActionSource } from "../src/lib/action-text.ts";
 import { renderWithProviders } from "./render.tsx";
@@ -324,5 +328,143 @@ describe("quotableSelection", () => {
     }) as Selection;
     expect(() => quotableSelection(legacy, document)).not.toThrow();
     expect(quotableSelection(legacy, document)).toBeNull();
+  });
+});
+
+/** Stands in for the page's comment box, so quotes have somewhere to land. */
+function Sink({ onQuote }: { onQuote: (markdown: string) => void }) {
+  useQuoteSink(onQuote);
+  return null;
+}
+
+/**
+ * The comment box as it takes a quote: focused, the caret inside it, both
+ * set while the quote is being handed over, the way a tap has to for iOS to
+ * open the keyboard.
+ */
+function FocusingSink({ onQuote }: { onQuote: (markdown: string) => void }) {
+  const box = useRef<HTMLDivElement>(null);
+  useQuoteSink((markdown) => {
+    onQuote(markdown);
+    const el = box.current;
+    if (el === null) return;
+    el.focus();
+    const caret = document.createRange();
+    caret.selectNodeContents(el);
+    caret.collapse(false);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(caret);
+  });
+  return (
+    <div
+      ref={box}
+      contentEditable
+      suppressContentEditableWarning
+      tabIndex={-1}
+      data-testid="box"
+    >
+      draft
+    </div>
+  );
+}
+
+/** The card page's part in this: two comments, the floating entry, a box. */
+function Page({ children }: { children?: ReactNode }) {
+  const content = useRef<HTMLDivElement>(null);
+  return (
+    <div ref={content} className="relative">
+      <CommentItem slug="p" issueNumber={7} comment={comment(1, A)} />
+      <CommentItem slug="p" issueNumber={7} comment={comment(2, B)} />
+      <SelectionQuote containerRef={content} />
+      {children}
+    </div>
+  );
+}
+
+async function renderPage(box?: "plain" | "focusing") {
+  const onQuote = vi.fn();
+  const view = renderWithProviders(
+    <QuoteReplyProvider>
+      <Page>
+        {box === "plain" && <Sink onQuote={onQuote} />}
+        {box === "focusing" && <FocusingSink onQuote={onQuote} />}
+      </Page>
+    </QuoteReplyProvider>,
+  );
+  const [a, b] = await waitFor(() => {
+    const bodies = view.container.querySelectorAll(`[${QUOTE_BODY_ATTR}]`);
+    if (bodies.length < 2 || !bodies[1]?.querySelector("[data-loc]")) {
+      throw new Error("bodies not rendered yet");
+    }
+    return [...bodies] as [HTMLElement, HTMLElement];
+  });
+  return { view, a, b, onQuote };
+}
+
+/** The bold word in A's second paragraph, selected. */
+function selectBold(a: Element): void {
+  const bold = a.querySelector("strong")?.firstChild;
+  if (!bold) throw new Error("no bold word");
+  select(bold, 0, bold, 5);
+}
+
+/**
+ * Let the rAF-batched recompute run and React commit it, so that "no button"
+ * is a verdict rather than a frame the entry has not looked at yet.
+ */
+async function settle(): Promise<void> {
+  await act(async () => {
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+  });
+}
+
+describe("SelectionQuote", () => {
+  it("quotes the selected word in its markdown and steps aside", async () => {
+    const { view, a, onQuote } = await renderPage("plain");
+    selectBold(a);
+    fireEvent.click(await view.findByRole("button", { name: "Quote reply" }));
+    expect(onQuote).toHaveBeenCalledExactlyOnceWith("**three**");
+    await waitFor(() =>
+      expect(view.queryByRole("button", { name: "Quote reply" })).toBeNull(),
+    );
+    expect(window.getSelection()?.toString()).toBe("");
+  });
+
+  it("quotes what was selected when its own press clears the selection", async () => {
+    const { view, a, onQuote } = await renderPage("plain");
+    selectBold(a);
+    const button = await view.findByRole("button", { name: "Quote reply" });
+    fireEvent.pointerDown(button, { pointerType: "mouse" });
+    window.getSelection()?.removeAllRanges();
+    await settle();
+    fireEvent.pointerUp(button, { pointerType: "mouse" });
+    fireEvent.click(button);
+    expect(onQuote).toHaveBeenCalledExactlyOnceWith("**three**");
+  });
+
+  it("offers nothing where there is no comment box", async () => {
+    const { view, a } = await renderPage();
+    selectBold(a);
+    await settle();
+    expect(view.queryByRole("button", { name: "Quote reply" })).toBeNull();
+  });
+
+  it("offers nothing for a selection across two comments", async () => {
+    const { view, a, b } = await renderPage("plain");
+    select(paragraph(a, 0), 6, paragraph(b, 0), 5);
+    await settle();
+    expect(view.queryByRole("button", { name: "Quote reply" })).toBeNull();
+  });
+
+  it("leaves the caret where the comment box put it", async () => {
+    const { view, a, onQuote } = await renderPage("focusing");
+    selectBold(a);
+    fireEvent.click(await view.findByRole("button", { name: "Quote reply" }));
+    expect(onQuote).toHaveBeenCalledExactlyOnceWith("**three**");
+    const box = view.getByTestId("box");
+    expect(document.activeElement).toBe(box);
+    const caret = window.getSelection();
+    expect(caret?.rangeCount).toBe(1);
+    expect(caret?.anchorNode && box.contains(caret.anchorNode)).toBe(true);
   });
 });
