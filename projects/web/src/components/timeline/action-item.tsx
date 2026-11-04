@@ -76,7 +76,10 @@ export function ActionItem({
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
-  const quoteRef = useQuoteTarget(comment.body, bodyRef, rowRef);
+  // A quote is cut from what the line renders, which is not the stored
+  // body: a selection's columns count in it.
+  const source = inlineActionSource(comment.body);
+  const quoteRef = useQuoteTarget(source, bodyRef, rowRef);
   const editInput = useRef<HTMLTextAreaElement>(null);
   /** Set by Edit action, so closing the menu hands the focus to the input. */
   const openingEditor = useRef(false);
@@ -213,7 +216,7 @@ export function ActionItem({
               issueNumber={issueNumber}
               rehypePlugins={QUOTE_REHYPE_PLUGINS}
             >
-              {inlineActionSource(comment.body)}
+              {source}
             </MarkdownView>
           </div>
         )}{" "}
