@@ -88,6 +88,7 @@ import {
 import { useNewerVersionToast } from "@/components/spec/newer-version-toast.tsx";
 import { ReviewSubmitDialog } from "@/components/spec/review-submit.tsx";
 import {
+  CommentEntryLabel,
   SelectionEntry,
   useSelectionEntry,
 } from "@/components/spec/selection-entry.tsx";
@@ -2561,11 +2562,9 @@ function SpecDiff({
           </div>
         ))}
       </div>
-      <SelectionEntry
-        pending={pending}
-        clear={clear}
-        onStage={stageSelection}
-      />
+      <SelectionEntry pending={pending} clear={clear} onStage={stageSelection}>
+        {pending !== null && <CommentEntryLabel anchor={pending} />}
+      </SelectionEntry>
     </div>
   );
 }
@@ -3231,11 +3230,9 @@ function SpecSourceFile({
           />
         </SpecStackFrame>
       </div>
-      <SelectionEntry
-        pending={pending}
-        clear={clear}
-        onStage={stageSelection}
-      />
+      <SelectionEntry pending={pending} clear={clear} onStage={stageSelection}>
+        {pending !== null && <CommentEntryLabel anchor={pending} />}
+      </SelectionEntry>
     </div>
   );
 }
