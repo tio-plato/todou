@@ -11,8 +11,6 @@ import type { SpecReviewSubmitInput } from "@todou/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MarkdownView } from "../src/components/shared/markdown-view.tsx";
 import {
-  anchorForSelection,
-  anchorRangeForNode,
   blockForLine,
   chipTop,
 } from "../src/components/spec/annotated-markdown.tsx";
@@ -22,6 +20,10 @@ import {
   parseSourceLoc,
   rehypeSourceLines,
 } from "../src/lib/rehype-source-lines.ts";
+import {
+  anchorForSelection,
+  anchorRangeForNode,
+} from "../src/lib/selection-anchor.ts";
 import { useSpecReviewDrafts } from "../src/lib/spec-drafts.ts";
 import { buildSegmentIndex } from "../src/lib/spec-source-index.ts";
 import { cmGetValue, cmPressKey, cmSetValue } from "./cm.ts";
