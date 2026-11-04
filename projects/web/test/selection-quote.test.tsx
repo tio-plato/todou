@@ -482,17 +482,17 @@ function textOf(el: Element, selector: string): Node {
 }
 
 describe("floating Quote reply (T-723)", () => {
-  it("quotes the selected block's markdown from inside one body", async () => {
+  it("quotes the selected words' markdown from inside one body", async () => {
     const { view, onQuote } = mount();
     const first = await rendered(view, "first");
-    const alpha = textOf(first, "p[data-loc]");
-    select(alpha, 0, alpha, 5);
+    const beta = textOf(first, "em");
+    select(beta, 0, beta, 4);
 
     const button = await view.findByRole("button", { name: "Quote reply" });
     fireEvent.click(button);
-    // The whole paragraph, emphasis intact: the same block granularity as
-    // the `…` menu's Quote reply.
-    expect(onQuote).toHaveBeenCalledWith("Alpha *beta* gamma.");
+    // The words selected, emphasis intact: the same cut as the `…` menu's
+    // Quote reply.
+    expect(onQuote).toHaveBeenCalledWith("*beta*");
     await waitFor(() =>
       expect(view.queryByRole("button", { name: "Quote reply" })).toBeNull(),
     );
@@ -537,7 +537,7 @@ describe("floating Quote reply (T-723)", () => {
     fireEvent.pointerUp(button);
     await settle();
     fireEvent.click(button);
-    expect(onQuote).toHaveBeenCalledWith("Delta epsilon.");
+    expect(onQuote).toHaveBeenCalledWith("Delta");
   });
 
   it("leaves the caret where the comment box put it", async () => {
@@ -579,5 +579,32 @@ describe("floating Quote reply (T-723)", () => {
     select(alpha, 0, alpha, 5);
     const button = await view.findByRole("button", { name: "Quote reply" });
     expect(button.parentElement?.className).toContain("fixed");
+  });
+});
+
+describe("floating Quote reply on a comment", () => {
+  it("quotes the selected word in its markdown and steps aside", async () => {
+    const onQuote = vi.fn();
+    const view = renderWithProviders(
+      <QuoteReplyProvider>
+        <Targets />
+        <CommentItem slug="p" issueNumber={7} comment={comment(1, A)} />
+        <Sink onQuote={onQuote} />
+        <SelectionQuote />
+      </QuoteReplyProvider>,
+    );
+    const bold = await waitFor(() => {
+      const body = bodiesIn(view.container)[0];
+      const text = body?.querySelector("strong")?.firstChild;
+      if (!text) throw new Error("body not rendered yet");
+      return text;
+    });
+    select(bold, 0, bold, 5);
+    fireEvent.click(await view.findByRole("button", { name: "Quote reply" }));
+    expect(onQuote).toHaveBeenCalledExactlyOnceWith("**three**");
+    await waitFor(() =>
+      expect(view.queryByRole("button", { name: "Quote reply" })).toBeNull(),
+    );
+    expect(window.getSelection()?.toString()).toBe("");
   });
 });

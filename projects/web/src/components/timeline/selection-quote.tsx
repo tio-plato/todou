@@ -13,11 +13,11 @@ import {
   useQuoteReply,
 } from "@/components/timeline/quote-reply.tsx";
 import { Button } from "@/components/ui/button";
-import { sourceLines } from "@/lib/quote-markdown.ts";
-import { selectedSourceRange } from "@/lib/quote-selection.ts";
+import { quoteOfSelection } from "@/lib/quote-markdown.ts";
 import { anchorForSelection } from "@/lib/selection-anchor.ts";
 import {
   composedContains,
+  elementNear,
   type SelectionEndpoints,
   selectionEndpoints,
 } from "@/lib/selection-endpoints.ts";
@@ -178,25 +178,20 @@ const PRESS_WINDOW_MS = 300;
 /** Where the entry sits, in document coordinates, and what it quotes. */
 type Pending = { markdown: string; top: number; right: number };
 
-/** The registered body both ends of `range` sit in, or null. */
-function targetOf(
-  targets: Map<Element, QuoteTarget>,
-  range: Range,
-): { el: Element; target: QuoteTarget } | null {
-  const start = range.startContainer;
-  for (
-    let el: Element | null =
-      start instanceof Element ? start : start.parentElement;
-    el !== null;
-    el = el.parentElement
-  ) {
-    const target = targets.get(el);
-    if (target === undefined) continue;
-    // A selection that runs on into the next entry, or up into this one's
-    // header, is not a quote from one body.
-    return el.contains(range.endContainer) ? { el, target } : null;
+/**
+ * Where the selection ends on screen. The legacy range is what has a box —
+ * but where the browser clamped it onto a shadow host, as it does for a
+ * selection in a code block's rows, it is an empty box at the host, and the
+ * element the selection ends in says where to sit instead (T-164).
+ */
+function selectionRect(selection: Selection, body: Element): DOMRect {
+  const range = selection.getRangeAt(0);
+  if (range.collapsed) {
+    const ends = endpointsOf(selection, body);
+    const near = ends === null ? null : elementNear(ends.end.node);
+    if (near != null) return near.getBoundingClientRect();
   }
-  return null;
+  return range.getBoundingClientRect();
 }
 
 /**
@@ -230,19 +225,19 @@ export function SelectionQuote() {
       // Mid-drag the entry would sit under the words still being selected;
       // `pointerup` schedules the read that counts.
       if (dragging.current) return;
-      const range = selection.getRangeAt(0);
-      const found = targetOf(targets, range);
-      const lines = found === null ? null : selectedSourceRange(found.el);
+      // Just what is selected, cut from the body's markdown, as the `…`
+      // menu's Quote reply quotes it.
+      const picked = quotableSelection(selection, targets);
       const markdown =
-        found === null || lines === null
-          ? ""
-          : sourceLines(found.target.body(), lines.start, lines.end);
-      if (found === null || markdown === "") {
+        picked === null ? "" : quoteOfSelection(picked.source, picked.anchor);
+      if (picked === null || markdown === "") {
         setPending(null);
         return;
       }
-      const rect = range.getBoundingClientRect();
-      const frame = found.target.frame().getBoundingClientRect();
+      const rect = selectionRect(selection, picked.body);
+      const frame = (
+        targets.get(picked.body)?.frame() ?? picked.body
+      ).getBoundingClientRect();
       setPending({
         markdown,
         // Never below the body: a selection ending on a block's last
