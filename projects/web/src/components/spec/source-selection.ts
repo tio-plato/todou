@@ -1,5 +1,9 @@
 import type { AnchorRange } from "@/components/spec/selection-entry.tsx";
-import type { CodeHighlightRanges } from "@/lib/code-highlights.ts";
+import {
+  type CodeHighlightRanges,
+  type LineMark,
+  markRows,
+} from "@/lib/code-highlights.ts";
 import {
   DELETION_LINE_TYPE,
   LINE_TYPE_ATTR,
@@ -254,29 +258,33 @@ export function sourceAnchorForSelection(
   };
 }
 
-/** A comment or draft anchored to columns of one version of a file. */
+/**
+ * A comment or draft on lines of one version of a file: on columns of them,
+ * or on the whole lines when the columns are null.
+ */
 export type SourceMark = {
   kind: "comment" | "draft";
   path: string;
   version: number;
   lineStart: number;
   lineEnd: number;
-  colStart: number;
-  colEnd: number;
+  colStart: number | null;
+  colEnd: number | null;
 };
 
 /**
- * Every line row under `container`: those pierre draws in its hosts' shadow
- * roots, and any drawn in the light DOM. Hosts only, rather than every open
- * shadow root below: the source diff holds the whole stack, and each of its
- * rows carries a span per token that a search for nested roots would visit.
+ * Every tree of line rows under `container`: the shadow roots pierre draws
+ * its hosts' rows in, and the light DOM for any drawn there. Hosts only,
+ * rather than every open shadow root below: the source diff holds the whole
+ * stack, and each of its rows carries a span per token that a search for
+ * nested roots would visit.
  */
-function rowsUnder(container: Element): Element[] {
+function rootsUnder(container: Element): ParentNode[] {
   const roots: ParentNode[] = [container];
   for (const host of container.querySelectorAll("diffs-container")) {
     if (host.shadowRoot !== null) roots.push(host.shadowRoot);
   }
-  return roots.flatMap((root) => [...root.querySelectorAll("[data-line]")]);
+  return roots;
 }
 
 /**
@@ -313,6 +321,10 @@ function placesOf(
  * on each row of the version a mark is anchored to, within its lines, the
  * columns it covers on that line. A row that does not read as its source line
  * is left unpainted rather than painted somewhere near.
+ *
+ * A mark without columns paints no range. Each row within its lines is
+ * marked with `LINE_MARK_ATTR` instead, whatever the row reads, since a whole
+ * line needs no columns cut out of it; every other row loses that mark.
  */
 export function sourceHighlightRanges(
   container: Element,
@@ -320,45 +332,59 @@ export function sourceHighlightRanges(
   marks: SourceMark[],
 ): CodeHighlightRanges {
   const ranges: CodeHighlightRanges = { comment: [], draft: [] };
-  if (marks.length === 0) return ranges;
+  const roots = rootsUnder(container);
+  if (marks.length === 0) {
+    for (const root of roots) markRows(root);
+    return ranges;
+  }
   const starts = new Map<string, number[]>();
   // Every row of one host names the same file.
   const filesByHost = new Map<Element, SourceFiles | null>();
-  for (const row of rowsUnder(container)) {
-    const root = row.getRootNode();
-    const host = root instanceof ShadowRoot ? root.host : row;
-    let files = filesByHost.get(host);
-    if (files === undefined) {
-      files = filesAt(host);
-      filesByHost.set(host, files);
-    }
-    if (files === null) continue;
-    for (const { side, line } of placesOf(row, files)) {
-      const here = marks.filter(
-        (mark) =>
-          mark.path === side.path &&
-          mark.version === side.version &&
-          mark.lineStart <= line &&
-          line <= mark.lineEnd,
-      );
-      if (here.length === 0) continue;
-      let lineStarts = starts.get(side.body);
-      if (lineStarts === undefined) {
-        lineStarts = lineStartsOf(side.body);
-        starts.set(side.body, lineStarts);
+  for (const root of roots) {
+    const wanted = new Map<Element, LineMark>();
+    for (const row of root.querySelectorAll("[data-line]")) {
+      const host = root instanceof ShadowRoot ? root.host : row;
+      let files = filesByHost.get(host);
+      if (files === undefined) {
+        files = filesAt(host);
+        filesByHost.set(host, files);
       }
-      const source = lineOf(side.body, lineStarts, line);
-      if (source === null || rowText(row) !== source.text) continue;
-      for (const mark of here) {
-        const range = rangeInRow(
-          row,
-          line === mark.lineStart ? mark.colStart - 1 : 0,
-          line === mark.lineEnd ? mark.colEnd : source.text.length,
+      if (files === null) continue;
+      for (const { side, line } of placesOf(row, files)) {
+        const here = marks.filter(
+          (mark) =>
+            mark.path === side.path &&
+            mark.version === side.version &&
+            mark.lineStart <= line &&
+            line <= mark.lineEnd,
         );
-        if (range !== null)
-          (mark.kind === "comment" ? ranges.comment : ranges.draft).push(range);
+        if (here.length === 0) continue;
+        for (const mark of here) {
+          if (mark.colStart !== null && mark.colEnd !== null) continue;
+          if (wanted.get(row) !== "comment") wanted.set(row, mark.kind);
+        }
+        let lineStarts = starts.get(side.body);
+        if (lineStarts === undefined) {
+          lineStarts = lineStartsOf(side.body);
+          starts.set(side.body, lineStarts);
+        }
+        const source = lineOf(side.body, lineStarts, line);
+        if (source === null || rowText(row) !== source.text) continue;
+        for (const mark of here) {
+          if (mark.colStart === null || mark.colEnd === null) continue;
+          const range = rangeInRow(
+            row,
+            line === mark.lineStart ? mark.colStart - 1 : 0,
+            line === mark.lineEnd ? mark.colEnd : source.text.length,
+          );
+          if (range !== null)
+            (mark.kind === "comment" ? ranges.comment : ranges.draft).push(
+              range,
+            );
+        }
       }
     }
+    markRows(root, wanted);
   }
   return ranges;
 }

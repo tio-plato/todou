@@ -8,6 +8,8 @@ import {
 import {
   announceCodeRendered,
   clearCodeHighlights,
+  LINE_MARK_ATTR,
+  markRows,
   setCodeHighlights,
 } from "../src/lib/code-highlights.ts";
 import { renderWithProviders } from "./render.tsx";
@@ -116,6 +118,41 @@ function onLine(
         ...at,
       };
 }
+
+/** A comment or draft on whole lines `start`–`end`. */
+function wholeLines(
+  kind: "comment" | "draft",
+  start: number,
+  end: number,
+): DisplayedAnnotation {
+  const at = { start, end, colStart: null, colEnd: null };
+  return kind === "comment"
+    ? { key: `c${start}-${end}`, kind, item: ITEM, ...at }
+    : {
+        key: `d${start}-${end}`,
+        kind,
+        draft: {
+          id: `d${start}-${end}`,
+          anchor: {
+            path: "plan.md",
+            version: 1,
+            line_start: start,
+            line_end: end,
+            col_start: null,
+            col_end: null,
+          },
+          quote: "",
+          body: "staged",
+        },
+        ...at,
+      };
+}
+
+/** Each row's whole-line mark under `root`, in row order. */
+const lineMarks = (root: ParentNode) =>
+  [...root.querySelectorAll("[data-line]")].map((row) =>
+    row.getAttribute(LINE_MARK_ATTR),
+  );
 
 /** The rendered document, its code wrappers waiting for their rows. */
 async function renderDocument(
@@ -267,34 +304,54 @@ describe("code highlights in the rendered view", () => {
     expect(shadow.contains(after?.startContainer ?? null)).toBe(true);
   });
 
-  it("keeps the wash for a whole-line comment that runs into the block", async () => {
+  it("marks the rows a whole-line comment covers, and drops the wash", async () => {
+    stubHighlights();
+    // Line 5 is "const bravo = 2;", the second of the block's three rows.
+    const { wrappers } = await renderDocument(TS_FENCE, [
+      wholeLines("comment", 5, 5),
+    ]);
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    const shadow = await drawRows(wrapper, TS_ROWS);
+    expect(lineMarks(shadow)).toEqual([null, "comment", null]);
+    expect(wrapper.classList.contains("spec-code-painted")).toBe(true);
+  });
+
+  it("marks whole-line rows where the browser has no highlights", async () => {
+    // Line 5 is "const bravo = 2;"; an attribute needs no highlight API.
+    const { wrappers } = await renderDocument(TS_FENCE, [
+      wholeLines("comment", 5, 5),
+    ]);
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    const shadow = await drawRows(wrapper, TS_ROWS);
+    expect(lineMarks(shadow)).toEqual([null, "comment", null]);
+    expect(wrapper.classList.contains("spec-code-painted")).toBe(true);
+  });
+
+  // A whole-line comment reaching into a block from the prose above it used
+  // to keep the block's wash, having no characters of its own to paint
+  // there; the rows it covers now carry it, so the wash steps aside.
+  it("marks the rows a whole-line comment runs into from the prose", async () => {
     const registry = stubHighlights();
     // Lines 1–5 run from the paragraph into the fence; line 6, column 7–11
     // is "bravo".
     const body =
       "Para one\nstill para.\n\n```ts\nconst alpha = 1;\nconst bravo = 2;\n```\n";
-    const whole: DisplayedAnnotation = {
-      key: "c1",
-      kind: "comment",
-      item: ITEM,
-      start: 1,
-      end: 5,
-      colStart: null,
-      colEnd: null,
-    };
     const { wrappers } = await renderDocument(body, [
-      whole,
+      wholeLines("comment", 1, 5),
       onLine("draft", 6, 7, 11),
     ]);
     const [wrapper] = wrappers;
     if (wrapper === undefined) throw new Error("no fence");
-    await drawRows(
+    const shadow = await drawRows(
       wrapper,
       `<div data-line="1"><span>const alpha = 1;</span></div>
        <div data-line="2"><span>const bravo = 2;</span></div>`,
     );
     expect(texts(registry, "spec-draft")).toEqual(["bravo"]);
-    expect(wrapper.classList.contains("spec-code-painted")).toBe(false);
+    expect(lineMarks(shadow)).toEqual(["comment", null]);
+    expect(wrapper.classList.contains("spec-code-painted")).toBe(true);
   });
 
   it("keeps the wash while one of the block's comments cannot be painted", async () => {
@@ -325,6 +382,63 @@ describe("code highlights in the rendered view", () => {
     await drawRows(wrapper, TS_ROWS);
     expect(wrapper.classList.contains("spec-mark-comment-block")).toBe(true);
     expect(wrapper.classList.contains("spec-code-painted")).toBe(false);
+  });
+});
+
+/** Two of pierre's rows and their line numbers, in a shadow root of their own. */
+function rowsWithNumbers(): ShadowRoot {
+  const host = document.createElement("div");
+  const shadow = host.attachShadow({ mode: "open" });
+  shadow.innerHTML = `
+    <code data-gutter="">
+      <div data-column-number="1" data-line-index="0">1</div>
+      <div data-column-number="2" data-line-index="1">2</div>
+    </code>
+    <code data-content="">
+      <div data-line="1" data-line-index="0">alpha</div>
+      <div data-line="2" data-line-index="1">bravo</div>
+    </code>`;
+  return shadow;
+}
+
+describe("whole-line marks", () => {
+  const marksOf = (shadow: ShadowRoot, selector: string) =>
+    [...shadow.querySelectorAll(selector)].map((el) =>
+      el.getAttribute(LINE_MARK_ATTR),
+    );
+
+  it("marks each row and its line number with the kind that covers it", () => {
+    const shadow = rowsWithNumbers();
+    const [one, two] = shadow.querySelectorAll("[data-line]");
+    if (one === undefined || two === undefined) throw new Error("no rows");
+    markRows(
+      shadow,
+      new Map([
+        [one, "draft"],
+        [two, "comment"],
+      ]),
+    );
+    expect(marksOf(shadow, "[data-line]")).toEqual(["draft", "comment"]);
+    expect(marksOf(shadow, "[data-column-number]")).toEqual([
+      "draft",
+      "comment",
+    ]);
+  });
+
+  it("unmarks the rows and numbers it is no longer handed", () => {
+    const shadow = rowsWithNumbers();
+    const [one, two] = shadow.querySelectorAll("[data-line]");
+    if (one === undefined || two === undefined) throw new Error("no rows");
+    markRows(
+      shadow,
+      new Map([
+        [one, "draft"],
+        [two, "comment"],
+      ]),
+    );
+    markRows(shadow, new Map([[two, "comment"]]));
+    expect(marksOf(shadow, "[data-line]")).toEqual([null, "comment"]);
+    expect(marksOf(shadow, "[data-column-number]")).toEqual([null, "comment"]);
   });
 });
 

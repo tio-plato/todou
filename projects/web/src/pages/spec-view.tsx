@@ -1,7 +1,8 @@
-import type {
-  DiffLineAnnotation,
-  LineAnnotation,
-  SelectedLineRange,
+import {
+  type DiffLineAnnotation,
+  type LineAnnotation,
+  parseDiffFromFile,
+  type SelectedLineRange,
 } from "@pierre/diffs";
 // Imported directly rather than through the lazy wrapper in pierre.tsx: this
 // whole page is route-lazy, so pierre never reaches the main bundle through
@@ -124,6 +125,11 @@ import {
   CODE_HIGHLIGHT_CSS,
   useCodeHighlights,
 } from "@/lib/code-highlights.ts";
+import {
+  COLLAPSED_CONTEXT_THRESHOLD,
+  hangLine,
+  shownLines,
+} from "@/lib/diff-shown-lines.ts";
 import {
   holdRevealed,
   type RevealMode,
@@ -2311,10 +2317,7 @@ function SpecDiff({
         })),
         ...drafts.map((d) => ({ kind: "draft" as const, anchor: d.anchor })),
       ].flatMap(({ kind, anchor }): SourceMark[] =>
-        anchor.line_start === null ||
-        anchor.line_end === null ||
-        anchor.col_start == null ||
-        anchor.col_end == null
+        anchor.line_start === null || anchor.line_end === null
           ? []
           : [
               {
@@ -2323,8 +2326,8 @@ function SpecDiff({
                 version: anchor.version,
                 lineStart: anchor.line_start,
                 lineEnd: anchor.line_end,
-                colStart: anchor.col_start,
-                colEnd: anchor.col_end,
+                colStart: anchor.col_start ?? null,
+                colEnd: anchor.col_end ?? null,
               },
             ],
       ),
@@ -2594,13 +2597,13 @@ function SpecUnfoldableFile({
       ...comments
         .filter((c) => here(c.anchor))
         .map((c) => ({
-          lineNumber: c.anchor.line_start ?? 0,
+          lineNumber: c.anchor.line_end ?? 0,
           metadata: { kind: "comment" as const, item: c },
         })),
       ...drafts
         .filter((d) => here(d.anchor))
         .map((d) => ({
-          lineNumber: d.anchor.line_start ?? 0,
+          lineNumber: d.anchor.line_end ?? 0,
           metadata: { kind: "draft" as const, draft: d },
         })),
     ];
@@ -2714,6 +2717,8 @@ function AnnotatedFileDiff({
         announceCodeRendered(node, phase);
       },
       unsafeCSS: CODE_HIGHLIGHT_CSS,
+      // Where notes hang depends on which lines this leaves drawn.
+      collapsedContextThreshold: COLLAPSED_CONTEXT_THRESHOLD,
       enableLineSelection: true,
       onLineSelectionEnd: (range: SelectedLineRange | null) => {
         if (!range) return;
@@ -2749,20 +2754,46 @@ function AnnotatedFileDiff({
       wrap,
     ],
   );
+  // The lines pierre draws of each side, from the diff it parses itself out
+  // of the same two files and the same threshold.
+  const shown = useMemo(() => {
+    const fileDiff = parseDiffFromFile(oldFile, newFile);
+    return {
+      additions: shownLines(fileDiff, "additions", COLLAPSED_CONTEXT_THRESHOLD),
+      deletions: shownLines(fileDiff, "deletions", COLLAPSED_CONTEXT_THRESHOLD),
+    };
+  }, [oldFile, newFile]);
   const lineAnnotations = useMemo(() => {
-    type Anchor = { path: string; version: number; line_start: number | null };
+    type Anchor = {
+      path: string;
+      version: number;
+      line_start: number | null;
+      line_end: number | null;
+    };
     const here = (anchor: Anchor) =>
       (anchor.path === oldPath && anchor.version === fromVersion) ||
       (anchor.path === newPath && anchor.version === toVersion);
-    const at = (anchor: Anchor) => ({
-      side:
+    const at = (anchor: Anchor) => {
+      const side =
         anchor.version === fromVersion
           ? ("deletions" as const)
-          : ("additions" as const),
-      // pierre's contract: lineNumber 0 renders a side-level annotation
-      // above the first hunk — exactly where file-level comments belong.
-      lineNumber: anchor.line_start ?? 0,
-    });
+          : ("additions" as const);
+      return {
+        side,
+        // pierre's contract: lineNumber 0 renders a side-level annotation
+        // above the first hunk — exactly where file-level comments belong.
+        // A range hangs under its last line, or under the last of it pierre
+        // draws: a note on a collapsed line shows only once it is expanded.
+        lineNumber:
+          anchor.line_start === null
+            ? 0
+            : hangLine(
+                anchor.line_start,
+                anchor.line_end ?? anchor.line_start,
+                shown[side],
+              ),
+      };
+    };
     return [
       ...comments
         .filter((c) => here(c.anchor))
@@ -2783,7 +2814,7 @@ function AnnotatedFileDiff({
           }),
         ),
     ];
-  }, [comments, drafts, oldPath, newPath, fromVersion, toVersion]);
+  }, [comments, drafts, oldPath, newPath, fromVersion, toVersion, shown]);
 
   return (
     <SpecStackFrame
@@ -2955,18 +2986,19 @@ function SpecSourceFile({
   stickyTop: number;
 }) {
   // File-level comments and drafts have their own strip above and never
-  // reach `annotations`.
+  // reach `annotations`. A note hangs under the last line it covers, where
+  // the reader has just read what it is about.
   const lineAnnotations = useMemo(
     () =>
       annotations.map(
         (a): LineAnnotation<LineNote> =>
           a.kind === "comment"
             ? {
-                lineNumber: a.start,
+                lineNumber: a.end,
                 metadata: { kind: "comment", item: a.item },
               }
             : {
-                lineNumber: a.start,
+                lineNumber: a.end,
                 metadata: { kind: "draft", draft: a.draft },
               },
       ),
@@ -2986,20 +3018,16 @@ function SpecSourceFile({
   const { pending, clear } = useSelectionEntry(containerRef, resolveSelection);
   const marks = useMemo(
     () =>
-      annotations.flatMap((a): SourceMark[] =>
-        a.colStart == null || a.colEnd == null
-          ? []
-          : [
-              {
-                kind: a.kind,
-                path,
-                version,
-                lineStart: a.start,
-                lineEnd: a.end,
-                colStart: a.colStart,
-                colEnd: a.colEnd,
-              },
-            ],
+      annotations.map(
+        (a): SourceMark => ({
+          kind: a.kind,
+          path,
+          version,
+          lineStart: a.start,
+          lineEnd: a.end,
+          colStart: a.colStart ?? null,
+          colEnd: a.colEnd ?? null,
+        }),
       ),
     [annotations, path, version],
   );

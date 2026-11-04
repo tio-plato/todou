@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MarkdownView } from "../src/components/shared/markdown-view.tsx";
+import { CODE_RENDERED_EVENT } from "../src/lib/code-highlights.ts";
 import { errorSummary, viewBoxWidth } from "../src/lib/mermaid.ts";
 import { rehypeSourceLines } from "../src/lib/rehype-source-lines.ts";
 import { renderWithProviders } from "./render.tsx";
@@ -93,6 +94,24 @@ describe("mermaid fences (T-523)", () => {
 
     fireEvent.click(back);
     expect(container.querySelector(".mermaid-diagram svg")).not.toBeNull();
+  });
+
+  it("tells the page around it that its code rows are gone", async () => {
+    render.next = { ok: true, svg: SVG, width: 1360 };
+    let heard = 0;
+    const hear = () => {
+      heard++;
+    };
+    document.addEventListener(CODE_RENDERED_EVENT, hear);
+    try {
+      const container = await mount(FENCE);
+      await waitFor(() => {
+        expect(container.querySelector(".mermaid-diagram svg")).not.toBeNull();
+      });
+      expect(heard).toBeGreaterThan(0);
+    } finally {
+      document.removeEventListener(CODE_RENDERED_EVENT, hear);
+    }
   });
 
   it("keeps a diagram that does not parse as source, with the error under it", async () => {

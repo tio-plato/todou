@@ -1243,15 +1243,39 @@ html[data-header-settling] [data-header-follow] {
   }
 
   /* Spec review view (T-23): blocks carrying comments, and blocks changed
-     since the compare baseline (the ↑/↓ nav jumps between the latter). */
+     since the compare baseline (the ↑/↓ nav jumps between the latter). An
+     annotated block takes its colour from what covers it: amber for a
+     comment, indigo while drafts alone do, as their marks and chips are. */
   .spec-annotated {
+    --spec-annotated-color: var(--color-amber-500);
     border-left: 3px solid
-      color-mix(in oklab, var(--color-amber-500) 60%, transparent);
+      color-mix(in oklab, var(--spec-annotated-color) 60%, transparent);
     padding-left: 0.5rem;
     background-color: color-mix(
       in oklab,
-      var(--color-amber-500) 6%,
+      var(--spec-annotated-color) 6%,
       transparent
+    );
+  }
+  .spec-annotated-draft {
+    --spec-annotated-color: var(--color-indigo-500);
+  }
+  /* A row's wash goes on its cells instead (below): a striped row and the
+     header row paint their own colour over the row's, which is all a wash
+     on the row could ever be. As specific as the rule above and no more,
+     so that a changed row's green below still wins. */
+  :where(tr).spec-annotated {
+    background-color: transparent;
+  }
+  .markdown-body tr.spec-annotated > :is(td, th) {
+    --spec-annotated-wash: color-mix(
+      in oklab,
+      var(--spec-annotated-color) 6%,
+      transparent
+    );
+    background-image: linear-gradient(
+      var(--spec-annotated-wash),
+      var(--spec-annotated-wash)
     );
   }
   .spec-changed {
@@ -1267,7 +1291,7 @@ html[data-header-settling] [data-header-follow] {
   .spec-annotated.spec-changed {
     border-left-color: color-mix(
       in oklab,
-      var(--color-amber-500) 60%,
+      var(--spec-annotated-color) 60%,
       var(--diff-addition)
     );
   }
@@ -1307,7 +1331,7 @@ html[data-header-settling] [data-header-follow] {
   .markdown-body .spec-annotated.spec-ins-block {
     border-left-color: color-mix(
       in oklab,
-      var(--color-amber-500) 60%,
+      var(--spec-annotated-color) 60%,
       var(--diff-addition)
     );
   }
@@ -1500,14 +1524,17 @@ html[data-header-settling] [data-header-follow] {
     border-left-color: color-mix(
       in oklab,
       var(--color-indigo-500) 60%,
-      var(--color-amber-500)
+      var(--spec-annotated-color)
     );
   }
   /* Where the annotated characters themselves are painted inside the block
-     (CSS Custom Highlight API, lib/code-highlights.ts), the bar alone says
-     the block carries one, and a wash would only blur which characters. */
+     (CSS Custom Highlight API, lib/code-highlights.ts), or the annotated
+     rows marked, the bar alone says the block carries one, and a wash would
+     only blur which characters or rows. */
   .markdown-body .spec-code-painted.spec-mark-comment-block,
-  .markdown-body .spec-code-painted.spec-mark-draft-block {
+  .markdown-body .spec-code-painted.spec-mark-draft-block,
+  .markdown-body
+    .spec-code-painted.spec-annotated:not(.spec-ins-block, .spec-changed) {
     background-color: transparent;
   }
 
