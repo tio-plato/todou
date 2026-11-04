@@ -12,7 +12,11 @@ import {
 
 /** What a rendered body hands the floating Quote reply. */
 export type QuoteTarget = {
-  /** The stored markdown, read when the reader's selection settles. */
+  /**
+   * The markdown the body renders, read when the reader's selection
+   * settles: the stored markdown, except where the view rewrites it before
+   * rendering, as an action line does.
+   */
   body: () => string;
   /** The box whose right edge the button lines up with. */
   frame: () => Element;
