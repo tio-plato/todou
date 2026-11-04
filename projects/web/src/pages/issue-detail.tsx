@@ -86,6 +86,7 @@ import {
 import { QuoteReplyProvider } from "@/components/timeline/quote-reply.tsx";
 import { RevealAllEye } from "@/components/timeline/reveal-all-eye.tsx";
 import { RevealedRunsProvider } from "@/components/timeline/revealed-runs.tsx";
+import { useQuotableBody } from "@/components/timeline/selection-quote.tsx";
 import { Timeline } from "@/components/timeline/timeline.tsx";
 import { TimelineDivider } from "@/components/timeline/timeline-divider.tsx";
 import { Button } from "@/components/ui/button";
@@ -475,6 +476,7 @@ export function BodyBlock({
   const [editing, setEditing] = useState(false);
   const editor = useRef<MarkdownEditorHandle>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const quotableRef = useQuotableBody(bodyRef, issue.body);
   const opened = useOpenedEvent(slug, issue.number);
   const refCompletion = useRefCompletion(slug);
   const [uploading, setUploading] = useState(false);
@@ -664,7 +666,7 @@ export function BodyBlock({
             No description.
           </p>
         ) : (
-          <div ref={bodyRef}>
+          <div ref={quotableRef} data-quote-body="">
             <MarkdownView
               slug={slug}
               issueNumber={issue.number}
