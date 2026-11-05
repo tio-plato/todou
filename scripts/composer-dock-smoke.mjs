@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * Real-browser regression for the folded comment composer at the page end
- * (T-532, T-538).
+ * (T-532, T-538), and for the New messages pill staying above whatever floats
+ * at the bottom, clickable, however tall the composer grows.
  * Usage: node scripts/composer-dock-smoke.mjs [--keep] [--help]
  * Requires the same installed dependencies, Node 24+, flock and CHROMIUM
  * (default /usr/bin/chromium) as the other browser smokes.
@@ -24,7 +25,10 @@ Seeds a card long enough to scroll, opens it on a 390px touch phone and on a
 composer must be the one-line box while the page is at its end and the
 floating Comment button anywhere above; the swap must not move the page or
 flip back and forth, must not break the bottom landing on open (T-527), and
-anchors must still land clear of the dock (T-519).
+anchors must still land clear of the dock (T-519). With the reader scrolled
+away and a comment arriving, the New messages pill must stay above the folded
+dock or Comment button, the opened box, a tall draft and a simulated keyboard,
+and take the click at its centre.
 
 --keep  Retain isolated artifacts under .tmp/ after cleanup.
 Exit codes: 0 pass, 1 assertion, 2 infrastructure error.
@@ -73,6 +77,12 @@ async function seed(stack) {
     cookie,
     issueUrl: `${stack.webUrl}/projects/${slug}/issues/${issue.number}`,
     ids,
+    // Sent without an Origin header, so the open page takes it for someone
+    // else's comment rather than the echo of its own.
+    comment: (body) =>
+      call("POST", `/projects/${slug}/issues/${issue.number}/comments`, {
+        body,
+      }),
   };
 }
 
@@ -110,6 +120,57 @@ function readState() {
     actionsShown: dock.querySelector(".composer-actions-in") !== null,
     headerBottom: document.querySelector("header").getBoundingClientRect()
       .bottom,
+  };
+}
+
+/**
+ * The New messages pill against the layer that floats at the bottom: the dock
+ * while it floats, the phone's Comment button while the folded dock waits at
+ * the page end.
+ */
+function readPill() {
+  const pill = [...document.querySelectorAll("button")].find(
+    (button) => button.textContent.trim() === "New messages",
+  );
+  const dock = document
+    .querySelector('[aria-label="Write a comment"]')
+    .closest(".sticky");
+  const opener = document.querySelector("[data-composer-opener]");
+  const floats = getComputedStyle(dock).position !== "static";
+  const dockRect = dock.getBoundingClientRect();
+  const rect = pill?.getBoundingClientRect();
+  const hit =
+    rect &&
+    document.elementFromPoint(
+      rect.x + rect.width / 2,
+      rect.y + rect.height / 2,
+    );
+  return {
+    shown: rect !== undefined && rect.height > 0,
+    top: rect?.top ?? null,
+    bottom: rect?.bottom ?? null,
+    hits: pill?.contains(hit) === true,
+    floats,
+    floatingTop: floats
+      ? dockRect.top
+      : (opener?.getBoundingClientRect().top ?? window.innerHeight),
+    // Mounted while the box is folded at any width, hidden above sm, and
+    // faded rather than removed while the box itself is on screen (T-585).
+    openerShown:
+      opener !== null &&
+      opener.getBoundingClientRect().width > 0 &&
+      opener.parentElement.dataset.state === "shown",
+    dockTop: dockRect.top,
+    dockHeight: dockRect.height,
+    focusedInside: dock.contains(document.activeElement),
+    actionsShown: dock.querySelector(".composer-actions-in") !== null,
+    headerBottom: document.querySelector("header").getBoundingClientRect()
+      .bottom,
+    fromEnd:
+      document.documentElement.scrollHeight -
+      window.scrollY -
+      window.innerHeight,
+    innerHeight: window.innerHeight,
   };
 }
 
@@ -170,10 +231,33 @@ function input(page) {
       type,
       touchPoints: points.map(([x, y], id) => ({ x, y, id })),
     });
+  const mouse = (type, x, y, extra = {}) =>
+    page.send("Input.dispatchMouseEvent", { type, x, y, ...extra });
   return {
     state: async (ms = 400) => {
       await sleep(ms);
       return evaluate(page, readState);
+    },
+    click: async (x, y) => {
+      await mouse("mouseMoved", x, y);
+      for (const type of ["mousePressed", "mouseReleased"])
+        await mouse(type, x, y, { button: "left", clickCount: 1 });
+    },
+    wheel: (x, y, deltaY) => mouse("mouseWheel", x, y, { deltaX: 0, deltaY }),
+    /** Lines typed into the focused editor, Enter between them. */
+    type: async (lines) => {
+      for (const [i, line] of lines.entries()) {
+        if (i > 0)
+          for (const type of ["keyDown", "keyUp"])
+            await page.send("Input.dispatchKeyEvent", {
+              type,
+              key: "Enter",
+              code: "Enter",
+              windowsVirtualKeyCode: 13,
+              ...(type === "keyDown" ? { text: "\r" } : {}),
+            });
+        await page.send("Input.insertText", { text: line });
+      }
     },
     /** A finger moving by `dy` (positive drags down, so the page scrolls up). */
     swipe: async (x, y, dy) => {
@@ -359,6 +443,106 @@ async function desktopCases(page) {
   ];
 }
 
+/**
+ * The New messages pill sits above whatever floats at the bottom, below the
+ * header, and takes the click at its centre, through every height the dock
+ * goes through. Scrolls with real input: the bottom landing's hold lets go
+ * only on the reader's first input, and until then the arriving comment
+ * would pull the page back down instead of raising the pill.
+ */
+async function pillCases(page, fixture, viewport, label, dir) {
+  const io = input(page);
+  const out = [];
+  const pill = () => evaluate(page, readPill);
+  for (let i = 0; i < 8; i++) {
+    const p = await pill();
+    // `shouldFollowBottom` keeps following within one screen of the end.
+    if (p.fromEnd > p.innerHeight) break;
+    if (viewport.mobile) await io.swipe(viewport.width / 2, 120, 700);
+    else await io.wheel(viewport.width / 2, viewport.height / 2, -600);
+    await sleep(400);
+  }
+  await fixture.comment(`Arrives while the ${label} reader is away`);
+  const deadline = Date.now() + 10_000;
+  while (!(await pill()).shown && Date.now() < deadline) await sleep(200);
+
+  const check = async (name, extra, detail) => {
+    const p = await pill();
+    const shot = await page.send("Page.captureScreenshot", { format: "png" });
+    writeFileSync(
+      resolve(dir, `pill-${label}-${name}.png`),
+      Buffer.from(shot.data, "base64"),
+    );
+    out.push({
+      name: `pill-${label}-${name}`,
+      ok: Boolean(
+        p.shown &&
+          p.hits &&
+          p.bottom <= p.floatingTop &&
+          p.top >= p.headerBottom &&
+          extra(p),
+      ),
+      detail: { ...p, ...detail },
+    });
+    return p;
+  };
+
+  await sleep(400);
+  await check("folded", (p) =>
+    viewport.mobile ? !p.floats && p.openerShown : p.floats && !p.actionsShown,
+  );
+
+  const target = await evaluate(
+    page,
+    (selector) => {
+      const r = document.querySelector(selector).getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    },
+    viewport.mobile
+      ? "[data-composer-opener]"
+      : '[aria-label="Write a comment"]',
+  );
+  if (viewport.mobile) await io.tap(target.x, target.y);
+  else await io.click(target.x, target.y);
+  await sleep(400);
+  const focused = await check(
+    "focused",
+    (p) => p.focusedInside && p.actionsShown,
+  );
+
+  await io.type(Array.from({ length: 8 }, (_, i) => `Draft line ${i + 1}`));
+  await sleep(400);
+  const tall = await check(
+    "tall-draft",
+    (p) => p.dockHeight >= focused.dockHeight + 100,
+    { grewBy: (await pill()).dockHeight - focused.dockHeight },
+  );
+
+  if (viewport.mobile) {
+    // What an on-screen keyboard does to the page: the shell publishes the
+    // strip it covers, and the floating layers rise above it.
+    const previous = await evaluate(page, () => {
+      const root = document.documentElement;
+      const value = root.style.getPropertyValue("--vv-bottom");
+      root.style.setProperty("--vv-bottom", "300px");
+      return value;
+    });
+    await sleep(400);
+    const rose = tall.dockTop - (await pill()).dockTop;
+    await check("keyboard-inset", () => rose >= 290 && rose <= 310, { rose });
+    await evaluate(
+      page,
+      (value) => {
+        const root = document.documentElement;
+        if (value) root.style.setProperty("--vv-bottom", value);
+        else root.style.removeProperty("--vv-bottom");
+      },
+      previous,
+    );
+  }
+  return out;
+}
+
 async function main() {
   const args = process.argv.slice(2);
   if (args.some((arg) => !["--keep", "--help"].includes(arg))) {
@@ -415,6 +599,23 @@ async function main() {
       } finally {
         await page.close();
       }
+      // Last: each viewport posts a comment, and the anchors above count on
+      // the seeded one being the card's last.
+      const pills = [];
+      for (const [viewport, label] of [
+        [PHONE, "phone"],
+        [DESKTOP, "desktop"],
+      ]) {
+        page = await openCard(context, fixture, viewport);
+        try {
+          pills.push(
+            ...(await pillCases(page, fixture, viewport, label, stack.dir)),
+          );
+        } finally {
+          await page.close();
+        }
+      }
+      record("pill", pills);
     } finally {
       await context.close();
     }
