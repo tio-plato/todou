@@ -10,6 +10,7 @@ import { quoteOfSelection } from "@/lib/quote-markdown.ts";
 import { anchorForSelection } from "@/lib/selection-anchor.ts";
 import {
   composedContains,
+  orderedEndpoints,
   type SelectionEndpoints,
   selectionEndpoints,
 } from "@/lib/selection-endpoints.ts";
@@ -51,47 +52,6 @@ export type QuotableSelection = {
   source: string;
   anchor: AnchorRange;
 };
-
-/**
- * A point in the light DOM standing for `node`: an endpoint inside a shadow
- * root becomes its outermost host, from before it or after it, since a range
- * cannot hold a point in another tree.
- */
-function lightPoint(
-  node: Node,
-  offset: number,
-  side: "before" | "after",
-): { node: Node; offset: number } {
-  let host: Element | null = null;
-  for (
-    let root = node.getRootNode();
-    root instanceof ShadowRoot;
-    root = root.host.getRootNode()
-  ) {
-    host = root.host;
-  }
-  const parent = host?.parentNode;
-  if (host === null || parent == null) return { node, offset };
-  const at = Array.prototype.indexOf.call(parent.childNodes, host);
-  return { node: parent, offset: side === "before" ? at : at + 1 };
-}
-
-/** The selection's endpoints as a light-DOM range, in document order. */
-function lightRange(ends: SelectionEndpoints): Range {
-  const range = document.createRange();
-  let start = lightPoint(ends.start.node, ends.start.offset, "before");
-  let end = lightPoint(ends.end.node, ends.end.offset, "after");
-  range.setStart(start.node, start.offset);
-  // The legacy endpoints are anchor and focus, which a backwards drag
-  // hands over backwards.
-  if (range.comparePoint(end.node, end.offset) < 0) {
-    start = lightPoint(ends.end.node, ends.end.offset, "before");
-    end = lightPoint(ends.start.node, ends.start.offset, "after");
-    range.setStart(start.node, start.offset);
-  }
-  range.setEnd(end.node, end.offset);
-  return range;
-}
 
 /** Whether `range` covers any text of `body` but whitespace. */
 function coversText(range: Range, body: Element): boolean {
@@ -146,7 +106,9 @@ export function quotableSelection(
   const scope = root instanceof Document ? root.documentElement : root;
   const all = endpointsOf(selection, scope);
   if (all === null || all.collapsed) return null;
-  const range = lightRange(all);
+  const ordered = orderedEndpoints(all);
+  if (ordered === null) return null;
+  const { range } = ordered;
   const selected = selection.toString() !== "";
   const bodies = [...scope.querySelectorAll(`[${QUOTE_BODY_ATTR}]`)].filter(
     (body) =>

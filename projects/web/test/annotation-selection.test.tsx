@@ -179,8 +179,8 @@ describe("AnnotatedMarkdown floating button (T-60 root cause B)", () => {
     expect(onStage).toHaveBeenCalledWith({
       lineStart: 1,
       lineEnd: 1,
-      colStart: null,
-      colEnd: null,
+      colStart: 1,
+      colEnd: 17,
     });
   });
 
@@ -276,7 +276,7 @@ describe("AnnotatedMarkdown column anchors (T-142)", () => {
     });
   });
 
-  it("falls back to lines for a selection anchored on an element", async () => {
+  it("anchors a selection on a block's element boundaries to its text", async () => {
     const onStage = vi.fn();
     const view = renderWithProviders(
       <AnnotatedMarkdown
@@ -306,8 +306,8 @@ describe("AnnotatedMarkdown column anchors (T-142)", () => {
     expect(onStage).toHaveBeenCalledWith({
       lineStart: 1,
       lineEnd: 1,
-      colStart: null,
-      colEnd: null,
+      colStart: 1,
+      colEnd: 17,
     });
   });
 });
@@ -1659,5 +1659,148 @@ describe("column anchors at the edges of code rows", () => {
     } finally {
       container.remove();
     }
+  });
+});
+
+// A triple-click leaves an end on an element boundary rather than in text:
+// Chromium and WebKit end at the start of the next block, Firefox wraps the
+// block's element. Neither end maps to a column, which used to widen the
+// anchor to the whole lines of every block the two ends touch.
+describe("endpoints that select nothing", () => {
+  const SOURCE =
+    "First paragraph here.\n\nSecond paragraph here.\n\n- item one\n- item two\n- item three\n";
+
+  async function rendered(
+    body = SOURCE,
+    ready = "li[data-loc]",
+  ): Promise<HTMLElement> {
+    const view = renderWithProviders(
+      <AnnotatedMarkdown
+        slug="p"
+        issueNumber={1}
+        body={body}
+        annotations={[]}
+        onStage={() => {}}
+        onEditDraft={() => {}}
+        onRemoveDraft={() => {}}
+        onResolve={() => {}}
+      />,
+    );
+    return waitFor(() => {
+      const el = view.getByTestId("annotated-markdown");
+      if (!el.querySelector(ready)) throw new Error("not rendered");
+      return el;
+    });
+  }
+
+  it.each([
+    [
+      "a paragraph that ends on the next one's element",
+      (paragraphs: Element[], _items: Element[]) =>
+        ends(paragraphs[0]?.firstChild, 0, paragraphs[1], 0),
+      { lineStart: 1, lineEnd: 1, colStart: 1, colEnd: 21 },
+    ],
+    [
+      "an item that ends on the next item's element",
+      (_paragraphs: Element[], items: Element[]) =>
+        ends(items[1]?.firstChild, 0, items[2], 0),
+      { lineStart: 6, lineEnd: 6, colStart: 3, colEnd: 10 },
+    ],
+    [
+      "an item selected as its element's contents",
+      (_paragraphs: Element[], items: Element[]) =>
+        ends(items[1], 0, items[1], 1),
+      { lineStart: 6, lineEnd: 6, colStart: 3, colEnd: 10 },
+    ],
+    [
+      "an item selected backwards from the next item's element",
+      (_paragraphs: Element[], items: Element[]) =>
+        ends(items[2], 0, items[1]?.firstChild, 0),
+      { lineStart: 6, lineEnd: 6, colStart: 3, colEnd: 10 },
+    ],
+  ])("anchors %s to that block's text", async (_name, pick, anchor) => {
+    const container = await rendered();
+    const paragraphs = [...container.querySelectorAll("p[data-loc]")];
+    const items = [...container.querySelectorAll("li[data-loc]")];
+    expect(
+      anchorForSelection(
+        container,
+        buildSegmentIndex(SOURCE),
+        pick(paragraphs, items),
+      ),
+    ).toEqual(anchor);
+  });
+
+  it("stops before deleted old text rather than in it", () => {
+    const container = document.createElement("div");
+    const first = document.createElement("p");
+    first.setAttribute("data-loc", "1-1");
+    const removed = document.createElement("del");
+    removed.className = "spec-del";
+    removed.textContent = "former";
+    first.append(document.createTextNode("present"), removed);
+    const second = document.createElement("p");
+    second.setAttribute("data-loc", "3-3");
+    second.textContent = "next";
+    container.append(first, second);
+    document.body.append(container);
+    try {
+      expect(
+        anchorForSelection(
+          container,
+          buildSegmentIndex("present\n\nnext\n"),
+          ends(first.firstChild, 0, second, 0),
+        ),
+      ).toEqual({ lineStart: 1, lineEnd: 1, colStart: 1, colEnd: 7 });
+    } finally {
+      container.remove();
+    }
+  });
+
+  it("keeps an image the selection ends past", async () => {
+    const source = "See ![pic](x.png)\n\nnext\n";
+    const container = await rendered(source, "p[data-loc] img");
+    const [first, second] = [...container.querySelectorAll("p[data-loc]")];
+    expect(
+      anchorForSelection(
+        container,
+        buildSegmentIndex(source),
+        ends(first?.firstChild, 0, second, 0),
+      ),
+    ).toEqual({ lineStart: 1, lineEnd: 1, colStart: null, colEnd: null });
+  });
+
+  it("stops before an old image a compared table put back", async () => {
+    const source = "| a |\n| - |\n| one |\n\nafter\n";
+    const container = await rendered(source, "tbody td");
+    // An image the cell lost, as the comparison puts it back after the text.
+    const image = document.createElement("img");
+    image.className = "spec-del-img";
+    container.querySelector("tbody td")?.append(image);
+    expect(
+      anchorForSelection(
+        container,
+        buildSegmentIndex(source),
+        ends(
+          container.querySelector("tbody td")?.firstChild,
+          0,
+          container.querySelector("p[data-loc]"),
+          0,
+        ),
+      ),
+    ).toEqual({ lineStart: 3, lineEnd: 3, colStart: 3, colEnd: 5 });
+  });
+
+  it("leaves alone ends that select text themselves", async () => {
+    // Both ends sit next to a space, which stays in the anchor.
+    const container = await rendered();
+    const [first, second] = [...container.querySelectorAll("p[data-loc]")];
+    expect(
+      anchorForSelection(
+        container,
+        buildSegmentIndex(SOURCE),
+        ends(first?.firstChild, 5, second?.firstChild, 7),
+      ),
+    ).toEqual({ lineStart: 1, lineEnd: 3, colStart: 6, colEnd: 7 });
   });
 });
