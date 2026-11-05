@@ -974,6 +974,38 @@ describe("AnnotatedMarkdown selection triggers (T-384)", () => {
     select(textOf(container, 0), 0, textOf(container, 0), 5);
     expect(await view.findByTestId("annotation-action-bar")).not.toBeNull();
   });
+
+  it("follows a selection handle dragged after a long press", async () => {
+    // iOS Safari: once the long press lifts, holding a selection handle
+    // sends one touch pointerdown and no pointerup or pointercancel until
+    // the next press. A quick tap on the entry then clicks before the
+    // recompute its own pointerup schedules has rendered, which the
+    // pointerdown, pointerup and click fired back to back stand for here.
+    stubCoarsePointer();
+    const { view, container, onStage } = await mount();
+    const first = textOf(container, 0);
+    const paragraph = first.parentElement as Element;
+
+    fireEvent.pointerDown(paragraph, { pointerType: "touch" });
+    select(first, 0, first, 5);
+    fireEvent.pointerUp(paragraph, { pointerType: "touch" });
+    await view.findByText(/Comment L1:1–5/);
+
+    fireEvent.pointerDown(paragraph, { pointerType: "touch" });
+    select(first, 0, textOf(container, 1), 4);
+    await settle();
+    const bar = view.getByText(/Comment L1:1–L3:4/);
+
+    fireEvent.pointerDown(bar, { pointerType: "touch" });
+    fireEvent.pointerUp(bar, { pointerType: "touch" });
+    fireEvent.click(bar);
+    expect(onStage).toHaveBeenCalledWith({
+      lineStart: 1,
+      lineEnd: 3,
+      colStart: 1,
+      colEnd: 4,
+    });
+  });
 });
 
 // The two edges T-384's review found: an entry the reader cannot reach is
