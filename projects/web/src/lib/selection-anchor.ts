@@ -297,7 +297,11 @@ export function anchorRangeForNode(
 /** Where an endpoint falls relative to the rendered file. */
 type Side = "inside" | "before" | "after";
 
-function sideOf(container: Element, node: Node, offset: number): Side | null {
+export function sideOf(
+  container: Element,
+  node: Node,
+  offset: number,
+): Side | null {
   // Containment is settled first: a node inside pierre's shadow root has no
   // position relative to the container at all, and comparing it would answer
   // about the host's siblings instead (T-164).
