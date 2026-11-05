@@ -12,7 +12,7 @@ import type {
   TimelineComment,
 } from "@todou/shared";
 import { actionTextProblem, formatRef } from "@todou/shared";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import type { AppContext } from "../bootstrap.ts";
 import type { Db } from "../db/driver.ts";
@@ -836,6 +836,8 @@ export async function hideCommentsInTx(
         inArray(comments.id, input.comment_ids),
       ),
     )
+    // In id order whatever the plan scans: the lock order on `lockIssueRows`.
+    .orderBy(asc(comments.id))
     .for("update");
   const byId = new Map(rows.map((r) => [r.id, r]));
 

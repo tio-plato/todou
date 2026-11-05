@@ -6,7 +6,7 @@ import type {
   IssueListRow,
   TimelineComment,
 } from "@todou/shared";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import type { AppContext } from "../bootstrap.ts";
 import {
@@ -233,9 +233,11 @@ export async function executeCommands(
     // Answering, hiding and resolving all lock the comment rows before they
     // write the issue row. `insertCommentInTx` writes the issue row, so the
     // comments this submission hides are locked ahead of it, or an answer to
-    // one of them deadlocks against this transaction on PostgreSQL. Same
-    // predicate as `hideCommentsInTx`, so several rows lock in the order it
-    // and the hide endpoint take them; its own lock later finds them held.
+    // one of them deadlocks against this transaction on PostgreSQL. In id
+    // order, as `hideCommentsInTx` takes them: the lock order on
+    // `lockIssueRows`. The same predicate alone does not give the same order,
+    // since a longer id list can turn the plan into a scan in physical order.
+    // `hideCommentsInTx`'s own lock later finds every row held.
     if (hideIds.length > 0) {
       await tx
         .select({ id: comments.id })
@@ -246,6 +248,7 @@ export async function executeCommands(
             inArray(comments.id, [...new Set(hideIds)]),
           ),
         )
+        .orderBy(asc(comments.id))
         .for("update");
     }
     let hide: HideInTxResult | null = null;
