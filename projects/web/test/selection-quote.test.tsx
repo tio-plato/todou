@@ -13,6 +13,7 @@ import {
   SelectionQuote,
 } from "../src/components/timeline/selection-quote.tsx";
 import { inlineActionSource } from "../src/lib/action-text.ts";
+import { quoteOfSelection } from "../src/lib/quote-markdown.ts";
 import { renderWithProviders } from "./render.tsx";
 
 // Code blocks render through pierre's CodeView, drawn in a shadow root
@@ -144,6 +145,17 @@ const CODE_ROWS = `
   <div data-line="1"><span>const a = 1;</span></div>
   <div data-line="2"><span>const b = 2;</span></div>`;
 
+const LIST = "- First item.\n- Second item with `code` in it.\n- Third item.";
+const PROSE_AND_CODE =
+  "Intro words.\n\n```ts\nconst a = 1;\n```\n\nOutro words.";
+
+/** The markdown a picked selection quotes, as the composer receives it. */
+function quoted(picked: ReturnType<typeof quotableSelection>): string | null {
+  return picked === null
+    ? null
+    : quoteOfSelection(picked.source, picked.anchor);
+}
+
 afterEach(() => {
   window.getSelection()?.removeAllRanges();
 });
@@ -187,6 +199,77 @@ describe("quotableSelection", () => {
       colStart: null,
       colEnd: null,
     });
+  });
+
+  // A triple-click leaves an end on an element boundary rather than in text:
+  // Chromium and WebKit end at the start of the next block, Firefox wraps
+  // the block's element.
+  it.each([
+    [
+      "ends at the next item's element",
+      (items: Element[]) => {
+        select(items[1]?.firstChild as Node, 0, items[2] as Node, 0);
+      },
+    ],
+    [
+      "wraps the item's element",
+      (items: Element[]) => {
+        const item = items[1] as Node;
+        select(item, 0, item, item.childNodes.length);
+      },
+    ],
+    [
+      "ends between the two items",
+      (items: Element[]) => {
+        const list = items[1]?.parentNode as Node;
+        const next = [...list.childNodes].indexOf(items[2] as ChildNode);
+        select(items[1]?.firstChild as Node, 0, list, next);
+      },
+    ],
+    [
+      "is made backwards from the next item's element",
+      (items: Element[]) => {
+        window
+          .getSelection()
+          ?.setBaseAndExtent(
+            items[2] as Node,
+            0,
+            items[1]?.firstChild as Node,
+            0,
+          );
+      },
+    ],
+  ])(
+    "quotes only the text of an item whose selection %s",
+    async (_name, pick) => {
+      const { a } = await renderTwo(comment(1, LIST), comment(2, B));
+      pick([...a.querySelectorAll("li")]);
+      expect(quoted(quotableSelection(window.getSelection(), document))).toBe(
+        "Second item with `code` in it.",
+      );
+    },
+  );
+
+  it("keeps a code block that ends the selected prose", async () => {
+    const { a } = await renderTwo(comment(1, PROSE_AND_CODE), comment(2, B));
+    // Highlighted, the block shows pierre's rows and no plain text.
+    a.querySelector("[data-loc-content-start]")?.replaceChildren();
+    drawRows(a, '<div data-line="1"><span>const a = 1;</span></div>');
+    const outro = a.querySelectorAll("p[data-loc]")[1] as Node;
+    expect(
+      quoted(quotableSelection(select(paragraph(a, 0), 0, outro, 0), document)),
+    ).toBe("Intro words.\n\n```ts\nconst a = 1;\n```");
+  });
+
+  it("leaves out a code block the selection only touches", async () => {
+    // Before highlighting, a triple-click on the paragraph above ends at the
+    // start of the block's plain text.
+    const { a } = await renderTwo(comment(1, PROSE_AND_CODE), comment(2, B));
+    const wrapper = a.querySelector("[data-loc-content-start]");
+    const plain = wrapper?.firstChild as Node;
+    expect(
+      quoted(quotableSelection(select(paragraph(a, 0), 0, plain, 0), document)),
+    ).toBe("Intro words.");
   });
 
   it("keeps a selection that ends at the very start of the next comment", async () => {

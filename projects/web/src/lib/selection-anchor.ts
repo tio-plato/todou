@@ -14,6 +14,7 @@ import {
 import {
   composedContains,
   elementNear,
+  orderedEndpoints,
   type SelectionEndpoints,
 } from "./selection-endpoints.ts";
 import {
@@ -62,8 +63,15 @@ function columnBlockOf(
 }
 
 /**
- * Text nodes of a block as the *document* has them — the annotation UI and
- * the `<del>` runs this component injects are not part of the source and
+ * What the spec view injects into the rendered document: the annotation UI,
+ * and the old text, structure and list numbers of a compared version. None
+ * of it is part of the source.
+ */
+const INJECTED =
+  "[data-annotation-ui], .spec-del, .spec-del-block, .spec-del-structure, .spec-list-number";
+
+/**
+ * Text nodes of a block as the *document* has them — the injected nodes
  * would shift every offset after them.
  */
 function sourceTextWalker(block: Element): TreeWalker {
@@ -74,12 +82,7 @@ function sourceTextWalker(block: Element): TreeWalker {
       acceptNode: (node) => {
         if (node.nodeType !== Node.ELEMENT_NODE)
           return NodeFilter.FILTER_ACCEPT;
-        const el = node as Element;
-        return el.hasAttribute("data-annotation-ui") ||
-          el.classList.contains("spec-del") ||
-          el.classList.contains("spec-del-block") ||
-          el.classList.contains("spec-del-structure") ||
-          el.classList.contains("spec-list-number")
+        return (node as Element).matches(INJECTED)
           ? NodeFilter.FILTER_REJECT
           : NodeFilter.FILTER_SKIP;
       },
@@ -323,13 +326,266 @@ function blockOfEndpoint(
     : parseSourceLoc(edge.getAttribute(SOURCE_LINE_ATTR));
 }
 
+type Point = { node: Node; offset: number };
+
+const CODE_BLOCK = `[${CODE_CONTENT_START_ATTR}]`;
+
+/**
+ * Old content no selection can anchor to: what `sourceTextWalker` skips, and
+ * the rows, cells and images a compared table puts back (T-221, T-229). Their
+ * prose already sits in `.spec-del` runs; an old image put back into a
+ * current cell sits in nothing else.
+ */
+const OLD_OR_INJECTED = `${INJECTED}, .spec-del-row, .spec-del-cell, .spec-del-img`;
+
+/**
+ * What a selection takes whole rather than character by character: a code
+ * block's wrapper, with whatever pierre or mermaid drew in it, an image, and
+ * any other element with a shadow root of its own.
+ */
+function isBox(el: Element): boolean {
+  return (
+    el.hasAttribute(CODE_CONTENT_START_ATTR) ||
+    el.tagName === "IMG" ||
+    el.shadowRoot !== null
+  );
+}
+
+/** The part of a text node inside `range`, and where in the node it starts. */
+function partIn(text: Text, range: Range): { from: number; text: string } {
+  const from = text === range.startContainer ? range.startOffset : 0;
+  const to = text === range.endContainer ? range.endOffset : text.length;
+  return { from, text: text.data.slice(from, to) };
+}
+
+/**
+ * Whether `range` selects any of a box rather than only touching its edge:
+ * an image or a shadow host lies wholly in the range, and a code block
+ * shares text or a pierre host with it.
+ */
+function coversBox(range: Range, box: Element): boolean {
+  if (!box.hasAttribute(CODE_CONTENT_START_ATTR)) {
+    const parent = box.parentNode;
+    if (parent === null) return false;
+    const at = Array.prototype.indexOf.call(parent.childNodes, box);
+    return (
+      range.comparePoint(parent, at) === 0 &&
+      range.comparePoint(parent, at + 1) === 0
+    );
+  }
+  const inBox = document.createRange();
+  inBox.selectNodeContents(box);
+  const from = inBox.comparePoint(range.startContainer, range.startOffset);
+  const to = inBox.comparePoint(range.endContainer, range.endOffset);
+  if (from > 0 || to < 0) return false;
+  if (from === 0) inBox.setStart(range.startContainer, range.startOffset);
+  if (to === 0) inBox.setEnd(range.endContainer, range.endOffset);
+  return (
+    /\S/.test(inBox.toString()) ||
+    [...box.querySelectorAll("diffs-container")].some((host) =>
+      range.intersectsNode(host),
+    )
+  );
+}
+
+type Content =
+  | { kind: "text"; node: Text; from: number; text: string }
+  | { kind: "box"; el: Element };
+
+/**
+ * `node` as something the selection selects in one of the container's
+ * blocks: text other than whitespace, or a box it covers. Null for anything
+ * else — markup, old or injected nodes, what a box holds, and what the renderer
+ * adds outside the blocks, such as the heading of a footnote list.
+ */
+function contentAt(
+  container: Element,
+  range: Range,
+  node: Node,
+): Content | null {
+  const el = elementNear(node);
+  if (el === null || el.closest(OLD_OR_INJECTED) !== null) return null;
+  const inside = node === el ? el.parentElement : el;
+  const box = inside?.closest(CODE_BLOCK) ?? null;
+  if (box !== null && container.contains(box)) return null;
+  const block = el.closest(`[${SOURCE_LINE_ATTR}]`);
+  if (block === null || !container.contains(block)) return null;
+  if (node instanceof Text) {
+    const part = partIn(node, range);
+    return /\S/.test(part.text) ? { kind: "text", node, ...part } : null;
+  }
+  return node === el && isBox(el) && coversBox(range, el)
+    ? { kind: "box", el }
+    : null;
+}
+
+/**
+ * Whether an endpoint selects nothing itself, and may move: it sits in the
+ * container's light DOM, outside any code block the selection covers, on an
+ * element or on text whose part in the selection is blank. pierre's rows
+ * map their own edges, and so does the text of a code block.
+ */
+function selectsNothing(container: Element, range: Range, at: Point): boolean {
+  if (!container.contains(at.node)) return false;
+  const box = elementNear(at.node)?.closest(CODE_BLOCK) ?? null;
+  if (box !== null && container.contains(box) && coversBox(range, box)) {
+    return false;
+  }
+  return !(at.node instanceof Text) || !/\S/.test(partIn(at.node, range).text);
+}
+
+/** Whether a walk looks at what `node` holds. */
+function walksInto(node: Node): boolean {
+  return (
+    !(node instanceof Element) ||
+    !(node.matches(OLD_OR_INJECTED) || isBox(node))
+  );
+}
+
+function lastWithin(node: Node): Node {
+  let last = node;
+  while (walksInto(last) && last.lastChild !== null) last = last.lastChild;
+  return last;
+}
+
+/** The node before `node` in document order, within the container. */
+function nodeBefore(container: Element, node: Node): Node | null {
+  if (node === container) return null;
+  if (node.previousSibling !== null) return lastWithin(node.previousSibling);
+  const parent = node.parentNode;
+  return parent === container ? null : parent;
+}
+
+/** The node after `node` in document order, within the container. */
+function nodeAfter(container: Element, node: Node, into: boolean): Node | null {
+  if (into && walksInto(node) && node.firstChild !== null) {
+    return node.firstChild;
+  }
+  for (let n: Node | null = node; n !== null && n !== container; ) {
+    if (n.nextSibling !== null) return n.nextSibling;
+    n = n.parentNode;
+  }
+  return null;
+}
+
+/** The last content the selection selects before `at`, its end. */
+function contentBefore(
+  container: Element,
+  range: Range,
+  at: Point,
+): Content | null {
+  let node: Node | null;
+  if (at.node instanceof Text) node = nodeBefore(container, at.node);
+  else {
+    const child = at.node.childNodes[at.offset - 1];
+    node = child === undefined ? at.node : lastWithin(child);
+  }
+  for (; node !== null; node = nodeBefore(container, node)) {
+    // Past the start: nothing before it is selected.
+    if (!range.intersectsNode(node)) return null;
+    const content = contentAt(container, range, node);
+    if (content !== null) return content;
+  }
+  return null;
+}
+
+/** The first content the selection selects after `at`, its start. */
+function contentAfter(
+  container: Element,
+  range: Range,
+  at: Point,
+): Content | null {
+  let node: Node | null =
+    (at.node instanceof Text ? undefined : at.node.childNodes[at.offset]) ??
+    nodeAfter(container, at.node, false);
+  for (; node !== null; node = nodeAfter(container, node, true)) {
+    if (!range.intersectsNode(node)) return null;
+    const content = contentAt(container, range, node);
+    if (content !== null) return content;
+  }
+  return null;
+}
+
+/** The point on one side of an element, in its parent. */
+function beside(el: Element, side: "before" | "after"): Point {
+  const parent = el.parentNode as Node;
+  const at = Array.prototype.indexOf.call(parent.childNodes, el);
+  return { node: parent, offset: side === "before" ? at : at + 1 };
+}
+
+/**
+ * Endpoints that select nothing themselves, moved onto the nearest content
+ * the selection does select. A triple-click leaves an end on an element
+ * boundary rather than in text — Chromium and WebKit at the start of the
+ * next block, Firefox around the block's own element — and an element
+ * endpoint maps to no column, which would widen the anchor to the whole
+ * lines of every block the two ends touch. An endpoint that selects any
+ * character itself is never moved, so a drag anchors exactly as it reads.
+ *
+ * Text takes the endpoint onto its first or last character that is not
+ * whitespace; an image or a shadow host, beside it. A code block keeps a
+ * text endpoint where it is, at the edge of the prose next to the block,
+ * which already maps to columns; an element endpoint goes just inside the
+ * block's wrapper, whose own stamp then bounds the anchor.
+ */
+function endsOnContent(
+  container: Element,
+  ends: SelectionEndpoints,
+): SelectionEndpoints {
+  const ordered = orderedEndpoints(ends);
+  if (ordered === null) return ends;
+  const { range } = ordered;
+  const { start, end } = ordered.ends;
+  const moveStart = selectsNothing(container, range, start);
+  const moveEnd = selectsNothing(container, range, end);
+  if (!moveStart && !moveEnd) return ends;
+  const first = moveStart ? contentAfter(container, range, start) : null;
+  const last = moveEnd ? contentBefore(container, range, end) : null;
+  // Nothing but whitespace between the two ends.
+  if ((moveStart && first === null) || (moveEnd && last === null)) return ends;
+  return {
+    start: first === null ? start : startOn(first, start),
+    end: last === null ? end : endOn(last, end),
+    collapsed: ends.collapsed,
+  };
+}
+
+function startOn(content: Content, start: Point): Point {
+  if (content.kind === "text") {
+    return {
+      node: content.node,
+      offset: content.from + content.text.search(/\S/),
+    };
+  }
+  if (!content.el.hasAttribute(CODE_CONTENT_START_ATTR)) {
+    return beside(content.el, "before");
+  }
+  return start.node instanceof Text ? start : { node: content.el, offset: 0 };
+}
+
+function endOn(content: Content, end: Point): Point {
+  if (content.kind === "text") {
+    return {
+      node: content.node,
+      offset: content.from + content.text.trimEnd().length,
+    };
+  }
+  if (!content.el.hasAttribute(CODE_CONTENT_START_ATTR)) {
+    return beside(content.el, "after");
+  }
+  return end.node instanceof Text
+    ? end
+    : { node: content.el, offset: content.el.childNodes.length };
+}
+
 /**
  * The anchor a selection points at, or null when it points at nothing in
  * this file. Endpoints outside the container are clamped to its first or
  * last block instead of forfeiting the anchor: a drag that overshoots the
  * end of the prose, or ⌘/Ctrl-A, still means "this file, from here to
  * there". Only a selection lying wholly on one side of the container has
- * nothing to say about it.
+ * nothing to say about it. Endpoints inside it that select nothing are first
+ * moved onto what the selection does select (`endsOnContent`).
  *
  * Fed endpoints rather than a Selection so that the decision is a value
  * computation: no DOM events, no React, and tests can hand it a pair of
@@ -338,12 +594,13 @@ function blockOfEndpoint(
 export function anchorForSelection(
   container: Element,
   index: SegmentIndex,
-  ends: SelectionEndpoints,
+  selected: SelectionEndpoints,
 ): AnchorRange | null {
   // Old semantic blocks and explicit old list numbers have no line in the
   // current source; a line fallback would silently attach to nearby prose.
-  if (isOldEndpoint(ends.start.node) || isOldEndpoint(ends.end.node))
+  if (isOldEndpoint(selected.start.node) || isOldEndpoint(selected.end.node))
     return null;
+  const ends = endsOnContent(container, selected);
   const startSide = sideOf(container, ends.start.node, ends.start.offset);
   const endSide = sideOf(container, ends.end.node, ends.end.offset);
   if (startSide === null || endSide === null) return null;
