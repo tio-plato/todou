@@ -1050,6 +1050,8 @@ export async function resolveSpecComments(
           inArray(comments.id, input.comment_ids),
         ),
       )
+      // In id order whatever the plan scans: the lock order on `lockIssueRows`.
+      .orderBy(asc(comments.id))
       .for("update");
     const byId = new Map(rows.map((r) => [r.id, r]));
     const paths: string[] = [];
