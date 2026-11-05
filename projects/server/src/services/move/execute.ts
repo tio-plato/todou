@@ -126,7 +126,7 @@ async function moveWithinDb(
 
   return db.transaction(async (tx) => {
     // Pins the row for the whole move. Reference recording takes a share
-    // lock on the same row (see recordReferences), so an event cannot land
+    // lock on the same row (see lockIssueRows), so an event cannot land
     // on the card between the copy and the cleanup that would delete it.
     await tx
       .select({ id: issues.id })

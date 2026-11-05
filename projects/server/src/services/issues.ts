@@ -88,6 +88,7 @@ import { metadataEntriesByIssue, metadataRowsFor } from "./metadata.ts";
 import { loadMuteContext } from "./mutes.ts";
 import { unreadIssueState } from "./reads.ts";
 import {
+  lockIssueRows,
   recordCrossReferences,
   recordIssueMentions,
   recordLocalReferences,
@@ -535,6 +536,9 @@ export async function createIssue(
     self: null,
   });
   const row = await db.transaction(async (tx) => {
+    // The referenced cards lock before the number, the order a move takes
+    // the card and then the target's project_meta (see lockIssueRows).
+    const targets = await lockIssueRows(tx, project, null, resolved.local);
     const meta = await tx
       .update(projectMeta)
       .set({ nextIssueNumber: sql`${projectMeta.nextIssueNumber} + 1` })
@@ -622,7 +626,7 @@ export async function createIssue(
       project,
       actor.id,
       { issueNumber: number },
-      resolved.local,
+      targets,
       agentContext,
     );
     await recordIssueMentions(
@@ -1090,6 +1094,11 @@ export async function updateIssue(
   };
 
   await db.transaction(async (tx) => {
+    // Ahead of the first event and the UPDATE (see lockIssueRows).
+    const targets =
+      resolved === null
+        ? []
+        : await lockIssueRows(tx, project, before.id, resolved.local);
     const addEvent = async (
       type: (typeof issueEvents.$inferInsert)["type"],
       payload: Record<string, unknown>,
@@ -1227,7 +1236,7 @@ export async function updateIssue(
         project,
         actor.id,
         { issueNumber: number },
-        resolved.local,
+        targets,
         agentContext,
       );
       await recordIssueMentions(
