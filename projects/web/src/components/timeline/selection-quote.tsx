@@ -284,7 +284,12 @@ export function SelectionQuote() {
           event.target instanceof Element &&
           event.target.closest(`[${UI_ATTR}]`) !== null;
         if (!onUi) {
-          dragging.current = true;
+          // A finger selects through the platform's own long press and
+          // handles, whose pointer events promise no end: iOS sends one
+          // pointerdown for a handle drag and nothing after it. Holding
+          // the read back is for the entry sitting under the words a mouse
+          // or pen is still selecting, so a touch never holds it.
+          if (event.pointerType !== "touch") dragging.current = true;
           return;
         }
         pressingUi.current = true;
