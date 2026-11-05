@@ -75,7 +75,10 @@ export function useSelectionEntry<A extends AnchorRange>(
   resolve: (container: Element, ends: SelectionEndpoints) => A | null,
 ): { pending: PendingSelection<A> | null; clear: () => void } {
   const [pending, setPending] = useState<PendingSelection<A> | null>(null);
-  /** A drag is in flight: its selection is not final until the pointer lifts. */
+  /**
+   * A mouse or pen drag is in flight: its selection is not final until the
+   * pointer lifts.
+   */
   const draggingRef = useRef(false);
   /** The entry is being pressed: the selection may vanish, the anchor stays. */
   const pressingUiRef = useRef(false);
@@ -105,9 +108,9 @@ export function useSelectionEntry<A extends AnchorRange>(
         if (!keepOnEmpty && !pressingUiRef.current) setPending(null);
         return;
       }
-      // Mid-drag the entry would sit under the words still being selected,
-      // and every frame would pay for a recompute. `pointerup` schedules
-      // the one that counts.
+      // During a mouse or pen drag the entry would sit under the words
+      // still being selected, and every frame would pay for a recompute.
+      // `pointerup` schedules the one that counts.
       if (draggingRef.current) return;
       const ends = selectionEndpoints(selection, container);
       if (ends === null || ends.collapsed) {
@@ -184,7 +187,12 @@ export function useSelectionEntry<A extends AnchorRange>(
           event.target instanceof Element &&
           event.target.closest("[data-annotation-ui]") !== null;
         if (!onUi) {
-          draggingRef.current = true;
+          // A finger selects through the platform's own long press and
+          // handles, whose pointer events promise no end: iOS sends one
+          // pointerdown for a handle drag and nothing after it. Holding
+          // the recompute back is for the entry sitting under the words a
+          // mouse or pen is still selecting, so a touch never holds it.
+          if (event.pointerType !== "touch") draggingRef.current = true;
           return;
         }
         pressingUiRef.current = true;
