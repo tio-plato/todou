@@ -32,7 +32,7 @@ import {
   scanReferenceTokens,
   spliceResolved,
 } from "@todou/shared";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lt, type SQL } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import type { AppContext, DbContext } from "../bootstrap.ts";
 import type { Db } from "../db/driver.ts";
@@ -809,33 +809,95 @@ class Resolver {
 }
 
 /**
- * Land `referenced` events on the cards this content names, in the same
- * project and in the same transaction.
+ * Lock the issue rows a write in this project touches, before it writes any
+ * of them: `write`, the card it updates (null when it updates none), and the
+ * cards `numbers` references. Returns the referenced cards that are still
+ * referenceable, which are the ones owed a `referenced` event.
  *
- * The share lock is what makes a single-transaction move wait: it takes FOR
- * UPDATE on the same row, and without it an event could land on the card
+ * Row locks on PostgreSQL follow one order across the server, so that the
+ * waits between transactions never form a cycle:
+ *
+ * 1. Comment rows before issue rows. A transaction that locks both existing
+ *    comment rows and issue rows locks the comment rows first.
+ * 2. Rows of one kind in ascending id: comment rows by `comments.id`, issue
+ *    rows by `issues.id`. A statement that locks several rows says
+ *    `ORDER BY id`; several statements go from the smallest id up.
+ * 3. Each row in its strongest mode the first time, never upgraded: FOR NO
+ *    KEY UPDATE on a card the transaction updates (what an `UPDATE issues`
+ *    that changes no key column takes), FOR UPDATE on a card being moved,
+ *    FOR SHARE on a card that is only referenced. Two transactions that each
+ *    share-lock a row and then update it wait for each other's share lock.
+ * 4. Every issue row is locked before the transaction first writes an
+ *    existing issue row. A newly inserted issue row, which no other
+ *    transaction can see, is exempt; so is the KEY SHARE a foreign-key check
+ *    takes on an issue row when a comment or an event is inserted, which
+ *    conflicts only with FOR UPDATE.
+ * 5. Issue rows before `project_meta`. Creating a card locks the cards its
+ *    body references, then this project's `project_meta` to take a number; a
+ *    same-database move locks the card it moves, then the target project's
+ *    `project_meta`.
+ *
+ * One statement takes one mode, so this takes three: the referenced cards
+ * below `write` FOR SHARE, `write` FOR NO KEY UPDATE, the referenced cards
+ * above it FOR SHARE. Splitting the references around `write` keeps the
+ * whole set in id order, and `ORDER BY` sorts the rows before they are
+ * locked. With no `write` the references take one statement. With no
+ * references nothing is locked: a transaction that touches one issue row has
+ * no order to keep, and its `UPDATE` takes the lock itself.
+ *
+ * The share lock is also what makes a single-transaction move wait: it takes
+ * FOR UPDATE on the same row, and without it an event could land on the card
  * between the copy and the source-side cleanup that deletes it again.
+ *
+ * A locked row's `deleted_at`, `moved_at` and `moving_since` cannot change
+ * until this transaction ends, so the cards returned are the set to record.
+ */
+export async function lockIssueRows(
+  tx: Db,
+  project: ProjectRow,
+  write: number | null,
+  numbers: number[],
+): Promise<Array<{ id: number; number: number }>> {
+  if (numbers.length === 0) return [];
+  const share = (range: SQL | undefined) =>
+    tx
+      .select({ id: issues.id, number: issues.number })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.projectId, project.id),
+          inArray(issues.number, numbers),
+          referenceable,
+          range,
+        ),
+      )
+      .orderBy(asc(issues.id))
+      .for("share");
+  if (write === null) return share(undefined);
+  const below = await share(lt(issues.id, write));
+  await tx
+    .select({ id: issues.id })
+    .from(issues)
+    .where(eq(issues.id, write))
+    .for("no key update");
+  const above = await share(gt(issues.id, write));
+  return [...below, ...above];
+}
+
+/**
+ * Land `referenced` events on `targets`, in the same project and in the same
+ * transaction. `targets` comes from `lockIssueRows` earlier in that
+ * transaction.
  */
 export async function recordLocalReferences(
   tx: Db,
   project: ProjectRow,
   actorId: number,
   source: ResolveSource,
-  numbers: number[],
+  targets: Array<{ id: number; number: number }>,
   agentContext: AgentContext | null,
 ): Promise<Array<{ eventId: number; issueNumber: number }>> {
-  if (numbers.length === 0) return [];
-  const targets = await tx
-    .select({ id: issues.id, number: issues.number })
-    .from(issues)
-    .where(
-      and(
-        eq(issues.projectId, project.id),
-        inArray(issues.number, numbers),
-        referenceable,
-      ),
-    )
-    .for("share");
+  if (targets.length === 0) return [];
   return insertReferenceEvents(
     tx,
     project,
