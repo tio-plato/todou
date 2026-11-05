@@ -185,7 +185,7 @@ describe("quotableSelection", () => {
     ).toBeNull();
   });
 
-  it("clamps an end past the body to its last block", async () => {
+  it("quotes up to the body's last character from a drag past its end", async () => {
     const { view, a } = await renderTwo(comment(1, A), comment(2, B));
     const between = view.getByTestId("between").firstChild as Node;
     const picked = quotableSelection(
@@ -193,12 +193,7 @@ describe("quotableSelection", () => {
       document,
     );
     expect(picked?.body).toBe(a);
-    expect(picked?.anchor).toEqual({
-      lineStart: 3,
-      lineEnd: 3,
-      colStart: null,
-      colEnd: null,
-    });
+    expect(quoted(picked)).toBe("**three** four.");
   });
 
   // A triple-click leaves an end on an element boundary rather than in text:
@@ -249,6 +244,25 @@ describe("quotableSelection", () => {
       );
     },
   );
+
+  it("quotes from the body's first character for a drag in from above it", async () => {
+    const { view, b } = await renderTwo(comment(1, A), comment(2, B));
+    const between = view.getByTestId("between").firstChild as Node;
+    expect(
+      quoted(
+        quotableSelection(select(between, 4, paragraph(b, 0), 5), document),
+      ),
+    ).toBe("Bravo");
+  });
+
+  it("quotes only the text of a body's last item selected past the body", async () => {
+    const { view, a } = await renderTwo(comment(1, LIST), comment(2, B));
+    const last = a.querySelectorAll("li")[2]?.firstChild as Node;
+    const between = view.getByTestId("between").firstChild as Node;
+    expect(
+      quoted(quotableSelection(select(last, 0, between, 0), document)),
+    ).toBe("Third item.");
+  });
 
   it("keeps a code block that ends the selected prose", async () => {
     const { a } = await renderTwo(comment(1, PROSE_AND_CODE), comment(2, B));
