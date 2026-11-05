@@ -566,6 +566,40 @@ describe("floating Quote reply (T-723)", () => {
     );
   });
 
+  it("follows a selection handle dragged after a long press", async () => {
+    // iOS Safari: once the long press lifts, holding a selection handle
+    // sends one touch pointerdown and no pointerup or pointercancel until
+    // the next press. A quick tap on the entry then clicks before the read
+    // its own pointerup schedules has rendered, which the pointerdown,
+    // pointerup and click fired back to back stand for here.
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query !== POINTER_FINE,
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    const { view, onQuote } = mount();
+    const first = await rendered(view, "first");
+    const alpha = textOf(first, "p[data-loc]");
+    const paragraph = alpha.parentElement as Element;
+    const delta = first.querySelectorAll("p[data-loc]")[1]?.firstChild;
+    if (!delta) throw new Error("no second paragraph");
+
+    fireEvent.pointerDown(paragraph, { pointerType: "touch" });
+    select(alpha, 0, alpha, 5);
+    fireEvent.pointerUp(paragraph, { pointerType: "touch" });
+    await view.findByRole("button", { name: "Quote reply" });
+
+    fireEvent.pointerDown(paragraph, { pointerType: "touch" });
+    select(alpha, 0, delta, 5);
+    await settle();
+    const button = view.getByRole("button", { name: "Quote reply" });
+    fireEvent.pointerDown(button, { pointerType: "touch" });
+    fireEvent.pointerUp(button, { pointerType: "touch" });
+    fireEvent.click(button);
+    expect(onQuote).toHaveBeenCalledWith("Alpha *beta* gamma.\n\nDelta");
+  });
+
   it("pins a full-width bar to the viewport's foot for touch", async () => {
     vi.stubGlobal("matchMedia", (query: string) => ({
       matches: query !== POINTER_FINE,
