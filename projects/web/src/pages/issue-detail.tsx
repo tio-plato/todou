@@ -102,6 +102,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useDockCover } from "@/lib/dock-cover.ts";
 import { useRefCompletion } from "@/lib/editor/ref-completion.ts";
 import { useScrollInsets } from "@/lib/scroll-insets.ts";
 import { useDirtySource } from "@/lib/unsaved-guard.ts";
@@ -139,6 +140,8 @@ export function IssueDetailPage() {
   const contentRef = useRef<HTMLDivElement>(null);
   const [end, setEnd] = useState<HTMLDivElement | null>(null);
   const atEnd = useInView(end);
+  // For what floats above the composer, the New messages pill among them.
+  useDockCover(composerRef);
   // Which of the three homes the back control takes (T-461). The header's nav
   // keeps it below `sm`; from there it travels with the heading, inside the
   // column until the viewport leaves a gutter to hang it in.
