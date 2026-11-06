@@ -46,6 +46,7 @@ import { useQuestionLanding } from "@/components/timeline/use-question-landing.t
 import { useTimelineAnchor } from "@/components/timeline/use-timeline-anchor.ts";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { aboveDock } from "@/lib/dock-cover.ts";
 import { isQuestionLandingHash } from "@/lib/question-landing.ts";
 import {
   isHoldingTarget,
@@ -59,6 +60,8 @@ import { useReadFailure } from "@/lib/use-read-failure.ts";
 const FIRST_PASS_UNITS = 6;
 /** The longest idle period browsers grant, for where there are none. */
 const IDLE_BUDGET_MS = 50;
+/** The New messages pill's clearance above the floating composer. */
+const PILL_GAP = 12;
 
 /** The key a unit renders under, and its identity across fills. */
 function unitKey(unit: RenderUnit): string {
@@ -604,7 +607,10 @@ export function Timeline({
           </div>
         ))}
         {newBelow && (
-          <div className="sticky bottom-36 z-10 flex h-0 items-end justify-center">
+          <div
+            className="sticky z-10 flex h-0 items-end justify-center"
+            style={{ bottom: aboveDock(PILL_GAP) }}
+          >
             <Button
               size="sm"
               className="shadow-lg"
