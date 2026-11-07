@@ -1,4 +1,4 @@
-import type { UserRef } from "@todou/shared";
+import type { MemberRole, UserRef } from "@todou/shared";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { UserRow } from "../../auth/pat.ts";
 import type { AppContext } from "../../bootstrap.ts";
@@ -46,6 +46,11 @@ export type MovePlan = {
   sameProjectDb: boolean;
   /** …and the system tables are in there too, so one transaction covers all. */
   systemColocated: boolean;
+  /**
+   * The mover's role in the source project, for the write gate the move
+   * asks again once it holds the card.
+   */
+  role: MemberRole;
 };
 
 /**
@@ -122,6 +127,7 @@ export async function planMove(
     movedAt: new Date(),
     sameProjectDb: sourceUrl === targetUrl,
     systemColocated: sourceUrl === systemUrl && targetUrl === systemUrl,
+    role,
   };
 }
 

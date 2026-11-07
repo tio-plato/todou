@@ -20,12 +20,13 @@ import {
   issueMoves,
   projects,
 } from "../../db/system-schema.ts";
-import { IssueMovingError } from "../../errors.ts";
+import { IssueMovingError, NotFoundError } from "../../errors.ts";
 import { type ProjectRow, routeInfoOf } from "../access.ts";
 import { markDraftAttachments } from "../attachments.ts";
 import { announceBlockChanges, evaluateBlockerStatus } from "../blocks.ts";
 import { getIssue } from "../issues.ts";
 import { lineageOf, recordAliases, registerMove } from "../relocation.ts";
+import { assertIssueWritable, gateColumns } from "../trash.ts";
 import {
   type ActivityImportedMaxIds,
   clearIssueChildren,
@@ -128,11 +129,16 @@ async function moveWithinDb(
     // Pins the row for the whole move. Reference recording takes a share
     // lock on the same row (see lockIssueRows), so an event cannot land
     // on the card between the copy and the cleanup that would delete it.
-    await tx
-      .select({ id: issues.id })
+    const [locked] = await tx
+      .select(gateColumns)
       .from(issues)
       .where(eq(issues.id, plan.row.id))
       .for("update");
+    if (locked === undefined) throw new NotFoundError("issue not found");
+    // `planMove` checked outside any transaction, and another move or a
+    // delete may have committed while this waited: this is the first look
+    // at the card while holding it.
+    assertIssueWritable(locked, actor, plan.role);
 
     const number =
       plan.reinhabit ?? (await nextNumber(tx, plan.target.project.id));
@@ -240,13 +246,20 @@ async function moveAcrossDbs(
         eq(issues.id, plan.row.id),
         isNull(issues.movingSince),
         isNull(issues.movedAt),
+        isNull(issues.deletedAt),
       ),
     )
     .returning({ id: issues.id });
   if (frozen.length === 0) {
-    // Another move got there first. The registration row has to go before
-    // the 409, or the sweep would later thaw a freeze that is not ours.
+    // Another move got there first, or the card went to the trash after the
+    // plan read it. The registration row has to go before the 409, or the
+    // sweep would later thaw a freeze that is not ours.
     await system.delete(issueMoves).where(eq(issueMoves.moveToken, moveToken));
+    const [now] = await plan.source.db
+      .select(gateColumns)
+      .from(issues)
+      .where(eq(issues.id, plan.row.id));
+    if (now !== undefined) assertIssueWritable(now, actor, plan.role);
     throw new IssueMovingError();
   }
   await step(2);
@@ -623,6 +636,9 @@ async function replanFromRow(
     movedAt: row.movedAt,
     sameProjectDb: sourceUrl === targetUrl,
     systemColocated: false,
+    // Recovery carries on from after the freeze, past both places that read
+    // the role.
+    role: "admin",
   };
 }
 
