@@ -53,6 +53,7 @@ import {
   assertIssueReadable,
   assertIssueWritable,
   gateColumns,
+  lockWritableIssue,
   type TrashFields,
 } from "./trash.ts";
 import { getUserRefs } from "./users.ts";
@@ -1041,6 +1042,8 @@ export async function resolveSpecComments(
 
   const events: ChangeEvent[] = [];
   const resolved = await db.transaction(async (tx) => {
+    // The card before the comments it resolves (see lockIssueRows).
+    await lockWritableIssue(tx, { id: issue.id, actor, role });
     const rows = await tx
       .select()
       .from(comments)

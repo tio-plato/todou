@@ -57,6 +57,7 @@ import {
   assertIssueReadable,
   assertIssueWritable,
   gateColumns,
+  lockWritableIssue,
 } from "./trash.ts";
 import { getUserRefs } from "./users.ts";
 
@@ -127,6 +128,8 @@ export async function uploadAttachment(
   const requested = sanitizeFilename(file.name);
   const row = await retryNaming(() =>
     db.transaction(async (tx) => {
+      // The gate again, under the card's lock (see lockIssueRows).
+      await lockWritableIssue(tx, { id: issue.id, actor, role });
       const attachment = await insertNamed(tx, requested, {
         projectId: project.id,
         issueId: issue.id,
@@ -471,6 +474,8 @@ export async function completeDirectUpload(
   try {
     row = await retryNaming(() =>
       db.transaction(async (tx) => {
+        // The gate again, under the card's lock (see lockIssueRows).
+        await lockWritableIssue(tx, { id: pending.issueId, actor, role });
         const attachment = await insertNamed(tx, pending.filename, {
           projectId: project.id,
           issueId: pending.issueId,
@@ -747,6 +752,9 @@ export async function deleteAttachment(
   }
 
   const deleted = await db.transaction(async (tx) => {
+    // The gate again, under the card's lock, before the row under it goes
+    // (see lockIssueRows).
+    await lockWritableIssue(tx, { id: row.issueId, actor, role });
     const gone = await tx
       .delete(attachments)
       .where(eq(attachments.id, row.id))
