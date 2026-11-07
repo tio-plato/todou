@@ -26,6 +26,7 @@ describe.skipIf(!PG_URL)("moves and writes on PostgreSQL", () => {
   let holderPid: number;
   let author: { user: UserRow; headers: { authorization: string } };
   let referenced: Card;
+  let writer: { user: UserRow; headers: { authorization: string } };
   const stamp = Date.now().toString(36);
   const source = `movelock-${stamp}`;
   let projects = 0;
@@ -74,6 +75,13 @@ describe.skipIf(!PG_URL)("moves and writes on PostgreSQL", () => {
     });
     expect(created.status).toBe(201);
     referenced = await card();
+    writer = await addUserWithToken(t.ctx, `movelock-${stamp}-writer`);
+    const joined = await send(
+      "PUT",
+      `/projects/${source}/members/${writer.user.id}`,
+      { role: "writer" },
+    );
+    expect(joined.status).toBe(204);
   });
 
   afterAll(async () => {
@@ -488,6 +496,44 @@ describe.skipIf(!PG_URL)("moves and writes on PostgreSQL", () => {
       // be the one read once the move held the card.
       const landed = await send("GET", `/projects/${target.slug}/issues/${n}`);
       expect((await json(landed)).open_questions).toBe(0);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("a move of a card trashed while it waited is refused", async () => {
+    // Written by a writer and moved by an admin, so that the move's second
+    // look at the card judges the trash by the mover's own role.
+    const created = await t.app.request(`/api/projects/${source}/issues`, {
+      method: "POST",
+      headers: { ...writer.headers, "content-type": "application/json" },
+      body: JSON.stringify({ title: "Trashed while moving" }),
+    });
+    expect(created.status).toBe(201);
+    const x = (await json(created)) as Card;
+    const target = await project();
+
+    await holder.query("BEGIN");
+    await holder.query(
+      "SELECT id FROM issues WHERE id = $1 FOR NO KEY UPDATE",
+      [x.id],
+    );
+    const pending = move(x.number, target.slug);
+    try {
+      await waitForLockWaiters(1);
+      // The holder plays a delete that commits after the move was planned.
+      await holder.query(
+        "UPDATE issues SET deleted_at = now(), deleted_by = author_id WHERE id = $1",
+        [x.id],
+      );
+      await holder.query("COMMIT");
+
+      const refused = await pending;
+      expect(refused.status).toBe(409);
+      expect((await json(refused)).error.code).toBe("issue_deleted");
+      const listed = await send("GET", `/projects/${target.slug}/issues`);
+      expect((await json(listed)).items).toEqual([]);
     } finally {
       await holder.query("ROLLBACK");
       await Promise.allSettled([pending]);

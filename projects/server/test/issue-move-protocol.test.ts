@@ -11,7 +11,7 @@ import { issueAddresses, issueMoves } from "../src/db/system-schema.ts";
 import { routeInfoOf } from "../src/services/access.ts";
 import type { ActivityImportedMaxIds } from "../src/services/move/copy.ts";
 import { sweepMoves } from "../src/services/move/execute.ts";
-import { makeTestApp, type TestApp } from "./helpers.ts";
+import { addUserWithToken, makeTestApp, type TestApp } from "./helpers.ts";
 
 // biome-ignore lint/suspicious/noExplicitAny: test-side response poking
 const json = (res: Response): Promise<any> => res.json() as Promise<any>;
@@ -179,9 +179,13 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
     const B = `pmv-b-${placement}`;
 
     /** A fresh app per test: the injected failure is per-run, not per-suite. */
-    const setup = async (failAt?: Step) => {
+    const setup = async (
+      failAt?: Step,
+      onStep?: (step: Step) => Promise<unknown>,
+    ) => {
       const t = await makeTestApp(placement, undefined, {
         afterMoveStep: async (step) => {
+          await onStep?.(step);
           if (step === failAt) throw new Error(`injected failure at ${step}`);
         },
       });
@@ -201,8 +205,11 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
     };
 
     let open: TestApp | null = null;
-    const app = async (failAt?: Step) => {
-      const made = await setup(failAt);
+    const app = async (
+      failAt?: Step,
+      onStep?: (step: Step) => Promise<unknown>,
+    ) => {
+      const made = await setup(failAt, onStep);
       open = made.t;
       return made;
     };
@@ -548,6 +555,56 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
       expect(
         (await req(t, `/projects/${A}/issues/${source.number}`, admin)).status,
       ).toBe(301);
+    });
+
+    it("refuses to freeze a card trashed after the move was planned", async () => {
+      let trash: () => Promise<unknown> = async () => {};
+      const { t, admin, ids } = await app(undefined, (step) =>
+        step === 1 ? trash() : Promise.resolve(),
+      );
+      // Written by a writer and moved by an admin, so that the gate the move
+      // asks again judges the trash by the mover's own role.
+      const writer = await addUserWithToken(t.ctx, "trash-race-writer");
+      const joined = await req(
+        t,
+        `/projects/${A}/members/${writer.user.id}`,
+        admin,
+        { method: "PUT", body: JSON.stringify({ role: "writer" }) },
+      );
+      expect(joined.status).toBe(204);
+      const source = await createIssue(
+        t,
+        writer.headers,
+        A,
+        "trashed mid-move",
+      );
+      // Between registering (step 1) and freezing (step 2): a delete that
+      // commits after `planMove` read the card.
+      trash = async () => {
+        const res = await req(
+          t,
+          `/projects/${A}/issues/${source.number}`,
+          admin,
+          {
+            method: "DELETE",
+          },
+        );
+        expect(res.status).toBe(204);
+      };
+
+      const moved = await move(t, admin, A, source.number, B);
+      expect(moved.status).toBe(409);
+      expect((await json(moved)).error.code).toBe("issue_deleted");
+      expect(await t.ctx.router.system().select().from(issueMoves)).toEqual([]);
+      const listed = await req(t, `/projects/${B}/issues`, admin);
+      expect((await json(listed)).items).toEqual([]);
+      const dbA = await dbOf(t, ids[A] as number, A);
+      const [row] = await dbA
+        .select()
+        .from(issues)
+        .where(eq(issues.id, source.id));
+      expect(row?.deletedAt).not.toBeNull();
+      expect(row?.movingSince).toBeNull();
     });
 
     it("keeps the address book flat for every address the card has had", async () => {
