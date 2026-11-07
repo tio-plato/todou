@@ -1084,11 +1084,14 @@ export async function updateIssue(
   };
 
   await db.transaction(async (tx) => {
-    // Ahead of the first event and the UPDATE (see lockIssueRows).
-    const targets =
-      resolved === null
-        ? []
-        : await lockIssueRows(tx, project, before.id, resolved.local);
+    // Ahead of the first event and the UPDATE, asking the write gate again
+    // under the card's lock (see lockIssueRows).
+    const targets = await lockIssueRows(
+      tx,
+      project,
+      { id: before.id, actor, role },
+      resolved?.local ?? [],
+    );
     const addEvent = async (
       type: (typeof issueEvents.$inferInsert)["type"],
       payload: Record<string, unknown>,
