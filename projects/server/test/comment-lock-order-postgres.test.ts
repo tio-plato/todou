@@ -132,10 +132,11 @@ describe.skipIf(!PG_URL)("bulk comment locks on PostgreSQL", () => {
   };
 
   // The holder is a transaction that keeps the order, locking the two rows by
-  // id: a request that hides a few comments through a primary-key index
-  // scan, say. A request that also locks by id waits on `lower` holding no
-  // comment row; one that locks in physical order already holds `higher`,
-  // and the holder's second lock closes the cycle.
+  // id. A request that also locks by id waits on `lower` holding no comment
+  // row; one that locks in physical order already holds `higher`, and the
+  // holder's second lock closes the cycle. (A hide holds the card before its
+  // comments, so no real write plays the holder's part any more; the case
+  // pins that several comments are still taken in id order.)
   const race = async (
     lower: number,
     higher: number,

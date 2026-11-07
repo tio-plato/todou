@@ -8,8 +8,8 @@ const json = (response: Response): Promise<any> => response.json();
 const PG_URL = process.env.TODOU_TEST_POSTGRES_URL;
 
 // PGlite serializes on its one connection, so lock order never shows there.
-// The holder plays the two halves of an answer: lock the question comment,
-// then, once the submission waits on a lock it holds, write the issue row.
+// The holder plays an answer: it locks the card, then the question comment,
+// and once the submission waits on the card it writes the answer.
 describe.skipIf(!PG_URL)("command submission lock order", () => {
   let t: TestApp;
   let holder: pg.Client;
@@ -50,7 +50,7 @@ describe.skipIf(!PG_URL)("command submission lock order", () => {
     await t?.cleanup();
   });
 
-  it("a submission with a body and a hide locks the comments before the issue row", async () => {
+  it("a submission with a body and a hide waits for an answer in flight", async () => {
     const card = await post("/issues", { title: "Hide an asked question" });
     expect(card.status).toBe(201);
     const issue = (await json(card)) as { id: number; number: number };
@@ -71,6 +71,10 @@ describe.skipIf(!PG_URL)("command submission lock order", () => {
       await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")
     ).rows[0]?.pid;
     await holder.query("BEGIN");
+    await holder.query(
+      "SELECT id FROM issues WHERE id = $1 FOR NO KEY UPDATE",
+      [issue.id],
+    );
     await holder.query("SELECT id FROM comments WHERE id = $1 FOR UPDATE", [
       question.id,
     ]);
