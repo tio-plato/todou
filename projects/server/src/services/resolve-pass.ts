@@ -48,7 +48,12 @@ import { type ProjectRow, projectRoleOf, routeInfoOf } from "./access.ts";
 import type { ReferenceInputs } from "./cross-references.ts";
 import { currentRefPrefix } from "./references.ts";
 import { type Address, aliasOf, currentAddressOf } from "./relocation.ts";
-import { live, referenceable } from "./trash.ts";
+import {
+  live,
+  lockWritableIssue,
+  referenceable,
+  type WriteGate,
+} from "./trash.ts";
 
 /** The content being saved, so a card never records a reference to itself. */
 export type ResolveSource = { issueNumber: number; commentId?: number };
@@ -809,19 +814,26 @@ class Resolver {
 }
 
 /**
- * Lock the issue rows a write in this project touches, before it writes any
- * of them: `write`, the card it updates (null when it updates none), and the
- * cards `numbers` references. Returns the referenced cards that are still
+ * Lock the issue rows a write in this project touches, before it locks or
+ * writes anything else: `write`, the card it writes (null when it writes
+ * none), asking the write gate again under its lock, and the cards
+ * `numbers` references. Returns the referenced cards that are still
  * referenceable, which are the ones owed a `referenced` event.
  *
  * Row locks on PostgreSQL follow one order across the server, so that the
  * waits between transactions never form a cycle:
  *
- * 1. Comment rows before issue rows. A transaction that locks both existing
- *    comment rows and issue rows locks the comment rows first.
- * 2. Rows of one kind in ascending id: comment rows by `comments.id`, issue
- *    rows by `issues.id`. A statement that locks several rows says
- *    `ORDER BY id`; several statements go from the smallest id up.
+ * 1. A card before the rows under it. A transaction that writes a card locks
+ *    that card's issue row before it locks or writes any row under it
+ *    (comments, assignees, labels, metadata, attachments, pending uploads,
+ *    events), and asks the write gate again under that lock
+ *    (`lockWritableIssue`). A move locks the card it moves FOR UPDATE first.
+ *    Writes to one card therefore queue on the card, and which of them
+ *    locks a comment first no longer matters to any other.
+ * 2. Rows of one kind in ascending id: issue rows by `issues.id`. A
+ *    statement that locks several rows says `ORDER BY id`; several
+ *    statements go from the smallest id up. Several comments locked in one
+ *    statement are sorted by id as well.
  * 3. Each row in its strongest mode the first time, never upgraded: FOR NO
  *    KEY UPDATE on a card the transaction updates (what an `UPDATE issues`
  *    that changes no key column takes), FOR UPDATE on a card being moved,
@@ -837,13 +849,23 @@ class Resolver {
  *    same-database move locks the card it moves, then the target project's
  *    `project_meta`.
  *
+ * Three places keep another order, and none can form a cycle. The last
+ * step of a cross-database move empties the frozen source before it writes
+ * the card row: a write that locks a frozen card finds `moving_since` and
+ * gives up, so none holds a row under it. A move back into a tombstone
+ * updates the tombstone after the card it moves, out of id order: whatever
+ * else locks a tombstone is a write about to be refused by the gate, which
+ * waits on nothing more while it holds it, and references skip tombstones.
+ * And requesting a direct upload inserts its pending row in a statement of
+ * its own without locking the card: it holds no other lock to wait with.
+ *
  * One statement takes one mode, so this takes three: the referenced cards
  * below `write` FOR SHARE, `write` FOR NO KEY UPDATE, the referenced cards
  * above it FOR SHARE. Splitting the references around `write` keeps the
  * whole set in id order, and `ORDER BY` sorts the rows before they are
- * locked. With no `write` the references take one statement. With no
- * references nothing is locked: a transaction that touches one issue row has
- * no order to keep, and its `UPDATE` takes the lock itself.
+ * locked. With no `write` the references take one statement, and with no
+ * references either nothing is locked. `write` is locked even when nothing
+ * is referenced, because the gate has to be asked under its lock.
  *
  * The share lock is also what makes a single-transaction move wait: it takes
  * FOR UPDATE on the same row, and without it an event could land on the card
@@ -855,32 +877,29 @@ class Resolver {
 export async function lockIssueRows(
   tx: Db,
   project: ProjectRow,
-  write: number | null,
+  write: WriteGate | null,
   numbers: number[],
 ): Promise<Array<{ id: number; number: number }>> {
-  if (numbers.length === 0) return [];
-  const share = (range: SQL | undefined) =>
-    tx
-      .select({ id: issues.id, number: issues.number })
-      .from(issues)
-      .where(
-        and(
-          eq(issues.projectId, project.id),
-          inArray(issues.number, numbers),
-          referenceable,
-          range,
-        ),
-      )
-      .orderBy(asc(issues.id))
-      .for("share");
+  const share = async (range: SQL | undefined) =>
+    numbers.length === 0
+      ? []
+      : tx
+          .select({ id: issues.id, number: issues.number })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.projectId, project.id),
+              inArray(issues.number, numbers),
+              referenceable,
+              range,
+            ),
+          )
+          .orderBy(asc(issues.id))
+          .for("share");
   if (write === null) return share(undefined);
-  const below = await share(lt(issues.id, write));
-  await tx
-    .select({ id: issues.id })
-    .from(issues)
-    .where(eq(issues.id, write))
-    .for("no key update");
-  const above = await share(gt(issues.id, write));
+  const below = await share(lt(issues.id, write.id));
+  await lockWritableIssue(tx, write);
+  const above = await share(gt(issues.id, write.id));
   return [...below, ...above];
 }
 

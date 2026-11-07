@@ -6,7 +6,7 @@ import type {
   IssueListRow,
   TimelineComment,
 } from "@todou/shared";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import type { AppContext } from "../bootstrap.ts";
 import {
@@ -42,7 +42,11 @@ import {
   recordCrossReferences,
   resolveContent,
 } from "./resolve-pass.ts";
-import { assertIssueWritable, gateColumns } from "./trash.ts";
+import {
+  assertIssueWritable,
+  gateColumns,
+  lockWritableIssue,
+} from "./trash.ts";
 import { getUserRefs } from "./users.ts";
 
 /**
@@ -230,26 +234,10 @@ export async function executeCommands(
   let listRow: IssueListRow | undefined;
 
   const applied = await db.transaction(async (tx) => {
-    // Answering, hiding and resolving all lock the comment rows before they
-    // write the issue row. `insertCommentInTx` writes the issue row, so the
-    // comments this submission hides are locked ahead of it, or an answer to
-    // one of them deadlocks against this transaction on PostgreSQL. In id
-    // order, as `hideCommentsInTx` takes them: the lock order on
-    // `lockIssueRows`. The same predicate alone does not give the same order,
-    // since a longer id list can turn the plan into a scan in physical order.
-    // `hideCommentsInTx`'s own lock later finds every row held.
-    if (hideIds.length > 0) {
-      await tx
-        .select({ id: comments.id })
-        .from(comments)
-        .where(
-          and(
-            eq(comments.issueId, issue.id),
-            inArray(comments.id, [...new Set(hideIds)]),
-          ),
-        )
-        .orderBy(asc(comments.id))
-        .for("update");
+    // The card before anything under it (see lockIssueRows): here when no
+    // comment is posted, in `insertCommentInTx` when one is.
+    if (resolved === null) {
+      await lockWritableIssue(tx, { id: issue.id, actor, role });
     }
     let hide: HideInTxResult | null = null;
     const addEvent = async (
@@ -289,6 +277,7 @@ export async function executeCommands(
         mentions: resolved.mentions,
         kind: input.kind,
         agentContext,
+        gate: { actor, role },
       });
       comment = result.comment;
       crossTargets = resolved.cross;

@@ -36,7 +36,7 @@ import {
   assertIssueReadable,
   assertIssueWritable,
   gateColumns,
-  referenceable,
+  lockWritableIssue,
 } from "./trash.ts";
 import { getUserRefs } from "./users.ts";
 
@@ -254,6 +254,9 @@ export async function submitAnswers(
   const answers = toAnswerRecords(component, input);
 
   const row = await db.transaction(async (tx) => {
+    // The card first (see lockIssueRows): a move that took the comment away
+    // answers here, before the missing comment does.
+    await lockWritableIssue(tx, { id: issue.id, actor, role });
     // Answer-once is comment-level and atomic: lock the comment row so two
     // concurrent submissions serialize, then the loser sees the winner's
     // event and conflicts instead of double-inserting. A delete that won the
@@ -377,6 +380,10 @@ export async function withdrawQuestions(
   const events: ChangeEvent[] = [];
   const result = await db.transaction(
     async (tx): Promise<QuestionWithdrawResult> => {
+      // The card first, with the gate asked again under its lock: a
+      // cross-database move that froze the card after the check above would
+      // copy it without this withdrawal and then empty the source.
+      await lockWritableIssue(tx, { id: issue.id, actor, role });
       // The lock answering and deleting take too: whichever comes second
       // sees the first one's settlement, or finds the comment gone.
       const [locked] = await tx
@@ -420,27 +427,13 @@ export async function withdrawQuestions(
         })
         .returning({ id: issueEvents.id, ts: microIso(issueEvents.createdAt) });
       if (!event) throw new Error("event insert returned no row");
-      // Writable is asked again here, under the issue row lock this UPDATE
-      // takes: a cross-database move that froze the card after the check
-      // above copies it without this withdrawal and then empties the source,
-      // so the withdrawal would vanish behind a 200.
-      const [counted] = await tx
+      await tx
         .update(issues)
         .set({
           openQuestions: sql`greatest(${issues.openQuestions} - ${asked}, 0)`,
           updatedAt: new Date(),
         })
-        .where(and(eq(issues.id, issue.id), referenceable))
-        .returning({ id: issues.id });
-      if (!counted) {
-        const [now] = await tx
-          .select(gateColumns)
-          .from(issues)
-          .where(eq(issues.id, issue.id));
-        if (!now) throw new NotFoundError("issue not found");
-        assertIssueWritable(now, actor, role);
-        throw new Error("a writable issue matched no counter update");
-      }
+        .where(eq(issues.id, issue.id));
       events.push(
         {
           entity: "timeline",

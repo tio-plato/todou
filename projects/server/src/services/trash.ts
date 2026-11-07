@@ -1,6 +1,7 @@
 import type { MemberRole } from "@todou/shared";
-import { and, isNull, type SQL } from "drizzle-orm";
+import { and, eq, isNull, type SQL } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
+import type { Db } from "../db/driver.ts";
 import { issues } from "../db/project-schema.ts";
 import {
   IssueDeletedError,
@@ -106,6 +107,17 @@ export function assertIssueReadable(
 }
 
 /**
+ * The half of the write gate that deleting and restoring pass as well: a
+ * card that moved away, or is being copied to another project, takes no
+ * write of any kind.
+ */
+export function assertNotMoving(row: TrashFields): void {
+  // Always readable at the source: writing still demands a writer role there.
+  if (row.movedAt !== null) throw new IssueMovedError(row, true, true);
+  if (row.movingSince !== null) throw new IssueMovingError();
+}
+
+/**
  * Write gate: the same visibility, but seeing a trashed card earns a 409
  * instead of permission — a card in the trash is frozen until it is
  * restored, and so is one being copied to another project.
@@ -115,10 +127,39 @@ export function assertIssueWritable(
   actor: UserRow,
   role: MemberRole,
 ): void {
-  // Always readable at the source: writing still demands a writer role there.
-  if (row.movedAt !== null) throw new IssueMovedError(row, true, true);
-  if (row.movingSince !== null) throw new IssueMovingError();
+  assertNotMoving(row);
   if (row.deletedAt === null) return;
   if (seesTrashed(row, actor, role)) throw new IssueDeletedError();
   throw new NotFoundError("issue not found");
+}
+
+/** The card a write is about to write, and who is writing it. */
+export type WriteGate = { id: number; actor: UserRow; role: MemberRole };
+
+/**
+ * Lock the card a write is about to write and ask the write gate again,
+ * under the lock. The gate a request passes before its transaction only
+ * fails fast: a move, a freeze or a delete can commit between that check
+ * and the write, which then lands on a tombstone or is emptied away with
+ * the source after the copy, behind a success. Once this holds the row,
+ * none of them can.
+ *
+ * FOR NO KEY UPDATE is what the `UPDATE issues` most writes go on to make
+ * takes. It conflicts with a move's FOR UPDATE, a freeze's UPDATE and every
+ * other write's lock on the card, and not with the KEY SHARE another
+ * transaction's foreign-key check takes when it inserts a row under the
+ * card. It is the write's first lock, before it locks or writes anything
+ * under the card (rule 1 on `lockIssueRows`).
+ */
+export async function lockWritableIssue(
+  tx: Db,
+  gate: WriteGate,
+): Promise<void> {
+  const [row] = await tx
+    .select(gateColumns)
+    .from(issues)
+    .where(eq(issues.id, gate.id))
+    .for("no key update");
+  if (row === undefined) throw new NotFoundError("issue not found");
+  assertIssueWritable(row, gate.actor, gate.role);
 }

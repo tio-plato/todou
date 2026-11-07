@@ -395,4 +395,28 @@ describe.skipIf(!PG_URL)("question settlement races on PostgreSQL", () => {
       }
     },
   );
+
+  it("an answer rechecks moving_since once it holds the issue row", async () => {
+    const { issue, a } = await askTwo();
+    await holder.query("BEGIN");
+    await holder.query(issueLock(issue.id).sql, [issue.id]);
+    const pending = answerA(issue.number, a);
+    try {
+      await waitForLockWaiters(1);
+      // The freeze of a cross-database move, committed while the answer
+      // waited: the copy has already read the card without this answer.
+      await holder.query(
+        "UPDATE issues SET moving_since = now() WHERE id = $1",
+        [issue.id],
+      );
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(409);
+      const state = await snapshot(issue.id);
+      expect(state.issue.openQuestions).toBe(3);
+      expect(settlementsOf(state.events, a)).toEqual([]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await pending;
+    }
+  });
 });
