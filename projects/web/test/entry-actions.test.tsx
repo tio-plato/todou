@@ -1,6 +1,12 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import type { Issue, Project, TimelineComment } from "@todou/shared";
+import type {
+  Issue,
+  Project,
+  QuestionsComponent,
+  TimelineComment,
+} from "@todou/shared";
+import { Window as HappyWindow } from "happy-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { projectQuery } from "../src/api/queries.ts";
 import { CommentItem } from "../src/components/timeline/comment-item.tsx";
@@ -406,6 +412,127 @@ describe("EntryActionsMenu on a comment", () => {
       "Quote reply",
       "Reference in a new issue",
     ]);
+  });
+});
+
+const QUESTIONS: QuestionsComponent = {
+  type: "questions",
+  questions: [
+    {
+      key: "storage",
+      header: "Storage",
+      question: "Where should X live?",
+      multiple: false,
+      options: [
+        { label: "Reuse the jobs table", description: "Fewer tables." },
+        { label: "A **new** table" },
+      ],
+    },
+  ],
+};
+
+/** The comment's body and its question, as a whole quote lays them out. */
+const QUESTIONS_QUOTE = [
+  "First paragraph.",
+  "",
+  "Second **paragraph**.",
+  "",
+  "**Storage**",
+  "",
+  "Where should X live?",
+  "",
+  "- Reuse the jobs table — Fewer tables.",
+  "- A **new** table",
+];
+
+/**
+ * `/questions` for the card, answering for this comment with `answer`. The
+ * query cache alone would not do: `questionsQuery` refetches on mount, and a
+ * failed refetch leaves the card's verdict unknown.
+ */
+function stubQuestions(answer: unknown) {
+  vi.stubGlobal("fetch", async (input: unknown, init?: RequestInit) => {
+    const url = String(input);
+    if ((init?.method ?? "GET") === "GET" && url.includes("/questions")) {
+      return Response.json({
+        items: [
+          {
+            comment_id: 1234,
+            author,
+            created_at: "2026-08-11T00:00:00Z",
+            questions: QUESTIONS.questions,
+            answer,
+          },
+        ],
+        open: answer === null ? 1 : 0,
+      });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  });
+}
+
+describe("Quote reply on a question comment", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("quotes the body, the questions and the answer when nothing is selected", async () => {
+    stubQuestions({
+      event_id: 7,
+      actor: author,
+      created_at: "2026-08-12T00:00:00Z",
+      answers: [
+        {
+          key: "storage",
+          selected: [{ index: 1, label: "A **new** table" }],
+          other: null,
+          declined: false,
+        },
+      ],
+    });
+    const onQuote = vi.fn();
+    const view = renderComment({
+      onQuote,
+      comment: comment({ component: QUESTIONS }),
+    });
+    await within(view.container).findByText("answered by");
+
+    await openMenu(view);
+    fireEvent.click(menuItem("Quote reply"));
+    await waitFor(() =>
+      expect(onQuote).toHaveBeenCalledExactlyOnceWith(
+        [...QUESTIONS_QUOTE, "", "**Answer:** A **new** table"].join("\n"),
+      ),
+    );
+  });
+
+  it("still quotes the questions while the form is in a floating window", async () => {
+    stubQuestions(null);
+    // A Document Picture-in-Picture window of its own, as the card's tests
+    // stand one up.
+    const pip = new HappyWindow();
+    vi.stubGlobal("documentPictureInPicture", {
+      requestWindow: vi.fn(async () => pip as unknown as Window),
+    });
+    const onQuote = vi.fn();
+    const view = renderComment({
+      onQuote,
+      comment: comment({ component: QUESTIONS }),
+    });
+    fireEvent.click(
+      await within(view.container).findByRole("button", {
+        name: "Answer in a floating window",
+      }),
+    );
+    await within(view.container).findByText("Answering in a floating window");
+
+    await openMenu(view);
+    fireEvent.click(menuItem("Quote reply"));
+    await waitFor(() =>
+      expect(onQuote).toHaveBeenCalledExactlyOnceWith(
+        QUESTIONS_QUOTE.join("\n"),
+      ),
+    );
   });
 });
 
