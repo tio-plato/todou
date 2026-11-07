@@ -387,6 +387,7 @@ describe.skipIf(!PG_URL)("moves and writes on PostgreSQL", () => {
           `/projects/${source}/attachments/direct-uploads/${id}/complete`,
         ),
     },
+    { name: "trash", prepare: nothing, send: (x) => send("DELETE", on(x, "")) },
   ];
 
   it.each(writes)(

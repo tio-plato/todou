@@ -799,6 +799,39 @@ describe.each(PLACEMENTS)("issue move (%s placement)", (placement) => {
     expect(res.status).toBe(403);
   });
 
+  it("refuses to trash a card at the address it moved away from", async () => {
+    const source = await createIssue(A, "trashed after it moved", "body");
+    const out = await moved(A, source.number, B);
+
+    const trashed = await req(
+      `/projects/${A}/issues/${source.number}`,
+      author,
+      {
+        method: "DELETE",
+      },
+    );
+    expect(trashed.status).toBe(409);
+    expect((await json(trashed)).error.code).toBe("issue_moved");
+    const restored = await req(
+      `/projects/${A}/issues/${source.number}/restore`,
+      author,
+      { method: "POST" },
+    );
+    expect(restored.status).toBe(409);
+    expect((await json(restored)).error.code).toBe("issue_moved");
+    const [tombstone] = await (await dbOf(idA, A))
+      .select({ deletedAt: issues.deletedAt })
+      .from(issues)
+      .where(eq(issues.id, source.id));
+    expect(tombstone?.deletedAt).toBeNull();
+    const landed = await req(
+      `/projects/${B}/issues/${out.moved_to.number}`,
+      author,
+    );
+    expect(landed.status).toBe(200);
+    expect((await json(landed)).deleted_at).toBeNull();
+  });
+
   it("maps the status and reports what it dropped", async () => {
     const label = await json(
       await req(`/projects/${A}/labels`, admin, {

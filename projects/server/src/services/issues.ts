@@ -96,6 +96,8 @@ import { microIso } from "./timeline.ts";
 import {
   assertIssueReadable,
   assertIssueWritable,
+  assertNotMoving,
+  gateColumns,
   live,
   seesTrashed,
 } from "./trash.ts";
@@ -1338,6 +1340,9 @@ async function setTrashed(
   );
   const db = await ctx.router.forProject(routeInfoOf(project));
   const row = await loadIssueRow(db, project.id, number);
+  // A card that moved, or is moving, answers that first, as it does for
+  // every other write.
+  assertNotMoving(row);
 
   // Visibility before permission: to someone who may not see this card in
   // the trash it must look like it was never there.
@@ -1358,6 +1363,17 @@ async function setTrashed(
 
   const events: ChangeEvent[] = [];
   const after = await db.transaction(async (tx) => {
+    // Not `assertIssueWritable`: deleting and restoring have to reach a card
+    // in the trash. Asked again under the lock, so that a move that
+    // committed meanwhile refuses this rather than having it mark the
+    // tombstone.
+    const [locked] = await tx
+      .select(gateColumns)
+      .from(issues)
+      .where(eq(issues.id, row.id))
+      .for("no key update");
+    if (!locked) throw new NotFoundError("issue not found");
+    assertNotMoving(locked);
     const updated = await tx
       .update(issues)
       .set(
