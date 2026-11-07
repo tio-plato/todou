@@ -11,6 +11,7 @@ import {
 } from "@codemirror/view";
 import { useEffect, useImperativeHandle, useRef } from "react";
 
+import { compositionSafeDispatch } from "@/lib/editor/composition-safe-dispatch.ts";
 import { compositionSafeMeasure } from "@/lib/editor/composition-safe-measure.ts";
 import { parkedTooltip } from "@/lib/editor/parked-tooltip.ts";
 import { tooltipSpace } from "@/lib/editor/tooltip-space.ts";
@@ -268,6 +269,8 @@ export function CodeEditor({
     if (parent === null) return;
     const instance = new EditorView({
       parent,
+      // Keeps iOS IME deletions from being written back (see the module).
+      dispatchTransactions: compositionSafeDispatch,
       state: EditorState.create({
         doc: latestInitialValue.current,
         extensions: [
