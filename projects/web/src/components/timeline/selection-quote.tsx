@@ -1,6 +1,12 @@
+import type {
+  Question,
+  QuestionAnswer,
+  QuestionsComponent,
+} from "@todou/shared";
 import { TextQuoteIcon } from "lucide-react";
 import {
   type CSSProperties,
+  type RefCallback,
   useCallback,
   useEffect,
   useRef,
@@ -14,6 +20,7 @@ import {
 } from "@/components/timeline/quote-reply.tsx";
 import { Button } from "@/components/ui/button";
 import { quoteOfSelection } from "@/lib/quote-markdown.ts";
+import { entryQuote } from "@/lib/quote-questions.ts";
 import { anchorForSelection, sideOf } from "@/lib/selection-anchor.ts";
 import {
   composedContains,
@@ -28,6 +35,9 @@ import {
 } from "@/lib/spec-source-index.ts";
 import { POINTER_FINE, useMediaQuery } from "@/lib/use-media-query.ts";
 
+/** Worn by the outermost element of a question card. */
+export const QUOTE_QUESTIONS_ATTR = "data-quote-questions";
+
 /**
  * Each body's markdown as it was last indexed: a body is indexed the first
  * time a selection in it is read, and again once it renders something else.
@@ -40,6 +50,64 @@ function segmentIndexOf(body: Element, source: string): SegmentIndex {
   const index = buildSegmentIndex(source);
   INDEXES.set(body, { source, index });
   return index;
+}
+
+/**
+ * The comment or action line `el` belongs to: the root that carries its id.
+ * The issue body has none above it, and is its own entry.
+ */
+export function entryOf(el: Element): Element {
+  return el.closest("[data-comment-id]") ?? el;
+}
+
+/** What each question card shows, by the element it renders into. */
+const QUESTIONS = new WeakMap<
+  Element,
+  { component: QuestionsComponent; answers: readonly QuestionAnswer[] | null }
+>();
+
+/**
+ * The ref for a question card's outermost element: it records the questions
+ * and the answers the card shows, null while there are none or they are not
+ * known. Outermost because a popped-out form renders into another document,
+ * and the page keeps only this element and a placeholder inside it.
+ */
+export function useQuotableQuestions(
+  component: QuestionsComponent,
+  answers: readonly QuestionAnswer[] | null,
+): RefCallback<HTMLDivElement> {
+  return useCallback(
+    (el: HTMLDivElement | null) => {
+      if (el !== null) QUESTIONS.set(el, { component, answers });
+    },
+    [component, answers],
+  );
+}
+
+/** The questions an entry's card shows, and their answers; null for none. */
+export function questionsIn(entry: Element): {
+  questions: readonly Question[];
+  answers: readonly QuestionAnswer[] | null;
+} | null {
+  const card = entry.querySelector(`[${QUOTE_QUESTIONS_ATTR}]`);
+  const shown = card === null ? undefined : QUESTIONS.get(card);
+  return shown === undefined
+    ? null
+    : { questions: shown.component.questions, answers: shown.answers };
+}
+
+/**
+ * What quoting a whole entry quotes: its stored body, then the questions and
+ * answers its card shows. `entry` is null for an entry not rendered, which
+ * quotes its body alone.
+ */
+export function wholeQuoteOf(entry: Element | null, body: string): string {
+  return entryQuote({
+    body,
+    questions: null,
+    answers: null,
+    ...(entry === null ? null : questionsIn(entry)),
+  });
 }
 
 /** A selection inside one quotable body, anchored in what it renders. */
