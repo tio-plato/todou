@@ -416,4 +416,81 @@ describe.skipIf(!PG_URL)("moves and writes on PostgreSQL", () => {
       }
     },
   );
+
+  it("a move copies what an answer committed while it waited", async () => {
+    const x = await card();
+    const asked = await comment(x.number, {
+      body: "which one?",
+      component: {
+        type: "questions",
+        questions: [
+          { question: "Which?", options: [{ label: "a" }, { label: "b" }] },
+        ],
+      },
+    });
+    const key = asked.component.questions[0].key as string;
+    const target = await project();
+
+    // The holder plays an answer: it holds the card and the question, and
+    // writes the answer once the move waits on the card.
+    await holder.query("BEGIN");
+    await holder.query(
+      "SELECT id FROM issues WHERE id = $1 FOR NO KEY UPDATE",
+      [x.id],
+    );
+    await holder.query("SELECT id FROM comments WHERE id = $1 FOR UPDATE", [
+      asked.id,
+    ]);
+    const pending = move(x.number, target.slug);
+    try {
+      await waitForLockWaiters(1);
+      await holder.query(
+        `INSERT INTO issue_events (project_id, issue_id, actor_id, type, payload)
+         VALUES ((SELECT project_id FROM issues WHERE id = $1), $1, $2,
+                 'question_answered', $3::jsonb)`,
+        [
+          x.id,
+          author.user.id,
+          JSON.stringify({
+            comment_id: asked.id,
+            answers: [
+              {
+                key,
+                selected: [{ index: 0, label: "a" }],
+                other: null,
+                declined: false,
+              },
+            ],
+            via: "answer",
+          }),
+        ],
+      );
+      await holder.query(
+        `UPDATE issues SET open_questions = greatest(open_questions - 1, 0),
+                           updated_at = now()
+         WHERE id = $1`,
+        [x.id],
+      );
+      await holder.query("COMMIT");
+
+      const moved = await pending;
+      expect(moved.status).toBe(200);
+      const n = (await json(moved)).moved_to.number as number;
+      const questions = await send(
+        "GET",
+        `/projects/${target.slug}/issues/${n}/questions`,
+      );
+      expect(questions.status).toBe(200);
+      const { items } = await json(questions);
+      expect(items).toHaveLength(1);
+      expect(items[0].answer).not.toBeNull();
+      // The move was planned before the answer committed: the count has to
+      // be the one read once the move held the card.
+      const landed = await send("GET", `/projects/${target.slug}/issues/${n}`);
+      expect((await json(landed)).open_questions).toBe(0);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
 });
