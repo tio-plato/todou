@@ -26,8 +26,10 @@ import {
 } from "@/components/project-listbox.tsx";
 import { useQuoteReply } from "@/components/timeline/quote-reply.tsx";
 import {
+  entryOf,
   type QuotableSelection,
   quotableSelection,
+  wholeQuoteOf,
 } from "@/components/timeline/selection-quote.tsx";
 import { Button } from "@/components/ui/button";
 import {
@@ -92,7 +94,10 @@ export function EntryActionsMenu({
   issueNumber: number;
   /** Absent for the issue body, whose permalink is the card itself. */
   commentId?: number;
-  /** The stored markdown, which is what gets copied and quoted. */
+  /**
+   * The stored markdown, which is what gets copied, and quoted along with
+   * the questions the entry's card shows.
+   */
   body: string;
   /** The rendered body, to tell a selection in it from one anywhere else. */
   bodyRef: RefObject<HTMLElement | null>;
@@ -160,7 +165,12 @@ export function EntryActionsMenu({
     quoted.current = true;
     selected.current = null;
     flushSync(() => setOpen(false));
-    quote(cut.trim() === "" ? body : cut);
+    const rendered = bodyRef.current;
+    quote(
+      cut.trim() === ""
+        ? wholeQuoteOf(rendered === null ? null : entryOf(rendered), body)
+        : cut,
+    );
   };
 
   return (
