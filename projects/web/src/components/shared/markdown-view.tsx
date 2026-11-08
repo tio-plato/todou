@@ -29,6 +29,7 @@ import {
   FENCE_PATCH_ATTR,
   parseSourceLoc,
   SOURCE_LINE_ATTR,
+  SOURCE_SPAN_ATTR,
 } from "@/lib/rehype-source-lines.ts";
 import { remarkIssueRefs } from "@/lib/remark-issue-refs.ts";
 import {
@@ -43,6 +44,36 @@ import { useRefChipFlow } from "@/lib/use-ref-chip-flow.ts";
  * wash is redundant — the diff's own red and green say the same thing per line.
  */
 export const FENCE_DIFF_CLASS = "spec-fence-diff";
+
+/** An override's props without the source span, and the span. */
+function withoutSpan<P extends object>(props: P): [P, unknown] {
+  const { [SOURCE_SPAN_ATTR]: span, ...rest } = props as P &
+    Record<typeof SOURCE_SPAN_ATTR, unknown>;
+  return [rest as P, span];
+}
+
+/**
+ * Puts a link's or a document card's source span (`SOURCE_SPAN_ATTR`) on the
+ * page. The overrides hand those to components — a chip, a document card —
+ * that draw their own markup and drop what they do not know, so the span
+ * rides on a wrapper around them instead, one place for every kind of chip.
+ * `display: contents` keeps the wrapper out of layout: the chip flow already
+ * looks past contents ancestors, and a document card stays a block.
+ */
+function SourceSpan({
+  span,
+  children,
+}: {
+  span: unknown;
+  children: ReactNode;
+}): ReactNode {
+  if (typeof span !== "string") return children;
+  return (
+    <span className="contents" {...{ [SOURCE_SPAN_ATTR]: span }}>
+      {children}
+    </span>
+  );
+}
 
 /** The slice of hast react-markdown hands to component overrides. */
 type HastNode = {
@@ -335,19 +366,22 @@ export const MarkdownViewWithPlugins = memo(function MarkdownViewWithPlugins({
             // MarkdownLink's business. WHICH attachment an address names is
             // the wrapper's: answering that takes a query, and this map is
             // not a component, so no hook may run in it.
-            a: (props): ReactNode => {
+            a: (stamped): ReactNode => {
+              const [props, span] = withoutSpan(stamped);
               const target =
                 issueNumber === undefined
                   ? null
                   : parseAttachmentHref(props.href);
               if (target !== null && issueNumber !== undefined) {
                 return (
-                  <MarkdownAttachmentAnchor
-                    slug={slug}
-                    issueNumber={issueNumber}
-                    address={target}
-                    {...props}
-                  />
+                  <SourceSpan span={span}>
+                    <MarkdownAttachmentAnchor
+                      slug={slug}
+                      issueNumber={issueNumber}
+                      address={target}
+                      {...props}
+                    />
+                  </SourceSpan>
                 );
               }
               const repeat =
@@ -362,20 +396,26 @@ export const MarkdownViewWithPlugins = memo(function MarkdownViewWithPlugins({
               // wrong card; give it its own prop rather than widening this
               // one.
               return (
-                <MarkdownLink
-                  slug={slug}
-                  pageNumber={issueNumber}
-                  repeat={repeat}
-                  {...props}
-                />
+                <SourceSpan span={span}>
+                  <MarkdownLink
+                    slug={slug}
+                    pageNumber={issueNumber}
+                    repeat={repeat}
+                    {...props}
+                  />
+                </SourceSpan>
               );
             },
             img: (
-              props: ComponentProps<"img"> & { node?: unknown },
+              stamped: ComponentProps<"img"> & { node?: unknown },
             ): ReactNode => {
+              // Only a document card shows text, so only it carries the span:
+              // a picture holds none to select, and a swapped pair has to
+              // stay two adjacent siblings (T-223).
+              const [props, span] = withoutSpan(stamped);
               const target = parseAttachmentHref(props.src);
               if (target !== null && issueNumber !== undefined) {
-                return (
+                const image = (
                   <MarkdownAttachmentImage
                     slug={slug}
                     issueNumber={issueNumber}
@@ -383,6 +423,11 @@ export const MarkdownViewWithPlugins = memo(function MarkdownViewWithPlugins({
                     embedded={embedded}
                     {...props}
                   />
+                );
+                return isTextEmbedName(target.name ?? "") ? (
+                  <SourceSpan span={span}>{image}</SourceSpan>
+                ) : (
+                  image
                 );
               }
               // Whether an address names an image is answered by the address,
