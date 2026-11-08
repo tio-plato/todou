@@ -476,6 +476,218 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
     }
   });
 
+  it("deleting a project locks its block edges in id order", async () => {
+    const p = await project();
+    const x = await card(p.slug, "X");
+    const w1 = await card(p.slug, "W1");
+    const w2 = await card(p.slug, "W2");
+    await block(p.slug, w1, x);
+    await block(p.slug, w2, x);
+    const edges = await observer.query<{ id: string }>(
+      `SELECT id FROM issue_blocks
+       WHERE blocker_project_id = $1 AND blocker_number = $2 ORDER BY id`,
+      [p.id, x.number],
+    );
+    const [e1, e2] = edges.rows.map((row) => Number(row.id));
+    if (e1 === undefined || e2 === undefined) throw new Error("no edges");
+    // A new version of e1 lands behind e2, so the cascade from the registry
+    // row meets e2 first.
+    await observer.query(
+      "UPDATE issue_blocks SET cleared_at = cleared_at WHERE id = $1",
+      [e1],
+    );
+    expect(await physicalOrder("issue_blocks", [e1, e2])).toEqual([e2, e1]);
+
+    // The holder locks edges in id order, as every write of several does.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issue_blocks WHERE id = $1 FOR UPDATE",
+        [e1],
+      );
+      pending = send("DELETE", `/projects/${p.slug}`, undefined, seq);
+      await waitForLockWaiters(1);
+      await holder.query(
+        "SELECT id FROM issue_blocks WHERE id = $1 FOR UPDATE",
+        [e2],
+      );
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(204);
+      const left = await observer.query<{ count: string }>(
+        "SELECT count(*) FROM issue_blocks WHERE id = ANY($1)",
+        [[e1, e2]],
+      );
+      expect(left.rows).toEqual([{ count: "0" }]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("deleting a project locks its read positions in id order", async () => {
+    const p = await project();
+    const a = await card(p.slug, "a");
+    const b = await card(p.slug, "b");
+    for (const x of [a, b]) {
+      const read = await send(
+        "PUT",
+        `/projects/${p.slug}/issues/${x.number}/read`,
+        {},
+      );
+      expect(read.status).toBe(204);
+    }
+    const positions = await observer.query<{ id: string; issue_id: string }>(
+      "SELECT id, issue_id FROM issue_reads WHERE issue_id = ANY($1)",
+      [[a.id, b.id]],
+    );
+    const idOf = (x: { id: number }) =>
+      Number(positions.rows.find((row) => Number(row.issue_id) === x.id)?.id);
+    const [ra, rb] = [idOf(a), idOf(b)];
+    expect(ra).toBeLessThan(rb);
+    // A new version of a, behind b: deleting the cards meets b first, and
+    // its cascade takes b's read position before a's.
+    const edited = await send(
+      "PATCH",
+      `/projects/${p.slug}/issues/${a.number}`,
+      {
+        title: "a, edited",
+      },
+    );
+    expect(edited.status).toBe(200);
+    expect(await physicalOrder("issues", [a.id, b.id])).toEqual([b.id, a.id]);
+
+    // The holder is a "mark all read" by the same reader.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issue_reads WHERE id = $1 FOR UPDATE",
+        [ra],
+      );
+      pending = send("DELETE", `/projects/${p.slug}`, undefined, seq);
+      await waitForLockWaiters(1);
+      await holder.query(
+        "SELECT id FROM issue_reads WHERE id = $1 FOR UPDATE",
+        [rb],
+      );
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(204);
+      for (const table of ["issues", "issue_reads"]) {
+        const left = await observer.query<{ count: string }>(
+          `SELECT count(*) FROM ${table} WHERE project_id = $1`,
+          [p.id],
+        );
+        expect(left.rows, table).toEqual([{ count: "0" }]);
+      }
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("deleting a project waits for a card being created instead of deadlocking", async () => {
+    const p = await project();
+    const created = await send("POST", `/projects/${p.slug}/labels`, {
+      name: "L",
+    });
+    expect(created.status).toBe(201);
+    const label = (await json(created)).id as number;
+
+    const [status] = (
+      await observer.query<{ id: string }>(
+        "SELECT id FROM statuses WHERE project_id = $1 ORDER BY id LIMIT 1",
+        [p.id],
+      )
+    ).rows;
+
+    // The holder creates a card with a label: it takes a number, inserts the
+    // card, then the card's label row, whose foreign key takes KEY SHARE on
+    // the label.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      const [next] = (
+        await holder.query<{ number: string }>(
+          `UPDATE project_meta SET next_issue_number = next_issue_number + 1
+           WHERE project_id = $1 RETURNING next_issue_number - 1 AS number`,
+          [p.id],
+        )
+      ).rows;
+      pending = send("DELETE", `/projects/${p.slug}`);
+      await waitForLockWaiters(1);
+      const [inserted] = (
+        await holder.query<{ id: string }>(
+          `INSERT INTO issues (project_id, number, title, status_id, author_id)
+           VALUES ($1, $2, 'created', $3, 0) RETURNING id`,
+          [p.id, next?.number, status?.id],
+        )
+      ).rows;
+      await holder.query(
+        "INSERT INTO issue_labels (issue_id, label_id) VALUES ($1, $2)",
+        [inserted?.id, label],
+      );
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(204);
+      // The card it created went with the rest.
+      for (const table of ["issues", "labels", "project_meta"]) {
+        const left = await observer.query<{ count: string }>(
+          `SELECT count(*) FROM ${table} WHERE project_id = $1`,
+          [p.id],
+        );
+        expect(left.rows, table).toEqual([{ count: "0" }]);
+      }
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("deleting a project waits for a label being deleted instead of deadlocking", async () => {
+    const p = await project();
+    const x = await card(p.slug, "X");
+    const created = await send("POST", `/projects/${p.slug}/labels`, {
+      name: "L",
+    });
+    expect(created.status).toBe(201);
+    const label = (await json(created)).id as number;
+    const labeled = await send(
+      "PATCH",
+      `/projects/${p.slug}/issues/${x.number}`,
+      {
+        label_ids: [label],
+      },
+    );
+    expect(labeled.status).toBe(200);
+
+    // The holder deletes the label: the label row first, then the card rows
+    // its cascade removes.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query("SELECT id FROM labels WHERE id = $1 FOR UPDATE", [
+        label,
+      ]);
+      pending = send("DELETE", `/projects/${p.slug}`);
+      await waitForLockWaiters(1);
+      await holder.query("DELETE FROM labels WHERE id = $1", [label]);
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(204);
+      for (const table of ["issues", "issue_labels", "labels"]) {
+        const left = await observer.query<{ count: string }>(
+          table === "issue_labels"
+            ? "SELECT count(*) FROM issue_labels WHERE issue_id = $1"
+            : `SELECT count(*) FROM ${table} WHERE project_id = $1`,
+          [table === "issue_labels" ? x.id : p.id],
+        );
+        expect(left.rows, table).toEqual([{ count: "0" }]);
+      }
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
   it("a command removing a label that is being deleted reads the card after it", async () => {
     const p = await project();
     const x = await card(p.slug, "X");
@@ -568,6 +780,63 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
         [[ra, rb], start?.now],
       );
       expect(after.rows).toEqual([{ seen: true }, { seen: true }]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("deleting a project waits for writers instead of deadlocking", async () => {
+    const p = await project();
+    const a = await card(p.slug, "a");
+    const b = await card(p.slug, "b");
+    expect(a.id).toBeLessThan(b.id);
+    const commented = await send(
+      "POST",
+      `/projects/${p.slug}/issues/${a.number}/comments`,
+      { body: "on a" },
+    );
+    expect(commented.status).toBe(201);
+    const read = await send(
+      "PUT",
+      `/projects/${p.slug}/issues/${b.number}/read`,
+      {},
+    );
+    expect(read.status).toBe(204);
+    // A new version of a, behind b in the table.
+    const edited = await send(
+      "PATCH",
+      `/projects/${p.slug}/issues/${a.number}`,
+      {
+        title: "a, edited",
+      },
+    );
+    expect(edited.status).toBe(200);
+    expect(await physicalOrder("issues", [a.id, b.id])).toEqual([b.id, a.id]);
+
+    // The holder is a write on both cards, locking them in id order.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issues WHERE id = $1 FOR NO KEY UPDATE",
+        [a.id],
+      );
+      pending = send("DELETE", `/projects/${p.slug}`, undefined, seq);
+      await waitForLockWaiters(1);
+      await holder.query(
+        "SELECT id FROM issues WHERE id = $1 FOR NO KEY UPDATE",
+        [b.id],
+      );
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(204);
+      for (const table of ["issues", "comments", "issue_reads"]) {
+        const left = await observer.query<{ count: string }>(
+          `SELECT count(*) FROM ${table} WHERE project_id = $1`,
+          [p.id],
+        );
+        expect(left.rows, table).toEqual([{ count: "0" }]);
+      }
     } finally {
       await holder.query("ROLLBACK");
       await Promise.allSettled([pending]);
