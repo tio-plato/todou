@@ -608,10 +608,13 @@ export async function deleteProject(
       // One transaction, so a failure leaves the data whole rather than half
       // deleted. It first waits for the writes still at work on these cards,
       // taking the cards in id order the way those writes do, then the read
-      // positions in the order marking everything read takes them (see
-      // lockIssueRows). The order the deletes meet them in no longer matters.
-      // Counted rather than returned, so a large project's ids never come
-      // back to this process; each lock still sorts before it locks.
+      // positions in the order marking everything read takes them, then the
+      // labels, before deleting the cards cascades to their label rows: a
+      // label deleted meanwhile takes the label first and then those rows
+      // (see lockIssueRows). The order the deletes meet them in no longer
+      // matters. Counted rather than returned, so a large project's ids
+      // never come back to this process; each lock still sorts before it
+      // locks.
       await db.transaction(async (tx) => {
         await tx
           .select({ locked: count() })
@@ -632,6 +635,17 @@ export async function deleteProject(
               .from(issueReads)
               .where(eq(issueReads.projectId, project.id))
               .orderBy(asc(issueReads.id))
+              .for("update")
+              .as("locked"),
+          );
+        await tx
+          .select({ locked: count() })
+          .from(
+            tx
+              .select({ id: labels.id })
+              .from(labels)
+              .where(eq(labels.projectId, project.id))
+              .orderBy(asc(labels.id))
               .for("update")
               .as("locked"),
           );

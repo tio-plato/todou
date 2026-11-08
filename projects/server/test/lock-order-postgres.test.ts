@@ -462,6 +462,51 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
     }
   });
 
+  it("deleting a project waits for a label being deleted instead of deadlocking", async () => {
+    const p = await project();
+    const x = await card(p.slug, "X");
+    const created = await send("POST", `/projects/${p.slug}/labels`, {
+      name: "L",
+    });
+    expect(created.status).toBe(201);
+    const label = (await json(created)).id as number;
+    const labeled = await send(
+      "PATCH",
+      `/projects/${p.slug}/issues/${x.number}`,
+      {
+        label_ids: [label],
+      },
+    );
+    expect(labeled.status).toBe(200);
+
+    // The holder deletes the label: the label row first, then the card rows
+    // its cascade removes.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query("SELECT id FROM labels WHERE id = $1 FOR UPDATE", [
+        label,
+      ]);
+      pending = send("DELETE", `/projects/${p.slug}`);
+      await waitForLockWaiters(1);
+      await holder.query("DELETE FROM labels WHERE id = $1", [label]);
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(204);
+      for (const table of ["issues", "issue_labels", "labels"]) {
+        const left = await observer.query<{ count: string }>(
+          table === "issue_labels"
+            ? "SELECT count(*) FROM issue_labels WHERE issue_id = $1"
+            : `SELECT count(*) FROM ${table} WHERE project_id = $1`,
+          [table === "issue_labels" ? x.id : p.id],
+        );
+        expect(left.rows, table).toEqual([{ count: "0" }]);
+      }
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
   it("marking everything read locks read positions in id order", async () => {
     const p = await project();
     const a = await card(p.slug, "a");
