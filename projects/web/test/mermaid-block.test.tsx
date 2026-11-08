@@ -11,6 +11,7 @@ import { MarkdownView } from "../src/components/shared/markdown-view.tsx";
 import { CODE_RENDERED_EVENT } from "../src/lib/code-highlights.ts";
 import { errorSummary, viewBoxSize } from "../src/lib/mermaid.ts";
 import { rehypeSourceLines } from "../src/lib/rehype-source-lines.ts";
+import type { SourceFence } from "../src/lib/spec-source-index.ts";
 import { renderWithProviders } from "./render.tsx";
 
 vi.mock("@pierre/diffs/react", () => ({
@@ -58,7 +59,10 @@ beforeEach(() => {
   render.bySource.clear();
 });
 
-async function mount(source: string, fenceBaselines?: Map<number, string>) {
+async function mount(
+  source: string,
+  fenceBaselines?: Map<number, SourceFence>,
+) {
   const { container } = renderWithProviders(
     <MarkdownView
       rehypePlugins={[rehypeSourceLines]}
@@ -204,7 +208,7 @@ describe("changed diagrams in a compare view (T-724)", () => {
     '<svg id="mermaid-2" viewBox="0 0 552 328"><text>旧</text></svg>';
   const PARSE_ERROR =
     "Parse error on line 2:\n...\n---^\nExpecting 'SQE', got 'PS'";
-  const compare = () => mount(FENCE, new Map([[1, OLD]]));
+  const compare = () => mount(FENCE, new Map([[1, { value: OLD, line: 1 }]]));
   const drawn = (container: HTMLElement) =>
     container.querySelectorAll(".mermaid-compare-diagram svg");
 
