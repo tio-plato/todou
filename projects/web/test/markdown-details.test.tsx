@@ -260,4 +260,36 @@ describe("source-line stamps around a fold", () => {
       "1-6",
     );
   });
+
+  // Block HTML outside a fold shows as text with no block of its own, all
+  // of it on one line: it gets one stamped block for that whole run.
+  it.each([
+    [
+      // Three raw nodes once the tags are cut out and left unpaired.
+      "a summary outside any fold",
+      "<summary>x</summary>\n",
+      "1-1",
+      ["<summary>x</summary>"],
+    ],
+    [
+      "two blocks of HTML a blank line apart",
+      "<div>a</div>\n\n<div>b</div>\n",
+      "1-3",
+      ["<div>a</div>", "<div>b</div>"],
+    ],
+    [
+      // The text left after the fold opens with the line ending of the
+      // fold's own line, which is no line of this block's.
+      "HTML on the line after a fold's closing tag",
+      "<details><summary>More</summary>hidden</details>\n<p>after</p>\n",
+      "2-2",
+      ["<p>after</p>"],
+    ],
+  ])("stamps %s as one block", async (_shape, source, loc, shown) => {
+    const container = await mount(source, { stamped: true });
+    const blocks = container.querySelectorAll(".markdown-body div[data-loc]");
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.getAttribute("data-loc")).toBe(loc);
+    for (const text of shown) expect(blocks[0]?.textContent).toContain(text);
+  });
 });
