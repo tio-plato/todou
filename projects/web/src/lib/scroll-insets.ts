@@ -235,7 +235,8 @@ function visibleBottom(): number {
 }
 
 /**
- * Bring the conversation's end to the bottom of what the reader sees.
+ * Where a landing on the bottom puts the page: the conversation's end on the
+ * bottom of what the reader sees.
  *
  * Not the document's end, which lies below the shell's footer and, on a narrow
  * screen, below the sidebar that follows the comment box: a landing there put
@@ -248,23 +249,61 @@ function visibleBottom(): number {
  * literally for a frame, parking the visual viewport a whole screen past the
  * end — one blank white frame on every landing (T-585).
  */
-function scrollToEnd() {
+function endTarget(): number {
   const root = document.documentElement;
   const max = Math.max(0, root.scrollHeight - root.clientHeight);
   const el = endElement();
-  if (el === null) {
-    window.scrollTo(0, max);
-    return;
-  }
+  if (el === null) return max;
   const target =
     el.getBoundingClientRect().bottom + window.scrollY - visibleBottom();
-  window.scrollTo(0, Math.min(max, Math.max(0, target)));
+  return Math.min(max, Math.max(0, target));
+}
+
+function scrollToEnd() {
+  window.scrollTo(0, endTarget());
 }
 
 /** Go to the end of the conversation and stay there; see `hold`. */
 export function landAtBottom(): () => void {
   scrollToEnd();
   return hold(document.body, scrollToEnd, true);
+}
+
+/** Where `revealBlock` in `"start"` mode puts the page for `el`. */
+function startTarget(el: HTMLElement): number {
+  const rect = el.getBoundingClientRect();
+  return restingScrollY(
+    { top: rect.top + window.scrollY, height: rect.height },
+    usableViewport(),
+    "start",
+  );
+}
+
+/**
+ * Bring `el`'s top under the top overlays, as `revealBlock` does in `"start"`
+ * mode, but no further down than a landing on the bottom goes: what follows
+ * `el` may be shorter than a screen, and the rest of the way down is the
+ * footer or, on a phone, the sidebar below the comment box. Flash it, and
+ * hold it there; see `hold`. Each placement measures both again, so `el` rises
+ * as what follows it loads. While stopped short at the bottom it is a landing
+ * on the bottom, and what arrives meanwhile is followed.
+ */
+export function revealAboveEnd(el: HTMLElement): () => void {
+  openEnclosingFolds(el);
+  flash(el);
+  const place = () => {
+    const start = startTarget(el);
+    const end = endTarget();
+    window.scrollTo(0, Math.max(0, Math.min(start, end)));
+    if (held?.release === release) held.onEnd = start >= end;
+  };
+  const release = hold(document.body, (release) => {
+    // Gone with a route change nobody touched the page for.
+    if (!el.isConnected) release();
+    else place();
+  });
+  place();
+  return release;
 }
 
 /**
