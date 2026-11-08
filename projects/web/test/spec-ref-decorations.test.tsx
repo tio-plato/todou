@@ -390,6 +390,34 @@ describe("annotation highlights in text lined up piece by piece", () => {
   );
 });
 
+describe("annotation highlights beside an autolink", () => {
+  it("marks only the anchored word of text an autolink is cut from", async () => {
+    const client = seeded();
+    client.setQueryData(referenceConfigQuery("p").queryKey, {
+      ...PREFIXED,
+      autolinks: [
+        {
+          id: 1,
+          prefix: "JIRA-",
+          url_template: "https://tracker.example/<num>",
+        },
+      ],
+    } satisfies ReferenceConfig);
+    // In "fixes JIRA-42 \* today", "today" is columns 18 to 22.
+    const { container } = await renderSpec({
+      body: "fixes JIRA-42 \\* today\n",
+      annotations: [anchored("comment", 1, 18, 1, 22)],
+      client,
+      ready: "a[href='https://tracker.example/42']",
+    });
+    expect(texts(container, "mark.spec-mark-comment")).toEqual(["today"]);
+    const link = container.querySelector(
+      "a[href='https://tracker.example/42']",
+    );
+    expect(link?.closest("mark")).toBeNull();
+  });
+});
+
 describe("annotation highlights inside inline code", () => {
   it("marks only the characters of code the anchor names", async () => {
     // In "a `code` b", columns 5 and 6 are "od".

@@ -982,8 +982,8 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
   );
 
   it("keeps the columns beside an autolink cut from text with an escape", async () => {
-    // Each piece of a text node whose source is longer than its value gets
-    // the whole node's position, so the link carries a span not its own.
+    // The text the link is cut from is longer in the source than on the
+    // page, so the link's span is mapped through that text's pieces.
     const { onStage, button } = await stageSelection(
       "**bold** fixes JIRA-42 \\* today\n",
       (container) => bracketedIn(container, "[bold]"),
@@ -998,9 +998,26 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
     });
   });
 
+  it("anchors a word beside a chip, after an autolink and an escape", async () => {
+    // The text holding the autolink is longer in the source than on the
+    // page, and the chip sends the block to the path that looks for atoms.
+    const { onStage, button } = await stageSelection(
+      "[#12](/projects/1/issues/12) fixes JIRA-42 \\* today\n",
+      (container) => bracketedIn(container, "* [today]"),
+      { client: autolinkClient(), ready: "a[data-issue-link]" },
+    );
+    fireEvent.click(button);
+    expect(onStage).toHaveBeenCalledWith({
+      lineStart: 1,
+      lineEnd: 1,
+      colStart: 47,
+      colEnd: 51,
+    });
+  });
+
   it("anchors a word inside an autolink cut from a continuation line", async () => {
-    // Both pieces of "\n  JIRA-7" carry the whole node's span; the blank one
-    // must not let the link pass for an atom spanning the indent.
+    // "\n  JIRA-7" is longer in the source than on the page; the blank
+    // piece must not let the link pass for an atom spanning the indent.
     const { onStage, button } = await stageSelection(
       "- *em*\n  JIRA-7\n",
       (container) => bracketedIn(container, "J[IR]A-7"),
