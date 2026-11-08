@@ -225,6 +225,29 @@ describe("folding the unchanged blocks of a comparison (T-222)", () => {
     ).toBe(true);
   });
 
+  it("keeps a commented block of HTML open", async () => {
+    // Paragraph 10, line 19, is a block of HTML the page shows as text.
+    const html = "<div>html block</div>";
+    const before = V1.replace("段落 10 的原文说明。", html);
+    const after = V2.replace("段落 10 的原文说明。", html);
+    const { container } = await renderFold(before, after, {
+      annotations: [
+        {
+          key: "c1",
+          kind: "comment",
+          item: comment(1, { line_start: 19, line_end: 19 }),
+          start: 19,
+          end: 19,
+        },
+      ],
+    });
+    expect(container.querySelector(".markdown-body")?.textContent).toContain(
+      html,
+    );
+    const folded = [...container.querySelectorAll(".spec-folded")];
+    expect(folded.some((el) => el.textContent?.includes(html))).toBe(false);
+  });
+
   it("keeps a block a draft is staged on open", async () => {
     const { container } = await renderFold(V1, V2, {
       annotations: [
