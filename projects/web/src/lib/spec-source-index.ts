@@ -1383,6 +1383,7 @@ export type SourceColumns = {
  * server measures lines without their newline. Both ends therefore step off
  * a newline they landed on, which makes a selection starting at a line end
  * mean column 1 of the next line rather than one past the end of this one.
+ * The `\r` of a CRLF line ending is part of it: the page shows none.
  *
  * `hidden` names any other offsets the reader could not have selected: the
  * part of a code line in front of what its row shows. Both ends step off
@@ -1397,7 +1398,9 @@ export function columnsOfOffsets(
 ): SourceColumns | null {
   if (end <= start) return null;
   const skip = (offset: number) =>
-    text.source[offset] === "\n" || hidden(offset);
+    text.source[offset] === "\n" ||
+    (text.source[offset] === "\r" && text.source[offset + 1] === "\n") ||
+    hidden(offset);
   let first = start;
   let last = end - 1;
   while (first < last && skip(first)) first++;

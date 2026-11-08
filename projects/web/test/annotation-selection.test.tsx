@@ -2204,6 +2204,33 @@ describe("column anchors inside a code block", () => {
     expect(cut(lines, anchor)).toBe("bravo");
   });
 
+  // pierre is handed a CRLF fence's lines joined by `\r\n`: whether a row
+  // keeps its `\r` or not, the row reads as its source line.
+  it.each([
+    ["without", TOKEN_ROWS],
+    [
+      "with",
+      TOKEN_ROWS.replace(/<\/span><\/div>(?=\s+<div)/g, "\r</span></div>"),
+    ],
+  ])(
+    "anchors a word to its columns in a fence with CRLF line ends, rows drawn %s their \\r",
+    (_drawn, rows) => {
+      const { container, shadow, index, lines } = fenceWithRows(
+        `Intro.\r\n\r\n\`\`\`ts\r\n${CODE_ROWS.join("\r\n")}\r\n\`\`\`\r\n`,
+        rows,
+      );
+      const word = shadow.querySelector("[data-line='2'] span:nth-child(2)");
+      const anchor = anchorForSelection(
+        container,
+        index,
+        ends(word?.firstChild, 0, word?.firstChild, 5),
+      );
+      if (anchor === null) throw new Error("no anchor");
+      expect(anchor.lineStart).toBe(anchor.lineEnd);
+      expect(cut(lines, anchor)).toBe("bravo");
+    },
+  );
+
   it.each(FENCE_SHAPES)("anchors a word to its columns in %s", (_name, of) => {
     const source = of(CODE_ROWS);
     const { container, shadow, index, lines } = fenceWithRows(

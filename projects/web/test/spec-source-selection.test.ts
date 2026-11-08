@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   type SourceFiles,
   sourceAnchorForSelection,
+  sourceHighlightRanges,
 } from "../src/components/spec/source-selection.ts";
 
 type Row = { line: number; text: string; type?: string };
@@ -153,6 +154,77 @@ describe("sourceAnchorForSelection", () => {
     expect(anchor?.lineStart).toBe(anchor?.lineEnd);
     expect(cut(BODY, anchor)).toBe("quick");
   });
+
+  // The source view hands pierre the whole file; whether a row keeps the
+  // `\r` of its line or not, it reads as that line.
+  const CRLF = BODY.replaceAll("\n", "\r\n");
+  const crlf = {
+    "plan.md": { current: { path: "plan.md", version: 3, body: CRLF } },
+  };
+  const crlfRows = (cr: string) =>
+    rowsOf(BODY).map((row) => ({ ...row, text: row.text + cr }));
+
+  it.each([
+    ["without", ""],
+    ["with", "\r"],
+  ])(
+    "anchors a word in a CRLF file's line to its columns, rows drawn %s their \\r",
+    (_drawn, cr) => {
+      const root = container();
+      const file = drawFile(root, "plan.md", crlfRows(cr));
+      const anchor = sourceAnchorForSelection(
+        root,
+        ends(file.text(2), 4, file.text(2), 9),
+        filesBy(crlf),
+      );
+      expect(anchor).toMatchObject({ lineStart: 3, lineEnd: 3 });
+      expect(cut(CRLF, anchor)).toBe("quick");
+    },
+  );
+
+  it.each([
+    ["without", ""],
+    ["with", "\r"],
+  ])(
+    "highlights a comment's columns in a CRLF file's line, rows drawn %s their \\r",
+    (_drawn, cr) => {
+      const root = container();
+      drawFile(root, "plan.md", crlfRows(cr));
+      const ranges = sourceHighlightRanges(root, filesBy(crlf), [
+        {
+          kind: "comment",
+          path: "plan.md",
+          version: 3,
+          lineStart: 3,
+          colStart: 5,
+          lineEnd: 3,
+          colEnd: 9,
+        },
+      ]);
+      expect(ranges.comment.map((range) => range.toString())).toEqual([
+        "quick",
+      ]);
+    },
+  );
+
+  // An end on a CRLF line's boundary names no `\r`, as one on an LF line's
+  // names no `\n`: [start row, start offset, end row, end offset, quote].
+  it.each([
+    ["let go at the next row's start", 2, 4, 3, 0, "quick brown fox."],
+    ["opening at a row's end", 2, "The quick brown fox.".length, 3, 5, "Jumps"],
+  ])(
+    "anchors a selection %s in a CRLF file to the characters selected",
+    (_gesture, from, fromAt, to, toAt, quote) => {
+      const root = container();
+      const file = drawFile(root, "plan.md", crlfRows(""));
+      const anchor = sourceAnchorForSelection(
+        root,
+        ends(file.text(from), fromAt, file.text(to), toAt),
+        filesBy(crlf),
+      );
+      expect(cut(CRLF, anchor)).toBe(quote);
+    },
+  );
 
   it("starts a selection that opens at a line's end on the next line", () => {
     const root = container();
