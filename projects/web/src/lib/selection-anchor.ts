@@ -71,48 +71,103 @@ function columnBlockOf(
 const INJECTED =
   "[data-annotation-ui], .spec-del, .spec-del-block, .spec-del-structure, .spec-list-number";
 
+/** A block's text nodes lined up against the segments it renders. */
+type BlockAlignment = {
+  /** The block's own segments, in source order. */
+  segments: SourceSegment[];
+  /** Where each text node starts in those segments' joined text. */
+  offsets: Map<Node, number>;
+  /** Text nodes the renderer inserted, which take no room there. */
+  inserted: Set<Node>;
+};
+
 /**
- * Text nodes of a block as the *document* has them — the injected nodes
+ * Line a block's text nodes up against its own segments, or null when they
+ * do not read alike — an attachment card or any other text the source does
+ * not hold — since a wrong column is worse than none.
+ *
+ * Two things in a block are not its own text. A block nested in it — a
+ * sublist in a list item, a code block in a compact one — is stamped and
+ * mapped by itself: its subtree is skipped, and so are the segments lying
+ * wholly on its lines. Two sibling blocks never share a source line, and a
+ * container whose first line opens its first child (`- ## Title`) has no
+ * text of its own there, so taking out whole lines is exact. And
+ * `mdast-util-to-hast` puts whitespace-only text nodes the source does not
+ * have between the blocks of a list item and after a `<br>`: one is matched
+ * as text first, since a blank between two emphases is the source's, and
+ * only when that fails is it taken as inserted. Inserted ones sit on block
+ * edges, where the segments never start with a blank — mdast keeps none at
+ * the start of a paragraph or after a hard break.
+ *
+ * The injected nodes `INJECTED` names are skipped as they always were: they
  * would shift every offset after them.
  */
-function sourceTextWalker(block: Element): TreeWalker {
-  return document.createTreeWalker(
-    block,
-    NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT,
-    {
-      acceptNode: (node) => {
-        if (node.nodeType !== Node.ELEMENT_NODE)
-          return NodeFilter.FILTER_ACCEPT;
-        return (node as Element).matches(INJECTED)
-          ? NodeFilter.FILTER_REJECT
-          : NodeFilter.FILTER_SKIP;
-      },
-    },
+function alignBlock(
+  index: SegmentIndex,
+  block: { el: Element; loc: { start: number; end: number } },
+): BlockAlignment | null {
+  const nested = mergedLines(
+    [...block.el.querySelectorAll(`[${SOURCE_LINE_ATTR}]`)]
+      .filter((el) => el.closest(INJECTED) === null)
+      .flatMap((el) => parseSourceLoc(el.getAttribute(SOURCE_LINE_ATTR)) ?? []),
   );
+  const segments = segmentsInLines(index, block.loc).filter(
+    (segment) =>
+      !nested.some(
+        (loc) => segment.line >= loc.start && segment.endLine <= loc.end,
+      ),
+  );
+  if (segments.length === 0) return null;
+  const texts: Node[] = [];
+  const walk = (parent: Node) => {
+    for (const child of parent.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        texts.push(child);
+        continue;
+      }
+      if (
+        !(child instanceof Element) ||
+        child.matches(INJECTED) ||
+        child.hasAttribute(SOURCE_LINE_ATTR)
+      ) {
+        continue;
+      }
+      walk(child);
+    }
+  };
+  walk(block.el);
+  const joined = segments.map((segment) => segment.text).join("");
+  const offsets = new Map<Node, number>();
+  const inserted = new Set<Node>();
+  let at = 0;
+  for (const text of texts) {
+    const data = text.nodeValue ?? "";
+    offsets.set(text, at);
+    if (joined.startsWith(data, at)) at += data.length;
+    else if (/\S/.test(data)) return null;
+    else inserted.add(text);
+  }
+  return at === joined.length ? { segments, offsets, inserted } : null;
 }
 
-function renderedTextOf(block: Element): string {
-  const walker = sourceTextWalker(block);
-  let text = "";
-  for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
-    text += n.nodeValue ?? "";
+/**
+ * Line ranges with the touching and overlapping ones merged: a long sublist
+ * is one range rather than one per item, for the filter that runs on every
+ * segment of the block.
+ */
+function mergedLines(
+  ranges: Array<{ start: number; end: number }>,
+): Array<{ start: number; end: number }> {
+  const merged: Array<{ start: number; end: number }> = [];
+  for (const range of [...ranges].sort((a, b) => a.start - b.start)) {
+    const last = merged.at(-1);
+    if (last !== undefined && range.start <= last.end + 1) {
+      last.end = Math.max(last.end, range.end);
+    } else {
+      merged.push({ ...range });
+    }
   }
-  return text;
-}
-
-/** Offset of a text-node position within the block's rendered text. */
-function renderedOffsetIn(
-  block: Element,
-  node: Node,
-  offset: number,
-): number | null {
-  const walker = sourceTextWalker(block);
-  let seen = 0;
-  for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
-    if (n === node) return seen + offset;
-    seen += n.nodeValue?.length ?? 0;
-  }
-  return null;
+  return merged;
 }
 
 /** Source offset one selection endpoint maps to, or null to give up. */
@@ -125,18 +180,14 @@ function sourceOffsetOfEndpoint(
   if (isOldEndpoint(node) || node.nodeType !== Node.TEXT_NODE) return null;
   const block = columnBlockOf(node);
   if (block === null) return null;
-  const segments = segmentsInLines(index, block.loc);
-  if (segments.length === 0) return null;
-  // The mapping assumes the block renders its source prose and nothing
-  // else. An attachment card or any other injected text breaks that, and
-  // a wrong column is worse than none — bail out to the line anchor.
-  if (renderedTextOf(block.el) !== segments.map((s) => s.text).join("")) {
-    return null;
-  }
-  const rendered = renderedOffsetIn(block.el, node, offset);
-  if (rendered === null) return null;
-  const source = sourceOffsetOfRendered(segments, rendered, edge);
-  return edge === "start" ? pastPrefix(index, segments, source) : source;
+  const aligned = alignBlock(index, block);
+  const at = aligned?.offsets.get(node);
+  if (aligned === null || at === undefined) return null;
+  const rendered = aligned.inserted.has(node) ? at : at + offset;
+  const source = sourceOffsetOfRendered(aligned.segments, rendered, edge);
+  return edge === "start"
+    ? pastPrefix(index, aligned.segments, source)
+    : source;
 }
 
 /**
@@ -352,7 +403,7 @@ type Point = { node: Node; offset: number };
 const CODE_BLOCK = `[${CODE_CONTENT_START_ATTR}]`;
 
 /**
- * Old content no selection can anchor to: what `sourceTextWalker` skips, and
+ * Old content no selection can anchor to: what `alignBlock` skips, and
  * the rows, cells and images a compared table puts back (T-221, T-229). Their
  * prose already sits in `.spec-del` runs; an old image put back into a
  * current cell sits in nothing else.

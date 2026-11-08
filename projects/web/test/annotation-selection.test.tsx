@@ -606,6 +606,50 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
     });
   });
 
+  it("anchors a word in a list item that holds a sublist", async () => {
+    // The parent's <li> holds the sublist's text too, and the blank text
+    // nodes the renderer puts between an item's blocks.
+    const { onStage, button } = await stageSelection(
+      "- parent item words\n  1. child one\n  2. child two\n- next item\n",
+      (container) => bracketedIn(container, "parent [item] words"),
+    );
+    fireEvent.click(button);
+    expect(onStage).toHaveBeenCalledWith({
+      lineStart: 1,
+      lineEnd: 1,
+      colStart: 10,
+      colEnd: 13,
+    });
+  });
+
+  it("anchors a list item's own text after a code block in it", async () => {
+    const { onStage, button } = await stageSelection(
+      "- item text\n  ```\n  code\n  ```\n  more\n",
+      (container) => bracketedIn(container, "[more]"),
+    );
+    fireEvent.click(button);
+    expect(onStage).toHaveBeenCalledWith({
+      lineStart: 5,
+      lineEnd: 5,
+      colStart: 3,
+      colEnd: 6,
+    });
+  });
+
+  it("counts the blank between two emphases as the paragraph's text", async () => {
+    const { onStage, button } = await stageSelection(
+      "*one* *two* three\n",
+      (container) => bracketedIn(container, " [three]"),
+    );
+    fireEvent.click(button);
+    expect(onStage).toHaveBeenCalledWith({
+      lineStart: 1,
+      lineEnd: 1,
+      colStart: 13,
+      colEnd: 17,
+    });
+  });
+
   it("gives up columns on a line holding a ref chip", async () => {
     const client = testQueryClient();
     client.setQueryData(
