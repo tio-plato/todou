@@ -627,6 +627,19 @@ function scrolling({ below = 0 }: { below?: number } = {}): Scrolling {
   };
 }
 
+/**
+ * New messages is up: the button, in a layer that is showing. The layer stays
+ * mounted, and the button in it keeps its look while it fades out.
+ */
+function newMessagesShown(view: View) {
+  return (
+    view
+      .queryByRole("button", { name: "New messages" })
+      ?.closest("[data-scroll-to-bottom]")
+      ?.getAttribute("data-state") === "shown"
+  );
+}
+
 async function landed(view: View, scroll: Scrolling, id: number, count = 1) {
   await waitFor(
     () => {
@@ -936,7 +949,7 @@ describe("question landing through the real issue route", () => {
     await refetchTail(view);
     await view.findByText("comment body 4");
     expect(scroll.bottoms()).toBe(1);
-    expect(view.getByRole("button", { name: "New messages" })).toBeTruthy();
+    expect(newMessagesShown(view)).toBe(true);
     expect(view.getByText(LOCATE_FAILURE)).toBeTruthy();
     expect(view.router.state.location.hash).toBe(ENTRY);
     expect(scroll.events.some((event) => event.startsWith("reveal:"))).toBe(
@@ -1533,7 +1546,7 @@ describe("question landing through the real issue route", () => {
     await refetchTail(view);
     await view.findByText("comment body 4");
     expect(scroll.bottoms()).toBe(2);
-    expect(view.getByRole("button", { name: "New messages" })).toBeTruthy();
+    expect(newMessagesShown(view)).toBe(true);
     expect(server.questions()).toHaveLength(0);
   });
 
@@ -1557,7 +1570,7 @@ describe("question landing through the real issue route", () => {
     await view.findByText("comment body 4");
     expect(scroll.bottoms()).toBe(2);
     expect(scroll.position()).toBe(10_000 - 800);
-    expect(view.getByRole("button", { name: "New messages" })).toBeTruthy();
+    expect(newMessagesShown(view)).toBe(true);
   });
 
   it.each([
