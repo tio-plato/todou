@@ -628,6 +628,7 @@ function stageDraft(
   line: number,
   body: string,
   end = line,
+  cols: [number, number] | null = null,
 ) {
   const stored = JSON.parse(localStorage.getItem(DRAFTS_KEY) ?? "[]");
   stored.push({
@@ -637,8 +638,8 @@ function stageDraft(
       version,
       line_start: line,
       line_end: end,
-      col_start: null,
-      col_end: null,
+      col_start: cols?.[0] ?? null,
+      col_end: cols?.[1] ?? null,
     },
     quote: "",
     body,
@@ -751,6 +752,109 @@ describe("baseline comments in the rendered comparison", () => {
         ].map((mark) => mark.textContent),
       ).toEqual(["delta"]),
     );
+  });
+});
+
+describe("baseline notes on text kept as it was", () => {
+  // v2 inserts a line under the title, which moves the kept paragraph from
+  // v1's line 3 to line 4, and edits the last line; v3, the current version,
+  // adds one more line at the end.
+  const KEPT_V2 =
+    "# Title\nInserted line.\n\nKept paragraph.\n\nThe quick red fox.\n";
+  const KEPT: Record<number, Record<string, string>> = {
+    1: { "kept.md": "# Title\n\nKept paragraph.\n\nThe quick brown fox.\n" },
+    2: { "kept.md": KEPT_V2 },
+    3: { "kept.md": `${KEPT_V2}One more line.\n` },
+  };
+  const COMPARE = "?v=2&file=kept.md&compare=1&view=rendered";
+
+  /** The classes of the rendered paragraph reading `text` as it is now. */
+  const classesOf = (view: { container: HTMLElement }, text: string) => {
+    const p = [
+      ...view.container.querySelectorAll(
+        '[data-testid="annotated-markdown"] p',
+      ),
+    ].find((el) => el.textContent === text);
+    return p === undefined ? null : [...p.classList];
+  };
+
+  it("washes the kept paragraph a whole-line draft covers, at its new lines", async () => {
+    // v1's lines 2–4: a blank line, the paragraph, a blank line.
+    stageDraft("d-kept", "kept.md", 1, 2, "still true?", 4);
+    mockSpec([], KEPT);
+    const view = renderSpecView(COMPARE);
+    await waitFor(() =>
+      expect(classesOf(view, "Kept paragraph.")).toContain("spec-annotated"),
+    );
+    expect(classesOf(view, "Kept paragraph.")).toContain(
+      "spec-annotated-draft",
+    );
+    expect(classesOf(view, "Inserted line.")).not.toBeNull();
+    expect(classesOf(view, "Inserted line.")).not.toContain("spec-annotated");
+    expect(
+      await view.findAllByRole("button", {
+        name: "1 comment(s) on this block",
+      }),
+    ).toHaveLength(1);
+  });
+
+  it("paints the kept words a column draft covers", async () => {
+    // v1's line 3 is "Kept paragraph."; "Kept paragraph" is columns 1 to 14.
+    stageDraft("d-cols", "kept.md", 1, 3, "say more", 3, [1, 14]);
+    mockSpec([], KEPT);
+    const view = renderSpecView(COMPARE);
+    await waitFor(() =>
+      expect(
+        [...view.container.querySelectorAll('[data-mark-key="d-cols"]')].map(
+          (mark) => mark.textContent,
+        ),
+      ).toEqual(["Kept paragraph"]),
+    );
+  });
+
+  it("hangs a comment on v1 on a version that is not the current one", async () => {
+    // The server maps v1's line 3 onto v3, the current version: line 4.
+    mockSpec(
+      [
+        {
+          ...comment("kept.md", 1, 3, "still true?"),
+          current_line_start: 4,
+          current_line_end: 4,
+        },
+      ],
+      KEPT,
+    );
+    const view = renderSpecView(COMPARE);
+    await waitFor(() =>
+      expect(classesOf(view, "Kept paragraph.")).toContain("spec-annotated"),
+    );
+    expect(classesOf(view, "Kept paragraph.")).not.toContain(
+      "spec-annotated-draft",
+    );
+    expect(view.queryByText(/Comments without a place/)).toBeNull();
+  });
+
+  it("hangs a renamed file's comment from under its old path", async () => {
+    // drift.md's first three lines are drifted.md's, unchanged; the current
+    // version has no drift.md, so the server outdates the comment.
+    const base = comment("drift.md", 1, 1, "on alpha");
+    mockSpec([
+      {
+        ...base,
+        outdated: true,
+        current_line_start: null,
+        current_line_end: null,
+      },
+    ]);
+    const view = renderSpecView("?v=2&file=drifted.md&compare=1&view=rendered");
+    await waitFor(() => {
+      const p = [
+        ...view.container.querySelectorAll(
+          '[data-testid="annotated-markdown"] p',
+        ),
+      ].find((el) => el.textContent?.startsWith("alpha"));
+      expect(p?.classList).toContain("spec-annotated");
+    });
   });
 });
 
