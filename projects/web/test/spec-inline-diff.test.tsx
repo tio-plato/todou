@@ -1950,6 +1950,21 @@ describe("how image edits render (T-223)", () => {
     expect(fresh?.parentElement).toBe(old?.parentElement);
   });
 
+  it("puts an old picture from outside the card beside the new one", async () => {
+    // Not an attachment, so the plain `<img>` path draws both.
+    const before = "https://img.example/a.png";
+    const after = "https://img.example/b.png";
+    const { container } = await renderDiff(
+      `## 图\n\n![](${before})\n`,
+      `## 图\n\n![](${after})\n`,
+    );
+    const old = container.querySelector("del.spec-img-del");
+    const fresh = old?.nextElementSibling;
+    expect(fresh?.tagName).toBe("IMG");
+    expect(fresh?.getAttribute("src")).toBe(after);
+    expect(fresh?.parentElement).toBe(old?.parentElement);
+  });
+
   it("does not draw the same image twice when only the alt moved", async () => {
     const { container } = await renderDiff(
       `![改前](${IMG_A})\n`,

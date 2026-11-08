@@ -1159,9 +1159,10 @@ function decorateAtomic(
 }
 
 /**
- * The whole-block class a `<pre>` wears when a mark reaches into it, or
- * null. pierre owns the inside of a code block (T-31), so a span crossing
- * one has no text node to land on and the block itself has to say it.
+ * The whole-block class a `<pre>` or an `<img>` wears when a mark reaches
+ * into it, or null. pierre owns the inside of a code block (T-31), and an
+ * image has no inside, so a span crossing one has no text node to land on
+ * and the block itself has to say it.
  * Insertions are already covered: a wholly-new fence gets INS_BLOCK_CLASS
  * from `blocks`, and word-level diffs only ever map onto prose.
  */
@@ -1258,6 +1259,13 @@ export function rehypeDecorations(options: Decorations = NO_DECORATIONS) {
           // container in between would both break that test and produce a
           // `<div>` inside a `<p>`. Side by side is two `inline-block`s.
           if (child.tagName === "img") {
+            // An image shows no text to put a mark in, and a mark reaching
+            // into one — a selection made inside a document card anchors
+            // to the whole `![…](…)` — would show nowhere but the rail. It
+            // wears the block class a `<pre>` does, which reaches a
+            // document card or a picture through its `className`.
+            const wash = markBlockClass(child, spans);
+            if (wash !== null) addClass(child, wash);
             const swap = images.find(
               (image) => image.at.start === child.position?.start.offset,
             );

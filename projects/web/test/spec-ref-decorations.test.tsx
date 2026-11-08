@@ -365,3 +365,33 @@ describe("annotation highlights over an escape", () => {
     expect(texts(container, "mark.spec-mark-comment")).toEqual(["a *"]);
   });
 });
+
+// An image shows no text a mark could sit in, so an annotation anchored on
+// one — a selection inside a document card anchors to its `![…](…)` — showed
+// nowhere on the page but the rail.
+describe("annotations reaching onto an image", () => {
+  const BODY = "See ![pic](x.png) after\n";
+
+  it("washes the image the anchor covers", async () => {
+    const { container } = await renderSpec({
+      body: BODY,
+      // "![pic](x.png)" occupies columns 5 through 17.
+      annotations: [anchored("comment", 1, 5, 1, 17)],
+      ready: "img",
+    });
+    const image = container.querySelector("img");
+    expect(image?.classList.contains("spec-mark-comment-block")).toBe(true);
+  });
+
+  it("leaves an image alone when the anchor is the word after it", async () => {
+    const { container } = await renderSpec({
+      body: BODY,
+      annotations: [anchored("comment", 1, 19, 1, 23)],
+      ready: "img",
+    });
+    expect(texts(container, "mark.spec-mark-comment")).toEqual(["after"]);
+    expect(container.querySelector("img")?.className ?? "").not.toContain(
+      "spec-mark",
+    );
+  });
+});
