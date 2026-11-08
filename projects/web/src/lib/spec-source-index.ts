@@ -189,6 +189,14 @@ export type SegmentIndex = {
   images: Map<number, SourceImage>;
   /** Every code block's body, by the leaf group it owns (T-343). */
   fences: Map<number, SourceFence>;
+  /**
+   * Raw HTML inside a leaf block, which the page shows as its own source
+   * text: todou runs no HTML. Kept apart from `segments`, so `text` and the
+   * word diff never weigh markup as prose; only the selection mapping reads
+   * these, to line a block's text up with what it shows. Each is exact and
+   * has no place in `text`, so its `at` is -1.
+   */
+  literals: SourceSegment[];
 };
 
 /** One run of a text node, in its value and in the source. */
@@ -362,6 +370,7 @@ export function buildSegmentIndex(source: string): SegmentIndex {
   let parent: number | null = null;
   const childCounts = new Map<number | null, number>();
   const lineStarts = lineStartsOf(source);
+  const literals: SourceSegment[] = [];
 
   const pushBlock = (node: Nodes, type: SourceBlockType): number | null => {
     const start = node.position?.start.offset;
@@ -404,6 +413,28 @@ export function buildSegmentIndex(source: string): SegmentIndex {
   const visit = (node: Nodes): void => {
     if (node.type === "html") {
       markOpaque();
+      // Inline HTML only: a block of its own shows outside every stamped
+      // block. One whose source is not its value — it spans a line a
+      // container prefixes — is left out, and its block keeps the line.
+      const start = node.position?.start.offset;
+      const end = node.position?.end.offset;
+      if (
+        group >= 0 &&
+        start !== undefined &&
+        end !== undefined &&
+        end - start === node.value.length
+      ) {
+        literals.push({
+          text: node.value,
+          at: -1,
+          start,
+          end,
+          line: node.position?.start.line ?? 1,
+          endLine: node.position?.end.line ?? 1,
+          exact: true,
+          group,
+        });
+      }
       return;
     }
     // A fence is a leaf that owns a group but contributes no prose: nothing
@@ -521,6 +552,7 @@ export function buildSegmentIndex(source: string): SegmentIndex {
     groupTypes,
     images,
     fences,
+    literals,
   };
 }
 
