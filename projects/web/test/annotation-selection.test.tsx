@@ -17,12 +17,21 @@ import { projectsQuery } from "../src/api/queries.ts";
 import { referenceConfigQuery } from "../src/api/references.ts";
 import { MarkdownView } from "../src/components/shared/markdown-view.tsx";
 import { AnnotatedMarkdown } from "../src/components/spec/annotated-markdown.tsx";
+import { compareAnchorForSelection } from "../src/lib/compare-anchor.ts";
+import {
+  NO_DECORATIONS,
+  rehypeDecorations,
+} from "../src/lib/rehype-decorations.ts";
 import { rehypeSourceLines } from "../src/lib/rehype-source-lines.ts";
 import {
   anchorForSelection,
   anchorRangeForNode,
 } from "../src/lib/selection-anchor.ts";
-import { selectionEndpoints } from "../src/lib/selection-endpoints.ts";
+import {
+  type SelectionEndpoints,
+  selectionEndpoints,
+} from "../src/lib/selection-endpoints.ts";
+import { pairedFences } from "../src/lib/spec-decorations.ts";
 import {
   buildSegmentIndex,
   type SegmentIndex,
@@ -2250,5 +2259,481 @@ describe("endpoints that select nothing", () => {
         ends(first?.firstChild, 5, second?.firstChild, 7),
       ),
     ).toEqual({ lineStart: 1, lineEnd: 3, colStart: 6, colEnd: 7 });
+  });
+});
+
+describe("anchoring a compared document", () => {
+  /**
+   * `after` rendered as a comparison against `before`, and its selections
+   * anchored as the spec view anchors them.
+   */
+  async function compared(before: string, after: string, ready = "[data-loc]") {
+    const view = renderWithProviders(
+      <AnnotatedMarkdown
+        slug="p"
+        issueNumber={1}
+        body={after}
+        baselineBody={before}
+        annotations={[]}
+        onStage={() => {}}
+        onEditDraft={() => {}}
+        onRemoveDraft={() => {}}
+        onResolve={() => {}}
+      />,
+    );
+    const container = await waitFor(() => {
+      const el = view.getByTestId("annotated-markdown");
+      if (!el.querySelector(ready)) throw new Error("not rendered");
+      return el;
+    });
+    const index = buildSegmentIndex(after);
+    const baseline = buildSegmentIndex(before);
+    const fences = pairedFences(baseline, index);
+    return {
+      container,
+      anchor: (selected: SelectionEndpoints) =>
+        compareAnchorForSelection(container, index, baseline, fences, selected),
+    };
+  }
+
+  /** The text node under `selector` holding `text`, and where it starts. */
+  function textAt(
+    container: Element,
+    selector: string,
+    text: string,
+  ): { node: Node; at: number } {
+    for (const el of container.querySelectorAll(selector)) {
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
+        const at = (n as Text).data.indexOf(text);
+        if (at >= 0) return { node: n, at };
+      }
+    }
+    throw new Error(`no ${selector} holds ${JSON.stringify(text)}`);
+  }
+
+  /** Endpoints from `from` characters into `a`'s text to `to` into `b`'s. */
+  function across(
+    a: { node: Node; at: number },
+    from: number,
+    b: { node: Node; at: number },
+    to: number,
+  ): SelectionEndpoints {
+    return ends(a.node, a.at + from, b.node, b.at + to);
+  }
+
+  /** `text` selected whole, wherever under `selector` it is. */
+  function word(container: Element, selector: string, text: string) {
+    const found = textAt(container, selector, text);
+    return across(found, 0, found, text.length);
+  }
+
+  /** What a baseline anchor names in `before`, as the server cuts a quote. */
+  function quoted(
+    before: string,
+    anchor: ReturnType<typeof compareAnchorForSelection>,
+  ): string {
+    if (anchor === null) throw new Error("no anchor");
+    expect(anchor.baseline).toBe(true);
+    return cut(before.split("\n"), anchor);
+  }
+
+  it("anchors a removed word to where it was in the baseline", async () => {
+    const before = "Intro.\n\nThe quick brown fox jumps.\n";
+    const after = "Intro.\n\nThe quick red fox jumps.\n";
+    const { container, anchor } = await compared(before, after);
+    const selected = anchor(word(container, "del.spec-del", "brown"));
+    expect(selected).toMatchObject({ lineStart: 3, lineEnd: 3 });
+    expect(quoted(before, selected)).toBe("brown");
+  });
+
+  it("leaves the emphasis markers out of a removed run's edges", async () => {
+    const before = "Keep this sentence **old bold** and the rest.\n";
+    const after = "Keep this sentence and the rest.\n";
+    const { container, anchor } = await compared(before, after);
+    // From the first character of `old` to the last of `bold`: both ends
+    // sit on a boundary between the plain text and the emphasis.
+    expect(quoted(before, anchor(word(container, "del", "old bold")))).toBe(
+      "old bold",
+    );
+    const run = textAt(container, "del", "old bold");
+    expect(quoted(before, anchor(across(run, 0, run, 6)))).toBe("old bo");
+  });
+
+  it("anchors a word of a restored paragraph to its baseline columns", async () => {
+    const before =
+      "# Title\n\nFirst para.\n\nRemoved paragraph with words.\n\nLast para.\n";
+    const after = "# Title\n\nFirst para.\n\nLast para.\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "p.spec-del-structure",
+    );
+    const selected = anchor(word(container, "p.spec-del-structure", "with"));
+    expect(selected).toMatchObject({ lineStart: 5, lineEnd: 5 });
+    expect(quoted(before, selected)).toBe("with");
+  });
+
+  it("anchors a triple-clicked restored paragraph to its own text", async () => {
+    const before =
+      "# Title\n\nFirst para.\n\nRemoved paragraph with words.\n\nLast para.\n";
+    const after = "# Title\n\nFirst para.\n\nLast para.\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "p.spec-del-structure",
+    );
+    const old = container.querySelector("p.spec-del-structure");
+    // Chromium and WebKit end a triple-click at the next block's start.
+    const next = old?.nextElementSibling;
+    expect(next?.textContent).toBe("Last para.");
+    expect(quoted(before, anchor(ends(old?.firstChild, 0, next, 0)))).toBe(
+      "Removed paragraph with words.",
+    );
+  });
+
+  it("anchors inside a marker quoting a removed list item", async () => {
+    const before = "- retained alpha\n- **deleted middle**\n- retained omega\n";
+    const after =
+      "- retained alpha\n\n| separator |\n| --- |\n| divider |\n\n- retained omega\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "del.spec-del-block",
+    );
+    const selected = anchor(word(container, "del.spec-del-block", "middle"));
+    expect(selected).toMatchObject({ lineStart: 2, lineEnd: 2 });
+    expect(quoted(before, selected)).toBe("middle");
+  });
+
+  it("anchors a triple-clicked marker to its own text", async () => {
+    const before = "- retained alpha\n- **deleted middle**\n- retained omega\n";
+    const after =
+      "- retained alpha\n\n| separator |\n| --- |\n| divider |\n\n- retained omega\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "del.spec-del-block",
+    );
+    const marker = container.querySelector("del.spec-del-block");
+    // Chromium and WebKit end a triple-click at the next block's start.
+    const next = marker?.nextElementSibling;
+    expect(next?.tagName).toBe("TABLE");
+    expect(quoted(before, anchor(ends(marker?.firstChild, 0, next, 0)))).toBe(
+      "- **deleted middle**",
+    );
+  });
+
+  it("anchors inside the second of two removed items one marker quotes", async () => {
+    const before =
+      "- retained alpha\n- deleted one\n- deleted two\n- retained omega\n";
+    const after =
+      "- retained alpha\n\n| separator |\n| --- |\n| divider |\n\n- retained omega\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "del.spec-del-block",
+    );
+    expect(container.querySelectorAll("del.spec-del-block")).toHaveLength(1);
+    const selected = anchor(word(container, "del.spec-del-block", "two"));
+    expect(selected).toMatchObject({ lineStart: 3, lineEnd: 3 });
+    expect(quoted(before, selected)).toBe("two");
+  });
+
+  it("anchors inside the marker a structure falls back to", async () => {
+    const before =
+      "<details>\n<summary>S</summary>\n\nKeep.\n\n</details>\n\nRemoved root.\n";
+    const after = "<details>\n<summary>S</summary>\n\nKeep.\n\n</details>\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "del.spec-del-block",
+    );
+    const selected = anchor(word(container, "del.spec-del-block", "root"));
+    expect(selected).toMatchObject({ lineStart: 8, lineEnd: 8 });
+    expect(quoted(before, selected)).toBe("root");
+  });
+
+  it("starts a marker trimmed at its head where its text does", () => {
+    const baselineSource = "Intro.\n\n  Old words here.\n";
+    const current = "Intro.\n";
+    const view = render(
+      <QueryClientProvider client={testQueryClient()}>
+        <MarkdownView
+          rehypePlugins={[
+            rehypeSourceLines,
+            [
+              rehypeDecorations,
+              {
+                ...NO_DECORATIONS,
+                deletions: [
+                  {
+                    at: current.length,
+                    text: "\n  Old words here.",
+                    block: true,
+                    // What a marker quoting from a line's end looks like.
+                    parts: [
+                      {
+                        kind: "text",
+                        text: "\n  Old words here.",
+                        origin: { source: baselineSource.indexOf("\n  Old") },
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          ]}
+        >
+          {current}
+        </MarkdownView>
+      </QueryClientProvider>,
+    );
+    const container = view.container;
+    const first = textAt(container, "del.spec-del-block", "Old");
+    const baseline = buildSegmentIndex(baselineSource);
+    const selected = compareAnchorForSelection(
+      container,
+      buildSegmentIndex(current),
+      baseline,
+      new Map(),
+      across(first, 0, first, 1),
+    );
+    expect(selected).toMatchObject({ lineStart: 3, colStart: 3 });
+    expect(quoted(baselineSource, selected)).toBe("O");
+  });
+
+  it.each([
+    [
+      "a cell of a removed row",
+      "| name | kept |\n| --- | --- |\n| alpha | gamma |\n| delta | epsilon |\n| eta | iota |\n",
+      "| name | kept |\n| --- | --- |\n| alpha | gamma |\n| eta | iota |\n",
+      "tr.spec-del-row",
+      "epsilon",
+      4,
+    ],
+    [
+      "a cell of a removed column",
+      "| name | gone | kept |\n| --- | --- | --- |\n| alpha | beta | gamma |\n| eta | theta | iota |\n",
+      "| name | kept |\n| --- | --- |\n| alpha | gamma |\n| eta | iota |\n",
+      ".spec-del-cell",
+      "theta",
+      4,
+    ],
+    [
+      "the old text of a cell that was emptied",
+      "| a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | four |\n",
+      "| a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 |  |\n",
+      "td del.spec-del",
+      "four",
+      4,
+    ],
+  ])(
+    "anchors %s to the baseline",
+    async (_name, before, after, selector, text, line) => {
+      const { container, anchor } = await compared(before, after, selector);
+      const selected = anchor(word(container, selector, text));
+      expect(selected).toMatchObject({ lineStart: line, lineEnd: line });
+      expect(quoted(before, selected)).toBe(text);
+    },
+  );
+
+  /** Rows drawn into the shadow root of `wrapper`, as pierre draws them. */
+  function drawRows(wrapper: Element | null, rows: string): ShadowRoot {
+    if (wrapper === null) throw new Error("no code block wrapper");
+    const host = document.createElement("diffs-container");
+    wrapper.append(host);
+    const shadow = host.shadowRoot ?? host.attachShadow({ mode: "open" });
+    shadow.innerHTML = rows;
+    return shadow;
+  }
+
+  it("anchors a deleted row of an edited block to the baseline's line", async () => {
+    // The baseline block opens two lines further down than the current one.
+    const before =
+      "Intro.\n\nExtra paragraph.\n\n```ts\nconst a = 1;\nconst b = 2;\n```\n";
+    const after = "Intro.\n\n```ts\nconst a = 1;\nconst b = 3;\n```\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    const shadow = drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-line-type="context">const a = 1;</div>
+       <div data-line="2" data-line-type="change-deletion">const b = 2;</div>
+       <div data-line="2" data-line-type="change-addition">const b = 3;</div>`,
+    );
+    const row = shadow.querySelector("[data-line-type='change-deletion']");
+    const selected = anchor(ends(row?.firstChild, 6, row?.firstChild, 11));
+    expect(selected).toMatchObject({ lineStart: 7, lineEnd: 7 });
+    expect(quoted(before, selected)).toBe("b = 2");
+  });
+
+  it("anchors a row of a restored code block to the baseline's line", async () => {
+    const before = "Intro.\n\n```ts\nold();\nmore();\n```\n\nOutro.\n";
+    const after = "Intro.\n\nOutro.\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-old-loc].markdown-fence",
+    );
+    const shadow = drawRows(
+      container.querySelector("[data-old-loc].markdown-fence"),
+      `<div data-line="1">old();</div><div data-line="2">more();</div>`,
+    );
+    const row = shadow.querySelector("[data-line='2']");
+    const selected = anchor(ends(row?.firstChild, 0, row?.firstChild, 4));
+    expect(selected).toMatchObject({ lineStart: 5, lineEnd: 5 });
+    expect(quoted(before, selected)).toBe("more");
+  });
+
+  it("anchors a selection running out of removed text to the current text", async () => {
+    const before = "Intro.\n\nThe quick brown fox jumps.\n";
+    const after = "Intro.\n\nThe quick red fox jumps.\n";
+    const { container, anchor } = await compared(before, after);
+    const selected = anchor(
+      across(
+        textAt(container, "del.spec-del", "brown"),
+        2,
+        textAt(container, "p", " fox jumps."),
+        4,
+      ),
+    );
+    expect(selected?.baseline).toBeUndefined();
+    if (selected === null) throw new Error("no anchor");
+    expect(cut(after.split("\n"), selected)).toBe("red fox");
+  });
+
+  it("anchors a selection out of a block's first deleted row from the next row", async () => {
+    // pierre draws the deleted row first, with no current row before it.
+    const before = "Intro.\n\n```ts\na();\n```\n\nAfter text.\n";
+    const after = "Intro.\n\n```ts\nb();\n```\n\nAfter text.\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    const shadow = drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-line-type="change-deletion">a();</div>
+       <div data-line="1" data-line-type="change-addition">b();</div>`,
+    );
+    const row = shadow.querySelector("[data-line-type='change-deletion']");
+    const text = textAt(container, "p", "After text.");
+    // From the current row that follows the deleted one, never from before
+    // the block.
+    expect(anchor(ends(row?.firstChild, 1, text.node, 5))).toEqual({
+      lineStart: after.split("\n").indexOf("b();") + 1,
+      colStart: 1,
+      lineEnd: after.split("\n").indexOf("After text.") + 1,
+      colEnd: 5,
+    });
+  });
+
+  it("anchors a selection into a block's last deleted row up to the row before it", async () => {
+    // pierre draws the deleted row last, with no current row after it.
+    const before = "Intro text.\n\n```ts\nb();\na();\n```\n";
+    const after = "Intro text.\n\n```ts\nb();\n```\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    const shadow = drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-line-type="context">b();</div>
+       <div data-line="2" data-line-type="change-deletion">a();</div>`,
+    );
+    const row = shadow.querySelector("[data-line-type='change-deletion']");
+    const text = textAt(container, "p", "Intro text.");
+    // Up to the end of the current row before the deleted one, never past
+    // the block.
+    expect(anchor(ends(text.node, 6, row?.firstChild, 2))).toEqual({
+      lineStart: 1,
+      colStart: 7,
+      lineEnd: after.split("\n").indexOf("b();") + 1,
+      colEnd: 4,
+    });
+  });
+
+  it("anchors a selection running into a restored paragraph to the current text", async () => {
+    const before =
+      "# Title\n\nFirst para.\n\nRemoved paragraph with words.\n\nLast para.\n";
+    const after = "# Title\n\nFirst para.\n\nLast para.\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "p.spec-del-structure",
+    );
+    const selected = anchor(
+      across(
+        textAt(container, "p", "First para."),
+        6,
+        textAt(container, "p.spec-del-structure", "Removed"),
+        4,
+      ),
+    );
+    expect(selected?.baseline).toBeUndefined();
+    if (selected === null) throw new Error("no anchor");
+    expect(cut(after.split("\n"), selected)).toBe("para.");
+  });
+
+  it("anchors a selection between two removed paragraphs to the baseline between them", async () => {
+    const before =
+      "Para one.\n\nOld A here.\n\nPara two.\n\nOld B here.\n\nPara three.\n";
+    const after = "Para one.\n\nPara two.\n\nPara three.\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "p.spec-del-structure",
+    );
+    const selected = anchor(
+      across(
+        textAt(container, "p.spec-del-structure", "Old A"),
+        4,
+        textAt(container, "p.spec-del-structure", "Old B"),
+        5,
+      ),
+    );
+    expect(selected).toMatchObject({ lineStart: 3, lineEnd: 7 });
+    expect(quoted(before, selected)).toBe("A here.\n\nPara two.\n\nOld B");
+  });
+
+  it("anchors as the current document does where nothing was removed", async () => {
+    const source =
+      "First paragraph here.\n\nSecond **paragraph** here.\n\n- item one\n- item two\n";
+    const { container, anchor } = await compared(source, source);
+    const paragraphs = [...container.querySelectorAll("p[data-loc]")];
+    const items = [...container.querySelectorAll("li[data-loc]")];
+    const index = buildSegmentIndex(source);
+    for (const selected of [
+      ends(paragraphs[0]?.firstChild, 6, paragraphs[1]?.lastChild, 3),
+      ends(paragraphs[0]?.firstChild, 0, paragraphs[1], 0),
+      ends(items[1], 0, items[1], 1),
+      ends(items[1]?.firstChild, 0, paragraphs[0]?.firstChild, 2),
+    ]) {
+      const current = anchorForSelection(container, index, selected);
+      expect(current).not.toBeNull();
+      expect(anchor(selected)).toEqual(current);
+    }
+  });
+
+  it("starts a restored ordered item at its text, past its old number", async () => {
+    const before = "1. first\n2. second removed\n3. third\n";
+    const after = "1. first\n2. third\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "li.spec-del-structure",
+    );
+    const item = container.querySelector("li.spec-del-structure");
+    const number = item?.querySelector(".spec-list-number");
+    const text = textAt(container, "li.spec-del-structure", "second removed");
+    const selected = anchor(
+      ends(number?.firstChild, 0, text.node, text.at + "second removed".length),
+    );
+    expect(selected).toMatchObject({ lineStart: 2, lineEnd: 2, colStart: 4 });
+    expect(quoted(before, selected)).toBe("second removed");
   });
 });
