@@ -1,5 +1,5 @@
 import { act, fireEvent, waitFor } from "@testing-library/react";
-import type { TimelineComment } from "@todou/shared";
+import type { QuestionsComponent, TimelineComment } from "@todou/shared";
 import { type ReactNode, useRef, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CommentItem } from "../src/components/timeline/comment-item.tsx";
@@ -10,10 +10,10 @@ import {
 import {
   QUOTE_BODY_ATTR,
   quotableSelection,
+  quoteOfQuotable,
   SelectionQuote,
 } from "../src/components/timeline/selection-quote.tsx";
 import { inlineActionSource } from "../src/lib/action-text.ts";
-import { quoteOfSelection } from "../src/lib/quote-markdown.ts";
 import { renderWithProviders } from "./render.tsx";
 
 // Code blocks render through pierre's CodeView, drawn in a shadow root
@@ -60,6 +60,13 @@ function comment(
 const A = "Alpha one two.\n\nAlpha **three** four.";
 const B = "Bravo five six.";
 
+/** Each comment's body, which comes before anything else quotable in it. */
+function bodiesIn(container: Element): HTMLElement[] {
+  return [...container.querySelectorAll("[data-comment-id]")].flatMap(
+    (entry) => entry.querySelector<HTMLElement>(`[${QUOTE_BODY_ATTR}]`) ?? [],
+  );
+}
+
 /** Two comments with a node between them that belongs to neither body. */
 async function renderTwo(first: TimelineComment, second: TimelineComment) {
   const view = renderWithProviders(
@@ -70,11 +77,11 @@ async function renderTwo(first: TimelineComment, second: TimelineComment) {
     </QuoteReplyProvider>,
   );
   const [a, b] = await waitFor(() => {
-    const bodies = view.container.querySelectorAll(`[${QUOTE_BODY_ATTR}]`);
+    const bodies = bodiesIn(view.container);
     if (bodies.length < 2 || !bodies[1]?.querySelector("[data-loc]")) {
       throw new Error("bodies not rendered yet");
     }
-    return [...bodies] as [HTMLElement, HTMLElement];
+    return bodies as [HTMLElement, HTMLElement];
   });
   return { view, a, b };
 }
@@ -151,13 +158,100 @@ const PROSE_AND_CODE =
 
 /** The markdown a picked selection quotes, as the composer receives it. */
 function quoted(picked: ReturnType<typeof quotableSelection>): string | null {
-  return picked === null
-    ? null
-    : quoteOfSelection(picked.source, picked.anchor);
+  return picked === null ? null : quoteOfQuotable(picked);
+}
+
+/**
+ * The one part a selection picked, once it is shown to be the only one and
+ * to belong to the entry `body` sits in: the root of its comment or line.
+ */
+function onlyPart(picked: ReturnType<typeof quotableSelection>, body: Element) {
+  expect(picked?.parts).toHaveLength(1);
+  expect(picked?.entry).toBe(body.closest("[data-comment-id]"));
+  return picked?.parts[0];
+}
+
+const ASKING: QuestionsComponent = {
+  type: "questions",
+  questions: [
+    {
+      key: "storage",
+      header: "Storage",
+      question: "Where should X live?",
+      multiple: false,
+      options: [
+        { label: "Reuse the **jobs** table", description: "Fewer tables." },
+        { label: "A new table for X" },
+      ],
+    },
+  ],
+};
+
+const ANSWER = {
+  event_id: 7,
+  actor: author,
+  created_at: "2026-08-12T00:00:00Z",
+  answers: [
+    {
+      key: "storage",
+      selected: [{ index: 0, label: "Reuse the **jobs** table" }],
+      other: "Keep it small.",
+      declined: false,
+    },
+  ],
+};
+
+/**
+ * `/questions` for the card, answering for comment 1 with `answer`: the form
+ * for null, the answered card otherwise.
+ */
+function stubQuestions(answer: typeof ANSWER | null) {
+  vi.stubGlobal("fetch", async (input: unknown) => {
+    const url = String(input);
+    if (url.includes("/questions")) {
+      return Response.json({
+        items: [
+          {
+            comment_id: 1,
+            author,
+            created_at: "2026-08-11T00:00:00Z",
+            questions: ASKING.questions,
+            answer,
+          },
+        ],
+        open: answer === null ? 1 : 0,
+      });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  });
+}
+
+/** The first text node under `root` that holds `text`. */
+function textWith(root: Element, text: string): Text {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node.nodeValue?.includes(text)) return node as Text;
+  }
+  throw new Error(`no text "${text}"`);
+}
+
+/** A question comment of body A, then B, its card settled as `answer` says. */
+async function renderAsking(answer: typeof ANSWER | null) {
+  stubQuestions(answer);
+  const { view, a, b } = await renderTwo(
+    comment(1, A, { component: ASKING }),
+    comment(2, B),
+  );
+  await view.findByText(answer === null ? "awaiting answer" : "answered by");
+  const prompt = await view.findByText("Where should X live?");
+  const card = prompt.closest("[data-question-key]");
+  if (card === null) throw new Error("no question card");
+  return { view, a, b, card };
 }
 
 afterEach(() => {
   window.getSelection()?.removeAllRanges();
+  vi.unstubAllGlobals();
 });
 
 describe("quotableSelection", () => {
@@ -165,9 +259,10 @@ describe("quotableSelection", () => {
     const { a } = await renderTwo(comment(1, A), comment(2, B));
     const text = paragraph(a, 0);
     const picked = quotableSelection(select(text, 10, text, 13), document);
-    expect(picked?.body).toBe(a);
-    expect(picked?.source).toBe(A);
-    expect(picked?.anchor).toEqual({
+    const part = onlyPart(picked, a);
+    expect(part?.el).toBe(a);
+    expect(part?.source).toBe(A);
+    expect(part?.anchor).toEqual({
       lineStart: 1,
       lineEnd: 1,
       colStart: 11,
@@ -192,7 +287,7 @@ describe("quotableSelection", () => {
       select(paragraph(a, 1), 6, between, 4),
       document,
     );
-    expect(picked?.body).toBe(a);
+    expect(onlyPart(picked, a)?.el).toBe(a);
     expect(quoted(picked)).toBe("**three** four.");
   });
 
@@ -293,9 +388,10 @@ describe("quotableSelection", () => {
       select(paragraph(a, 1), 0, paragraph(b, 0), 0),
       document,
     );
-    expect(picked?.body).toBe(a);
-    expect(picked?.anchor.lineStart).toBe(3);
-    expect(picked?.anchor.lineEnd).toBe(3);
+    const part = onlyPart(picked, a);
+    expect(part?.el).toBe(a);
+    expect(part?.anchor.lineStart).toBe(3);
+    expect(part?.anchor.lineEnd).toBe(3);
   });
 
   it("counts no next comment whose selected part is only whitespace", async () => {
@@ -311,7 +407,7 @@ describe("quotableSelection", () => {
       select(paragraph(a, 1), 0, item, 0),
       document,
     );
-    expect(picked?.body).toBe(a);
+    expect(onlyPart(picked, a)?.el).toBe(a);
   });
 
   it("anchors in the body as it reads after an edit", async () => {
@@ -338,8 +434,9 @@ describe("quotableSelection", () => {
     });
     const picked = quotableSelection(select(text, 7, text, 12), document);
     expect(view.container.querySelector(`[${QUOTE_BODY_ATTR}]`)).toBe(before);
-    expect(picked?.source).toBe(edited);
-    expect(picked?.anchor).toEqual({
+    const part = onlyPart(picked, before);
+    expect(part?.source).toBe(edited);
+    expect(part?.anchor).toEqual({
       lineStart: 1,
       lineEnd: 1,
       colStart: 8,
@@ -361,9 +458,10 @@ describe("quotableSelection", () => {
     );
     const text = paragraph(b, 0);
     const picked = quotableSelection(select(text, 2, text, 8), document);
-    expect(picked?.body).toBe(b);
-    expect(picked?.source).toBe(inlineActionSource(body));
-    expect(picked?.source).not.toBe(body);
+    const part = onlyPart(picked, b);
+    expect(part?.el).toBe(b);
+    expect(part?.source).toBe(inlineActionSource(body));
+    expect(part?.source).not.toBe(body);
   });
 
   it("finds the comment a selection inside its code rows belongs to", async () => {
@@ -383,8 +481,9 @@ describe("quotableSelection", () => {
       ]),
       document,
     );
-    expect(picked?.body).toBe(a);
-    expect(picked?.anchor).toEqual({
+    const part = onlyPart(picked, a);
+    expect(part?.el).toBe(a);
+    expect(part?.anchor).toEqual({
       lineStart: 5,
       lineEnd: 5,
       colStart: 7,
@@ -411,6 +510,44 @@ describe("quotableSelection", () => {
         document,
       ),
     ).toBeNull();
+  });
+
+  it("quotes from a question's prompt into its second option as a list", async () => {
+    const { card } = await renderAsking(null);
+    const prompt = textWith(card, "Where should X live?");
+    const second = textWith(card, "A new table for X");
+    expect(
+      quoted(quotableSelection(select(prompt, 15, second, 5), document)),
+    ).toBe(
+      [
+        "live?",
+        "",
+        "- Reuse the **jobs** table — Fewer tables.",
+        "- A new",
+      ].join("\n"),
+    );
+  });
+
+  it("quotes from a comment's body into its question, the header whole", async () => {
+    const { a, card } = await renderAsking(null);
+    const prompt = textWith(card, "Where should X live?");
+    expect(
+      quoted(
+        quotableSelection(
+          select(textWith(a, " four."), 1, prompt, 12),
+          document,
+        ),
+      ),
+    ).toBe(["four.", "", "**Storage**", "", "Where should"].join("\n"));
+  });
+
+  it("quotes from an answered card's last option into its other text", async () => {
+    const { card } = await renderAsking(ANSWER);
+    const last = textWith(card, "A new table for X");
+    const other = textWith(card, "Keep it small.");
+    expect(quoted(quotableSelection(select(last, 6, other, 7), document))).toBe(
+      ["- table for X", "", "other: Keep it"].join("\n"),
+    );
   });
 
   it("gives up quietly where getComposedRanges rejects the call", async () => {
@@ -466,11 +603,17 @@ function FocusingSink({ onQuote }: { onQuote: (markdown: string) => void }) {
 }
 
 /** The card page's part in this: two comments, the floating entry, a box. */
-function Page({ children }: { children?: ReactNode }) {
+function Page({
+  first = comment(1, A),
+  children,
+}: {
+  first?: TimelineComment;
+  children?: ReactNode;
+}) {
   const content = useRef<HTMLDivElement>(null);
   return (
     <div ref={content} className="relative">
-      <CommentItem slug="p" issueNumber={7} comment={comment(1, A)} />
+      <CommentItem slug="p" issueNumber={7} comment={first} />
       <CommentItem slug="p" issueNumber={7} comment={comment(2, B)} />
       <SelectionQuote containerRef={content} />
       {children}
@@ -478,22 +621,22 @@ function Page({ children }: { children?: ReactNode }) {
   );
 }
 
-async function renderPage(box?: "plain" | "focusing") {
+async function renderPage(box?: "plain" | "focusing", first?: TimelineComment) {
   const onQuote = vi.fn();
   const view = renderWithProviders(
     <QuoteReplyProvider>
-      <Page>
+      <Page first={first}>
         {box === "plain" && <Sink onQuote={onQuote} />}
         {box === "focusing" && <FocusingSink onQuote={onQuote} />}
       </Page>
     </QuoteReplyProvider>,
   );
   const [a, b] = await waitFor(() => {
-    const bodies = view.container.querySelectorAll(`[${QUOTE_BODY_ATTR}]`);
+    const bodies = bodiesIn(view.container);
     if (bodies.length < 2 || !bodies[1]?.querySelector("[data-loc]")) {
       throw new Error("bodies not rendered yet");
     }
-    return [...bodies] as [HTMLElement, HTMLElement];
+    return bodies as [HTMLElement, HTMLElement];
   });
   return { view, a, b, onQuote };
 }
@@ -551,6 +694,19 @@ describe("SelectionQuote", () => {
     select(paragraph(a, 0), 6, paragraph(b, 0), 5);
     await settle();
     expect(view.queryByRole("button", { name: "Quote reply" })).toBeNull();
+  });
+
+  it("quotes a word selected in an option of a question's form", async () => {
+    stubQuestions(null);
+    const { view, onQuote } = await renderPage(
+      "plain",
+      comment(1, A, { component: ASKING }),
+    );
+    await view.findByText("awaiting answer");
+    const jobs = await waitFor(() => textWith(view.container, "jobs"));
+    select(jobs, 0, jobs, 4);
+    fireEvent.click(await view.findByRole("button", { name: "Quote reply" }));
+    expect(onQuote).toHaveBeenCalledExactlyOnceWith("**jobs**");
   });
 
   it("leaves the caret where the comment box put it", async () => {
