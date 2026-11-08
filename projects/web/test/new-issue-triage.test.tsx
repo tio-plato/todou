@@ -459,6 +459,17 @@ describe("the new-issue page's Ctrl-Enter", () => {
   });
 });
 
+describe("the new-issue page's description editor", () => {
+  // In iOS Chrome a contenteditable inside a <form> lags on every keystroke.
+  it("keeps the description editor out of every form", async () => {
+    const { container } = renderAs("admin");
+    await screen.findByLabelText("Title");
+    expect(
+      container.querySelector('[data-slot="markdown-editor"]')?.closest("form"),
+    ).toBeNull();
+  });
+});
+
 /**
  * Edges and a mute picked before the card exists (T-458). Both are replayed
  * onto the number the server hands back, which makes a half-finished submit
