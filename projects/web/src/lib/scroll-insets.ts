@@ -194,22 +194,95 @@ export function holdRevealed(
   });
 }
 
-/**
- * Bottom of the document, which sits below a sticky composer's in-flow spot.
- *
- * The largest offset there is, not `scrollHeight`: iOS Safari takes the
- * overshoot literally for a frame, parking the visual viewport a whole screen
- * past the end — one blank white frame on every landing (T-585).
- */
-function scrollToEnd() {
-  const root = document.documentElement;
-  window.scrollTo(0, Math.max(0, root.scrollHeight - root.clientHeight));
+/** The element ending the page's conversation; see `useScrollInsets`. */
+let declaredEnd: RefObject<HTMLElement | null> | null = null;
+
+function endElement(): HTMLElement | null {
+  const el = declaredEnd?.current ?? null;
+  return el?.isConnected ? el : null;
 }
 
-/** Go to the end of the document and stay there; see `hold`. */
+/**
+ * Page coordinate of the conversation's end: the bottom edge of the element
+ * the page declared, or the document's end on a page that declared none.
+ */
+export function conversationEnd(): number {
+  const el = endElement();
+  return el === null
+    ? document.documentElement.scrollHeight
+    : el.getBoundingClientRect().bottom + window.scrollY;
+}
+
+/**
+ * Where a landing on the bottom puts the page: the conversation's end on the
+ * bottom of what the reader sees.
+ *
+ * Not the document's end, which lies below the shell's footer and, on a narrow
+ * screen, below the sidebar that follows the comment box: a landing there put
+ * the box a sidebar's height out of sight. Less what an on-screen keyboard
+ * covers, so the box's place lands above the keyboard rather than behind it.
+ * Measured afresh at every call, since the hold calls again as the page grows.
+ *
+ * Never past the largest offset there is, and on a page with no declared end
+ * exactly that offset, not `scrollHeight`: iOS Safari takes the overshoot
+ * literally for a frame, parking the visual viewport a whole screen past the
+ * end — one blank white frame on every landing (T-585).
+ */
+function endTarget(): number {
+  const root = document.documentElement;
+  const max = Math.max(0, root.scrollHeight - root.clientHeight);
+  const el = endElement();
+  if (el === null) return max;
+  const visible = window.innerHeight - visualViewportInsets().bottom;
+  const target = el.getBoundingClientRect().bottom + window.scrollY - visible;
+  return Math.min(max, Math.max(0, target));
+}
+
+function scrollToEnd() {
+  window.scrollTo(0, endTarget());
+}
+
+/** Go to the end of the conversation and stay there; see `hold`. */
 export function landAtBottom(): () => void {
   scrollToEnd();
   return hold(document.body, scrollToEnd, true);
+}
+
+/** Where `revealBlock` in `"start"` mode puts the page for `el`. */
+function startTarget(el: HTMLElement): number {
+  const rect = el.getBoundingClientRect();
+  return restingScrollY(
+    { top: rect.top + window.scrollY, height: rect.height },
+    usableViewport(),
+    "start",
+  );
+}
+
+/**
+ * Bring `el`'s top under the top overlays, as `revealBlock` does in `"start"`
+ * mode, but no further down than a landing on the bottom goes: what follows
+ * `el` may be shorter than a screen, and the rest of the way down is the
+ * footer or, on a phone, the sidebar below the comment box. Flash it, and
+ * hold it there; see `hold`. Each placement measures both again, so `el` rises
+ * as what follows it loads. While stopped short at the bottom it is a landing
+ * on the bottom, and what arrives meanwhile is followed.
+ */
+export function revealAboveEnd(el: HTMLElement): () => void {
+  openEnclosingFolds(el);
+  flash(el);
+  const place = () => {
+    const start = startTarget(el);
+    const end = endTarget();
+    window.scrollTo(0, Math.max(0, Math.min(start, end)));
+    if (held?.release === release) held.onEnd = start >= end;
+  };
+  const release = hold(document.body, (release) => {
+    // Gone with a route change nobody touched the page for.
+    if (!el.isConnected) release();
+    else place();
+  });
+  place();
+  return release;
 }
 
 /**
@@ -229,11 +302,16 @@ export type ScrollInsetSources = {
   /** Overlays pinned to the viewport's top edge, beneath the shell header. */
   top?: ReadonlyArray<RefObject<HTMLElement | null>>;
   bottom?: ReadonlyArray<RefObject<HTMLElement | null>>;
+  /**
+   * The element whose bottom edge ends the conversation, where landings on
+   * the bottom go; without one they go to the document's end.
+   */
+  end?: RefObject<HTMLElement | null>;
 };
 
 /**
  * Declare this page's overlays, so every `scrollIntoView` on it lands clear of
- * them.
+ * them, and where its conversation ends, for the landings on the bottom.
  *
  * `useLayoutEffect`, not `useEffect`: the timeline anchor scrolls from a
  * passive effect in a child, which runs before any passive effect here, and
@@ -247,6 +325,7 @@ export type ScrollInsetSources = {
 export function useScrollInsets({
   top = [],
   bottom = [],
+  end,
 }: ScrollInsetSources): void {
   const sources = useRef({ top, bottom });
   const remeasure = useRef<() => void>(() => {});
@@ -356,4 +435,15 @@ export function useScrollInsets({
     sources.current = { top, bottom };
     remeasure.current();
   });
+
+  // The ref rather than the element it holds, read at every landing: one page
+  // per document, like the padding, and an element swapped in later is the
+  // one landed on.
+  useLayoutEffect(() => {
+    if (end === undefined) return;
+    declaredEnd = end;
+    return () => {
+      if (declaredEnd === end) declaredEnd = null;
+    };
+  }, [end]);
 }

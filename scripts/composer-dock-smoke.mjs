@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 /**
  * Real-browser regression for the folded comment composer at the page end
- * (T-532, T-538), and for the New messages pill staying above whatever floats
- * at the bottom, clickable, however tall the composer grows.
+ * (T-532, T-538), for opening a card on the comment box rather than on the
+ * page end, for the scroll-to-bottom button showing on a scroll down and only
+ * then, and for the New messages pill staying above whatever floats at the
+ * bottom, clickable, however tall the composer grows, and landing on the first
+ * comment that arrived.
  * Usage: node scripts/composer-dock-smoke.mjs [--keep] [--help]
  * Requires the same installed dependencies, Node 24+, flock and CHROMIUM
  * (default /usr/bin/chromium) as the other browser smokes.
@@ -25,10 +28,19 @@ Seeds a card long enough to scroll, opens it on a 390px touch phone and on a
 composer must be the one-line box while the page is at its end and the
 floating Comment button anywhere above; the swap must not move the page or
 flip back and forth, must not break the bottom landing on open (T-527), and
-anchors must still land clear of the dock (T-519). With the reader scrolled
-away and a comment arriving, the New messages pill must stay above the folded
-dock or Comment button, the opened box, a tall draft and a simulated keyboard,
-and take the click at its centre.
+anchors must still land clear of the dock (T-519). Opening the card must put
+the comment box on the viewport's bottom edge, with the phone's sidebar below
+the viewport rather than the box a sidebar's height above it. On a second,
+long card the scroll-to-bottom button must stay hidden through the landing,
+scrolling up and an anchor jump, show centred above the floating layer on a
+scroll down, hide on a scroll up, land on the box when clicked, take no room
+in the column, drop its slide under reduced motion, and stay hidden in the
+sidebar of a short phone, where a comment arriving shows New messages
+pointing up at it instead. With the reader scrolled away and a comment
+arriving, the New messages pill must stay above the folded dock or Comment
+button, the opened box, a tall draft and a simulated keyboard, and take the
+click at its centre; with two arriving, it lands on the first of them, or on
+the comment box when they are too short to bring the first any higher.
 
 --keep  Retain isolated artifacts under .tmp/ after cleanup.
 Exit codes: 0 pass, 1 assertion, 2 infrastructure error.
@@ -36,6 +48,8 @@ Exit codes: 0 pass, 1 assertion, 2 infrastructure error.
 
 const PHONE = { width: 390, height: 844, deviceScaleFactor: 2, mobile: true };
 const DESKTOP = { width: 1280, height: 900, deviceScaleFactor: 1 };
+/** Short enough that the sidebar alone fills it at the page end. */
+const SHORT = { width: 390, height: 400, deviceScaleFactor: 2, mobile: true };
 
 async function seed(stack) {
   let cookie = "";
@@ -71,12 +85,50 @@ async function seed(stack) {
     );
     ids.push((result.comment ?? result).id);
   }
+  // Its own card, so the geometry the cases above measure stays as it was:
+  // a body two screens long, for a button that has to show over it, and
+  // labels enough that a short phone's sidebar fills the screen on its own.
+  const labelIds = [];
+  for (let i = 1; i <= 24; i++) {
+    // Without a shared prefix: the sidebar keeps a prefix's labels on one
+    // line, and 24 of them would widen the phone page past its viewport.
+    const label = await call("POST", `/projects/${slug}/labels`, {
+      name: `subsystem-${i}`,
+    });
+    labelIds.push(label.id);
+  }
+  const long = await call("POST", `/projects/${slug}/issues`, {
+    title: "Long body",
+    label_ids: labelIds,
+    body: Array.from(
+      { length: 16 },
+      (_, i) =>
+        `Paragraph ${i + 1}. ${"Words to fill the body out. ".repeat(10)}`,
+    ).join("\n\n"),
+  });
+  const longIds = [];
+  for (let i = 1; i <= 12; i++) {
+    const result = await call(
+      "POST",
+      `/projects/${slug}/issues/${long.number}/comments`,
+      { body: `Reply ${i}\n\n${"A line long enough to wrap. ".repeat(6)}` },
+    );
+    longIds.push((result.comment ?? result).id);
+  }
   if (!cookie.includes("="))
     throw new Error("seed did not receive an auth cookie");
   return {
     cookie,
     issueUrl: `${stack.webUrl}/projects/${slug}/issues/${issue.number}`,
     ids,
+    long: {
+      issueUrl: `${stack.webUrl}/projects/${slug}/issues/${long.number}`,
+      ids: longIds,
+      comment: (body) =>
+        call("POST", `/projects/${slug}/issues/${long.number}/comments`, {
+          body,
+        }),
+    },
     // Sent without an Origin header, so the open page takes it for someone
     // else's comment rather than the echo of its own.
     comment: (body) =>
@@ -97,8 +149,14 @@ function readState() {
   const doc = document.documentElement;
   // Where the dock's own slot in the flow begins: below the timeline and the
   // gap between them. On a phone the sidebar follows it, so the document end is not it.
+  // Past the absolute end mark, and past the scroll-to-bottom layer: it is
+  // sticky, and its box is where it is stuck, not its place in the flow.
   let before = dock.previousElementSibling;
-  while (before && getComputedStyle(before).position === "absolute")
+  while (
+    before &&
+    (getComputedStyle(before).position === "absolute" ||
+      before.matches("[data-scroll-to-bottom]"))
+  )
     before = before.previousElementSibling;
   const slotTop =
     before.getBoundingClientRect().bottom +
@@ -113,6 +171,8 @@ function readState() {
     openerShown: openerRect !== undefined && openerRect.width > 0,
     dockTop: dock.getBoundingClientRect().top,
     dockHeight: dock.getBoundingClientRect().height,
+    dockBottom: dock.getBoundingClientRect().bottom,
+    asideTop: document.querySelector("aside")?.getBoundingClientRect().top,
     scrollY: window.scrollY,
     maxScroll: doc.scrollHeight - window.innerHeight,
     paddingBottom: getComputedStyle(doc).scrollPaddingBottom,
@@ -149,6 +209,7 @@ function readPill() {
     shown: rect !== undefined && rect.height > 0,
     top: rect?.top ?? null,
     bottom: rect?.bottom ?? null,
+    centre: rect ? rect.left + rect.width / 2 : null,
     hits: pill?.contains(hit) === true,
     floats,
     floatingTop: floats
@@ -166,10 +227,10 @@ function readPill() {
     actionsShown: dock.querySelector(".composer-actions-in") !== null,
     headerBottom: document.querySelector("header").getBoundingClientRect()
       .bottom,
+    // From the end of the conversation, the column the dock ends, which is
+    // what following new comments is measured against.
     fromEnd:
-      document.documentElement.scrollHeight -
-      window.scrollY -
-      window.innerHeight,
+      dock.parentElement.getBoundingClientRect().bottom - window.innerHeight,
     innerHeight: window.innerHeight,
   };
 }
@@ -190,7 +251,7 @@ function armSwapCounter() {
   });
 }
 
-async function openCard(context, fixture, viewport, hash = "") {
+async function openCard(context, fixture, viewport, hash = "", scripts = []) {
   const equals = fixture.cookie.indexOf("=");
   const page = await context.newPage({
     viewport,
@@ -199,6 +260,7 @@ async function openCard(context, fixture, viewport, hash = "") {
       value: fixture.cookie.slice(equals + 1),
       url: fixture.issueUrl,
     },
+    scripts,
   });
   if (viewport.mobile)
     await page.send("Emulation.setTouchEmulationEnabled", {
@@ -276,6 +338,8 @@ function input(page) {
 }
 
 const atEnd = (s) => s.scrollY >= s.maxScroll - 1;
+/** The comment box on the viewport's bottom edge, where a card opens. */
+const boxAtBottom = (s) => Math.abs(s.dockBottom - s.innerHeight) <= 1;
 
 async function phoneCases(page) {
   const io = input(page);
@@ -286,7 +350,7 @@ async function phoneCases(page) {
   const s0 = await io.state();
   check(
     "opens-at-end-with-box",
-    atEnd(s0) && s0.maxScroll > 1000 && s0.boxShown && !s0.openerShown,
+    boxAtBottom(s0) && s0.maxScroll > 1000 && s0.boxShown && !s0.openerShown,
     s0,
   );
 
@@ -334,7 +398,11 @@ async function phoneCases(page) {
           .querySelector('[aria-label="Write a comment"]')
           .closest(".sticky");
         let before = dock.previousElementSibling;
-        while (before && getComputedStyle(before).position === "absolute")
+        while (
+          before &&
+          (getComputedStyle(before).position === "absolute" ||
+            before.matches("[data-scroll-to-bottom]"))
+        )
           before = before.previousElementSibling;
         const slotTop =
           before.getBoundingClientRect().bottom +
@@ -429,6 +497,35 @@ async function anchorCase(context, fixture, index) {
   }
 }
 
+/**
+ * Opening the card lands on the end of the conversation, not of the document:
+ * below it are the shell's footer and, on a phone, the sidebar, which a
+ * landing at the document's end put between the box and the viewport's edge.
+ */
+async function landingCases(context, fixture) {
+  const out = [];
+  for (const [viewport, label] of [
+    [PHONE, "phone"],
+    [DESKTOP, "desktop"],
+  ]) {
+    const page = await openCard(context, fixture, viewport);
+    try {
+      const s = await evaluate(page, readState);
+      out.push({
+        name: `landing-${label}-box-at-bottom`,
+        ok:
+          boxAtBottom(s) &&
+          s.boxShown &&
+          (!viewport.mobile || s.asideTop >= s.innerHeight),
+        detail: s,
+      });
+    } finally {
+      await page.close();
+    }
+  }
+  return out;
+}
+
 async function desktopCases(page) {
   const io = input(page);
   const s0 = await io.state();
@@ -444,6 +541,456 @@ async function desktopCases(page) {
 }
 
 /**
+ * Records every state the scroll-to-bottom layer goes through from the first
+ * paint on, so a showing too brief to be caught by a reading still counts.
+ */
+function recordJumpStates() {
+  window.__jumpStates = [];
+  let last = null;
+  const read = () => {
+    const state =
+      document.querySelector("[data-scroll-to-bottom]")?.dataset.state ?? null;
+    if (state === last) return;
+    last = state;
+    if (state !== null) window.__jumpStates.push(state);
+  };
+  new MutationObserver(read).observe(document, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ["data-state"],
+  });
+}
+
+/** The scroll-to-bottom button against what floats below it and the column. */
+function readJump() {
+  const layer = document.querySelector("[data-scroll-to-bottom]");
+  const button = layer?.querySelector("button");
+  const rect = button?.getBoundingClientRect();
+  const style = button ? getComputedStyle(button) : null;
+  const hit =
+    rect &&
+    document.elementFromPoint(
+      rect.x + rect.width / 2,
+      rect.y + rect.height / 2,
+    );
+  const dock = document
+    .querySelector('[aria-label="Write a comment"]')
+    .closest(".sticky");
+  const opener = document.querySelector("[data-composer-opener]");
+  const floats = getComputedStyle(dock).position !== "static";
+  const column = layer?.parentElement.getBoundingClientRect();
+  const list = document.querySelector('[data-testid="timeline-scroll"]');
+  return {
+    state: layer?.dataset.state ?? null,
+    inert: layer?.hasAttribute("inert") ?? null,
+    name: button
+      ? (button.getAttribute("aria-label") ?? button.textContent.trim())
+      : null,
+    arrow:
+      button
+        ?.querySelector("svg")
+        ?.getAttribute("class")
+        ?.match(/lucide-arrow-(up|down)/)?.[1] ?? null,
+    top: rect?.top ?? null,
+    bottom: rect?.bottom ?? null,
+    centre: rect ? rect.left + rect.width / 2 : null,
+    opacity: style?.opacity ?? null,
+    translate: style?.translate ?? null,
+    hits: button?.contains(hit) === true,
+    floatingTop: floats
+      ? dock.getBoundingClientRect().top
+      : (opener?.getBoundingClientRect().top ?? window.innerHeight),
+    headerBottom: document.querySelector("header").getBoundingClientRect()
+      .bottom,
+    columnCentre: column ? column.left + column.width / 2 : null,
+    listBottom: list.getBoundingClientRect().bottom,
+    listEnd: list.lastElementChild.getBoundingClientRect().bottom,
+    dockTop: dock.getBoundingClientRect().top,
+    dockBottom: dock.getBoundingClientRect().bottom,
+    innerHeight: window.innerHeight,
+    scrollY: window.scrollY,
+    maxScroll: document.documentElement.scrollHeight - window.innerHeight,
+    states: window.__jumpStates.join(" "),
+  };
+}
+
+/** One step of the reader's own scrolling: a wheel notch, or a short swipe. */
+function nudge(io, viewport, direction) {
+  const x = viewport.width / 2;
+  const y = viewport.height / 2;
+  if (!viewport.mobile) return io.wheel(x, y, 100 * direction);
+  // A finger moving up drags the page down.
+  return io.swipe(x, y + 40 * direction, -80 * direction);
+}
+
+/**
+ * The scroll-to-bottom button shows on the reader's scroll down and on
+ * nothing else, sits centred in the column above whatever floats at the
+ * bottom, hides on a scroll up, and lands on the box when clicked.
+ */
+async function jumpCases(context, card, viewport, label, dir) {
+  const page = await openCard(context, card, viewport, "", [
+    `(${recordJumpStates})()`,
+  ]);
+  const io = input(page);
+  const out = [];
+  const read = () => evaluate(page, readJump);
+  const check = (name, ok, detail) =>
+    out.push({ name: `jump-${label}-${name}`, ok: Boolean(ok), detail });
+  const placed = (j) =>
+    j.hits &&
+    Math.abs(j.floatingTop - 12 - j.bottom) <= 1 &&
+    j.top >= j.headerBottom &&
+    Math.abs(j.centre - j.columnCentre) <= 1 &&
+    j.opacity === "1" &&
+    ["none", "0px"].includes(j.translate);
+  try {
+    const landed = await read();
+    check(
+      "landing",
+      landed.state === "hidden" && !landed.states.includes("shown"),
+      landed,
+    );
+
+    for (let i = 0; i < 40 && (await read()).scrollY > 0; i++) {
+      if (viewport.mobile)
+        await io.swipe(viewport.width / 2, 200, viewport.height / 2);
+      else await io.wheel(viewport.width / 2, viewport.height / 2, -600);
+      await sleep(200);
+    }
+    await sleep(400);
+    const top = await read();
+    check(
+      "up",
+      top.scrollY === 0 &&
+        top.state === "hidden" &&
+        !top.states.includes("shown"),
+      top,
+    );
+
+    await nudge(io, viewport, 1);
+    await sleep(400);
+    const down = await read();
+    check(
+      "down",
+      down.state === "shown" &&
+        down.name === "Scroll to bottom" &&
+        placed(down),
+      down,
+    );
+    const shot = await page.send("Page.captureScreenshot", { format: "png" });
+    writeFileSync(
+      resolve(dir, `jump-${label}-down.png`),
+      Buffer.from(shot.data, "base64"),
+    );
+
+    await nudge(io, viewport, -1);
+    await sleep(400);
+    const up = await read();
+    check(
+      "up-hides",
+      up.state === "hidden" && up.inert && !up.hits && up.opacity === "0",
+      up,
+    );
+
+    if (!viewport.mobile) {
+      const moving = up.translate;
+      await page.send("Emulation.setEmulatedMedia", {
+        features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+      });
+      // The slide's own transition plays the change out first.
+      await sleep(400);
+      const still = (await read()).translate;
+      await page.send("Emulation.setEmulatedMedia", { features: [] });
+      check("reduced-motion", moving === "0px 8px" && still === "none", {
+        moving,
+        still,
+      });
+    }
+
+    await nudge(io, viewport, 1);
+    await sleep(400);
+    const before = await read();
+    const x = before.centre ?? 0;
+    const y = ((before.top ?? 0) + (before.bottom ?? 0)) / 2;
+    if (viewport.mobile) await io.tap(x, y);
+    else await io.click(x, y);
+    await sleep(400);
+    const clicked = await read();
+    check(
+      "click",
+      before.state === "shown" &&
+        Math.abs(clicked.dockBottom - clicked.innerHeight) <= 1 &&
+        clicked.state === "hidden",
+      { before, clicked },
+    );
+    if (!viewport.mobile) {
+      // At the end the dock is in its place in the flow: the list's gap to it
+      // is the column's own, with nothing added by the layer between them.
+      check("gap", Math.abs(clicked.dockTop - clicked.listBottom - 16) <= 0.5, {
+        gap: clicked.dockTop - clicked.listBottom,
+      });
+    }
+
+    await evaluate(
+      page,
+      (id) => {
+        window.__jumpStates = [];
+        window.location.hash = `#comment-${id}`;
+      },
+      card.ids[1],
+    );
+    await sleep(1500);
+    const anchored = await read();
+    await nudge(io, viewport, 1);
+    await sleep(400);
+    const after = await read();
+    check(
+      "anchor",
+      anchored.scrollY < clicked.scrollY - 500 &&
+        anchored.state === "hidden" &&
+        !anchored.states.includes("shown") &&
+        after.state === "shown",
+      { anchored, after },
+    );
+  } finally {
+    await page.close();
+  }
+  return out;
+}
+
+/**
+ * In a phone's sidebar, below the comment box, the end of the conversation is
+ * above the viewport: scrolling there neither shows the button nor leaves it
+ * showing at the column's foot, out of sight but in reach of Tab.
+ */
+async function shortCases(context, card) {
+  const page = await openCard(context, card, SHORT, "", [
+    `(${recordJumpStates})()`,
+  ]);
+  const io = input(page);
+  const out = [];
+  const read = () => evaluate(page, readJump);
+  const check = (name, ok, detail) =>
+    out.push({ name: `jump-short-${name}`, ok: Boolean(ok), detail });
+  const toEnd = () =>
+    evaluate(page, () => {
+      window.scrollTo(0, document.documentElement.scrollHeight);
+      window.__jumpStates = [];
+    });
+  try {
+    await toEnd();
+    await sleep(400);
+    const end = await read();
+    const readings = [end];
+    await io.swipe(SHORT.width / 2, 150, 80);
+    await sleep(400);
+    readings.push(await read());
+    await io.swipe(SHORT.width / 2, 250, -80);
+    await sleep(400);
+    readings.push(await read());
+    check(
+      "sidebar",
+      readings.every((j) => j.listEnd < 0 && j.state === "hidden" && j.inert) &&
+        !readings.at(-1).states.includes("shown"),
+      readings,
+    );
+
+    await toEnd();
+    await sleep(400);
+    await evaluate(page, () => window.scrollTo(0, 0));
+    await sleep(400);
+    const jumped = await read();
+    await io.swipe(SHORT.width / 2, 250, -80);
+    await sleep(400);
+    const down = await read();
+    check(
+      "jump-up",
+      jumped.scrollY === 0 &&
+        jumped.state === "hidden" &&
+        down.state === "shown",
+      { jumped, down },
+    );
+
+    await io.tap(down.centre ?? 0, ((down.top ?? 0) + (down.bottom ?? 0)) / 2);
+    await sleep(400);
+    const clicked = await read();
+    check(
+      "click",
+      Math.abs(clicked.dockBottom - clicked.innerHeight) <= 1 &&
+        clicked.state === "hidden" &&
+        clicked.inert,
+      clicked,
+    );
+
+    // Down to the page's end with real input, which also lets go of the
+    // click's own hold: past the comment box, not only past the list's end,
+    // where a box still on screen is the end a new comment is followed to.
+    for (let i = 0; i < 8; i++) {
+      const at = await read();
+      if (at.scrollY >= at.maxScroll - 1) break;
+      await io.swipe(SHORT.width / 2, 300, -200);
+      await sleep(300);
+    }
+    await sleep(400);
+    const before = await read();
+    const result = await card.comment("Arrives above a reader in the sidebar");
+    const id = (result.comment ?? result).id;
+    const deadline = Date.now() + 10_000;
+    while ((await read()).state !== "shown" && Date.now() < deadline)
+      await sleep(200);
+    // Past its slide in.
+    await sleep(400);
+    const above = await read();
+    check(
+      "new-above",
+      before.dockBottom < 0 &&
+        above.listEnd < 0 &&
+        above.state === "shown" &&
+        above.name === "New messages" &&
+        above.arrow === "up" &&
+        above.hits &&
+        Math.abs(above.floatingTop - 12 - above.bottom) <= 1 &&
+        above.top >= 0,
+      { before, above },
+    );
+    await io.tap(
+      above.centre ?? 0,
+      ((above.top ?? 0) + (above.bottom ?? 0)) / 2,
+    );
+    await sleep(600);
+    const back = await evaluate(
+      page,
+      (comment) => ({
+        top:
+          document.getElementById(comment)?.getBoundingClientRect().top ?? null,
+        paddingTop: Number.parseFloat(
+          getComputedStyle(document.documentElement).scrollPaddingTop,
+        ),
+        innerHeight: window.innerHeight,
+        state:
+          document.querySelector("[data-scroll-to-bottom]")?.dataset.state ??
+          null,
+      }),
+      `comment-${id}`,
+    );
+    check(
+      "new-above-click",
+      back.top !== null &&
+        back.top >= back.paddingTop - 1 &&
+        back.top < back.innerHeight &&
+        back.state === "hidden",
+      back,
+    );
+  } finally {
+    await page.close();
+  }
+  return out;
+}
+
+/** Scroll up with real input until new comments would no longer be followed. */
+async function scrollAway(page, io, viewport) {
+  for (let i = 0; i < 8; i++) {
+    const p = await evaluate(page, readPill);
+    // `shouldFollowBottom` keeps following within one screen of the end.
+    if (p.fromEnd > p.innerHeight) return;
+    if (viewport.mobile) await io.swipe(viewport.width / 2, 120, 700);
+    else await io.wheel(viewport.width / 2, viewport.height / 2, -600);
+    await sleep(400);
+  }
+}
+
+/**
+ * With two comments arriving while the reader is away, New messages lands on
+ * the first of them under the header, not at the end past both. Two short
+ * ones leave too little below the first for that: it lands on the comment box
+ * then, as the arrow does, with the first in view above it.
+ */
+async function firstNewCase(context, fixture, viewport, label, size) {
+  const page = await openCard(context, fixture, viewport);
+  try {
+    const io = input(page);
+    await scrollAway(page, io, viewport);
+    const arrived = [];
+    for (const which of ["first", "second"]) {
+      const text = `Arrives ${which} while the ${label} reader is away`;
+      const result = await fixture.comment(
+        size === "short"
+          ? text
+          : `${text}\n\n${"A line long enough to wrap. ".repeat(6)}\n\n`.repeat(
+              4,
+            ),
+      );
+      arrived.push((result.comment ?? result).id);
+    }
+    const deadline = Date.now() + 10_000;
+    let at = await evaluate(page, readPill);
+    while (Date.now() < deadline) {
+      const seen = await evaluate(
+        page,
+        (id) => document.getElementById(`comment-${id}`) !== null,
+        arrived[1],
+      );
+      if (at.shown && seen) break;
+      await sleep(200);
+      at = await evaluate(page, readPill);
+    }
+    // Read before the click: a phone's header slides away once the page
+    // moves, taking its share of the padding with it, while what the landing
+    // placed stays where it was put.
+    const paddingTop = await evaluate(page, () =>
+      Number.parseFloat(
+        getComputedStyle(document.documentElement).scrollPaddingTop,
+      ),
+    );
+    const y = (at.top + at.bottom) / 2;
+    if (viewport.mobile) await io.tap(at.centre, y);
+    else await io.click(at.centre, y);
+    await sleep(600);
+    const landed = await evaluate(
+      page,
+      (ids) => {
+        const top = (id) =>
+          document.getElementById(`comment-${id}`)?.getBoundingClientRect()
+            .top ?? null;
+        const dock = document
+          .querySelector('[aria-label="Write a comment"]')
+          .closest(".sticky");
+        return {
+          first: top(ids[0]),
+          second: top(ids[1]),
+          // The end of the conversation: the column the dock ends.
+          columnBottom: dock.parentElement.getBoundingClientRect().bottom,
+          innerHeight: window.innerHeight,
+          state:
+            document.querySelector("[data-scroll-to-bottom]")?.dataset.state ??
+            null,
+        };
+      },
+      arrived,
+    );
+    const below = (top) => (top === null ? null : top - paddingTop);
+    return {
+      name: `pill-${label}-first-new${size === "short" ? "-short" : ""}`,
+      ok:
+        landed.state === "hidden" &&
+        (size === "short"
+          ? Math.abs(landed.columnBottom - landed.innerHeight) <= 1 &&
+            below(landed.first) >= -1 &&
+            landed.first < landed.innerHeight
+          : // A half pixel either way at a device pixel ratio of 2.
+            below(landed.first) >= -1 &&
+            below(landed.first) <= 2 &&
+            Math.abs(below(landed.second)) > 2),
+      detail: { pill: at, paddingTop, ...landed },
+    };
+  } finally {
+    await page.close();
+  }
+}
+
+/**
  * The New messages pill sits above whatever floats at the bottom, below the
  * header, and takes the click at its centre, through every height the dock
  * goes through. Scrolls with real input: the bottom landing's hold lets go
@@ -454,14 +1001,7 @@ async function pillCases(page, fixture, viewport, label, dir) {
   const io = input(page);
   const out = [];
   const pill = () => evaluate(page, readPill);
-  for (let i = 0; i < 8; i++) {
-    const p = await pill();
-    // `shouldFollowBottom` keeps following within one screen of the end.
-    if (p.fromEnd > p.innerHeight) break;
-    if (viewport.mobile) await io.swipe(viewport.width / 2, 120, 700);
-    else await io.wheel(viewport.width / 2, viewport.height / 2, -600);
-    await sleep(400);
-  }
+  await scrollAway(page, io, viewport);
   await fixture.comment(`Arrives while the ${label} reader is away`);
   const deadline = Date.now() + 10_000;
   while (!(await pill()).shown && Date.now() < deadline) await sleep(200);
@@ -540,6 +1080,7 @@ async function pillCases(page, fixture, viewport, label, dir) {
       previous,
     );
   }
+
   return out;
 }
 
@@ -599,6 +1140,18 @@ async function main() {
       } finally {
         await page.close();
       }
+      record("landing", await landingCases(context, fixture));
+      const long = { ...fixture, ...fixture.long };
+      const jumps = [];
+      for (const [viewport, label] of [
+        [PHONE, "phone"],
+        [DESKTOP, "desktop"],
+      ])
+        jumps.push(
+          ...(await jumpCases(context, long, viewport, label, stack.dir)),
+        );
+      jumps.push(...(await shortCases(context, long)));
+      record("jump", jumps);
       // Last: each viewport posts a comment, and the anchors above count on
       // the seeded one being the card's last.
       const pills = [];
@@ -614,6 +1167,10 @@ async function main() {
         } finally {
           await page.close();
         }
+        for (const size of ["long", "short"])
+          pills.push(
+            await firstNewCase(context, fixture, viewport, label, size),
+          );
       }
       record("pill", pills);
     } finally {
