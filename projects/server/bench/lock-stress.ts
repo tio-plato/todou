@@ -90,14 +90,19 @@ if (!/^postgres(ql)?:\/\//.test(systemUrl)) {
   const client = new pg.Client({ connectionString: systemUrl });
   await client.connect();
   try {
-    const table = await client.query<{ name: string | null }>(
-      "SELECT to_regclass('projects')::text AS name",
+    // The table the app's unqualified queries reach, and the one in public.
+    const present = await client.query<{ here: boolean; public: boolean }>(
+      `SELECT to_regclass('projects') IS NOT NULL AS here,
+              to_regclass('public.projects') IS NOT NULL AS public`,
     );
+    const any = async (sql: string) =>
+      (await client.query(sql)).rows.length > 0;
     const found =
-      table.rows[0]?.name == null
-        ? []
-        : (await client.query("SELECT 1 FROM projects LIMIT 1")).rows;
-    if (found.length > 0) {
+      (present.rows[0]?.here === true &&
+        (await any("SELECT 1 FROM projects LIMIT 1"))) ||
+      (present.rows[0]?.public === true &&
+        (await any("SELECT 1 FROM public.projects LIMIT 1")));
+    if (found) {
       console.error(
         "TODOU_DATABASE_SYSTEM must name an empty database: this bench deletes every draft in every project it finds there",
       );
