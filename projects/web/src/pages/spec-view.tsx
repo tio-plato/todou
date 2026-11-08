@@ -1906,7 +1906,9 @@ function SpecViewBody({
                   stickyTop={stickyTop}
                 />
               ) : (
-                <div className="rounded-lg border px-5 py-4">
+                // The inset is the card's padding and how far past the text
+                // AnnotatedMarkdown's chips reach on a phone, onto the border.
+                <div className="rounded-lg border px-(--spec-card-inset) py-4 [--spec-card-inset:--spacing(5)]">
                   {selected === undefined ? (
                     selectedPath !== undefined &&
                     baseline !== null &&
