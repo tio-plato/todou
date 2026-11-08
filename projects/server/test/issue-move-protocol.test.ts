@@ -557,6 +557,35 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
       ).toBe(301);
     });
 
+    it("leaves no tombstone in the trash when the source was trashed during the freeze", async () => {
+      const { t, admin, ids } = await app(3);
+      const source = await createIssue(t, admin, A, "trashed while frozen");
+      expect((await move(t, admin, A, source.number, B)).status).toBe(500);
+      // What a delete during the freeze could do before deletes refused a
+      // card being moved: the sweep then finishes the move on a trashed row.
+      const dbA = await dbOf(t, ids[A] as number, A);
+      const [author] = await dbA
+        .select({ id: issues.authorId })
+        .from(issues)
+        .where(eq(issues.id, source.id));
+      await dbA
+        .update(issues)
+        .set({ deletedAt: new Date(), deletedBy: author?.id })
+        .where(eq(issues.id, source.id));
+
+      expect(await sweepMoves(t.ctx)).toBe(1);
+      const [row] = await dbA
+        .select({
+          deletedAt: issues.deletedAt,
+          deletedBy: issues.deletedBy,
+          movedAt: issues.movedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, source.id));
+      expect(row?.movedAt).not.toBeNull();
+      expect(row).toMatchObject({ deletedAt: null, deletedBy: null });
+    });
+
     it("refuses to freeze a card trashed after the move was planned", async () => {
       let trash: () => Promise<unknown> = async () => {};
       const { t, admin, ids } = await app(undefined, (step) =>
