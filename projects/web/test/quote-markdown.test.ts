@@ -155,6 +155,8 @@ describe("quoteOfSelection", () => {
       ],
       ["## Install the CLI", "the", "CLI", "the CLI"],
       ["| a b | c |\n| --- | --- |", "b |", "b", "b"],
+      ["---\nname: Some value here\n---\n\nbody", "value", "value", "value"],
+      ["---\nname: Some value here\n---\n\nbody", "name", "name", "name"],
     ])(
       "quotes %j, selected from %j to %j, as %j",
       (source, first, last, quote) => {

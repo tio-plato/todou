@@ -80,9 +80,16 @@ function childrenOf(node: Nodes): Nodes[] {
 
 /**
  * Blocks whose phrasing a quote may cut into: what they show is text. A
- * block of HTML is cut into too (`leavesOf`).
+ * frontmatter field's key and value show their own source text, and a block
+ * of HTML is cut into too (`leavesOf`).
  */
-const LEAF_TYPES = new Set(["paragraph", "heading", "tableCell"]);
+const LEAF_TYPES = new Set([
+  "paragraph",
+  "heading",
+  "tableCell",
+  "frontmatterKey",
+  "frontmatterValue",
+]);
 
 /**
  * Inline nodes a quote takes whole or not at all. Inline code is not among
