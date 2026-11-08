@@ -2,7 +2,7 @@ import type { Question, QuestionAnswer } from "@todou/shared";
 import type { List, Nodes } from "mdast";
 import { describe, expect, it } from "vitest";
 import { parseMarkdown } from "../src/lib/markdown-processor.ts";
-import { entryQuote } from "../src/lib/quote-questions.ts";
+import { cutsQuote, entryQuote } from "../src/lib/quote-questions.ts";
 
 const STORAGE: Question = {
   key: "storage",
@@ -226,5 +226,84 @@ describe("entryQuote", () => {
         "- bar",
       ].join("\n"),
     );
+  });
+});
+
+describe("cutsQuote", () => {
+  it("lays out only the parts the selection cut, each where the card has it", () => {
+    expect(
+      cutsQuote([
+        { part: { kind: "body" }, text: "below." },
+        { part: { kind: "header", question: "storage" }, text: "Storage" },
+        {
+          part: { kind: "prompt", question: "storage" },
+          text: "Where should X live?",
+        },
+        {
+          part: { kind: "label", question: "storage", option: 0 },
+          text: "Reuse the jobs table (recommended)",
+        },
+        {
+          part: { kind: "description", question: "storage", option: 0 },
+          text: "Fewer tables.",
+        },
+        {
+          part: { kind: "description", question: "storage", option: 1 },
+          text: "One more table.",
+        },
+        { part: { kind: "other", question: "storage" }, text: "Keep it" },
+        { part: { kind: "prompt", question: "name" }, text: "Which" },
+      ]),
+    ).toBe(
+      [
+        "below.",
+        "",
+        "**Storage**",
+        "",
+        "Where should X live?",
+        "",
+        "- Reuse the jobs table (recommended) — Fewer tables.",
+        "- One more table.",
+        "",
+        "other: Keep it",
+        "",
+        "Which",
+      ].join("\n"),
+    );
+  });
+
+  it("starts the list at the first option cut", () => {
+    expect(
+      cutsQuote([
+        { part: { kind: "prompt", question: "storage" }, text: "live?" },
+        {
+          part: { kind: "label", question: "storage", option: 0 },
+          text: "Reuse the",
+        },
+      ]),
+    ).toBe("live?\n\n- Reuse the");
+  });
+
+  it("puts a cut of other that is not one paragraph below its label", () => {
+    expect(
+      cutsQuote([
+        {
+          part: { kind: "label", question: "name", option: 1 },
+          text: "bar",
+        },
+        {
+          part: { kind: "other", question: "name" },
+          text: "- one reason\n- another",
+        },
+      ]),
+    ).toBe("- bar\n\nother:\n\n- one reason\n- another");
+  });
+
+  it.each([
+    ["a header", { kind: "header", question: "storage" }, "Stor"],
+    ["a label", { kind: "label", question: "storage", option: 0 }, "jobs"],
+    ["the other text", { kind: "other", question: "storage" }, "small"],
+  ] as const)("quotes a cut inside %s as it is", (_name, part, text) => {
+    expect(cutsQuote([{ part, text }])).toBe(text);
   });
 });
