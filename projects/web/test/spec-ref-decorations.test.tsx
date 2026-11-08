@@ -257,9 +257,10 @@ describe("annotation highlights across a ref chip (T-164)", () => {
     expect(chip?.textContent).toContain("目标议题 161");
   });
 
-  it("gives an unbreakable bullet the whole-node highlight", async () => {
-    // The continuation indent stretches the source span past the rendered
-    // value, so the pieces cannot be measured — all of it, or none.
+  it("highlights only the anchored words of a wrapped bullet", async () => {
+    // The anchor ends on column 5 of "  并且换到第二行继续写。": the
+    // continuation's indent is not the item's text, and the rest of the line
+    // was never in the anchor's range.
     const { container } = await renderSpec({
       body: `- 第一条 bullet 提到 ${REF(161)}，\n  并且换到第二行继续写。\n- 第二条。\n`,
       annotations: [anchored("comment", 1, 3, 2, 5)],
@@ -270,7 +271,11 @@ describe("annotation highlights across a ref chip (T-164)", () => {
     expect(chip?.closest("mark.spec-mark-comment")).not.toBeNull();
     const marked = texts(container, "li mark.spec-mark-comment").join("");
     expect(marked).toContain("第一条 bullet 提到");
-    expect(marked).toContain("并且换到第二行继续写。");
+    expect(marked).toContain("并且换");
+    expect(marked).not.toContain("到第二行继续写。");
+    expect(container.querySelectorAll("li")[0]?.textContent).toContain(
+      "到第二行继续写。",
+    );
     // The bullet below was never in the anchor's range.
     expect(container.querySelectorAll("li")[1]?.textContent).toBe("第二条。");
   });
@@ -345,5 +350,18 @@ describe("annotations reaching into a code block (T-164)", () => {
     });
     const block = container.querySelector("div[data-loc]");
     expect(block?.className).not.toContain("spec-mark");
+  });
+});
+
+// An escape or a character reference is one piece of its text node: a
+// highlight that reaches into one takes all of it.
+describe("annotation highlights over an escape", () => {
+  it("takes the escaped character an anchor ends on the backslash of", async () => {
+    // In "a \* b c", columns 1 to 3 are "a \", which shows as "a *".
+    const { container } = await renderSpec({
+      body: "a \\* b c\n",
+      annotations: [anchored("comment", 1, 1, 1, 3)],
+    });
+    expect(texts(container, "mark.spec-mark-comment")).toEqual(["a *"]);
   });
 });

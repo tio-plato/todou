@@ -132,9 +132,11 @@ describe("buildSegmentIndex", () => {
     ]);
   });
 
-  it("marks inline code and escapes inexact", () => {
+  it("marks inline code and escapes inexact, and nothing around them", () => {
+    // The text around an escape still reads like its source, so only the
+    // two escapes themselves are indivisible.
     const inexact = index.segments.filter((s) => !s.exact).map((s) => s.text);
-    expect(inexact).toEqual(["code", " 与 *转义* 文本。"]);
+    expect(inexact).toEqual(["code", "*", "*"]);
   });
 
   it("leaves fenced code out entirely", () => {
