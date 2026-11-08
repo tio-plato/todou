@@ -15,12 +15,41 @@ import { useEffect } from "react";
  * to stay where the page put them: both values are zero unless the scale is 1.
  */
 export function visualViewportInsets(): { top: number; bottom: number } {
-  const vv = window.visualViewport;
-  if (vv == null || Math.abs(vv.scale - 1) > 0.01) return { top: 0, bottom: 0 };
+  const vv = unzoomedVisualViewport();
+  if (vv === null) return { top: 0, bottom: 0 };
   return {
     top: Math.max(0, vv.offsetTop),
     bottom: Math.max(0, window.innerHeight - vv.height - vv.offsetTop),
   };
+}
+
+/**
+ * The visual viewport's top edge in client coordinates.
+ *
+ * iOS WebKit measures client rects and `scrollY` from the visual viewport's
+ * top, so this is 0 there; an engine that follows CSSOM View measures them
+ * from the layout viewport's top and gets `offsetTop`, which is also what
+ * `pageTop - scrollY` reads there. Zero under a pinch zoom, like the insets
+ * above.
+ *
+ * With the keyboard up, iOS moves `scrollY` and client rects as soon as the
+ * page scrolls itself, but `pageTop` only at the visual viewport's next
+ * update, a frame or two later: read in between, `pageTop - scrollY` is the
+ * distance just scrolled, not 0. So that difference only tells which of the
+ * two origins the engine uses.
+ */
+export function visualViewportClientTop(): number {
+  const vv = unzoomedVisualViewport();
+  if (vv === null) return 0;
+  return Math.abs(vv.pageTop - window.scrollY - vv.offsetTop) < 1
+    ? vv.offsetTop
+    : 0;
+}
+
+/** `null` where the page should behave as if there were no visual viewport. */
+function unzoomedVisualViewport(): VisualViewport | null {
+  const vv = window.visualViewport;
+  return vv == null || Math.abs(vv.scale - 1) > 0.01 ? null : vv;
 }
 
 /** Fired on `window` whenever the published chrome offsets change. */
@@ -176,4 +205,13 @@ export function useAutoHideHeader(enabled: boolean, page?: string): void {
       announce();
     };
   }, [enabled, page]);
+}
+
+/** The pixels of the shell header `useAutoHideHeader` has slid out of view. */
+export function headerHidden(): number {
+  return (
+    Number.parseFloat(
+      document.documentElement.style.getPropertyValue("--header-hide"),
+    ) || 0
+  );
 }

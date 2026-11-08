@@ -6,27 +6,9 @@ import {
   useVisualViewportInsets,
   visualViewportInsets,
 } from "../src/lib/viewport-chrome.ts";
+import { stubVisualViewport } from "./visual-viewport.ts";
 
 const root = document.documentElement;
-
-/** A visual viewport the tests can move, the way a keyboard or a pan does. */
-function stubVisualViewport(state: {
-  offsetTop: number;
-  height: number;
-  scale?: number;
-}) {
-  const vv = new EventTarget();
-  Object.defineProperties(vv, {
-    offsetTop: { get: () => state.offsetTop },
-    height: { get: () => state.height },
-    scale: { get: () => state.scale ?? 1 },
-  });
-  vi.stubGlobal("visualViewport", vv);
-  return (next: Partial<typeof state>) => {
-    Object.assign(state, next);
-    vv.dispatchEvent(new Event("resize"));
-  };
-}
 
 afterEach(() => {
   cleanup();
