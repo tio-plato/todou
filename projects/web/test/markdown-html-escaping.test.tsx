@@ -299,6 +299,10 @@ describe.each(SURFACES)("raw HTML on the %s surface", (_name, props) => {
  * CommonMark and GFM output, the wrappers `MarkdownView` swaps in, and the two
  * tags this renderer now recognises. Anything else means a byte of the source
  * was read as markup.
+ *
+ * `SourceSpan`, the wrapper carrying a link's source offsets, is let through
+ * by its attribute rather than as a `span`: no byte of a source can build that
+ * attribute, so any other `span` still fails.
  */
 const BUILDABLE = new Set([
   "p",
@@ -309,6 +313,7 @@ const BUILDABLE = new Set([
   "code",
   "details",
   "summary",
+  "span[data-loc-span]",
 ]);
 
 it("builds no element the whitelist does not name", async () => {
@@ -320,7 +325,11 @@ it("builds no element the whitelist does not name", async () => {
       rehypePlugins: SPEC_PLUGINS,
     });
     for (const el of container.querySelectorAll(".markdown-body *")) {
-      seen.add(el.tagName.toLowerCase());
+      seen.add(
+        el.matches("span[data-loc-span]")
+          ? "span[data-loc-span]"
+          : el.tagName.toLowerCase(),
+      );
     }
   }
   expect([...seen].filter((tag) => !BUILDABLE.has(tag))).toEqual([]);

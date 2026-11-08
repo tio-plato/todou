@@ -2008,6 +2008,19 @@ describe("how image edits render (T-223)", () => {
     expect(swipe()?.disabled).toBe(true);
   });
 
+  it("puts an old picture from outside the card beside the new one", async () => {
+    // Not an attachment, so the plain `<img>` path draws both; in a table
+    // cell, where a swap is the old image beside the new one.
+    const before = "https://img.example/a.png";
+    const after = "https://img.example/b.png";
+    const { container } = await renderDiff(imageCell(before), imageCell(after));
+    const old = container.querySelector("td del.spec-img-del");
+    const fresh = old?.nextElementSibling;
+    expect(fresh?.tagName).toBe("IMG");
+    expect(fresh?.getAttribute("src")).toBe(after);
+    expect(fresh?.parentElement).toBe(old?.parentElement);
+  });
+
   it("does not draw the same image twice when only the alt moved", async () => {
     const { container } = await renderDiff(
       `![改前](${IMG_A})\n`,
