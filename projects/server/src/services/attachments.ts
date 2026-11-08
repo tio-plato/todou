@@ -12,7 +12,19 @@ import {
   formatRef,
   minRoleOf,
 } from "@todou/shared";
-import { and, asc, eq, inArray, isNull, like, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  like,
+  notInArray,
+  or,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import { uniqueViolation } from "../auth/provision.ts";
 import type { AppContext } from "../bootstrap.ts";
@@ -993,35 +1005,38 @@ export async function listDeletedAttachments(
   return result;
 }
 
+/** The drafts a text attaches, and the cards they were uploaded on. */
+export type LinkedDrafts = { ids: number[]; cards: number[] };
+
 /**
- * Turn the drafts `texts` link into attachments (T-568), inside the
- * transaction that writes the text, so the file and the words that show it
- * reach the card together. Only the writer's own drafts: they are the only
- * ones the writer has been shown, and an id typed by hand must not be able
- * to publish somebody else's unsent file.
+ * Find the drafts `texts` link that `commitDraftAttachments` may turn into
+ * attachments, and the cards they sit on. A write calls this before
+ * `lockIssueRows` and hands it `cards`: attaching a draft updates the card it
+ * was uploaded on, which must be locked with the others (see lockIssueRows).
+ *
+ * The read takes no lock, so it can come ahead of every lock the write
+ * takes. An attachment's `issue_id` never changes once written, so attaching
+ * the drafts writes no card but the ones read here.
  *
  * Owners are this project's id and current slug only — what an editor
  * writes for a file it uploaded a moment ago. A draft lives a day at most,
  * so no former slug can be holding one.
- *
- * Returns the change events to publish after commit.
  */
-export async function commitDraftAttachments(
+export async function findLinkedDrafts(
   tx: Db,
   project: ProjectRow,
   actorId: number,
   texts: readonly string[],
-  agentContext: AgentContext | null,
-): Promise<ChangeEvent[]> {
+): Promise<LinkedDrafts> {
   const owners = new Set([String(project.id), project.slug]);
   const ids = new Set<number>();
   for (const text of texts) {
     for (const id of linkedAttachmentIds(text, owners)) ids.add(id);
   }
-  if (ids.size === 0) return [];
-  const committed = await tx
-    .update(attachments)
-    .set({ draft: false })
+  if (ids.size === 0) return { ids: [], cards: [] };
+  const rows = await tx
+    .select({ id: attachments.id, issueId: attachments.issueId })
+    .from(attachments)
     .where(
       and(
         eq(attachments.projectId, project.id),
@@ -1029,7 +1044,76 @@ export async function commitDraftAttachments(
         eq(attachments.draft, true),
         inArray(attachments.id, [...ids]),
       ),
-    )
+    );
+  return { ids: rows.map((r) => r.id), cards: rows.map((r) => r.issueId) };
+}
+
+/**
+ * Turn the drafts `linked` names into attachments (T-568), inside the
+ * transaction that writes the text, so the file and the words that show it
+ * reach the card together. Only the writer's own drafts: they are the only
+ * ones the writer has been shown, and an id typed by hand must not be able
+ * to publish somebody else's unsent file.
+ *
+ * The caller found `linked` with `findLinkedDrafts` and locked `linked.cards`
+ * through `lockIssueRows`. An attachment's `issue_id` never changes, so every
+ * issue row this writes is already locked, and the order it writes them in
+ * makes no transaction wait.
+ *
+ * A draft on a card being moved to another database is skipped, not waited
+ * for, once something holds its row. Only a delete takes that row without
+ * locking the card first, the move emptying the frozen card or the draft
+ * reaper, and the move's last step writes the card row after its delete:
+ * waiting for it while holding the card would close a cycle. On any other
+ * card the wait is safe, since nothing holding a draft's row there waits
+ * for the card.
+ *
+ * Returns the change events to publish after commit.
+ */
+export async function commitDraftAttachments(
+  tx: Db,
+  project: ProjectRow,
+  actorId: number,
+  linked: LinkedDrafts,
+  agentContext: AgentContext | null,
+): Promise<ChangeEvent[]> {
+  if (linked.ids.length === 0) return [];
+  const linkedDrafts = and(
+    eq(attachments.projectId, project.id),
+    eq(attachments.uploaderId, actorId),
+    eq(attachments.draft, true),
+    inArray(attachments.id, linked.ids),
+  );
+  // The cards are locked, so none of them can be frozen or thawed now.
+  const frozen = (
+    await tx
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(inArray(issues.id, linked.cards), isNotNull(issues.movingSince)),
+      )
+  ).map((row) => row.id);
+  let onFrozen: SQL | undefined;
+  if (frozen.length > 0) {
+    const free = await tx
+      .select({ id: attachments.id })
+      .from(attachments)
+      .where(and(linkedDrafts, inArray(attachments.issueId, frozen)))
+      .for("no key update", { skipLocked: true });
+    onFrozen = or(
+      notInArray(attachments.issueId, frozen),
+      free.length === 0
+        ? undefined
+        : inArray(
+            attachments.id,
+            free.map((row) => row.id),
+          ),
+    );
+  }
+  const committed = await tx
+    .update(attachments)
+    .set({ draft: false })
+    .where(and(linkedDrafts, onFrozen))
     .returning();
   const events: ChangeEvent[] = [];
   for (const row of committed) {

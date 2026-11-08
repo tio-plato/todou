@@ -58,6 +58,33 @@ describe.skipIf(!PG_URL)("reference lock order", () => {
       payload: Record<string, unknown>;
     }>;
   };
+  const uploadDraft = async (card: Card, name: string) => {
+    const form = new FormData();
+    form.set("file", new File([`bytes of ${name}`], name));
+    form.set("issue_number", String(card.number));
+    form.set("draft", "true");
+    const res = await t.app.request(`/api/projects/${slug}/attachments`, {
+      method: "POST",
+      headers: author.headers,
+      body: form,
+    });
+    expect(res.status).toBe(201);
+    return (await json(res)) as { id: number; url: string };
+  };
+  const expectAttached = async (attachmentId: number, cardId: number) => {
+    const draft = await observer.query<{ draft: boolean }>(
+      "SELECT draft FROM attachments WHERE id = $1",
+      [attachmentId],
+    );
+    expect(draft.rows[0]?.draft).toBe(false);
+    const added = await observer.query<{ count: string }>(
+      `SELECT count(*) FROM issue_events
+       WHERE issue_id = $1 AND type = 'attachment_added'
+         AND (payload->'attachment'->>'id')::bigint = $2`,
+      [cardId, attachmentId],
+    );
+    expect(Number(added.rows[0]?.count)).toBe(1);
+  };
   const pidOf = async (client: pg.Client) =>
     (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid"))
       .rows[0]?.pid;
@@ -97,11 +124,16 @@ describe.skipIf(!PG_URL)("reference lock order", () => {
 
   // The holder is the write on B that references A: it writes B's row, then
   // share-locks A. B has the smaller id, so that is also the order the fixed
-  // server takes them in.
-  const race = async (request: (a: Card, b: Card) => Promise<Response>) => {
+  // server takes them in. `prepare` runs before the holder starts, and what
+  // it returns reaches `request`.
+  const race = async <P = undefined>(
+    request: (a: Card, b: Card, prepared: P) => Promise<Response>,
+    prepare?: (a: Card, b: Card) => Promise<P>,
+  ) => {
     const b = await createCard(slug, "B");
     const a = await createCard(slug, "A");
     expect(a.id).toBeGreaterThan(b.id);
+    const prepared = (await prepare?.(a, b)) as P;
 
     const pid = await pidOf(holder);
     await holder.query("BEGIN");
@@ -110,13 +142,13 @@ describe.skipIf(!PG_URL)("reference lock order", () => {
       await holder.query("UPDATE issues SET updated_at = now() WHERE id = $1", [
         b.id,
       ]);
-      pending = request(a, b);
+      pending = request(a, b, prepared);
       await blockedBy(pid);
       await holder.query("SELECT id FROM issues WHERE id = $1 FOR SHARE", [
         a.id,
       ]);
       await holder.query("COMMIT");
-      return { a, b, response: await pending };
+      return { a, b, prepared, response: await pending };
     } finally {
       await holder.query("ROLLBACK");
       await Promise.allSettled([pending]);
@@ -212,6 +244,293 @@ describe.skipIf(!PG_URL)("reference lock order", () => {
     } finally {
       await Promise.allSettled([m1, m2, c2].map((c) => c.query("ROLLBACK")));
       await Promise.allSettled(pending);
+    }
+  });
+
+  // Attaching a draft updates the card it was uploaded on, which need not be
+  // the card the text is written on. In the three races below the draft is
+  // on B, so the request updates B as well as A.
+  it("a comment linking a draft on another card locks that card first", async () => {
+    const { b, prepared, response } = await race(
+      (a, _b, draft) =>
+        send("POST", `/projects/${slug}/issues/${a.number}/comments`, {
+          body: `![](${draft.url})`,
+        }),
+      (_a: Card, b: Card) => uploadDraft(b, "comment.txt"),
+    );
+    expect(response.status).toBe(201);
+    await expectAttached(prepared.id, b.id);
+  });
+
+  it("a comment edit linking a draft on another card locks that card first", async () => {
+    const { b, prepared, response } = await race(
+      (a, _b, { comment, draft }) =>
+        send(
+          "PATCH",
+          `/projects/${slug}/issues/${a.number}/comments/${comment.id}`,
+          { body: `words ![](${draft.url})` },
+        ),
+      async (a: Card, b: Card) => {
+        const posted = await send(
+          "POST",
+          `/projects/${slug}/issues/${a.number}/comments`,
+          { body: "words" },
+        );
+        expect(posted.status).toBe(201);
+        const comment = (await json(posted)) as { id: number };
+        return { comment, draft: await uploadDraft(b, "edit.txt") };
+      },
+    );
+    expect(response.status).toBe(200);
+    await expectAttached(prepared.draft.id, b.id);
+  });
+
+  it("a body edit linking a draft on another card locks that card first", async () => {
+    const { b, prepared, response } = await race(
+      (a, _b, draft) =>
+        send("PATCH", `/projects/${slug}/issues/${a.number}`, {
+          body: `![](${draft.url})`,
+        }),
+      (_a: Card, b: Card) => uploadDraft(b, "body.txt"),
+    );
+    expect(response.status).toBe(200);
+    await expectAttached(prepared.id, b.id);
+  });
+
+  // The holder takes `first`, waits until the request queues behind it,
+  // then takes `second` and commits.
+  const contend = async (
+    first: () => Promise<unknown>,
+    request: () => Promise<Response>,
+    second: () => Promise<unknown>,
+  ) => {
+    const pid = await pidOf(holder);
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await first();
+      pending = request();
+      await blockedBy(pid);
+      await second();
+      await holder.query("COMMIT");
+      return await pending;
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  };
+  const lockCard = (id: number, mode: string) =>
+    holder.query(`SELECT id FROM issues WHERE id = $1 FOR ${mode}`, [id]);
+
+  it("a new card locks the card its draft is on before taking a number", async () => {
+    const c = await createCard(slug, "C");
+    const draft = await uploadDraft(c, "new.txt");
+    // The holder creates a card that references C: it share-locks C, then
+    // takes this project's project_meta.
+    const response = await contend(
+      () => lockCard(c.id, "SHARE"),
+      () =>
+        send("POST", `/projects/${slug}/issues`, {
+          title: "new",
+          body: `![](${draft.url})`,
+        }),
+      () =>
+        holder.query(
+          "UPDATE project_meta SET next_issue_number = next_issue_number WHERE project_id = $1",
+          [projectId],
+        ),
+    );
+    expect(response.status).toBe(201);
+    await expectAttached(draft.id, c.id);
+  });
+
+  // R1 falls in the references below X, R2 in those between X and A, and X
+  // is both referenced and updated: all three are owed a `referenced` event.
+  it("a write that references the card its draft is on locks it for update at once", async () => {
+    const r1 = await createCard(slug, "R1");
+    const x = await createCard(slug, "X");
+    const r2 = await createCard(slug, "R2");
+    const a = await createCard(slug, "A");
+    expect(x.id).toBeGreaterThan(r1.id);
+    expect(r2.id).toBeGreaterThan(x.id);
+    expect(a.id).toBeGreaterThan(r2.id);
+    const draft = await uploadDraft(x, "upgrade.txt");
+    // The holder is the same write on the server before the fix: it
+    // share-locks X, then goes on to update it.
+    const response = await contend(
+      () => lockCard(x.id, "SHARE"),
+      () =>
+        send("POST", `/projects/${slug}/issues/${a.number}/comments`, {
+          body: `see #${r1.number} #${x.number} #${r2.number} ![](${draft.url})`,
+        }),
+      () =>
+        holder.query("UPDATE issues SET updated_at = now() WHERE id = $1", [
+          x.id,
+        ]),
+    );
+    expect(response.status).toBe(201);
+    const comment = await json(response);
+    await expectAttached(draft.id, x.id);
+    for (const card of [r1, x, r2]) {
+      const events = await referencedOf(slug, card.number);
+      expect(events).toHaveLength(1);
+      expect(events[0]?.payload).toMatchObject({
+        by_issue: a.number,
+        by_comment: comment.id,
+      });
+    }
+  });
+
+  it("a write attaching drafts on several cards locks them in id order", async () => {
+    const c1 = await createCard(slug, "C1");
+    const c2 = await createCard(slug, "C2");
+    const a = await createCard(slug, "A");
+    // The server before the fix updated these cards in the order `UPDATE
+    // attachments … RETURNING` gave the drafts back: d2, uploaded first,
+    // came first, so it wrote C2 before C1.
+    const d2 = await uploadDraft(c2, "second.txt");
+    const d1 = await uploadDraft(c1, "first.txt");
+    const response = await contend(
+      () => lockCard(c1.id, "NO KEY UPDATE"),
+      () =>
+        send("POST", `/projects/${slug}/issues/${a.number}/comments`, {
+          body: `![](${d1.url}) ![](${d2.url})`,
+        }),
+      () => lockCard(c2.id, "NO KEY UPDATE"),
+    );
+    expect(response.status).toBe(201);
+    await expectAttached(d1.id, c1.id);
+    await expectAttached(d2.id, c2.id);
+  });
+
+  it("a comment linking a draft that is being deleted waits for the delete", async () => {
+    const x = await createCard(slug, "X");
+    const y = await createCard(slug, "Y");
+    expect(x.id).toBeLessThan(y.id);
+    const draft = await uploadDraft(x, "deleted.txt");
+    // The holder deletes the draft the way deleting an attachment does: it
+    // locks the card the draft is on, then deletes the attachment row.
+    const response = await contend(
+      () => lockCard(x.id, "NO KEY UPDATE"),
+      () =>
+        send("POST", `/projects/${slug}/issues/${y.number}/comments`, {
+          body: `![](${draft.url})`,
+        }),
+      () => holder.query("DELETE FROM attachments WHERE id = $1", [draft.id]),
+    );
+    expect(response.status).toBe(201);
+    const left = await observer.query(
+      "SELECT id FROM attachments WHERE id = $1",
+      [draft.id],
+    );
+    expect(left.rows).toHaveLength(0);
+    const added = await observer.query<{ count: string }>(
+      `SELECT count(*) FROM issue_events
+       WHERE issue_id = $1 AND type = 'attachment_added'
+         AND (payload->'attachment'->>'id')::bigint = $2`,
+      [x.id, draft.id],
+    );
+    expect(Number(added.rows[0]?.count)).toBe(0);
+  });
+
+  // The last step of a move to another database empties the frozen card,
+  // its attachment rows included, and then writes the card row. A write
+  // that holds that card while it waits for one of those attachment rows
+  // closes a cycle; it has to skip a draft the move is deleting.
+  it("a comment linking a draft that a move is deleting skips it", async () => {
+    const f = await createCard(slug, "F");
+    const a = await createCard(slug, "A");
+    const draft = await uploadDraft(f, "moving.txt");
+    await observer.query(
+      "UPDATE issues SET moving_since = now() WHERE id = $1",
+      [f.id],
+    );
+    const pid = await pidOf(holder);
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query("DELETE FROM attachments WHERE id = $1", [draft.id]);
+      let settled = false;
+      pending = send("POST", `/projects/${slug}/issues/${a.number}/comments`, {
+        body: `![](${draft.url})`,
+      }).finally(() => {
+        settled = true;
+      });
+      await expect
+        .poll(
+          async () => {
+            if (settled) return true;
+            const result = await observer.query<{ count: string }>(
+              `SELECT count(*) FROM pg_stat_activity
+               WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid))`,
+              [pid],
+            );
+            return Number(result.rows[0]?.count) > 0;
+          },
+          { timeout: 5000, interval: 10 },
+        )
+        .toBe(true);
+      await holder.query(
+        "UPDATE issues SET moved_at = now(), moving_since = NULL WHERE id = $1",
+        [f.id],
+      );
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(201);
+      const added = await observer.query<{ count: string }>(
+        `SELECT count(*) FROM issue_events
+         WHERE issue_id = $1 AND type = 'attachment_added'`,
+        [f.id],
+      );
+      expect(Number(added.rows[0]?.count)).toBe(0);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  // Until the copy reads the card's attachments, a draft attached on the
+  // frozen card still goes with it as an attachment.
+  it("a comment linking a draft on a card being moved attaches it", async () => {
+    const f = await createCard(slug, "F");
+    const a = await createCard(slug, "A");
+    const draft = await uploadDraft(f, "frozen.txt");
+    await observer.query(
+      "UPDATE issues SET moving_since = now() WHERE id = $1",
+      [f.id],
+    );
+    const response = await send(
+      "POST",
+      `/projects/${slug}/issues/${a.number}/comments`,
+      { body: `![](${draft.url})` },
+    );
+    expect(response.status).toBe(201);
+    await expectAttached(draft.id, f.id);
+  });
+
+  // Only a draft on a frozen card is skipped when its row is taken. On any
+  // other card the write waits, so a delete that rolls back leaves it to
+  // attach.
+  it("a comment linking a draft whose delete rolls back attaches it", async () => {
+    const x = await createCard(slug, "X");
+    const a = await createCard(slug, "A");
+    const draft = await uploadDraft(x, "kept.txt");
+    const pid = await pidOf(holder);
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      // The holder is the draft reaper: it deletes the row without locking
+      // the card, then gives up.
+      await holder.query("DELETE FROM attachments WHERE id = $1", [draft.id]);
+      pending = send("POST", `/projects/${slug}/issues/${a.number}/comments`, {
+        body: `![](${draft.url})`,
+      });
+      await blockedBy(pid);
+      await holder.query("ROLLBACK");
+      expect((await pending).status).toBe(201);
+      await expectAttached(draft.id, x.id);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
     }
   });
 });
