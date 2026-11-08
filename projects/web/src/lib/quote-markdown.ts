@@ -77,7 +77,10 @@ function childrenOf(node: Nodes): Nodes[] {
   return "children" in node ? (node.children as Nodes[]) : [];
 }
 
-/** Blocks whose phrasing a quote may cut into: what they show is text. */
+/**
+ * Blocks whose phrasing a quote may cut into: what they show is text. A
+ * block of HTML is cut into too (`leavesOf`).
+ */
 const LEAF_TYPES = new Set(["paragraph", "heading", "tableCell"]);
 
 /**
@@ -140,6 +143,13 @@ function leavesOf(tree: Nodes): Leaf[] {
           depth,
         });
       }
+      return;
+    }
+    // A block of HTML shows as its own source text, so a quote cuts it as
+    // text: what was selected of it, tags or not.
+    if (node.type === "html") {
+      const span = spanOf(node);
+      if (span) leaves.push({ node, span, content: span, depth });
       return;
     }
     const inner = node.type === "blockquote" ? depth + 1 : depth;

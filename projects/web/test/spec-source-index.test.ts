@@ -149,6 +149,32 @@ describe("buildSegmentIndex", () => {
     );
   });
 
+  // [shape, source, the literals it keeps].
+  it.each([
+    [
+      // Only the summary's text: the fold's tags become elements.
+      "a fold's summary",
+      "<details><summary>Fold here</summary>\n\nbody text\n\n</details>\n",
+      [{ text: "Fold here", start: 18, end: 27 }],
+    ],
+    [
+      "a block of HTML",
+      "<div>block words</div>\n",
+      [{ text: "<div>block words</div>", start: 0, end: 22 }],
+    ],
+  ])("keeps the text shown of %s as a literal", (_shape, source, literals) => {
+    const index = buildSegmentIndex(source);
+    expect(
+      index.literals.map(({ text, start, end }) => ({ text, start, end })),
+    ).toEqual(literals);
+  });
+
+  it("keeps a fold's summary out of the flattened prose", () => {
+    const source =
+      "<details><summary>Fold here</summary>\n\nbody text\n\n</details>\n";
+    expect(buildSegmentIndex(source).text).toBe("body text");
+  });
+
   it("flattens text with the blanks at a line break dropped, as shown", () => {
     expect(buildSegmentIndex("x &#10; y z\n").text).toBe("x\ny z");
   });

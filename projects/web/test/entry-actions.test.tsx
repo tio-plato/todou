@@ -407,6 +407,34 @@ describe("EntryActionsMenu on a comment", () => {
     );
   });
 
+  it("cuts the words selected in a block of HTML", async () => {
+    // The page shows the block as its source text, in a block of its own.
+    const onQuote = vi.fn();
+    const view = renderComment({
+      onQuote,
+      comment: comment({ body: "<div>block words</div>\n\nafter text" }),
+    });
+    const text = await waitFor(() => {
+      const node = view.container.querySelector("div[data-loc]")?.firstChild;
+      if (!node?.nodeValue?.includes("words")) {
+        throw new Error("block not stamped yet");
+      }
+      return node;
+    });
+    const at = text.nodeValue?.indexOf("words") ?? -1;
+    const range = document.createRange();
+    range.setStart(text, at);
+    range.setEnd(text, at + 5);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+
+    await openMenu(view);
+    fireEvent.click(menuItem("Quote reply"));
+    await waitFor(() =>
+      expect(onQuote).toHaveBeenCalledExactlyOnceWith("words"),
+    );
+  });
+
   it("keeps the selection the press underneath it drops", async () => {
     const onQuote = vi.fn();
     const view = renderComment({ onQuote });
