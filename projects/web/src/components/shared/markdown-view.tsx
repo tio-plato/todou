@@ -506,10 +506,15 @@ export const MarkdownViewWithPlugins = memo(function MarkdownViewWithPlugins({
             img: (
               stamped: ComponentProps<"img"> & { node?: unknown },
             ): ReactNode => {
-              // Only a document card shows text, so only it carries the span:
-              // a picture holds none to select, and a swapped pair has to
-              // stay two adjacent siblings (T-223).
+              // Every image carries its span, so that a selection ending
+              // beside one takes it whole. A document card wears it on a
+              // wrapper, as a link does; a picture, whatever stands in for a
+              // deleted one and a swapped picture's comparison on their own
+              // element: a swapped pair in a table cell has to stay two
+              // adjacent siblings (T-223), and a comparison its paragraph's
+              // one child.
               const [props, span] = withoutSpan(stamped);
+              const sourceSpan = typeof span === "string" ? span : undefined;
               const swapSrc = (props as Record<string, unknown>)[SWAP_SRC_ATTR];
               if (typeof swapSrc === "string" && issueNumber !== undefined) {
                 const swapAlt = (props as Record<string, unknown>)[
@@ -545,21 +550,24 @@ export const MarkdownViewWithPlugins = memo(function MarkdownViewWithPlugins({
                         : undefined
                     }
                     className={props.className}
+                    sourceSpan={sourceSpan}
                   />
                 );
               }
               const target = parseAttachmentHref(props.src);
               if (target !== null && issueNumber !== undefined) {
+                const card = isTextEmbedName(target.name ?? "");
                 const image = (
                   <MarkdownAttachmentImage
                     slug={slug}
                     issueNumber={issueNumber}
                     address={target}
                     embedded={embedded}
+                    sourceSpan={card ? undefined : sourceSpan}
                     {...props}
                   />
                 );
-                return isTextEmbedName(target.name ?? "") ? (
+                return card ? (
                   <SourceSpan span={span}>{image}</SourceSpan>
                 ) : (
                   image
@@ -575,7 +583,7 @@ export const MarkdownViewWithPlugins = memo(function MarkdownViewWithPlugins({
               }
               const { node: _node, ...rest } = props;
               // biome-ignore lint/a11y/useAltText: alt is forwarded via props when the markdown provides one
-              return <img {...rest} />;
+              return <img {...rest} {...{ [SOURCE_SPAN_ATTR]: sourceSpan }} />;
             },
           }),
     }),

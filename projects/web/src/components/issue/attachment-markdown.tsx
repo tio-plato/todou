@@ -39,6 +39,7 @@ import {
   type AttachmentRef,
   parseAttachmentHref,
 } from "@/lib/attachment-refs.ts";
+import { SOURCE_SPAN_ATTR } from "@/lib/rehype-source-lines.ts";
 
 /**
  * The markdown overrides for attachment addresses (T-242).
@@ -150,6 +151,7 @@ export function MarkdownAttachmentImage({
   address,
   embedded,
   onSize,
+  sourceSpan,
   node: _node,
   ...props
 }: ComponentProps<"img"> & {
@@ -160,6 +162,11 @@ export function MarkdownAttachmentImage({
   embedded: boolean;
   /** The natural size once loaded; null when there is nothing to load (T-722). */
   onSize?: (size: ImageSize | null) => void;
+  /**
+   * The image's source offsets (`SOURCE_SPAN_ATTR`), for whatever this draws
+   * in its place to wear. A document card's wrapper wears them instead.
+   */
+  sourceSpan?: string;
   node?: unknown;
 }): ReactNode {
   const { id, viaAlias, url, deleted } = useResolved(
@@ -175,12 +182,19 @@ export function MarkdownAttachmentImage({
       <DeletedAttachmentMark
         name={address.name ?? (props.alt || "image")}
         className={props.className}
+        sourceSpan={sourceSpan}
       />
     );
   }
   if (id === null) {
-    // biome-ignore lint/a11y/useAltText: alt is forwarded via props when the markdown provides one
-    return <img {...props} {...sizeHandlers(onSize)} />;
+    return (
+      // biome-ignore lint/a11y/useAltText: alt is forwarded via props when the markdown provides one
+      <img
+        {...props}
+        {...sizeHandlers(onSize)}
+        {...{ [SOURCE_SPAN_ATTR]: sourceSpan }}
+      />
+    );
   }
   // An alias was written when the file lived elsewhere; its canonical URL
   // saves every reader a 301 and is certainly readable from this project.
@@ -225,6 +239,7 @@ export function MarkdownAttachmentImage({
       // decoration is lost (T-223).
       className={props.className}
       onSize={onSize}
+      sourceSpan={sourceSpan}
     />
   );
 }
@@ -375,6 +390,7 @@ export function ImageSwapCompare({
   after,
   labels: authored,
   className,
+  sourceSpan,
 }: {
   slug: string;
   issueNumber: number;
@@ -383,6 +399,8 @@ export function ImageSwapCompare({
   /** An author's own names for the sides (T-767), over the page's versions. */
   labels?: { before: string; after: string };
   className?: string;
+  /** The new image's source offsets (`SOURCE_SPAN_ATTR`), for the comparison to wear. */
+  sourceSpan?: string;
 }) {
   const pageLabels = useContext(CompareLabelsContext);
   const labels = authored ?? pageLabels;
@@ -461,6 +479,7 @@ export function ImageSwapCompare({
           </Button>
         }
         className={className}
+        sourceSpan={sourceSpan}
       />
       {viewer === null && (
         <AttachmentViewerDialog

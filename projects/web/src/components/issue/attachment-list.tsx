@@ -42,6 +42,7 @@ import {
   previewKind,
 } from "@/lib/attachment-preview.ts";
 import { attachmentAnchorHref, attachmentHref } from "@/lib/attachment-refs.ts";
+import { SOURCE_SPAN_ATTR } from "@/lib/rehype-source-lines.ts";
 import { useSelection } from "@/lib/use-selection.ts";
 import { useSweepSelect } from "@/lib/use-sweep-select.ts";
 import { cn } from "@/lib/utils.ts";
@@ -573,6 +574,7 @@ export function AttachmentInlineImage({
   alt,
   className,
   onSize,
+  sourceSpan,
 }: {
   slug: string;
   issueNumber: number;
@@ -587,6 +589,8 @@ export function AttachmentInlineImage({
   className?: string;
   /** The natural size once loaded; null when it failed to (T-722). */
   onSize?: (size: { width: number; height: number } | null) => void;
+  /** The image's source offsets (`SOURCE_SPAN_ATTR`), on the `<img>` too. */
+  sourceSpan?: string;
 }) {
   const attachments = useQuery(attachmentsQuery(slug, issueNumber));
   const [viewer, setViewer] = useState<ViewerState | null>(null);
@@ -602,6 +606,7 @@ export function AttachmentInlineImage({
       <img
         src={src}
         alt={alt}
+        {...{ [SOURCE_SPAN_ATTR]: sourceSpan }}
         className={cn("cursor-zoom-in", className)}
         onLoad={
           onSize &&
@@ -643,12 +648,16 @@ export function AttachmentInlineImage({
 export function DeletedAttachmentMark({
   name,
   className,
+  sourceSpan,
 }: {
   name: string;
   className?: string;
+  /** The source offsets (`SOURCE_SPAN_ATTR`) of the image this stands for. */
+  sourceSpan?: string;
 }) {
   return (
     <span
+      {...{ [SOURCE_SPAN_ATTR]: sourceSpan }}
       className={cn(
         "inline-flex items-center gap-1 rounded border border-dashed px-1.5 text-sm text-muted-foreground",
         className,
