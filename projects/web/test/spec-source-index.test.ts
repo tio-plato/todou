@@ -13,6 +13,7 @@ import {
   sourceRangesOfText,
   type TableMatrix,
   tableOf,
+  textPieces,
 } from "../src/lib/spec-source-index.ts";
 import { wordDiff } from "../src/lib/word-diff.ts";
 
@@ -244,6 +245,62 @@ describe("buildSegmentIndex", () => {
       expect(lineColAt(index, ranges[0]?.start ?? 0)).toEqual({ line, col });
     },
   );
+});
+
+describe("textPieces", () => {
+  // [shape, source, the text node's source span, its value, its pieces].
+  it.each([
+    [
+      "a continuation line indented past a `>` of its text",
+      "a\n    >b c",
+      [0, 10],
+      "a\n>b c",
+      [
+        { text: "a\n", start: 0, end: 2, exact: true },
+        { text: ">b c", start: 6, end: 10, exact: true },
+      ],
+    ],
+    [
+      "the same line in a quote",
+      "> a\n>     >b c",
+      [2, 14],
+      "a\n>b c",
+      [
+        { text: "a\n", start: 2, end: 4, exact: true },
+        { text: ">b c", start: 10, end: 14, exact: true },
+      ],
+    ],
+    [
+      // Read from the line's start, the quote's own `>` would pass for the
+      // line's text, with the rest of the line left over.
+      "a quote's line of nothing but a `>` of its text",
+      "> a\n>     >",
+      [2, 11],
+      "a\n>",
+      [
+        { text: "a\n", start: 2, end: 4, exact: true },
+        { text: ">", start: 10, end: 11, exact: true },
+      ],
+    ],
+  ] as const)("lines up %s", (_shape, source, [start, end], value, pieces) => {
+    expect(textPieces(source, start, end, value)).toEqual(pieces);
+  });
+
+  it("lines up a long indent in time that grows with it, not its square", () => {
+    // The value's line opens with the blank `&#32;` stands for, so the read
+    // that starts at the line's start fails only past the whole indent.
+    const indent = 200_000;
+    const source = `a\n${" ".repeat(indent)}&#32;x`;
+    const began = performance.now();
+    const pieces = textPieces(source, 0, source.length, "a\n x");
+    // Squared, this many blanks takes tens of seconds.
+    expect(performance.now() - began).toBeLessThan(2000);
+    expect(pieces).toEqual([
+      { text: "a\n", start: 0, end: 2, exact: true },
+      { text: " ", start: 2 + indent, end: 7 + indent, exact: false },
+      { text: "x", start: 7 + indent, end: 8 + indent, exact: true },
+    ]);
+  });
 });
 
 describe("list structure metadata", () => {

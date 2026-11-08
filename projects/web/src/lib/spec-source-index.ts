@@ -239,9 +239,16 @@ const CONTINUATION_PREFIX = /[> \t]/;
  *
  * Every other character is copied from the source to the value, and runs of
  * them are exact pieces; a newline ends the one it is in. Null when the two
- * do not line up — the caller then keeps the node whole, as before. The one
- * known shape that does not is a continuation line indented four or more
- * spaces whose text opens with `>`, which is taken for a quote marker.
+ * do not line up — the caller then keeps the node whole, as before.
+ *
+ * A continuation line's prefix is not skipped greedily: a paragraph line
+ * indented four or more spaces is no quote, and its text may open with `>`.
+ * The prefix is the shortest run of `>`, blanks and tabs after which the rest
+ * of the line lines up, through the source newline that ends it or to the end
+ * of the value. A shorter run that takes a container's `>` for text stops
+ * lining up within the line, so that check is what keeps a quote's marker out
+ * of the text. The runs tried end at the line's start, past each `>` of the
+ * run the line opens with, and at the end of that run (`prefixEnds`).
  */
 export function textPieces(
   source: string,
@@ -252,6 +259,70 @@ export function textPieces(
   const pieces: TextPiece[] = [];
   let i = start;
   let j = 0;
+  for (let first = true; ; first = false) {
+    let line: TextLine | null = null;
+    for (const p of first ? [i] : prefixEnds(source, i, end)) {
+      const read = textLinePieces(source, p, end, value, j);
+      if (read === null) continue;
+      if (read.newline || /^[ \t\r\n]*$/.test(source.slice(read.i, end))) {
+        line = read;
+        break;
+      }
+    }
+    if (line === null) return null;
+    pieces.push(...line.pieces);
+    if (!line.newline) return pieces;
+    i = line.i;
+    j = line.j;
+  }
+}
+
+/**
+ * Where a continuation line's prefix may end, shortest first: at `from`, the
+ * line's start, just past each `>` of the run of `>`, blanks and tabs it
+ * opens with, and at the end of that run. Never among its blanks: the parser
+ * drops the blanks a line of text opens with, so the value's line never
+ * starts with one of them, and a prefix ending among them lines up only
+ * where the one past them does. Trying each blank on its own made a long
+ * indent cost its length squared, each try reading the rest of it.
+ */
+function prefixEnds(source: string, from: number, end: number): number[] {
+  const ends = [from];
+  let p = from;
+  while (p < end && CONTINUATION_PREFIX.test(source[p] ?? "")) {
+    p++;
+    if (source[p - 1] === ">") ends.push(p);
+  }
+  if (ends.at(-1) !== p) ends.push(p);
+  return ends;
+}
+
+/**
+ * One line of a text node read by `textLinePieces`, and where it stopped:
+ * past the source newline that ends it, or at the end of the value.
+ */
+type TextLine = {
+  pieces: TextPiece[];
+  i: number;
+  j: number;
+  newline: boolean;
+};
+
+/**
+ * `source` from `from` lined up with `value` from `at`, by the rules of
+ * `textPieces`, up to and including the first newline the two share, or to
+ * the end of `value`. Null when they stop reading alike first.
+ */
+function textLinePieces(
+  source: string,
+  from: number,
+  end: number,
+  value: string,
+  at: number,
+): TextLine | null {
+  const pieces: TextPiece[] = [];
+  let i = from;
+  let j = at;
   // The exact piece being grown, by where it starts in the source and value.
   let runStart = -1;
   let runAt = 0;
@@ -300,7 +371,7 @@ export function textPieces(
       j++;
       if (char === "\n") {
         closeRun();
-        while (i < end && CONTINUATION_PREFIX.test(source[i] ?? "")) i++;
+        return { pieces, i, j, newline: true };
       }
       continue;
     }
@@ -319,7 +390,7 @@ export function textPieces(
     return null;
   }
   closeRun();
-  return /^[ \t\r\n]*$/.test(source.slice(i, end)) ? pieces : null;
+  return { pieces, i, j, newline: false };
 }
 
 /**
