@@ -7,7 +7,7 @@ import type {
   ProjectUpdateInput,
 } from "@todou/shared";
 import { CANONICAL_STATUSES } from "@todou/shared";
-import { and, asc, desc, eq, inArray, ne, or } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, ne, or } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import { uniqueViolation } from "../auth/provision.ts";
 import type { AppContext } from "../bootstrap.ts";
@@ -610,19 +610,31 @@ export async function deleteProject(
       // taking the cards in id order the way those writes do, then the read
       // positions in the order marking everything read takes them (see
       // lockIssueRows). The order the deletes meet them in no longer matters.
+      // Counted rather than returned, so a large project's ids never come
+      // back to this process; each lock still sorts before it locks.
       await db.transaction(async (tx) => {
         await tx
-          .select({ id: issues.id })
-          .from(issues)
-          .where(eq(issues.projectId, project.id))
-          .orderBy(asc(issues.id))
-          .for("update");
+          .select({ locked: count() })
+          .from(
+            tx
+              .select({ id: issues.id })
+              .from(issues)
+              .where(eq(issues.projectId, project.id))
+              .orderBy(asc(issues.id))
+              .for("update")
+              .as("locked"),
+          );
         await tx
-          .select({ id: issueReads.id })
-          .from(issueReads)
-          .where(eq(issueReads.projectId, project.id))
-          .orderBy(asc(issueReads.id))
-          .for("update");
+          .select({ locked: count() })
+          .from(
+            tx
+              .select({ id: issueReads.id })
+              .from(issueReads)
+              .where(eq(issueReads.projectId, project.id))
+              .orderBy(asc(issueReads.id))
+              .for("update")
+              .as("locked"),
+          );
         // issues cascade to assignees/labels/comments/events/attachments.
         await tx.delete(issues).where(eq(issues.projectId, project.id));
         await tx.delete(comments).where(eq(comments.projectId, project.id));
