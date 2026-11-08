@@ -593,24 +593,43 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
     expect(created.status).toBe(201);
     const label = (await json(created)).id as number;
 
-    // The holder creates a card with a label: it takes a number, then the
-    // foreign key of the card's label row takes KEY SHARE on the label.
+    const [status] = (
+      await observer.query<{ id: string }>(
+        "SELECT id FROM statuses WHERE project_id = $1 ORDER BY id LIMIT 1",
+        [p.id],
+      )
+    ).rows;
+
+    // The holder creates a card with a label: it takes a number, inserts the
+    // card, then the card's label row, whose foreign key takes KEY SHARE on
+    // the label.
     await holder.query("BEGIN");
     let pending: Promise<Response> | undefined;
     try {
-      await holder.query(
-        `UPDATE project_meta SET next_issue_number = next_issue_number + 1
-         WHERE project_id = $1`,
-        [p.id],
-      );
+      const [next] = (
+        await holder.query<{ number: string }>(
+          `UPDATE project_meta SET next_issue_number = next_issue_number + 1
+           WHERE project_id = $1 RETURNING next_issue_number - 1 AS number`,
+          [p.id],
+        )
+      ).rows;
       pending = send("DELETE", `/projects/${p.slug}`);
       await waitForLockWaiters(1);
-      await holder.query("SELECT id FROM labels WHERE id = $1 FOR KEY SHARE", [
-        label,
-      ]);
+      const [inserted] = (
+        await holder.query<{ id: string }>(
+          `INSERT INTO issues (project_id, number, title, status_id, author_id)
+           VALUES ($1, $2, 'created', $3, 0) RETURNING id`,
+          [p.id, next?.number, status?.id],
+        )
+      ).rows;
+      await holder.query(
+        "INSERT INTO issue_labels (issue_id, label_id) VALUES ($1, $2)",
+        [inserted?.id, label],
+      );
       await holder.query("COMMIT");
       expect((await pending).status).toBe(204);
-      for (const table of ["labels", "project_meta"]) {
+      // The card it created went with the rest.
+      for (const table of ["issues", "labels", "project_meta"]) {
         const left = await observer.query<{ count: string }>(
           `SELECT count(*) FROM ${table} WHERE project_id = $1`,
           [p.id],
