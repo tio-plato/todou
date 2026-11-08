@@ -224,7 +224,7 @@ export async function copyIssueTree(
   src: Db,
   dst: Db,
   plan: {
-    row: Pick<typeof issues.$inferSelect, "id" | "authorId">;
+    row: typeof issues.$inferSelect;
     source: { project: { id: number } };
     target: { project: { id: number } };
     status: { to: { id: number } };
@@ -239,40 +239,30 @@ export async function copyIssueTree(
   const targetId = plan.target.project.id;
   const oldIssueId = plan.row.id;
 
-  // Read from `src` rather than taken from the plan, which was read before
-  // the move locked the card (one database) or froze it (two). An answer,
-  // an edit or a spec push committed in between is copied as an event, so
-  // these columns have to be read after it too.
-  const [current] = await src
+  const [stamps] = await src
     .select({
-      title: issues.title,
-      body: issues.body,
-      openQuestions: issues.openQuestions,
-      specVersion: issues.specVersion,
-      specReviewStatus: issues.specReviewStatus,
-      specUnresolvedComments: issues.specUnresolvedComments,
       createdAt: micro(issues.createdAt),
       bodyEditedAt: micro(issues.bodyEditedAt),
     })
     .from(issues)
     .where(eq(issues.id, oldIssueId));
-  if (current === undefined) throw new Error("issue row vanished mid-copy");
+  if (stamps === undefined) throw new Error("issue row vanished mid-copy");
 
   const fields = {
     projectId: targetId,
     number: opts.number,
-    title: current.title,
-    body: current.body,
+    title: plan.row.title,
+    body: plan.row.body,
     statusId: plan.status.to.id,
     authorId: plan.row.authorId,
-    createdAt: atMicro(current.createdAt),
+    createdAt: atMicro(stamps.createdAt),
     // A move is activity: the card belongs at the top of its new list.
     updatedAt: plan.movedAt,
-    bodyEditedAt: atMicro(current.bodyEditedAt),
-    openQuestions: current.openQuestions,
-    specVersion: current.specVersion,
-    specReviewStatus: current.specReviewStatus,
-    specUnresolvedComments: current.specUnresolvedComments,
+    bodyEditedAt: atMicro(stamps.bodyEditedAt),
+    openQuestions: plan.row.openQuestions,
+    specVersion: plan.row.specVersion,
+    specReviewStatus: plan.row.specReviewStatus,
+    specUnresolvedComments: plan.row.specUnresolvedComments,
     deletedAt: null,
     deletedBy: null,
     movingSince: null,

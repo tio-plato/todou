@@ -26,21 +26,27 @@ import { markDraftAttachments } from "../attachments.ts";
 import { announceBlockChanges, evaluateBlockerStatus } from "../blocks.ts";
 import { getIssue } from "../issues.ts";
 import { lineageOf, recordAliases, registerMove } from "../relocation.ts";
-import { assertIssueWritable, gateColumns } from "../trash.ts";
 import {
   type ActivityImportedMaxIds,
   clearIssueChildren,
   copyIssueTree,
   type IdMap,
 } from "./copy.ts";
-import { type MovePlan, planMove } from "./plan.ts";
+import {
+  assertStillMovable,
+  type MovePlan,
+  planMove,
+  replanHeld,
+} from "./plan.ts";
 
 /**
  * Move an issue to another project.
  *
  * Everything that can refuse the move happens in `planMove`, before a single
  * row is written — which is what lets `dry_run` promise that its preview is
- * what will actually happen.
+ * what will actually happen. The one exception is a write that lands on the
+ * card after the plan read it: both paths decide the plan again once they
+ * hold the card (`replanHeld`), and the response describes that plan.
  */
 export async function moveIssue(
   ctx: AppContext,
@@ -50,32 +56,37 @@ export async function moveIssue(
   input: MoveIssueInput,
   agentContext: AgentContext | null = null,
 ): Promise<MoveIssueResult> {
-  const plan = await planMove(ctx, actor, slug, number, input.to_project);
-  const mapping = {
+  const planned = await planMove(ctx, actor, slug, number, input.to_project);
+  const mappingOf = (plan: MovePlan) => ({
     status: { from: plan.status.from.name, to: plan.status.to.name },
     dropped_labels: plan.dropped.labels,
     dropped_assignees: plan.dropped.assignees,
-  };
+  });
 
   if (input.dry_run) {
     return {
-      moved_to: { slug: plan.target.project.slug, number: plan.reinhabit },
-      reinhabited: plan.reinhabit !== null,
-      mapping,
+      moved_to: {
+        slug: planned.target.project.slug,
+        number: planned.reinhabit,
+      },
+      reinhabited: planned.reinhabit !== null,
+      mapping: mappingOf(planned),
       issue: null,
     };
   }
+  await ctx.testHooks?.afterMovePlan?.();
 
   // Drafts travel with the card (T-568), and the reaper only opens projects
   // that are marked. Unconditional because the check it would replace races
   // an upload landing just before the freeze; a mark with no draft behind
   // it costs the target one visit and then clears itself.
-  await markDraftAttachments(ctx, plan.target.project);
+  await markDraftAttachments(ctx, planned.target.project);
 
   const landed =
-    plan.sameProjectDb && plan.systemColocated
-      ? await moveWithinDb(actor, plan, agentContext)
-      : await moveAcrossDbs(ctx, actor, plan, agentContext);
+    planned.sameProjectDb && planned.systemColocated
+      ? await moveWithinDb(actor, planned, agentContext)
+      : await moveAcrossDbs(ctx, actor, planned, agentContext);
+  const { plan } = landed;
 
   await afterCommit(ctx, plan, landed);
 
@@ -96,7 +107,7 @@ export async function moveIssue(
   return {
     moved_to: { slug: plan.target.project.slug, number: landed.number },
     reinhabited: plan.reinhabit !== null,
-    mapping,
+    mapping: mappingOf(plan),
     // Re-read rather than assembled here, so the response goes through the
     // same redaction every other read of this card does.
     issue: await getIssue(ctx, actor, plan.target.project.slug, landed.number),
@@ -110,6 +121,8 @@ export type Landed = {
   movedOutEventId: number | undefined;
   movedInEventId: number | undefined;
   tombstoneId: number;
+  /** The plan as decided again once the card was held. */
+  plan: MovePlan;
 };
 
 /**
@@ -119,26 +132,30 @@ export type Landed = {
  */
 async function moveWithinDb(
   actor: UserRow,
-  plan: MovePlan,
+  planned: MovePlan,
   agentContext: AgentContext | null,
 ): Promise<Landed> {
-  const db = plan.source.db;
+  const db = planned.source.db;
   const moveToken = randomUUID();
 
   return db.transaction(async (tx) => {
     // Pins the row for the whole move. Reference recording takes a share
     // lock on the same row (see lockIssueRows), so an event cannot land
     // on the card between the copy and the cleanup that would delete it.
-    const [locked] = await tx
-      .select(gateColumns)
+    // A competing move or trash that committed while this waited is
+    // visible in the row the lock returns.
+    const [held] = await tx
+      .select()
       .from(issues)
-      .where(eq(issues.id, plan.row.id))
+      .where(eq(issues.id, planned.row.id))
       .for("update");
-    if (locked === undefined) throw new NotFoundError("issue not found");
-    // `planMove` checked outside any transaction, and another move or a
-    // delete may have committed while this waited: this is the first look
-    // at the card while holding it.
-    assertIssueWritable(locked, actor, plan.role);
+    if (held === undefined) throw new NotFoundError("issue not found");
+    assertStillMovable(held);
+    const plan = await replanHeld(planned, held, {
+      source: tx,
+      target: tx,
+      system: tx,
+    });
 
     const number =
       plan.reinhabit ?? (await nextNumber(tx, plan.target.project.id));
@@ -200,6 +217,7 @@ async function moveWithinDb(
       movedOutEventId,
       movedInEventId,
       tombstoneId: plan.row.id,
+      plan,
     };
   });
 }
@@ -216,9 +234,10 @@ async function moveWithinDb(
 async function moveAcrossDbs(
   ctx: AppContext,
   actor: UserRow,
-  plan: MovePlan,
+  planned: MovePlan,
   agentContext: AgentContext | null,
 ): Promise<Landed> {
+  let plan = planned;
   const system = ctx.router.system();
   const moveToken = randomUUID();
   const step = async (n: 1 | 2 | 3 | 4 | 5 | 6) =>
@@ -246,21 +265,44 @@ async function moveAcrossDbs(
         eq(issues.id, plan.row.id),
         isNull(issues.movingSince),
         isNull(issues.movedAt),
+        // The trash's own write is guarded the same way, so exactly one of
+        // the two lands (T-666).
         isNull(issues.deletedAt),
       ),
     )
-    .returning({ id: issues.id });
-  if (frozen.length === 0) {
-    // Another move got there first, or the card went to the trash after the
-    // plan read it. The registration row has to go before the 409, or the
-    // sweep would later thaw a freeze that is not ours.
+    .returning();
+  const held = frozen[0];
+  if (held === undefined) {
+    // Another move or the trash got there first. The registration row has
+    // to go before the 409, or the sweep would later thaw a freeze that is
+    // not ours.
     await system.delete(issueMoves).where(eq(issueMoves.moveToken, moveToken));
     const [now] = await plan.source.db
-      .select(gateColumns)
+      .select()
       .from(issues)
       .where(eq(issues.id, plan.row.id));
-    if (now !== undefined) assertIssueWritable(now, actor, plan.role);
+    if (now === undefined) throw new NotFoundError("issue not found");
+    assertStillMovable(now);
     throw new IssueMovingError();
+  }
+  // The freeze's predicate already re-asked what `assertStillMovable` asks.
+  try {
+    plan = await replanHeld(plan, held, {
+      source: plan.source.db,
+      target: plan.target.db,
+      system,
+    });
+  } catch (err) {
+    // Nothing was copied yet, so this is the sweep's rollback done now
+    // rather than an hour from now.
+    await plan.source.db
+      .update(issues)
+      .set({ movingSince: null })
+      .where(
+        and(eq(issues.id, plan.row.id), eq(issues.movingSince, plan.movedAt)),
+      );
+    await system.delete(issueMoves).where(eq(issueMoves.moveToken, moveToken));
+    throw err;
   }
   await step(2);
 
@@ -293,6 +335,7 @@ async function moveAcrossDbs(
     movedOutEventId: undefined,
     movedInEventId: copied.movedInEventId,
     tombstoneId: plan.row.id,
+    plan,
   };
 }
 
@@ -636,9 +679,6 @@ async function replanFromRow(
     movedAt: row.movedAt,
     sameProjectDb: sourceUrl === targetUrl,
     systemColocated: false,
-    // Recovery carries on from after the freeze, past both places that read
-    // the role.
-    role: "admin",
   };
 }
 

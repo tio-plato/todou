@@ -107,17 +107,6 @@ export function assertIssueReadable(
 }
 
 /**
- * The half of the write gate that deleting and restoring pass as well: a
- * card that moved away, or is being copied to another project, takes no
- * write of any kind.
- */
-export function assertNotMoving(row: TrashFields): void {
-  // Always readable at the source: writing still demands a writer role there.
-  if (row.movedAt !== null) throw new IssueMovedError(row, true, true);
-  if (row.movingSince !== null) throw new IssueMovingError();
-}
-
-/**
  * Write gate: the same visibility, but seeing a trashed card earns a 409
  * instead of permission — a card in the trash is frozen until it is
  * restored, and so is one being copied to another project.
@@ -127,7 +116,9 @@ export function assertIssueWritable(
   actor: UserRow,
   role: MemberRole,
 ): void {
-  assertNotMoving(row);
+  // Always readable at the source: writing still demands a writer role there.
+  if (row.movedAt !== null) throw new IssueMovedError(row, true, true);
+  if (row.movingSince !== null) throw new IssueMovingError();
   if (row.deletedAt === null) return;
   if (seesTrashed(row, actor, role)) throw new IssueDeletedError();
   throw new NotFoundError("issue not found");
