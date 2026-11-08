@@ -59,7 +59,7 @@ import {
   requireCapability,
   routeInfoOf,
 } from "./access.ts";
-import { commitDraftAttachments } from "./attachments.ts";
+import { commitDraftAttachments, findLinkedDrafts } from "./attachments.ts";
 import {
   announceBlockChanges,
   type BlockSets,
@@ -534,9 +534,19 @@ export async function createIssue(
     self: null,
   });
   const row = await db.transaction(async (tx) => {
-    // The referenced cards lock before the number, the order a move takes
-    // the card and then the target's project_meta (see lockIssueRows).
-    const targets = await lockIssueRows(tx, project, null, resolved.local);
+    // The referenced cards and the cards whose drafts the body attaches
+    // lock before the number, the order a move takes the card and then the
+    // target's project_meta (see lockIssueRows).
+    const linked = await findLinkedDrafts(tx, project, actor.id, [
+      resolved.storedText,
+    ]);
+    const targets = await lockIssueRows(
+      tx,
+      project,
+      null,
+      resolved.local,
+      linked.cards,
+    );
     const meta = await tx
       .update(projectMeta)
       .set({ nextIssueNumber: sql`${projectMeta.nextIssueNumber} + 1` })
@@ -631,7 +641,7 @@ export async function createIssue(
         tx,
         project,
         actor.id,
-        [resolved.storedText],
+        linked,
         agentContext,
       )),
     );
@@ -1083,6 +1093,12 @@ export async function updateIssue(
   };
 
   await db.transaction(async (tx) => {
+    const linked = await findLinkedDrafts(
+      tx,
+      project,
+      actor.id,
+      resolved === null ? [] : [resolved.storedText],
+    );
     // Ahead of the first event and the UPDATE, asking the write gate again
     // under the card's lock (see lockIssueRows).
     const targets = await lockIssueRows(
@@ -1090,6 +1106,7 @@ export async function updateIssue(
       project,
       { id: before.id, actor, role },
       resolved?.local ?? [],
+      linked.cards,
     );
     const addEvent = async (
       type: (typeof issueEvents.$inferInsert)["type"],
@@ -1244,7 +1261,7 @@ export async function updateIssue(
           tx,
           project,
           actor.id,
-          [resolved.storedText],
+          linked,
           agentContext,
         )),
       );
