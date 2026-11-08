@@ -1,5 +1,5 @@
 import type { AnchorRange } from "@/components/spec/selection-entry.tsx";
-import { codeRowSource } from "./code-rows.ts";
+import { codeRowSource, stampedAbove } from "./code-rows.ts";
 import {
   DELETION_LINE_TYPE,
   LINE_TYPE_ATTR,
@@ -66,9 +66,13 @@ export type ColumnBlock = {
  * root, and `codeRowSource` maps those rows instead. What is left of a code
  * block outside its rows — the plain text shown before highlighting, a
  * mermaid picture — maps to nothing and keeps the line anchor.
+ *
+ * The walk hops shadow roots, for the rows pierre draws in a document card:
+ * the card is an atom of the paragraph it sits in.
  */
 function columnBlockOf(node: Node): ColumnBlock | null {
-  const stamped = elementNear(node)?.closest(`[${SOURCE_LINE_ATTR}]`) ?? null;
+  const near = elementNear(node);
+  const stamped = near === null ? null : stampedAbove(near);
   if (stamped === null) return null;
   if (stamped.hasAttribute(CODE_CONTENT_START_ATTR)) return null;
   const loc = parseSourceLoc(stamped.getAttribute(SOURCE_LINE_ATTR));
@@ -88,11 +92,18 @@ const OLD_TABLE_PARTS = ".spec-del-row, .spec-del-cell, .spec-del-img";
 export const DELETED_CONTENT = `${OLD_TEXT}, ${OLD_TABLE_PARTS}`;
 
 /**
- * What the spec view injects into the rendered document: the annotation UI,
- * and the old text, structure and list numbers of a compared version. None
- * of it is part of the source.
+ * The link `mdast-util-to-hast` ends a footnote definition with, back to
+ * where the footnote is referenced: its `↩` stands for nothing in the source.
  */
-const INJECTED = `[data-annotation-ui], ${OLD_TEXT}, .spec-list-number`;
+const FOOTNOTE_BACKREF = "a[data-footnote-backref]";
+
+/**
+ * What the spec view injects into the rendered document: the annotation UI,
+ * and the old text, structure and list numbers of a compared version; and
+ * what the renderer adds, a footnote definition's link back. None of it is
+ * part of the source.
+ */
+const INJECTED = `[data-annotation-ui], ${OLD_TEXT}, .spec-list-number, ${FOOTNOTE_BACKREF}`;
 
 /** A link or a document card a selection takes whole (`alignBlock`). */
 type Atom = { el: Element; start: number; end: number };
@@ -245,8 +256,9 @@ function withAtoms(
  * atom: it stands in the segments as one character in place of its span,
  * and a selection reaching into it takes its whole span.
  *
- * Inline HTML is shown as its own source text (`SegmentIndex.literals`), so
- * it lines up like any other exact segment.
+ * Raw HTML is shown as its own source text (`SegmentIndex.literals`), so it
+ * lines up like any other exact segment: inline HTML, a block of HTML, and
+ * the summary of a fold.
  *
  * The injected nodes `INJECTED` names are skipped as they always were: they
  * would shift every offset after them.
@@ -262,8 +274,8 @@ function alignBlock(
       .filter((el) => el.closest(INJECTED)?.contains(block.el) ?? true)
       .flatMap((el) => parseSourceLoc(el.getAttribute(block.stamp)) ?? []),
   );
-  // Inline HTML shows as its own source text, so it is the block's text
-  // here, though never part of the flattened prose.
+  // Raw HTML shows as its own source text, so it is the block's text here,
+  // though never part of the flattened prose.
   const literals = index.literals.filter(
     (literal) =>
       literal.line <= block.loc.end && literal.endLine >= block.loc.start,
@@ -280,8 +292,8 @@ function alignBlock(
   // mapped character by character, which no atom can improve on, so atoms
   // are only looked for when that fails. Trying them first would also trust
   // a span that is not its element's own: `remarkIssueRefs` cuts a project
-  // autolink out of a text node, and when that node's source is longer than
-  // its value every piece gets the whole node's position.
+  // autolink out of a text node, and when that node's pieces cannot be found
+  // every piece gets the whole node's position.
   return (
     lineUp(index, own, itemsOf(block, own, false)) ??
     lineUp(index, own, itemsOf(block, own, true))
@@ -333,12 +345,14 @@ function itemsOf(
         continue;
       }
       // Same `start-end` shape as a line range, but absolute offsets.
-      const span = takeAtoms
-        ? parseSourceLoc(child.getAttribute(SOURCE_SPAN_ATTR))
-        : null;
+      const span = parseSourceLoc(child.getAttribute(SOURCE_SPAN_ATTR));
+      // An image shows no text and holds none in its span, and yet a
+      // selection can end beside it: it is an atom in either pass.
       if (
         span !== null &&
-        textUnder(child) !== textInSpan(own, span.start, span.end)
+        (child.tagName === "IMG" ||
+          (takeAtoms &&
+            textUnder(child) !== textInSpan(own, span.start, span.end)))
       ) {
         atoms.push({ el: child, ...span });
         items.push(child);
@@ -410,6 +424,12 @@ function sourceOffsetOfEndpoint(
  * Source offset in `index` an endpoint in `block` maps to, or null to give
  * up. One in an atom takes the atom's edge: its start for a start, its end
  * for an end.
+ *
+ * An endpoint on an element maps only beside an atom: a start takes the edge
+ * of the atom right after it, an end of the one right before it. Those are
+ * the element endpoints `endsOnContent` leaves — beside an image or a
+ * shadow host, or inside an atom such as a document card — and any other
+ * keeps the line anchor.
  */
 export function sourceOffsetInBlock(
   index: SegmentIndex,
@@ -418,11 +438,19 @@ export function sourceOffsetInBlock(
   offset: number,
   edge: "start" | "end",
 ): number | null {
-  if (node.nodeType !== Node.TEXT_NODE) return null;
   const aligned = alignBlock(index, block);
   if (aligned === null) return null;
-  const atom = aligned.atoms.find((a) => a.el.contains(node));
+  // What an element endpoint has on its side: a start looks ahead.
+  const next =
+    node.nodeType === Node.TEXT_NODE
+      ? null
+      : (node.childNodes[edge === "start" ? offset : offset - 1] ?? null);
+  // A card's rows sit in a shadow root under it.
+  const atom = aligned.atoms.find(
+    (a) => composedContains(a.el, node) || a.el === next,
+  );
   if (atom !== undefined) return edge === "start" ? atom.start : atom.end;
+  if (node.nodeType !== Node.TEXT_NODE) return null;
   const at = aligned.offsets.get(node);
   if (at === undefined) return null;
   const rendered = aligned.inserted.has(node) ? at : at + offset;
@@ -450,8 +478,9 @@ function pastPrefix(
 /**
  * Source offset one endpoint maps to, wherever it is: a code row's text maps
  * by where `codeRowSource` puts the row, prose through the segment index.
- * `edge` only matters to prose, for which segment a boundary between two
- * belongs to.
+ * A row no code block's wrapper holds is one a document card draws, and maps
+ * as the rest of the card does. `edge` only matters to prose, for which
+ * segment a boundary between two belongs to.
  */
 function endpointOffset(
   index: SegmentIndex,
@@ -460,9 +489,12 @@ function endpointOffset(
   edge: "start" | "end",
 ): number | null {
   const row = rowAt(node);
-  if (row === null) return sourceOffsetOfEndpoint(index, node, offset, edge);
-  const source = codeRowSource(index, row);
-  if (source === null || source.textStart === null) return null;
+  const source = row === null ? null : codeRowSource(index, row);
+  // A row in no code block's wrapper is one a document card shows.
+  if (row === null || source === null) {
+    return sourceOffsetOfEndpoint(index, node, offset, edge);
+  }
+  if (source.textStart === null) return null;
   const at = offsetInRow(row, node, offset);
   return at === null ? null : source.textStart + at;
 }
@@ -683,7 +715,7 @@ const CURRENT_WALK: Walk = {
  * skipped. A number is no text of its item, so an endpoint in one moves.
  */
 const OLD_WALK: Walk = {
-  skip: "[data-annotation-ui]",
+  skip: `[data-annotation-ui], ${FOOTNOTE_BACKREF}`,
   block: `[${SOURCE_LINE_ATTR}], [${OLD_LINE_ATTR}], .spec-del-block`,
   code: `${CODE_BLOCK}, ${OLD_CODE_BLOCK}`,
   uiSelectsNothing: true,
@@ -773,7 +805,9 @@ function contentAt(
  * Whether an endpoint selects nothing itself, and may move: it sits in the
  * container's light DOM, outside any code block the selection covers, on an
  * element or on text whose part in the selection is blank. pierre's rows
- * map their own edges, and so does the text of a code block.
+ * map their own edges, and so does the text of a code block. The `↩` of a
+ * footnote definition's link back is no text of the source either: a drag
+ * to the end of a definition's line can end in it.
  */
 function selectsNothing(
   container: Element,
@@ -782,9 +816,10 @@ function selectsNothing(
   walk: Walk,
 ): boolean {
   if (!container.contains(at.node)) return false;
+  const near = elementNear(at.node);
   if (
-    walk.uiSelectsNothing &&
-    elementNear(at.node)?.closest("[data-annotation-ui]") != null
+    near?.closest(FOOTNOTE_BACKREF) != null ||
+    (walk.uiSelectsNothing && near?.closest("[data-annotation-ui]") != null)
   ) {
     return true;
   }

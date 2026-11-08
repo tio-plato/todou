@@ -4,6 +4,11 @@ import {
   type RefSegment,
   splitIssueRefs,
 } from "@/lib/issue-refs.ts";
+import {
+  sourceOffsetsOfRendered,
+  type TextPiece,
+  textPieces,
+} from "@/lib/spec-source-index.ts";
 
 type Point = { line: number; column: number; offset: number };
 
@@ -95,13 +100,22 @@ export function remarkIssueRefs(
   config: RefConfig = DEFAULT_REF_CONFIG,
   options: RefPluginOptions = {},
 ) {
-  return (tree: MdNode) => visit(tree, config, options);
+  // react-markdown hands every plugin the string it renders as `file.value`,
+  // the one the positions are offsets into.
+  return (tree: MdNode, file?: { value?: unknown }) =>
+    visit(
+      tree,
+      config,
+      options,
+      typeof file?.value === "string" ? file.value : null,
+    );
 }
 
 function visit(
   node: MdNode,
   config: RefConfig,
   options: RefPluginOptions,
+  source: string | null,
 ): void {
   if (node.children === undefined || OPAQUE.has(node.type)) return;
   const next: MdNode[] = [];
@@ -109,11 +123,11 @@ function visit(
     if (child.type === "text" && typeof child.value === "string") {
       const segments = keep(splitIssueRefs(child.value, config), options);
       if (segments.some((s) => s.type !== "text")) {
-        next.push(...split(child, segments));
+        next.push(...split(child, segments, source));
         continue;
       }
     }
-    visit(child, config, options);
+    visit(child, config, options, source);
     next.push(child);
   }
   node.children = next;
@@ -146,32 +160,84 @@ function advance(from: Point, text: string): Point {
  * and word-level diffs onto (T-142/T-164): pieces without one are skipped
  * outright, so a single ref used to cost a whole paragraph its highlight.
  *
- * Offsets inside the node only mean something when the source span and the
- * value agree character for character. Entities, escapes and a list item's
- * continuation indent all stretch the span, and then every segment claims
- * the whole node instead — which the engine reads as "indivisible" and
- * highlights in one go.
+ * Entities, escapes and a list item's continuation indent stretch a node's
+ * source span past its value, so an offset in the value maps to the source
+ * through the node's pieces (`textPieces`), the way a selection's does: a
+ * segment starting between two pieces starts where the next one does, one
+ * ending there ends where the previous one does, and one starting (ending)
+ * inside an escape takes its beginning (its end). Only when the pieces
+ * cannot be found, or the source is not at hand for such a node, does every
+ * segment claim the whole node instead — which the engine reads as
+ * "indivisible" and highlights in one go, and which a selection beside an
+ * autolink then took for an atom.
  */
-function split(node: MdNode, segments: RefSegment[]): MdNode[] {
+function split(
+  node: MdNode,
+  segments: RefSegment[],
+  source: string | null,
+): MdNode[] {
   const span = node.position;
-  const exact =
-    span !== undefined &&
-    span.end.offset - span.start.offset === (node.value ?? "").length;
-  let cursor = exact ? span?.start : undefined;
+  const value = node.value ?? "";
+  const placed = span === undefined ? null : placeIn(span, value, source);
   const out: MdNode[] = [];
+  let at = 0;
   for (const segment of segments) {
-    let position = span;
-    if (cursor !== undefined) {
-      const end = advance(
-        cursor,
-        segment.type === "text" ? segment.value : segment.text,
-      );
-      position = { start: cursor, end };
-      cursor = end;
-    }
-    out.push(nodeFor(segment, position));
+    const length = (segment.type === "text" ? segment.value : segment.text)
+      .length;
+    out.push(nodeFor(segment, placed?.(at, at + length) ?? span));
+    at += length;
   }
   return out;
+}
+
+/**
+ * The position of `[from, to)` of a node's value, or null when the node's
+ * pieces cannot be found. A node whose source reads as its value is one
+ * piece, read by addition: `textPieces` would take a `&amp;` it holds as
+ * written, as a plugin before this one leaves rejected link text, for a
+ * reference. Without the source, a node whose span is exactly as long as its
+ * value is taken for one.
+ *
+ * The segments are placed in order, so both the walk through the pieces and
+ * the point carried along the source only move forward: a paragraph of many
+ * references costs its length, not its length times their number.
+ */
+function placeIn(
+  span: { start: Point; end: Point },
+  value: string,
+  source: string | null,
+): ((from: number, to: number) => MdNode["position"]) | null {
+  const start = span.start.offset;
+  const end = span.end.offset;
+  const verbatim =
+    source === null
+      ? end - start === value.length
+      : source.slice(start, end) === value;
+  const pieces: TextPiece[] | null = verbatim
+    ? [{ text: value, start, end, exact: true }]
+    : source === null
+      ? null
+      : textPieces(source, start, end, value);
+  if (pieces === null) return null;
+  const toSource = sourceOffsetsOfRendered(pieces);
+  let at = { offset: start, point: span.start };
+  const pointAt = (offset: number): Point => {
+    // Two edges inside one escape or reference map out of order.
+    if (offset < at.offset) at = { offset: start, point: span.start };
+    const text =
+      source === null
+        ? value.slice(at.offset - start, offset - start)
+        : source.slice(at.offset, offset);
+    at = { offset, point: advance(at.point, text) };
+    return at.point;
+  };
+  return (from, to) => {
+    const a = toSource(from, "start");
+    const b = toSource(to, "end");
+    return a === null || b === null
+      ? undefined
+      : { start: pointAt(a), end: pointAt(b) };
+  };
 }
 
 function nodeFor(segment: RefSegment, position: MdNode["position"]): MdNode {

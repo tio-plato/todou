@@ -1,6 +1,8 @@
 import type { Nodes } from "mdast";
 import { decodeString } from "micromark-util-decode-string";
+import { trimLines } from "trim-lines";
 import { parseMarkdown } from "./markdown-processor.ts";
+import { splitRaw } from "./rehype-details.ts";
 import type { LineRange } from "./spec-changes.ts";
 
 /**
@@ -192,11 +194,16 @@ export type SegmentIndex = {
   /** Every code block's body, by the leaf group it owns (T-343). */
   fences: Map<number, SourceFence>;
   /**
-   * Raw HTML inside a leaf block, which the page shows as its own source
-   * text: todou runs no HTML. Kept apart from `segments`, so `text` and the
-   * word diff never weigh markup as prose; only the selection mapping reads
-   * these, to line a block's text up with what it shows. Each is exact and
-   * has no place in `text`, so its `at` is -1.
+   * Raw HTML, which the page shows as its own source text: todou runs no
+   * HTML. Kept apart from `segments`, so `text` and the word diff never
+   * weigh markup as prose; only the selection mapping reads these, to line a
+   * block's text up with what it shows. Each is exact and has no place in
+   * `text`, so its `at` is -1.
+   *
+   * Inline HTML is one literal. A block of HTML is cut where `rehypeDetails`
+   * cuts it, at the tags of a fold it turns into elements, and each run
+   * between them that is not blank is one: the page shows a fold's summary,
+   * not its tags.
    */
   literals: SourceSegment[];
 };
@@ -223,6 +230,11 @@ const ESCAPE_OR_REFERENCE =
 /** What a continuation line may open with that is not its text. */
 const CONTINUATION_PREFIX = /[> \t]/;
 
+/** A line ending, or part of one, as `trimLines` finds them. */
+function isLineEnding(char: string | undefined): boolean {
+  return char === "\n" || char === "\r";
+}
+
 /**
  * Line up a text node's value with its source span, `[start, end)`. A node
  * whose source is longer than its value cannot be entered by addition, and a
@@ -235,13 +247,23 @@ const CONTINUATION_PREFIX = /[> \t]/;
  *   to — so a quote cut from the source keeps the backslash;
  * - what a continuation line opens with — a quote's `> `, an item's indent,
  *   a paragraph's leading blanks — is in no piece at all;
- * - so are the blanks a soft line break drops from the end of a line.
+ * - so are the blanks a soft line break drops from the end of a line;
+ * - and so are the blanks the renderer drops on either side of a line break
+ *   (`trimLines`), when the value is what the page shows: those a reference
+ *   decodes to, and those written beside the line break `&#10;` stands for.
  *
  * Every other character is copied from the source to the value, and runs of
  * them are exact pieces; a newline ends the one it is in. Null when the two
- * do not line up — the caller then keeps the node whole, as before. The one
- * known shape that does not is a continuation line indented four or more
- * spaces whose text opens with `>`, which is taken for a quote marker.
+ * do not line up — the caller then keeps the node whole, as before.
+ *
+ * A continuation line's prefix is not skipped greedily: a paragraph line
+ * indented four or more spaces is no quote, and its text may open with `>`.
+ * The prefix is the shortest run of `>`, blanks and tabs after which the rest
+ * of the line lines up, through the source newline that ends it or to the end
+ * of the value. A shorter run that takes a container's `>` for text stops
+ * lining up within the line, so that check is what keeps a quote's marker out
+ * of the text. The runs tried end at the line's start, past each `>` of the
+ * run the line opens with, and at the end of that run (`prefixEnds`).
  */
 export function textPieces(
   source: string,
@@ -252,6 +274,70 @@ export function textPieces(
   const pieces: TextPiece[] = [];
   let i = start;
   let j = 0;
+  for (let first = true; ; first = false) {
+    let line: TextLine | null = null;
+    for (const p of first ? [i] : prefixEnds(source, i, end)) {
+      const read = textLinePieces(source, p, end, value, j);
+      if (read === null) continue;
+      if (read.newline || /^[ \t\r\n]*$/.test(source.slice(read.i, end))) {
+        line = read;
+        break;
+      }
+    }
+    if (line === null) return null;
+    pieces.push(...line.pieces);
+    if (!line.newline) return pieces;
+    i = line.i;
+    j = line.j;
+  }
+}
+
+/**
+ * Where a continuation line's prefix may end, shortest first: at `from`, the
+ * line's start, just past each `>` of the run of `>`, blanks and tabs it
+ * opens with, and at the end of that run. Never among its blanks: the parser
+ * drops the blanks a line of text opens with, so the value's line never
+ * starts with one of them, and a prefix ending among them lines up only
+ * where the one past them does. Trying each blank on its own made a long
+ * indent cost its length squared, each try reading the rest of it.
+ */
+function prefixEnds(source: string, from: number, end: number): number[] {
+  const ends = [from];
+  let p = from;
+  while (p < end && CONTINUATION_PREFIX.test(source[p] ?? "")) {
+    p++;
+    if (source[p - 1] === ">") ends.push(p);
+  }
+  if (ends.at(-1) !== p) ends.push(p);
+  return ends;
+}
+
+/**
+ * One line of a text node read by `textLinePieces`, and where it stopped:
+ * past the source newline that ends it, or at the end of the value.
+ */
+type TextLine = {
+  pieces: TextPiece[];
+  i: number;
+  j: number;
+  newline: boolean;
+};
+
+/**
+ * `source` from `from` lined up with `value` from `at`, by the rules of
+ * `textPieces`, up to and including the first newline the two share, or to
+ * the end of `value`. Null when they stop reading alike first.
+ */
+function textLinePieces(
+  source: string,
+  from: number,
+  end: number,
+  value: string,
+  at: number,
+): TextLine | null {
+  const pieces: TextPiece[] = [];
+  let i = from;
+  let j = at;
   // The exact piece being grown, by where it starts in the source and value.
   let runStart = -1;
   let runAt = 0;
@@ -269,16 +355,19 @@ export function textPieces(
   while (j < value.length) {
     if (i >= end) return null;
     const char = source[i] ?? "";
+    // The escape or reference starting here, and what it decodes to.
+    let token = "";
+    let decoded = "";
     if (char === "\\" || char === "&") {
       ESCAPE_OR_REFERENCE.lastIndex = i;
-      const token = ESCAPE_OR_REFERENCE.exec(source)?.[0] ?? "";
-      const decoded = decodeString(token);
+      token = ESCAPE_OR_REFERENCE.exec(source)?.[0] ?? "";
+      decoded = decodeString(token);
       // `&foo;` names no character and reads as itself, like plain text.
-      if (
-        decoded !== token &&
-        i + token.length <= end &&
-        value.startsWith(decoded, j)
-      ) {
+      if (decoded === token || i + token.length > end) {
+        token = "";
+        decoded = "";
+      }
+      if (token !== "" && value.startsWith(decoded, j)) {
         closeRun();
         pieces.push({
           text: decoded,
@@ -300,7 +389,7 @@ export function textPieces(
       j++;
       if (char === "\n") {
         closeRun();
-        while (i < end && CONTINUATION_PREFIX.test(source[i] ?? "")) i++;
+        return { pieces, i, j, newline: true };
       }
       continue;
     }
@@ -316,10 +405,22 @@ export function textPieces(
       i = blank;
       continue;
     }
+    // `mdast-util-to-hast` drops the blanks on either side of every line
+    // break in a value (`trimLines`), and so does `buildSegmentIndex`: what
+    // the source holds there — blanks, or a reference to them — shows nowhere.
+    if (isLineEnding(value[j]) || isLineEnding(value[j - 1])) {
+      const skip =
+        blank > i ? blank - i : /^[ \t]+$/.test(decoded) ? token.length : 0;
+      if (skip > 0) {
+        closeRun();
+        i += skip;
+        continue;
+      }
+    }
     return null;
   }
   closeRun();
-  return /^[ \t\r\n]*$/.test(source.slice(i, end)) ? pieces : null;
+  return { pieces, i, j, newline: false };
 }
 
 /**
@@ -523,6 +624,8 @@ export function buildSegmentIndex(source: string): SegmentIndex {
   const childCounts = new Map<number | null, number>();
   const lineStarts = lineStartsOf(source);
   const literals: SourceSegment[] = [];
+  // Inside a node whose text reaches the page through `hChildren`.
+  let verbatim = false;
 
   const pushBlock = (node: Nodes, type: SourceBlockType): number | null => {
     const start = node.position?.start.offset;
@@ -565,24 +668,50 @@ export function buildSegmentIndex(source: string): SegmentIndex {
   const visit = (node: Nodes): void => {
     if (node.type === "html") {
       markOpaque();
-      // Inline HTML only: a block of its own shows outside every stamped
-      // block. One whose source is not its value — it spans a line a
-      // container prefixes — is left out, and its block keeps the line.
+      // One whose source is not its value — it spans a line a container
+      // prefixes — is left out, and its block keeps the line.
       const start = node.position?.start.offset;
       const end = node.position?.end.offset;
-      if (
-        group >= 0 &&
-        start !== undefined &&
-        end !== undefined &&
-        end - start === node.value.length
-      ) {
+      if (start === undefined || end === undefined) return;
+      if (source.slice(start, end) !== node.value) return;
+      const pieces =
+        group >= 0
+          ? null
+          : splitRaw({
+              type: "raw",
+              value: node.value,
+              position: node.position,
+            });
+      const runs =
+        pieces === null
+          ? [{ value: node.value, from: start, to: end }]
+          : pieces.flatMap((piece) =>
+              "type" in piece &&
+              piece.type === "raw" &&
+              /\S/.test(piece.value) &&
+              piece.position?.start.offset !== undefined &&
+              piece.position.end.offset !== undefined
+                ? [
+                    {
+                      value: piece.value,
+                      from: piece.position.start.offset,
+                      to: piece.position.end.offset,
+                    },
+                  ]
+                : [],
+            );
+      for (const { value, from, to } of runs) {
+        // Its lines are those of the characters that are not blank: what a
+        // fold leaves after its closing tag opens with that line's ending,
+        // which is no text of that line's block.
         literals.push({
-          text: node.value,
+          text: value,
           at: -1,
-          start,
-          end,
-          line: node.position?.start.line ?? 1,
-          endLine: node.position?.end.line ?? 1,
+          start: from,
+          end: to,
+          line: lineColAt({ lineStarts }, from + value.search(/\S/)).line,
+          endLine: lineColAt({ lineStarts }, from + value.trimEnd().length - 1)
+            .line,
           exact: true,
           group,
         });
@@ -642,16 +771,24 @@ export function buildSegmentIndex(source: string): SegmentIndex {
       // A text node whose source is longer than its value goes in as the
       // runs `textPieces` finds, so that only an escape or a reference stays
       // indivisible rather than the whole node; inline code as the runs
-      // `codeSpanPieces` finds. Code goes in as the page shows it either
-      // way, so that a span it could not line up still leaves the rest of
-      // its paragraph aligned.
+      // `codeSpanPieces` finds. Both go in as the page shows them, so that a
+      // node that could not be lined up still leaves the rest of its
+      // paragraph aligned: code with its line endings as spaces, and text
+      // with the blanks around its line breaks dropped, as
+      // `mdast-util-to-hast` drops them. Text a node hands to the page
+      // through `hChildren` skips that step — a frontmatter cell's
+      // (`remarkFrontmatterTable`) — and goes in as it is.
       const value =
-        node.type === "inlineCode" ? shownCode(node.value) : node.value;
+        node.type === "inlineCode"
+          ? shownCode(node.value)
+          : verbatim
+            ? node.value
+            : trimLines(node.value);
       const pieces =
         node.type === "inlineCode"
           ? codeSpanPieces(source, start, end, node.value)
-          : end - start !== node.value.length
-            ? textPieces(source, start, end, node.value)
+          : end - start !== value.length
+            ? textPieces(source, start, end, value)
             : null;
       if (pieces !== null) {
         for (const piece of pieces) {
@@ -684,6 +821,8 @@ export function buildSegmentIndex(source: string): SegmentIndex {
     if (!("children" in node)) return;
     const outerGroup = group;
     const outerParent = parent;
+    const outerVerbatim = verbatim;
+    if ((node.data?.hChildren?.length ?? 0) > 0) verbatim = true;
     const type =
       FRONTMATTER_BLOCKS[node.type] ?? (node.type as SourceBlockType);
     const index = SOURCE_BLOCKS.has(type) ? pushBlock(node, type) : null;
@@ -701,6 +840,7 @@ export function buildSegmentIndex(source: string): SegmentIndex {
     }
     group = outerGroup;
     parent = outerParent;
+    verbatim = outerVerbatim;
   };
 
   visit(parseMarkdown(source));
@@ -1141,28 +1281,45 @@ export function sourceOffsetOfText(
  * whichever of its edges the caller is looking for.
  */
 export function sourceOffsetOfRendered(
-  segments: SourceSegment[],
+  segments: Pick<SourceSegment, "text" | "start" | "end" | "exact">[],
   offset: number,
   edge: "start" | "end",
 ): number | null {
+  return sourceOffsetsOfRendered(segments)(offset, edge);
+}
+
+/**
+ * `sourceOffsetOfRendered` for offsets that never go back, such as the edges
+ * of the runs a text node is cut into, taken in order: each call goes on
+ * from where the last one stopped, so mapping all of them walks the
+ * segments once.
+ */
+export function sourceOffsetsOfRendered(
+  segments: Pick<SourceSegment, "text" | "start" | "end" | "exact">[],
+): (offset: number, edge: "start" | "end") => number | null {
+  let i = 0;
   let seen = 0;
-  for (let i = 0; i < segments.length; i++) {
-    const segment = segments[i];
-    if (segment === undefined) continue;
-    const next = seen + segment.text.length;
-    // On a boundary the two sides disagree about who owns the offset: a
-    // selection's start reaches forward into the next segment, its end
-    // back into this one. The last segment owns its own far edge.
-    const owns =
-      offset < next ||
-      (offset === next && (edge === "end" || i === segments.length - 1));
-    if (owns) {
-      if (!segment.exact) return edge === "start" ? segment.start : segment.end;
-      return segment.start + (offset - seen);
+  return (offset, edge) => {
+    for (; i < segments.length; i++) {
+      const segment = segments[i];
+      if (segment === undefined) continue;
+      const next = seen + segment.text.length;
+      // On a boundary the two sides disagree about who owns the offset: a
+      // selection's start reaches forward into the next segment, its end
+      // back into this one. The last segment owns its own far edge.
+      const owns =
+        offset < next ||
+        (offset === next && (edge === "end" || i === segments.length - 1));
+      if (owns) {
+        if (!segment.exact) {
+          return edge === "start" ? segment.start : segment.end;
+        }
+        return segment.start + (offset - seen);
+      }
+      seen = next;
     }
-    seen = next;
-  }
-  return null;
+    return null;
+  };
 }
 
 /** 1-based line and UTF-16 code-unit column of a source offset. */

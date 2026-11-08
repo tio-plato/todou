@@ -366,6 +366,135 @@ describe("annotation highlights over an escape", () => {
   });
 });
 
+// Text whose source is longer than what it shows for more than an escape:
+// each used to be highlighted whole.
+describe("annotation highlights in text lined up piece by piece", () => {
+  // [shape, body, the anchor's line, column, line, column, what is marked].
+  it.each([
+    [
+      "a continuation line opening with >",
+      "a\n    >b c\n",
+      [2, 8, 2, 8],
+      ["c"],
+    ],
+    ["a reference for a line break", "x &#10; y z\n", [1, 11, 1, 11], ["z"]],
+  ] as const)(
+    "marks only the anchored characters of %s",
+    async (_shape, body, [start, colStart, end, colEnd], marked) => {
+      const { container } = await renderSpec({
+        body,
+        annotations: [anchored("comment", start, colStart, end, colEnd)],
+      });
+      expect(texts(container, "mark.spec-mark-comment")).toEqual(marked);
+    },
+  );
+});
+
+describe("annotation highlights in a footnote definition", () => {
+  it("marks only the anchored word, never the link back", async () => {
+    // "[^1]: note here" is line 3; "note" is columns 7 to 10.
+    const { container } = await renderSpec({
+      body: "text[^1] more words\n\n[^1]: note here\n",
+      annotations: [anchored("comment", 3, 7, 3, 10)],
+      ready: "a[data-footnote-backref]",
+    });
+    expect(texts(container, "mark.spec-mark-comment")).toEqual(["note"]);
+    const back = container.querySelector("a[data-footnote-backref]");
+    expect(back?.closest("mark")).toBeNull();
+  });
+
+  it("marks part of a definition that ends in a blank it spells out", async () => {
+    // The renderer appends a blank of its own after the one `&#32;` stands
+    // for, and only that one is taken off. "ot" is columns 8 and 9.
+    const { container } = await renderSpec({
+      body: "text[^1] x\n\n[^1]: note&#32;\n",
+      annotations: [anchored("comment", 3, 8, 3, 9)],
+      ready: "a[data-footnote-backref]",
+    });
+    expect(texts(container, "mark.spec-mark-comment")).toEqual(["ot"]);
+  });
+
+  it("marks the anchored word after an escape in a definition", async () => {
+    // "[^1]: note \* here" is line 3; "here" is columns 15 to 18.
+    const { container } = await renderSpec({
+      body: "text[^1] x\n\n[^1]: note \\* here\n",
+      annotations: [anchored("comment", 3, 15, 3, 18)],
+      ready: "a[data-footnote-backref]",
+    });
+    expect(texts(container, "mark.spec-mark-comment")).toEqual(["here"]);
+  });
+});
+
+// The page shows raw HTML as its own source, and its text can be anchored.
+describe("annotation highlights on raw HTML", () => {
+  it("paints nothing on raw HTML whose position does not read as its source", async () => {
+    // A fold in one block of HTML in a quote: the parser's value has no
+    // `> `, so the summary's place, counted in the value, falls short of
+    // its place in the source. "Fold" is columns 12 to 15 of line 2.
+    const { container } = await renderSpec({
+      body: "> <details>\n> <summary>Fold here</summary>\n> </details>\n",
+      annotations: [anchored("comment", 2, 12, 2, 15)],
+      ready: "summary",
+    });
+    expect(texts(container, "mark.spec-mark-comment")).toEqual([]);
+  });
+
+  // [shape, body, the anchor's line, column, line, column, what is marked].
+  it.each([
+    [
+      // "<details><summary>" is columns 1 to 18; "Fold" 19 to 22.
+      "a fold's summary",
+      "<details><summary>Fold here</summary>\n\nbody text\n\n</details>\n",
+      [1, 19, 1, 22],
+      ["Fold"],
+    ],
+    [
+      // "<div>block " is columns 1 to 11; "words" 12 to 16.
+      "a block of HTML",
+      "<div>block words</div>\n\nafter text\n",
+      [1, 12, 1, 16],
+      ["words"],
+    ],
+  ] as const)(
+    "marks only the anchored characters of %s",
+    async (_shape, body, [start, colStart, end, colEnd], marked) => {
+      const { container } = await renderSpec({
+        body,
+        annotations: [anchored("comment", start, colStart, end, colEnd)],
+      });
+      expect(texts(container, "mark.spec-mark-comment")).toEqual(marked);
+    },
+  );
+});
+
+describe("annotation highlights beside an autolink", () => {
+  it("marks only the anchored word of text an autolink is cut from", async () => {
+    const client = seeded();
+    client.setQueryData(referenceConfigQuery("p").queryKey, {
+      ...PREFIXED,
+      autolinks: [
+        {
+          id: 1,
+          prefix: "JIRA-",
+          url_template: "https://tracker.example/<num>",
+        },
+      ],
+    } satisfies ReferenceConfig);
+    // In "fixes JIRA-42 \* today", "today" is columns 18 to 22.
+    const { container } = await renderSpec({
+      body: "fixes JIRA-42 \\* today\n",
+      annotations: [anchored("comment", 1, 18, 1, 22)],
+      client,
+      ready: "a[href='https://tracker.example/42']",
+    });
+    expect(texts(container, "mark.spec-mark-comment")).toEqual(["today"]);
+    const link = container.querySelector(
+      "a[href='https://tracker.example/42']",
+    );
+    expect(link?.closest("mark")).toBeNull();
+  });
+});
+
 describe("annotation highlights inside inline code", () => {
   it("marks only the characters of code the anchor names", async () => {
     // In "a `code` b", columns 5 and 6 are "od".

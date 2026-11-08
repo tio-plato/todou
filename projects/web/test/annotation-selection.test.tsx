@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   attachmentsQuery,
   attachmentTextQuery,
+  deletedAttachmentsQuery,
 } from "../src/api/attachments.ts";
 import { issueRefQuery } from "../src/api/issue-refs.ts";
 import { projectsQuery } from "../src/api/queries.ts";
@@ -618,6 +619,32 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
       "b [c]",
       { lineStart: 1, lineEnd: 1, colStart: 13, colEnd: 13 },
     ],
+    [
+      // Indented four spaces, the `>` is the line's text, not a quote marker.
+      "a word on a continuation line opening with >",
+      "a\n    >b c\n",
+      ">b [c]",
+      { lineStart: 2, lineEnd: 2, colStart: 8, colEnd: 8 },
+    ],
+    [
+      "the > a continuation line opens with",
+      "a\n    >b c\n",
+      "[>b] c",
+      { lineStart: 2, lineEnd: 2, colStart: 5, colEnd: 6 },
+    ],
+    [
+      // The page drops the blanks around the line break `&#10;` stands for.
+      "a word after a reference for a line break",
+      "x &#10; y z\n",
+      "y [z]",
+      { lineStart: 1, lineEnd: 1, colStart: 11, colEnd: 11 },
+    ],
+    [
+      "a word after a blank reference ending a line",
+      "a&#32;\nb c\n",
+      "b [c]",
+      { lineStart: 2, lineEnd: 2, colStart: 3, colEnd: 3 },
+    ],
   ])("anchors %s to its own columns", async (_name, body, pick, anchor) => {
     const { onStage, button } = await stageSelection(body, (container) =>
       bracketedIn(container, pick),
@@ -685,6 +712,132 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
     fireEvent.click(button);
     expect(onStage).toHaveBeenCalledWith(anchor);
   });
+
+  describe("in a footnote definition", () => {
+    const FOOTNOTE = "text[^1] more words\n\n[^1]: note here\n";
+
+    /** The definition's text, and the text of its link back to the reference. */
+    function definitionNodes(container: HTMLElement): {
+      note: Node;
+      back: Node;
+    } {
+      const back = container.querySelector(
+        "a[data-footnote-backref]",
+      )?.firstChild;
+      const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if ((node as Text).data.startsWith("note here") && back) {
+          return { note: node, back };
+        }
+      }
+      throw new Error("no footnote definition");
+    }
+
+    it("anchors a word of the definition to its own columns", async () => {
+      const { onStage, button } = await stageSelection(
+        FOOTNOTE,
+        (container) => bracketedIn(container, "[note] here"),
+        { ready: "a[data-footnote-backref]" },
+      );
+      fireEvent.click(button);
+      expect(onStage).toHaveBeenCalledWith({
+        lineStart: 3,
+        lineEnd: 3,
+        colStart: 7,
+        colEnd: 10,
+      });
+    });
+
+    it("anchors a word on a definition's continuation line", async () => {
+      const { onStage, button } = await stageSelection(
+        "text[^1]\n\n[^1]: first line\n    continued\n",
+        (container) => bracketedIn(container, "[continued]"),
+        { ready: "a[data-footnote-backref]" },
+      );
+      fireEvent.click(button);
+      // "    continued": the indent is the definition's, not its text.
+      expect(onStage).toHaveBeenCalledWith({
+        lineStart: 4,
+        lineEnd: 4,
+        colStart: 5,
+        colEnd: 13,
+      });
+    });
+
+    it("ends a drag past the link back to the reference on the text", async () => {
+      const { onStage, button } = await stageSelection(
+        FOOTNOTE,
+        (container) => {
+          const { note, back } = definitionNodes(container);
+          return {
+            node: note,
+            from: 0,
+            endNode: back,
+            to: (back as Text).length,
+          };
+        },
+        { ready: "a[data-footnote-backref]" },
+      );
+      fireEvent.click(button);
+      expect(onStage).toHaveBeenCalledWith({
+        lineStart: 3,
+        lineEnd: 3,
+        colStart: 7,
+        colEnd: 15,
+      });
+    });
+  });
+
+  // Block HTML shows as its own source, but a fold's tags as a fold.
+  it.each([
+    [
+      "the summary of a fold",
+      "<details><summary>Fold here</summary>\n\nbody text\n\n</details>\n",
+      "[Fold] here",
+      { lineStart: 1, lineEnd: 1, colStart: 19, colEnd: 22 },
+    ],
+    [
+      // No blank line: the fold is one block of HTML, its body shown as is.
+      "the body of a fold written as one block",
+      "<details>\n<summary>s</summary>\n**body** here\n</details>\n",
+      "**body** [here]",
+      { lineStart: 3, lineEnd: 3, colStart: 10, colEnd: 13 },
+    ],
+    [
+      "a block of HTML",
+      "<div>block words</div>\n\nafter text\n",
+      "block [words]",
+      { lineStart: 1, lineEnd: 1, colStart: 12, colEnd: 16 },
+    ],
+    [
+      "a block of HTML in a quote",
+      "> <div>block words</div>\n",
+      "block [words]",
+      { lineStart: 1, lineEnd: 1, colStart: 14, colEnd: 18 },
+    ],
+    [
+      // One block of HTML: the fold, then on the next line more HTML.
+      "the summary of a fold with HTML on the line after it",
+      "<details><summary>More</summary>hidden</details>\n<p>after</p>\n",
+      "[More]",
+      { lineStart: 1, lineEnd: 1, colStart: 19, colEnd: 22 },
+    ],
+    [
+      "the HTML on the line after a fold",
+      "<details><summary>More</summary>hidden</details>\n<p>after</p>\n",
+      "<p>[after]",
+      { lineStart: 2, lineEnd: 2, colStart: 4, colEnd: 8 },
+    ],
+  ])(
+    "anchors a word in %s to its own columns",
+    async (_name, body, pick, anchor) => {
+      const { onStage, button } = await stageSelection(body, (container) =>
+        bracketedIn(container, pick),
+      );
+      fireEvent.click(button);
+      expect(onStage).toHaveBeenCalledWith(anchor);
+    },
+  );
 
   it("anchors a list item's own text after a code block in it", async () => {
     const { onStage, button } = await stageSelection(
@@ -805,32 +958,32 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
 
   const DOC_URL = "/api/projects/p/attachments/6/download/doc.md";
 
+  /** File `id` of issue 1 in project `p`. */
+  const attachment = (id: number, filename: string, contentType: string) => ({
+    id,
+    filename,
+    content_type: contentType,
+    size: 26,
+    url: `/api/projects/p/attachments/${id}/download/${filename}`,
+    uploader: {
+      id: 1,
+      login: "user",
+      display_name: "User",
+      kind: "human" as const,
+      avatar_url: null,
+      owner: null,
+    },
+    created_at: "2026-01-01T00:00:00.000Z",
+    aliases: [],
+  });
+
   /** A project whose issue 1 has `doc.md`, drawn as a document card. */
-  function docClient(): QueryClient {
+  function docClient(text = "# Embedded\n\nhello from doc\n"): QueryClient {
     const client = chipClient();
     client.setQueryData(attachmentsQuery("p", 1).queryKey, [
-      {
-        id: 6,
-        filename: "doc.md",
-        content_type: "text/markdown",
-        size: 26,
-        url: DOC_URL,
-        uploader: {
-          id: 1,
-          login: "user",
-          display_name: "User",
-          kind: "human",
-          avatar_url: null,
-          owner: null,
-        },
-        created_at: "2026-01-01T00:00:00.000Z",
-        aliases: [],
-      },
+      attachment(6, "doc.md", "text/markdown"),
     ]);
-    client.setQueryData(
-      attachmentTextQuery(DOC_URL).queryKey,
-      "# Embedded\n\nhello from doc\n",
-    );
+    client.setQueryData(attachmentTextQuery(DOC_URL).queryKey, text);
     return client;
   }
 
@@ -866,6 +1019,160 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
       lineEnd: 1,
       colStart: 1,
       colEnd: line.length,
+    });
+  });
+
+  it("keeps an image attachment a triple-click ends past to its columns", async () => {
+    const client = chipClient();
+    client.setQueryData(attachmentsQuery("p", 1).queryKey, [
+      attachment(7, "pic.png", "image/png"),
+    ]);
+    // The click leaves the end at the start of the next paragraph, and the
+    // end moves back to the element boundary after the image.
+    const { onStage, button } = await stageSelection(
+      "See ![pic.png](/api/projects/p/attachments/7/download/pic.png)\n\nnext\n",
+      (container) => {
+        const [first, second] = container.querySelectorAll("p[data-loc]");
+        if (!first?.firstChild || !second) throw new Error("no paragraphs");
+        return { node: first.firstChild, from: 0, endNode: second, to: 0 };
+      },
+      { client, ready: "p[data-loc] img" },
+    );
+    fireEvent.click(button);
+    expect(onStage).toHaveBeenCalledWith({
+      lineStart: 1,
+      lineEnd: 1,
+      colStart: 1,
+      colEnd: 62,
+    });
+  });
+
+  it("anchors a selection starting on the element boundary before a picture", async () => {
+    const { onStage, button } = await stageSelection(
+      "![pic](x.png) after\n",
+      (container) => {
+        const paragraph = container.querySelector("p[data-loc]");
+        const after = paragraph?.lastChild;
+        if (!paragraph || !after) throw new Error("no paragraph");
+        return {
+          node: paragraph,
+          from: 0,
+          endNode: after,
+          to: (after as Text).length,
+        };
+      },
+      { ready: "p[data-loc] img" },
+    );
+    fireEvent.click(button);
+    // "![pic](x.png) after" is columns 1 to 19.
+    expect(onStage).toHaveBeenCalledWith({
+      lineStart: 1,
+      lineEnd: 1,
+      colStart: 1,
+      colEnd: 19,
+    });
+  });
+
+  it("anchors the word after a deleted image attachment to its columns", async () => {
+    const client = chipClient();
+    client.setQueryData(attachmentsQuery("p", 1).queryKey, []);
+    client.setQueryData(deletedAttachmentsQuery("p", 1).queryKey, [
+      {
+        id: 8,
+        filename: "gone.png",
+        deleted_by: attachment(8, "gone.png", "image/png").uploader,
+        deleted_at: "2026-01-02T00:00:00.000Z",
+      },
+    ]);
+    // The page shows "gone.png deleted" where the source has the image.
+    const { onStage, button } = await stageSelection(
+      "see ![gone.png](/api/projects/p/attachments/8/download/gone.png) after\n",
+      (container) => bracketedIn(container, " [after]"),
+      { client, ready: "[data-attachment-deleted]" },
+    );
+    fireEvent.click(button);
+    expect(onStage).toHaveBeenCalledWith({
+      lineStart: 1,
+      lineEnd: 1,
+      colStart: 66,
+      colEnd: 70,
+    });
+  });
+
+  it("takes a document card whole for an end beside a picture in it", async () => {
+    const body = `see ![doc.md](${DOC_URL}) after\n`;
+    const { onStage, button } = await stageSelection(
+      body,
+      (container) => {
+        const image = container.querySelector("[data-loc] .markdown-body img");
+        const parent = image?.parentNode;
+        const see = container.querySelector(
+          "p[data-loc], div[data-loc]",
+        )?.firstChild;
+        if (!image || !parent || !see) throw new Error("no card picture");
+        // Past the picture, on the element boundary a triple-click leaves.
+        const at = Array.prototype.indexOf.call(parent.childNodes, image);
+        return { node: see, from: 0, endNode: parent, to: at + 1 };
+      },
+      {
+        client: docClient("![x](/y.png)\n\nhello from doc\n"),
+        ready: "[data-loc] .markdown-body img",
+      },
+    );
+    fireEvent.click(button);
+    // "see " and the whole "![doc.md](…)", columns 1 to 60.
+    expect(onStage).toHaveBeenCalledWith({
+      lineStart: 1,
+      lineEnd: 1,
+      colStart: 1,
+      colEnd: body.indexOf(" after"),
+    });
+  });
+
+  it("takes a code card whole for a selection in one of its rows", async () => {
+    const url = "/api/projects/p/attachments/9/download/a.ts";
+    const body = `see ![a.ts](${url}) after\n`;
+    const client = chipClient();
+    client.setQueryData(attachmentsQuery("p", 1).queryKey, [
+      attachment(9, "a.ts", "text/plain"),
+    ]);
+    client.setQueryData(attachmentTextQuery(url).queryKey, "const a = 1;\n");
+    const view = renderWithProviders(
+      <AnnotatedMarkdown
+        slug="p"
+        issueNumber={1}
+        body={body}
+        annotations={[]}
+        onStage={() => {}}
+        onEditDraft={() => {}}
+        onRemoveDraft={() => {}}
+        onResolve={() => {}}
+      />,
+      client,
+    );
+    const container = await waitFor(() => {
+      const el = view.getByTestId("annotated-markdown");
+      if (!el.querySelector("[data-loc] pre code")) throw new Error("no card");
+      return el;
+    });
+    // pierre draws the card's rows in a shadow root, which the mock does not.
+    const host = document.createElement("diffs-container");
+    container.querySelector("[data-loc] pre")?.after(host);
+    const shadow = host.shadowRoot ?? host.attachShadow({ mode: "open" });
+    shadow.innerHTML = '<div data-line="1"><span>const a = 1;</span></div>';
+    const row = shadow.querySelector("span")?.firstChild;
+    // The "a" of "const a = 1;": the whole "![a.ts](…)", columns 5 to 56.
+    expect(
+      anchorForSelection(
+        container,
+        buildSegmentIndex(body),
+        ends(row, 6, row, 7),
+      ),
+    ).toEqual({
+      lineStart: 1,
+      lineEnd: 1,
+      colStart: 5,
+      colEnd: body.indexOf(" after"),
     });
   });
 
@@ -956,8 +1263,8 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
   );
 
   it("keeps the columns beside an autolink cut from text with an escape", async () => {
-    // Each piece of a text node whose source is longer than its value gets
-    // the whole node's position, so the link carries a span not its own.
+    // The text the link is cut from is longer in the source than on the
+    // page, so the link's span is mapped through that text's pieces.
     const { onStage, button } = await stageSelection(
       "**bold** fixes JIRA-42 \\* today\n",
       (container) => bracketedIn(container, "[bold]"),
@@ -972,9 +1279,26 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
     });
   });
 
+  it("anchors a word beside a chip, after an autolink and an escape", async () => {
+    // The text holding the autolink is longer in the source than on the
+    // page, and the chip sends the block to the path that looks for atoms.
+    const { onStage, button } = await stageSelection(
+      "[#12](/projects/1/issues/12) fixes JIRA-42 \\* today\n",
+      (container) => bracketedIn(container, "* [today]"),
+      { client: autolinkClient(), ready: "a[data-issue-link]" },
+    );
+    fireEvent.click(button);
+    expect(onStage).toHaveBeenCalledWith({
+      lineStart: 1,
+      lineEnd: 1,
+      colStart: 47,
+      colEnd: 51,
+    });
+  });
+
   it("anchors a word inside an autolink cut from a continuation line", async () => {
-    // Both pieces of "\n  JIRA-7" carry the whole node's span; the blank one
-    // must not let the link pass for an atom spanning the indent.
+    // "\n  JIRA-7" is longer in the source than on the page; the blank
+    // piece must not let the link pass for an atom spanning the indent.
     const { onStage, button } = await stageSelection(
       "- *em*\n  JIRA-7\n",
       (container) => bracketedIn(container, "J[IR]A-7"),
@@ -1519,6 +1843,38 @@ describe("AnnotatedMarkdown entry placement and shadow fallback (T-384)", () => 
     // The shape ⌘/Ctrl-A produces on a real page: the selection's rect is as
     // tall as the document, while the file it anchors to is a short box.
     expect(await topWith(rect(0, 52), rect(0, 3150))).toBe(52);
+  });
+
+  it("keeps the line for an end in a shadow root that is in no card", () => {
+    // The shadow root's text reads like the rest of the line, but only a
+    // card's rows map, to the whole card.
+    const container = document.createElement("div");
+    const prose = document.createElement("p");
+    prose.setAttribute("data-loc", "1-1");
+    prose.append("alpha ");
+    const host = document.createElement("span");
+    const shadow = host.attachShadow({ mode: "open" });
+    const row = document.createElement("span");
+    row.textContent = "beta";
+    shadow.append(row);
+    prose.append(host);
+    container.append(prose);
+    document.body.append(container);
+    try {
+      const anchor = anchorForSelection(
+        container,
+        buildSegmentIndex("alpha beta\n"),
+        ends(prose.firstChild, 0, row.firstChild, 2),
+      );
+      expect(anchor).toEqual({
+        lineStart: 1,
+        lineEnd: 1,
+        colStart: null,
+        colEnd: null,
+      });
+    } finally {
+      container.remove();
+    }
   });
 
   it("widens to whole lines when an endpoint sits in a shadow root", () => {
@@ -2237,6 +2593,7 @@ describe("endpoints that select nothing", () => {
   });
 
   it("keeps an image the selection ends past", async () => {
+    // The end moves beside the image, which takes its whole `![…](…)`.
     const source = "See ![pic](x.png)\n\nnext\n";
     const container = await rendered(source, "p[data-loc] img");
     const [first, second] = [...container.querySelectorAll("p[data-loc]")];
@@ -2246,7 +2603,7 @@ describe("endpoints that select nothing", () => {
         buildSegmentIndex(source),
         ends(first?.firstChild, 0, second, 0),
       ),
-    ).toEqual({ lineStart: 1, lineEnd: 1, colStart: null, colEnd: null });
+    ).toEqual({ lineStart: 1, lineEnd: 1, colStart: 1, colEnd: 17 });
   });
 
   it("stops before an old image a compared table put back", async () => {
