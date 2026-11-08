@@ -88,11 +88,18 @@ const OLD_TABLE_PARTS = ".spec-del-row, .spec-del-cell, .spec-del-img";
 export const DELETED_CONTENT = `${OLD_TEXT}, ${OLD_TABLE_PARTS}`;
 
 /**
- * What the spec view injects into the rendered document: the annotation UI,
- * and the old text, structure and list numbers of a compared version. None
- * of it is part of the source.
+ * The link `mdast-util-to-hast` ends a footnote definition with, back to
+ * where the footnote is referenced: its `↩` stands for nothing in the source.
  */
-const INJECTED = `[data-annotation-ui], ${OLD_TEXT}, .spec-list-number`;
+const FOOTNOTE_BACKREF = "a[data-footnote-backref]";
+
+/**
+ * What the spec view injects into the rendered document: the annotation UI,
+ * and the old text, structure and list numbers of a compared version; and
+ * what the renderer adds, a footnote definition's link back. None of it is
+ * part of the source.
+ */
+const INJECTED = `[data-annotation-ui], ${OLD_TEXT}, .spec-list-number, ${FOOTNOTE_BACKREF}`;
 
 /** A link or a document card a selection takes whole (`alignBlock`). */
 type Atom = { el: Element; start: number; end: number };
@@ -683,7 +690,7 @@ const CURRENT_WALK: Walk = {
  * skipped. A number is no text of its item, so an endpoint in one moves.
  */
 const OLD_WALK: Walk = {
-  skip: "[data-annotation-ui]",
+  skip: `[data-annotation-ui], ${FOOTNOTE_BACKREF}`,
   block: `[${SOURCE_LINE_ATTR}], [${OLD_LINE_ATTR}], .spec-del-block`,
   code: `${CODE_BLOCK}, ${OLD_CODE_BLOCK}`,
   uiSelectsNothing: true,
@@ -773,7 +780,9 @@ function contentAt(
  * Whether an endpoint selects nothing itself, and may move: it sits in the
  * container's light DOM, outside any code block the selection covers, on an
  * element or on text whose part in the selection is blank. pierre's rows
- * map their own edges, and so does the text of a code block.
+ * map their own edges, and so does the text of a code block. The `↩` of a
+ * footnote definition's link back is no text of the source either: a drag
+ * to the end of a definition's line can end in it.
  */
 function selectsNothing(
   container: Element,
@@ -782,9 +791,10 @@ function selectsNothing(
   walk: Walk,
 ): boolean {
   if (!container.contains(at.node)) return false;
+  const near = elementNear(at.node);
   if (
-    walk.uiSelectsNothing &&
-    elementNear(at.node)?.closest("[data-annotation-ui]") != null
+    near?.closest(FOOTNOTE_BACKREF) != null ||
+    (walk.uiSelectsNothing && near?.closest("[data-annotation-ui]") != null)
   ) {
     return true;
   }

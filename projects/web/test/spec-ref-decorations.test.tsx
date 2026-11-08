@@ -390,6 +390,41 @@ describe("annotation highlights in text lined up piece by piece", () => {
   );
 });
 
+describe("annotation highlights in a footnote definition", () => {
+  it("marks only the anchored word, never the link back", async () => {
+    // "[^1]: note here" is line 3; "note" is columns 7 to 10.
+    const { container } = await renderSpec({
+      body: "text[^1] more words\n\n[^1]: note here\n",
+      annotations: [anchored("comment", 3, 7, 3, 10)],
+      ready: "a[data-footnote-backref]",
+    });
+    expect(texts(container, "mark.spec-mark-comment")).toEqual(["note"]);
+    const back = container.querySelector("a[data-footnote-backref]");
+    expect(back?.closest("mark")).toBeNull();
+  });
+
+  it("marks part of a definition that ends in a blank it spells out", async () => {
+    // The renderer appends a blank of its own after the one `&#32;` stands
+    // for, and only that one is taken off. "ot" is columns 8 and 9.
+    const { container } = await renderSpec({
+      body: "text[^1] x\n\n[^1]: note&#32;\n",
+      annotations: [anchored("comment", 3, 8, 3, 9)],
+      ready: "a[data-footnote-backref]",
+    });
+    expect(texts(container, "mark.spec-mark-comment")).toEqual(["ot"]);
+  });
+
+  it("marks the anchored word after an escape in a definition", async () => {
+    // "[^1]: note \* here" is line 3; "here" is columns 15 to 18.
+    const { container } = await renderSpec({
+      body: "text[^1] x\n\n[^1]: note \\* here\n",
+      annotations: [anchored("comment", 3, 15, 3, 18)],
+      ready: "a[data-footnote-backref]",
+    });
+    expect(texts(container, "mark.spec-mark-comment")).toEqual(["here"]);
+  });
+});
+
 describe("annotation highlights beside an autolink", () => {
   it("marks only the anchored word of text an autolink is cut from", async () => {
     const client = seeded();
