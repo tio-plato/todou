@@ -280,8 +280,8 @@ function alignBlock(
   // mapped character by character, which no atom can improve on, so atoms
   // are only looked for when that fails. Trying them first would also trust
   // a span that is not its element's own: `remarkIssueRefs` cuts a project
-  // autolink out of a text node, and when that node's source is longer than
-  // its value every piece gets the whole node's position.
+  // autolink out of a text node, and when that node's pieces cannot be found
+  // every piece gets the whole node's position.
   return (
     lineUp(index, own, itemsOf(block, own, false)) ??
     lineUp(index, own, itemsOf(block, own, true))
