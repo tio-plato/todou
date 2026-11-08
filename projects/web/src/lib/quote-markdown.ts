@@ -3,7 +3,13 @@ import { toMarkdown } from "mdast-util-to-markdown";
 import type { AnchorRange } from "@/components/spec/selection-entry.tsx";
 import { parseMarkdown } from "./markdown-processor.ts";
 import { splitRaw } from "./rehype-details.ts";
-import { lineColAt, lineStartsOf, lineTextOf } from "./spec-source-index.ts";
+import {
+  codeSpanPieces,
+  lineColAt,
+  lineStartsOf,
+  lineTextOf,
+  type TextPiece,
+} from "./spec-source-index.ts";
 
 /**
  * Turning a comment or an issue body into the markdown a reply quotes it
@@ -87,9 +93,12 @@ const LEAF_TYPES = new Set([
   "frontmatterValue",
 ]);
 
-/** Inline nodes a quote takes whole or not at all. */
+/**
+ * Inline nodes a quote takes whole or not at all. Inline code is not among
+ * them: a cut into it quotes the part it takes as code of its own
+ * (`inlineCodeOf`), and only a span whose code cannot be found is whole.
+ */
 const ATOMIC_TYPES = new Set([
-  "inlineCode",
   "image",
   "imageReference",
   "html",
@@ -284,10 +293,48 @@ function markersOf(node: Nodes): { span: Span; inner: Span } | null {
   return { span, inner: { start: first.start, end: last.end } };
 }
 
+/** A code span, where its code runs, and that code lined up with its source. */
+type InlineCode = { span: Span; code: Span; pieces: TextPiece[] };
+
+/** Null for anything but inline code whose code `codeSpanPieces` can find. */
+function inlineCodeOf(source: string, node: Nodes): InlineCode | null {
+  if (node.type !== "inlineCode") return null;
+  const span = spanOf(node);
+  if (span === null) return null;
+  const pieces = codeSpanPieces(source, span.start, span.end, node.value);
+  const first = pieces?.[0];
+  const last = pieces?.at(-1);
+  if (pieces === null || first === undefined || last === undefined) {
+    return null;
+  }
+  return { span, code: { start: first.start, end: last.end }, pieces };
+}
+
+/**
+ * The part of a code span's code that `[s, e)` takes, as the page shows it:
+ * an exact piece cut at the offsets, a line ending or a table's `\|` whole.
+ * The source would carry what is not code — the `> ` or the indent a
+ * continuation line opens with, the backslash of `\|` — and code has no
+ * markup of its own to keep.
+ */
+function shownPart(pieces: TextPiece[], s: number, e: number): string {
+  return pieces
+    .map((piece) => {
+      if (piece.end <= s || piece.start >= e) return "";
+      if (!piece.exact) return piece.text;
+      return piece.text.slice(
+        Math.max(0, s - piece.start),
+        Math.min(piece.text.length, e - piece.start),
+      );
+    })
+    .join("");
+}
+
 /**
  * The selection cut out of one leaf block, with the markup it cuts through
- * made whole again: a code span, an image or an address taken entire, and the
- * markers of emphasis or a link it starts or ends inside carried along.
+ * made whole again: an image or an address taken entire, the part of a code
+ * span it takes written as a code span of its own, and the markers of
+ * emphasis or a link it starts or ends inside carried along.
  */
 function cutInLeaf(
   source: string,
@@ -298,12 +345,24 @@ function cutInLeaf(
   let { start: s, end: e } = trimToText(source, start, end, leaf.depth);
   if (s >= e) return null;
   const inlines = inlinesOf(leaf.node);
-  // A cut through a code span, an image or an address would leave its
-  // syntax open; those are taken whole.
+  const codes = new Map<Nodes, InlineCode>();
+  for (const node of inlines) {
+    const code = inlineCodeOf(source, node);
+    if (code !== null) codes.set(node, code);
+  }
+  // A cut through an image or an address would leave its syntax open; those
+  // are taken whole, and so is a code span the cut takes all the code of.
   for (let grown = true; grown; ) {
     grown = false;
     for (const node of inlines) {
-      if (!ATOMIC_TYPES.has(node.type) && !isAutolink(source, node)) continue;
+      const code = codes.get(node);
+      const whole =
+        code === undefined
+          ? ATOMIC_TYPES.has(node.type) ||
+            node.type === "inlineCode" ||
+            isAutolink(source, node)
+          : s <= code.code.start && e >= code.code.end;
+      if (!whole) continue;
       const span = spanOf(node);
       if (span === null || span.start >= e || span.end <= s) continue;
       if (span.start < s) {
@@ -337,8 +396,24 @@ function cutInLeaf(
     else closing.push(source.slice(inner.end, span.end));
   }
   if (s >= e) return null;
+  // A code span the cut starts or ends inside is written anew around what it
+  // takes of the code; mdast-util-to-markdown picks the backticks and the
+  // padding that make it read back as that code.
+  let body = "";
+  let at = s;
+  for (const { span, pieces } of codes.values()) {
+    if (span.end <= s || span.start >= e) continue;
+    if (s <= span.start && e >= span.end) continue;
+    body += source.slice(at, Math.max(at, span.start));
+    body += toMarkdown({
+      type: "inlineCode",
+      value: shownPart(pieces, s, e),
+    }).replace(/\n$/, "");
+    at = Math.min(e, span.end);
+  }
+  body += source.slice(at, e);
   const [first = "", ...rest] =
-    `${opening.join("")}${source.slice(s, e)}${closing.join("")}`.split("\n");
+    `${opening.join("")}${body}${closing.join("")}`.split("\n");
   // A continuation line's indent and `>` are the leaf's container speaking,
   // and the quote is about to get a container of its own.
   const container = new RegExp(`^[ \\t]*(?:>[ \\t]*){0,${leaf.depth}}`);
