@@ -214,6 +214,19 @@ export function conversationEnd(): number {
 }
 
 /**
+ * The bottom of what the reader sees, in `getBoundingClientRect`'s
+ * coordinates: above an on-screen keyboard. Chromium and Firefox measure those
+ * from the layout viewport, where the visual one starts `pageTop - scrollY`
+ * down; Safari on iOS measures them from the visual viewport itself, its
+ * `pageTop` the window's own `scrollY`, and the same sum gives 0 there.
+ */
+function visibleBottom(): number {
+  const vv = window.visualViewport;
+  if (vv == null || Math.abs(vv.scale - 1) > 0.01) return window.innerHeight;
+  return vv.pageTop - window.scrollY + vv.height;
+}
+
+/**
  * Where a landing on the bottom puts the page: the conversation's end on the
  * bottom of what the reader sees.
  *
@@ -233,8 +246,8 @@ function endTarget(): number {
   const max = Math.max(0, root.scrollHeight - root.clientHeight);
   const el = endElement();
   if (el === null) return max;
-  const visible = window.innerHeight - visualViewportInsets().bottom;
-  const target = el.getBoundingClientRect().bottom + window.scrollY - visible;
+  const target =
+    el.getBoundingClientRect().bottom + window.scrollY - visibleBottom();
   return Math.min(max, Math.max(0, target));
 }
 
