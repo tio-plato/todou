@@ -462,6 +462,116 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
     }
   });
 
+  it("deleting a project locks its block edges in id order", async () => {
+    const p = await project();
+    const x = await card(p.slug, "X");
+    const w1 = await card(p.slug, "W1");
+    const w2 = await card(p.slug, "W2");
+    await block(p.slug, w1, x);
+    await block(p.slug, w2, x);
+    const edges = await observer.query<{ id: string }>(
+      `SELECT id FROM issue_blocks
+       WHERE blocker_project_id = $1 AND blocker_number = $2 ORDER BY id`,
+      [p.id, x.number],
+    );
+    const [e1, e2] = edges.rows.map((row) => Number(row.id));
+    if (e1 === undefined || e2 === undefined) throw new Error("no edges");
+    // A new version of e1 lands behind e2, so the cascade from the registry
+    // row meets e2 first.
+    await observer.query(
+      "UPDATE issue_blocks SET cleared_at = cleared_at WHERE id = $1",
+      [e1],
+    );
+    expect(await physicalOrder("issue_blocks", [e1, e2])).toEqual([e2, e1]);
+
+    // The holder locks edges in id order, as every write of several does.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issue_blocks WHERE id = $1 FOR UPDATE",
+        [e1],
+      );
+      pending = send("DELETE", `/projects/${p.slug}`, undefined, seq);
+      await waitForLockWaiters(1);
+      await holder.query(
+        "SELECT id FROM issue_blocks WHERE id = $1 FOR UPDATE",
+        [e2],
+      );
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(204);
+      const left = await observer.query<{ count: string }>(
+        "SELECT count(*) FROM issue_blocks WHERE id = ANY($1)",
+        [[e1, e2]],
+      );
+      expect(left.rows).toEqual([{ count: "0" }]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("deleting a project locks its read positions in id order", async () => {
+    const p = await project();
+    const a = await card(p.slug, "a");
+    const b = await card(p.slug, "b");
+    for (const x of [a, b]) {
+      const read = await send(
+        "PUT",
+        `/projects/${p.slug}/issues/${x.number}/read`,
+        {},
+      );
+      expect(read.status).toBe(204);
+    }
+    const positions = await observer.query<{ id: string; issue_id: string }>(
+      "SELECT id, issue_id FROM issue_reads WHERE issue_id = ANY($1)",
+      [[a.id, b.id]],
+    );
+    const idOf = (x: { id: number }) =>
+      Number(positions.rows.find((row) => Number(row.issue_id) === x.id)?.id);
+    const [ra, rb] = [idOf(a), idOf(b)];
+    expect(ra).toBeLessThan(rb);
+    // A new version of a, behind b: deleting the cards meets b first, and
+    // its cascade takes b's read position before a's.
+    const edited = await send(
+      "PATCH",
+      `/projects/${p.slug}/issues/${a.number}`,
+      {
+        title: "a, edited",
+      },
+    );
+    expect(edited.status).toBe(200);
+    expect(await physicalOrder("issues", [a.id, b.id])).toEqual([b.id, a.id]);
+
+    // The holder is a "mark all read" by the same reader.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issue_reads WHERE id = $1 FOR UPDATE",
+        [ra],
+      );
+      pending = send("DELETE", `/projects/${p.slug}`, undefined, seq);
+      await waitForLockWaiters(1);
+      await holder.query(
+        "SELECT id FROM issue_reads WHERE id = $1 FOR UPDATE",
+        [rb],
+      );
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(204);
+      for (const table of ["issues", "issue_reads"]) {
+        const left = await observer.query<{ count: string }>(
+          `SELECT count(*) FROM ${table} WHERE project_id = $1`,
+          [p.id],
+        );
+        expect(left.rows, table).toEqual([{ count: "0" }]);
+      }
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
   it("deleting a project waits for a label being deleted instead of deadlocking", async () => {
     const p = await project();
     const x = await card(p.slug, "X");
