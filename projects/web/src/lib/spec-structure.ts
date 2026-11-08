@@ -5,6 +5,7 @@ import {
   type SourceBlock,
   type SourceBlockType,
   sourceOffsetOfRendered,
+  type TextOrigin,
 } from "./spec-source-index.ts";
 
 /** The source identity Main needs to find a block in the rendered tree. */
@@ -21,7 +22,7 @@ export type StructuralBlockRef = {
 
 /** One visible part of a source fallback that contains an image. */
 export type StructuralFallbackPart =
-  | { kind: "text"; text: string }
+  | { kind: "text"; text: string; origin?: TextOrigin }
   | { kind: "image"; url: string; alt: string };
 
 /**
@@ -357,13 +358,18 @@ function fallbackParts(
       parts.push({
         kind: "text",
         text: baseline.source.slice(at, image.start),
+        origin: { source: at },
       });
     }
     parts.push({ kind: "image", url: image.url, alt: image.alt });
     at = image.end;
   }
   if (at < block.end) {
-    parts.push({ kind: "text", text: baseline.source.slice(at, block.end) });
+    parts.push({
+      kind: "text",
+      text: baseline.source.slice(at, block.end),
+      origin: { source: at },
+    });
   }
   return parts;
 }

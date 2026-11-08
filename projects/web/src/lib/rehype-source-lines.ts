@@ -36,6 +36,18 @@ const BLOCK_TAGS = new Set([
 export const SOURCE_LINE_ATTR = "data-loc";
 
 /**
+ * The compare baseline's counterparts of `SOURCE_LINE_ATTR`, worn by what a
+ * rendered comparison puts back of the baseline, so that a selection in
+ * removed content can anchor to the baseline. A block restored whole carries
+ * its baseline source lines; a run of removed text carries where its first
+ * character sits, in the baseline's flattened text (`OLD_FLAT_ATTR`) or in
+ * its source (`OLD_SOURCE_ATTR`), as `TextOrigin` says.
+ */
+export const OLD_LINE_ATTR = "data-old-loc";
+export const OLD_FLAT_ATTR = "data-old-at";
+export const OLD_SOURCE_ATTR = "data-old-src";
+
+/**
  * The absolute source offsets `start-end` (half-open) a link or an image
  * was rendered from. A chip shows a title where the source says `#12`, and a
  * document card shows a file the source names by address, so neither reads
@@ -57,6 +69,21 @@ const SPAN_TAGS = new Set(["a", "img"]);
 export const CODE_CONTENT_START_ATTR = "data-loc-content-start";
 
 /**
+ * The line a code block's contents begin on, for a block on source lines
+ * `loc` whose body has `contentLines` lines. Whether there is a marker line
+ * to skip is answered by the line count, not by reading the opening line: a
+ * fence inside a blockquote opens on "> ```ts", whose `>` survives
+ * trimStart().
+ */
+export function codeContentStart(
+  loc: { start: number; end: number },
+  contentLines: number,
+): number {
+  const span = loc.end - loc.start + 1;
+  return loc.start + (span - contentLines >= 1 ? 1 : 0);
+}
+
+/**
  * Marks a code block drawn by the patch viewer. Its rows are numbered by the
  * patched files rather than by the block, so anchoring maps them back through
  * the block's own text instead of through `data-line`.
@@ -74,6 +101,26 @@ export function parseSourceLoc(
 }
 
 /**
+ * Stamp every block element in `node`, itself included, with the source line
+ * range it was rendered from, as `attr`: `SOURCE_LINE_ATTR` for the document
+ * being rendered, `OLD_LINE_ATTR` for a block put back from the baseline.
+ */
+export function stampSourceLines(node: Root | Element, attr: string): void {
+  if (
+    node.type === "element" &&
+    BLOCK_TAGS.has(node.tagName) &&
+    node.position?.start.line !== undefined &&
+    node.position.end.line !== undefined
+  ) {
+    node.properties[attr] =
+      `${node.position.start.line}-${node.position.end.line}`;
+  }
+  for (const child of node.children) {
+    if (child.type === "element") stampSourceLines(child, attr);
+  }
+}
+
+/**
  * Rehype plugin stamping every block element with the markdown source line
  * range it was rendered from. This is the whole bridge between "what the
  * reviewer selected in the rendered document" and "which source lines the
@@ -82,16 +129,8 @@ export function parseSourceLoc(
  */
 export function rehypeSourceLines() {
   return (tree: Root) => {
+    stampSourceLines(tree, SOURCE_LINE_ATTR);
     const visit = (node: Root | Element) => {
-      if (
-        node.type === "element" &&
-        BLOCK_TAGS.has(node.tagName) &&
-        node.position?.start.line !== undefined &&
-        node.position.end.line !== undefined
-      ) {
-        node.properties[SOURCE_LINE_ATTR] =
-          `${node.position.start.line}-${node.position.end.line}`;
-      }
       if (
         node.type === "element" &&
         SPAN_TAGS.has(node.tagName) &&
@@ -101,10 +140,8 @@ export function rehypeSourceLines() {
         node.properties[SOURCE_SPAN_ATTR] =
           `${node.position.start.offset}-${node.position.end.offset}`;
       }
-      if ("children" in node) {
-        for (const child of node.children) {
-          if (child.type === "element") visit(child);
-        }
+      for (const child of node.children) {
+        if (child.type === "element") visit(child);
       }
     };
     visit(tree);

@@ -17,6 +17,7 @@ import {
   type SegmentIndex,
   type SourceBlock,
   type SourceBlockType,
+  type SourceFence,
   type SourceImage,
   type SourceRange,
   sourceOffsetOfText,
@@ -266,9 +267,11 @@ function matchImages(olds: SourceImage[], news: SourceImage[]): ImageMatching {
 }
 
 /**
- * Which code blocks were edited in place, as the old body each new one
+ * Which code blocks were edited in place, as the baseline block each new one
  * replaced — keyed by the new block's opening source line, which is what
- * `MarkdownPre` has on hand in the `data-loc` stamp (T-343).
+ * `MarkdownPre` has on hand in the `data-loc` stamp (T-343). The old body is
+ * what pierre diffs against; the old block's line is where its removed rows
+ * sit in the baseline.
  *
  * The inside of a fence still goes to pierre untouched, exactly as T-31
  * requires: rendering this is handing it two strings, not injecting a mark.
@@ -286,8 +289,8 @@ function matchImages(olds: SourceImage[], news: SourceImage[]): ImageMatching {
 export function pairedFences(
   baseline: SegmentIndex,
   current: SegmentIndex,
-): Map<number, string> {
-  const edited = new Map<number, string>();
+): Map<number, SourceFence> {
+  const edited = new Map<number, SourceFence>();
   const alignment = alignGroups(leavesOf(baseline), leavesOf(current));
   for (const matched of alignment.pairs) {
     if (matched.old.type !== "code" || matched.new.type !== "code") continue;
@@ -295,7 +298,7 @@ export function pairedFences(
     const nu = current.fences.get(matched.new.group);
     if (old === undefined || nu === undefined) continue;
     if (old.value === nu.value) continue;
-    edited.set(nu.line, old.value);
+    edited.set(nu.line, old);
   }
   return edited;
 }
@@ -347,8 +350,11 @@ export function changeDecorations(
     }
   };
 
-  /** Words in one cell, exactly as they are read in one paragraph. */
-  const words = (from: string, to: string, at: number) => {
+  /**
+   * Words in one cell, exactly as they are read in one paragraph. `from`
+   * and `to` sit at `oldAt` and `at` in the two flattened texts.
+   */
+  const words = (from: string, to: string, oldAt: number, at: number) => {
     const result = coalescedWordDiff(from, to);
     for (const range of result.ins) insert(at + range.start, at + range.end);
     for (const gone of result.del) {
@@ -356,11 +362,17 @@ export function changeDecorations(
       if (text.trim() === "") continue;
       const offset = sourceOffsetOfText(current, at + gone.at);
       if (offset === null) continue;
+      const lead = text.length - text.trimStart().length;
       // Always inline: the pair is one leaf block against one leaf block,
       // so whatever went — a word or the block's whole contents — the
       // block that replaced it is standing right there to carry the
       // strike-through (T-158's ruling for a rewritten table cell).
-      deletions.push({ at: offset, text: text.trim(), block: false });
+      deletions.push({
+        at: offset,
+        text: text.trim(),
+        block: false,
+        origin: { flat: oldAt + gone.from + lead },
+      });
     }
   };
 
@@ -403,9 +415,13 @@ export function changeDecorations(
         // the strike-through, so the overlay puts one back in it.
         if (cleared) {
           if (before.text !== "")
-            parts.push({ kind: "text", text: before.text });
+            parts.push({
+              kind: "text",
+              text: before.text,
+              origin: { flat: before.at },
+            });
         } else {
-          words(before.text, after.text, after.at);
+          words(before.text, after.text, before.at, after.at);
         }
         const matched = matchImages(
           imagesOf(baseline, before.block),
@@ -555,7 +571,7 @@ export function changeDecorations(
       });
       continue;
     }
-    words(matched.old.text, matched.new.text, matched.new.at);
+    words(matched.old.text, matched.new.text, matched.old.at, matched.new.at);
   }
 
   // Take the whole blocks the new leaves build, then word-mark only the
@@ -595,7 +611,11 @@ export function changeDecorations(
     order: number;
     newIndex: number;
     text: string;
-    /** Empty unless the removed source holds an image (T-223). */
+    /**
+     * The same content as text runs that know where in the baseline they
+     * came from, and the images between them (T-223); empty when neither
+     * can be told.
+     */
     parts: DeletionPart[];
   }> = [];
   const covered = new Set<number>();
@@ -624,18 +644,11 @@ export function changeDecorations(
   }
   for (const entry of oldOnly) {
     if (covered.has(entry.group.group)) continue;
-    // Only an image leaf can be located back in the source: a prose leaf's
-    // text is the flattened text, which has no range of its own, so a
-    // deletion made of prose never grows parts and renders as it always did.
-    const image = baseline.images.get(entry.group.group);
     removed.push({
       order: entry.group.group,
       newIndex: entry.newIndex,
       text: entry.group.text,
-      parts:
-        image === undefined
-          ? []
-          : partsOf(baseline, { start: image.start, end: image.end }),
+      parts: leafParts(baseline, entry.group),
     });
   }
   removed.sort((a, b) => a.order - b.order);
@@ -666,27 +679,53 @@ export function changeDecorations(
  * the only place removed content appears at all (T-209), and quoting
  * `![](/api/…/screenshot.png)` at a reader is quoting a url, not showing them
  * what went — so the images become images and the source between them stays
- * source. Empty when the range holds no image, which is the signal to render
- * the marker byte for byte the way it always was.
+ * source, each run knowing where in the source it starts.
  */
 function partsOf(index: SegmentIndex, range: SourceRange): DeletionPart[] {
   const inside = [...index.images.values()]
     .filter((image) => image.start >= range.start && image.end <= range.end)
     .sort((a, b) => a.start - b.start);
-  if (inside.length === 0) return [];
   const parts: DeletionPart[] = [];
   let at = range.start;
   for (const image of inside) {
     if (image.start > at) {
-      parts.push({ kind: "text", text: index.source.slice(at, image.start) });
+      parts.push({
+        kind: "text",
+        text: index.source.slice(at, image.start),
+        origin: { source: at },
+      });
     }
     parts.push({ kind: "image", url: image.url, alt: image.alt });
     at = image.end;
   }
   if (at < range.end) {
-    parts.push({ kind: "text", text: index.source.slice(at, range.end) });
+    parts.push({
+      kind: "text",
+      text: index.source.slice(at, range.end),
+      origin: { source: at },
+    });
   }
   return parts;
+}
+
+/**
+ * A removed leaf as `partsOf` cuts it. A prose leaf is a slice of the
+ * flattened text, so it is one run from where that slice starts; a code
+ * block or an image is a slice of the source. A leaf that is neither — a
+ * table whose images were appended to its prose (`leavesOf`) — has no one
+ * place to come from, and no parts.
+ */
+function leafParts(index: SegmentIndex, leaf: AlignGroup): DeletionPart[] {
+  if (leaf.at >= 0) {
+    return [{ kind: "text", text: leaf.text, origin: { flat: leaf.at } }];
+  }
+  const block = index.blocks.find(
+    (b) =>
+      (b.type === "code" || b.type === "image") && b.firstGroup === leaf.group,
+  );
+  return block === undefined
+    ? []
+    : partsOf(index, { start: block.start, end: block.end });
 }
 
 /**
@@ -716,12 +755,12 @@ function groupsOf(
 /**
  * Unmatched old blocks that sit at the same seam, merged into one marker.
  *
- * `parts` is null unless some entry in the cluster holds an image, which is
- * what keeps every image-free marker on the byte-for-byte path it has always
- * had (T-223). Once one entry has images the whole cluster is cut into parts,
- * because the marker renders as one thing: the entries that have none
- * contribute their source as a single text part, joined by the same newline
- * `texts` is joined by.
+ * `parts` is null unless some entry in the cluster has parts — images, or
+ * text that knows where in the baseline it came from — which keeps a marker
+ * with neither on the plain-text path it has always had (T-223). Once one
+ * entry has parts the whole cluster is cut into parts, because the marker
+ * renders as one thing: the entries that have none contribute their text as
+ * a single text part, joined by the same newline `texts` is joined by.
  */
 function clusterDeletions(
   removed: Array<{ newIndex: number; text: string; parts: DeletionPart[] }>,
@@ -730,7 +769,7 @@ function clusterDeletions(
     newIndex: number;
     texts: string[];
     segments: DeletionPart[];
-    withImage: boolean;
+    withParts: boolean;
   }> = [];
   for (const entry of removed) {
     let last = clusters.at(-1);
@@ -739,7 +778,7 @@ function clusterDeletions(
         newIndex: entry.newIndex,
         texts: [],
         segments: [],
-        withImage: false,
+        withParts: false,
       };
       clusters.push(last);
     } else last.segments.push({ kind: "text", text: "\n" });
@@ -749,12 +788,12 @@ function clusterDeletions(
         ? entry.parts
         : [{ kind: "text" as const, text: entry.text }]),
     );
-    last.withImage ||= entry.parts.length > 0;
+    last.withParts ||= entry.parts.length > 0;
   }
-  return clusters.map(({ newIndex, texts, segments, withImage }) => ({
+  return clusters.map(({ newIndex, texts, segments, withParts }) => ({
     newIndex,
     texts,
-    parts: withImage ? segments : null,
+    parts: withParts ? segments : null,
   }));
 }
 
