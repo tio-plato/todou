@@ -142,23 +142,6 @@ function coversText(range: Range, body: Element): boolean {
   return inBody.toString().trim() !== "";
 }
 
-/**
- * `selectionEndpoints`, or null where it throws: some browsers know
- * `getComposedRanges` only by an older signature, and reject this one. No
- * selection is no reason to break the caller — the menu reads this on the
- * press that opens it, and a throw there keeps the menu shut.
- */
-function endpointsOf(
-  selection: Selection,
-  container: Element,
-): SelectionEndpoints | null {
-  try {
-    return selectionEndpoints(selection, container);
-  } catch {
-    return null;
-  }
-}
-
 /** Whether `range` starts before the contents of `body`. */
 function startsBefore(range: Range, body: Element): boolean {
   const inBody = document.createRange();
@@ -211,7 +194,7 @@ export function quotableSelection(
   targets: ReadonlyMap<Element, QuoteTarget>,
 ): QuotableSelection | null {
   if (selection === null) return null;
-  const all = endpointsOf(selection, document.documentElement);
+  const all = selectionEndpoints(selection, document.documentElement);
   if (all === null || all.collapsed) return null;
   const ordered = orderedEndpoints(all);
   if (ordered === null) return null;
@@ -237,7 +220,7 @@ export function quotableSelection(
   if (touched.some((el) => entryOf(el) !== entry)) return null;
   const [head, ...rest] = touched.flatMap((el) => {
     const target = targets.get(el);
-    const ends = endpointsOf(selection, el);
+    const ends = selectionEndpoints(selection, el);
     if (target === undefined || ends === null || ends.collapsed) return [];
     return anchorIn(el, target, ends) ?? [];
   });
@@ -274,7 +257,7 @@ type Pending = { markdown: string; top: number; right: number };
 function selectionRect(selection: Selection, body: Element): DOMRect {
   const range = selection.getRangeAt(0);
   if (range.collapsed) {
-    const ends = endpointsOf(selection, body);
+    const ends = selectionEndpoints(selection, body);
     const near = ends === null ? null : elementNear(ends.end.node);
     if (near != null) return near.getBoundingClientRect();
   }
