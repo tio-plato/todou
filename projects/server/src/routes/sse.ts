@@ -19,6 +19,11 @@ import type { AppEnv } from "../auth/middleware.ts";
 import type { UserRow } from "../auth/pat.ts";
 import type { AppContext } from "../bootstrap.ts";
 import { DomainError } from "../errors.ts";
+import {
+  recheckStreamCredential,
+  type StreamCredential,
+  streamCredentialOf,
+} from "../events/stream-credential.ts";
 import type { WatcherHandle, WatcherScopes } from "../events/watchers.ts";
 import {
   accessibleProjectRows,
@@ -35,6 +40,24 @@ import { inboxRowState } from "../services/inbox.ts";
 import { readPrefs } from "../services/prefs.ts";
 
 const HEARTBEAT_MS = 30_000;
+
+/**
+ * Backlog at which a connection is cut off rather than queued further
+ * (T-625). The bus publishes synchronously and the drain loop awaits every
+ * write, so a client that stops reading leaves the backlog to grow with
+ * every write it is shown — without a bound, until the process runs out of
+ * memory. A reading client's backlog is one request's burst, a few dozen at
+ * most; the reconnect that follows a cut-off refetches what it missed.
+ */
+export const STREAM_QUEUE_MAX = 1024;
+
+/**
+ * How long one frame may take to leave before the connection is cut off
+ * (T-625). A write only waits once the socket's buffers are full, meaning
+ * the peer has megabytes unread or is gone; the heartbeat goes through the
+ * same deadline, which is what finds a peer that vanished without a RST.
+ */
+const WRITE_DEADLINE_MS = 120_000;
 
 /**
  * Backlog above which one connection stops judging its events (T-273). The
@@ -199,7 +222,9 @@ const userEventsRoute = createRoute({
     "absent where the write path gave no answer, and a client must then " +
     "refetch the lists unconditionally. The subscription follows membership " +
     "changes live: being added to a project starts its events mid-stream, " +
-    "being removed silences them.",
+    "being removed silences them. The stream closes once its credential " +
+    "would no longer authenticate a request (revoked, expired, logged out, " +
+    "account disabled), checked on every heartbeat.",
   request: {
     query: z.object({
       inbox: inboxParam,
@@ -219,7 +244,8 @@ const projectEventsRoute = createRoute({
     "SSE change feed for one project — a filtered view of /events. Events " +
     "carry pointers ({entity, id, action, issue_number?, project}) plus " +
     "`list_row` on an issue event (T-279, see /events); clients refetch via " +
-    "REST. The stream closes when the caller loses access to the project.",
+    "REST. The stream closes when the caller loses access to the project " +
+    "or its credential stops authenticating (see /events).",
   request: {
     params: z.object({ slug: ProjectRef }),
     query: z.object({
@@ -234,7 +260,9 @@ const projectEventsRoute = createRoute({
 function streamChanges(
   c: Context<AppEnv>,
   ctx: AppContext,
-  user: UserRow,
+  /** Replaced by every credential re-check, so a demotion takes effect too. */
+  initialUser: UserRow,
+  credential: StreamCredential,
   scope: Scope,
   wantInbox: boolean,
   /** Undefined = this connection asked for no metadata at all. */
@@ -243,6 +271,10 @@ function streamChanges(
   /** What the connection declared it watches; null = not listed (T-540). */
   declared: { what: WatchDeclaration; kind: WatcherKind } | null,
 ) {
+  let user = initialUser;
+  const heartbeatMs = ctx.testHooks?.sse?.heartbeatMs ?? HEARTBEAT_MS;
+  const writeDeadlineMs =
+    ctx.testHooks?.sse?.writeDeadlineMs ?? WRITE_DEADLINE_MS;
   return streamSSE(c, async (stream) => {
     // The visible set decides delivery per event; each row carries the slug
     // stamped into the payload and the route to that project's database.
@@ -263,6 +295,62 @@ function streamChanges(
     // anything never pays for it.
     let crossRefVisible: VisibleProjects | null = null;
 
+    /**
+     * Can this event change which projects the connection follows? Only a
+     * change to the caller's own membership, or a project appearing. An
+     * update to a project cannot — visibility is membership — and only
+     * matters to a connection already following it (T-625).
+     */
+    const reshapesVisible = (event: ChangeEvent): boolean =>
+      (event.entity === "member" && event.id === user.id) ||
+      (event.entity === "project" && event.action === "created");
+
+    // Flipped instead of breaking out directly so the revocation paths deep
+    // in the drain loop share the loop's single exit (and its cleanup).
+    let closed = false;
+
+    /**
+     * Ends the connection from this side even while a write is stuck on a
+     * peer that stopped reading: aborting fails the pending write, and
+     * destroying the socket is the only thing that releases it — the node
+     * adapter otherwise waits for a `drain` that never comes. `outgoing`
+     * is absent under `app.request`, where the abort alone is enough.
+     */
+    const sever = () => {
+      closed = true;
+      stream.abort();
+      (
+        c.env as { outgoing?: { destroy(): void } } | undefined
+      )?.outgoing?.destroy();
+    };
+
+    const write = async (message: { event: string; data: string }) => {
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        stream.writeSSE(message),
+        new Promise<void>((resolve) => {
+          deadline = setTimeout(() => {
+            sever();
+            resolve();
+          }, writeDeadlineMs);
+        }),
+      ]);
+      clearTimeout(deadline);
+    };
+
+    /**
+     * Does this connection want to hear about that namespace? A membership
+     * test on a set held in memory — deliberately not routed through
+     * `judge()`, whose queue length measures events waiting on database
+     * work, which this is not.
+     */
+    const wantsMetadata = (event: ChangeEvent): boolean => {
+      if (wantMetadata === undefined) return false;
+      if (wantMetadata === "*") return true;
+      const namespace = event.metadata?.namespace;
+      return namespace !== undefined && wantMetadata.includes(namespace);
+    };
+
     const queue: Array<{ projectId: number; event: ChangeEvent }> = [];
     // Kept out of `queue` on purpose: INBOX_JUDGE_QUEUE_MAX measures how
     // many events are waiting to be judged, and a `me` event triggers no
@@ -270,7 +358,28 @@ function streamChanges(
     // work that never happens.
     const meQueue: MeEvent[] = [];
     let wake: (() => void) | null = null;
+    /** Whether one more frame fits; cuts the connection off when not. */
+    const admit = (): boolean => {
+      if (queue.length + meQueue.length < STREAM_QUEUE_MAX) return true;
+      queue.length = 0;
+      meQueue.length = 0;
+      sever();
+      return false;
+    };
+    // Events queued or being handled that can move `visible`. While any is,
+    // `visible` may be about to grow, so nothing is filtered against it yet.
+    let reshaping = 0;
     const unsubscribe = ctx.bus.subscribe((projectId, event) => {
+      if (closed) return;
+      const reshapes = reshapesVisible(event);
+      // Filtered here rather than only in the drain loop (T-625): an event
+      // this connection will never send must not take memory while it waits,
+      // or every write on the instance would count against its backlog.
+      if (!reshapes && reshaping === 0 && !visible.has(projectId)) return;
+      if (event.entity === "metadata" && !wantsMetadata(event)) return;
+      if (event.entity === "watchers" && !wantPresence) return;
+      if (!admit()) return;
+      if (reshapes) reshaping++;
       queue.push({ projectId, event });
       wake?.();
     });
@@ -278,10 +387,19 @@ function streamChanges(
     // the inbox signals computed for me", of which this is one.
     const unsubscribeMe = wantInbox
       ? ctx.bus.subscribeMe(user.id, (event) => {
+          if (closed || !admit()) return;
           meQueue.push(event);
           wake?.();
         })
       : null;
+    // Set by a credential signal and by every heartbeat; honoured before the
+    // next frame goes out, so nothing is written past a revocation the
+    // stream has already heard about.
+    let recheckDue = false;
+    const unsubscribeCredentials = ctx.bus.subscribeCredentials(user.id, () => {
+      recheckDue = true;
+      wake?.();
+    });
     // Process shutdown must end the stream from the server side: SSE
     // responses never finish on their own, and every one of them would
     // otherwise hold `server.close()` open until it is severed (T-56).
@@ -326,22 +444,7 @@ function streamChanges(
       }
     };
 
-    /**
-     * Does this connection want to hear about that namespace? A membership
-     * test on a set held in memory — deliberately not routed through
-     * `judge()`, whose queue length measures events waiting on database
-     * work, which this is not.
-     */
-    const wantsMetadata = (event: ChangeEvent): boolean => {
-      if (wantMetadata === undefined) return false;
-      if (wantMetadata === "*") return true;
-      const namespace = event.metadata?.namespace;
-      return namespace !== undefined && wantMetadata.includes(namespace);
-    };
-
     const send = async (project: ProjectRow, event: ChangeEvent) => {
-      if (event.entity === "metadata" && !wantsMetadata(event)) return;
-      if (event.entity === "watchers" && !wantPresence) return;
       const payload: CrossChangeEvent = { ...event, project: project.slug };
       if (wantInbox) {
         const row = await judge(project, event);
@@ -350,7 +453,7 @@ function streamChanges(
         // "the server did not work it out".
         if (row !== undefined) payload.inbox_row = row;
       }
-      return stream.writeSSE({
+      return write({
         event: SSE_CHANGE_EVENT,
         data: JSON.stringify(payload),
       });
@@ -451,109 +554,154 @@ function streamChanges(
       syncWatcher();
     };
 
-    // Flipped instead of breaking out directly so the revocation paths deep
-    // in the drain loop share the loop's single exit (and its cleanup).
-    let closed = false;
+    /**
+     * Would this request still authenticate (T-624)? Closing is the whole
+     * answer to "no": the client's reconnect then meets the 401 the REST
+     * API already gives. A failed lookup closes too — the reconnect rebuilds
+     * everything, and an error is no proof the credential is still good.
+     */
+    const recheck = async () => {
+      if (!recheckDue) return;
+      recheckDue = false;
+      let fresh: UserRow | null;
+      try {
+        fresh = await recheckStreamCredential(
+          ctx.router.system(),
+          credential,
+          user.id,
+        );
+      } catch {
+        fresh = null;
+      }
+      if (fresh === null) {
+        closed = true;
+        return;
+      }
+      const demoted = fresh.isInstanceAdmin !== user.isInstanceAdmin;
+      user = fresh;
+      if (!demoted) return;
+      try {
+        await recompute();
+      } catch {
+        closed = true;
+        return;
+      }
+      // Admin visibility was all that held a pinned project open.
+      if (scope.kind === "project" && !visible.has(scope.row.id)) {
+        closed = true;
+      }
+    };
 
     try {
       if (declared !== null && agentContext !== null) await resolveDeclared();
       // Lets clients (and tests) know the subscription is live.
-      await stream.writeSSE({ event: "hello", data: "{}" });
+      await write({ event: "hello", data: "{}" });
       syncWatcher();
 
       while (!closed && !stream.aborted && !shutdown.aborted) {
         while (meQueue.length > 0 && !stream.aborted && !closed) {
+          await recheck();
+          if (closed) break;
           const event = meQueue.shift() as MeEvent;
-          await stream.writeSSE({
+          await write({
             event: SSE_ME_EVENT,
             data: JSON.stringify(event),
           });
         }
         while (queue.length > 0 && !stream.aborted && !closed) {
+          await recheck();
+          if (closed) break;
           const { projectId, event } = queue.shift() as {
             projectId: number;
             event: ChangeEvent;
           };
-
-          // My own membership changed: the visible set moved under us.
-          if (event.entity === "member" && event.id === user.id) {
-            if (scope.kind === "all") {
-              // Recompute, then deliver unconditionally — a just-granted
-              // project is not in the old set, a just-revoked one is not in
-              // the new; the union covers both. Only an add-then-remove race
-              // leaves the project unknown, and then there is nothing to say.
-              const before = visible.get(projectId);
-              try {
-                await recompute();
-              } catch {
-                closed = true; // fail-closed: reconnect rebuilds the set
+          try {
+            // My own membership changed: the visible set moved under us.
+            if (event.entity === "member" && event.id === user.id) {
+              if (scope.kind === "all") {
+                // Recompute, then deliver unconditionally — a just-granted
+                // project is not in the old set, a just-revoked one is not in
+                // the new; the union covers both. Only an add-then-remove race
+                // leaves the project unknown, and then there is nothing to say.
+                const before = visible.get(projectId);
+                try {
+                  await recompute();
+                } catch {
+                  closed = true; // fail-closed: reconnect rebuilds the set
+                  continue;
+                }
+                const row = visible.get(projectId) ?? before;
+                if (row !== undefined) await send(row, event);
                 continue;
               }
-              const row = visible.get(projectId) ?? before;
-              if (row !== undefined) await send(row, event);
-              continue;
+              if (projectId === scope.row.id && event.action === "deleted") {
+                // Revoked mid-stream: say why, then close (this is the hole
+                // the pre-T-122 route had — the subscription outlived access).
+                await send(scope.row, event);
+                closed = true;
+                continue;
+              }
+              // Role changes never drop below reader; fall through as an
+              // ordinary event.
             }
-            if (projectId === scope.row.id && event.action === "deleted") {
-              // Revoked mid-stream: say why, then close (this is the hole
-              // the pre-T-122 route had — the subscription outlived access).
-              await send(scope.row, event);
-              closed = true;
-              continue;
-            }
-            // Role changes never drop below reader; fall through as an
-            // ordinary event.
-          }
 
-          if (event.entity === "project" && event.action === "updated") {
-            // A rename moves the slug every later payload is stamped with,
-            // and nothing else in this loop would ever notice (T-156).
-            try {
-              await recompute();
-            } catch {
-              closed = true;
-              continue;
-            }
-          }
-
-          if (event.entity === "project" && scope.kind === "all") {
-            if (event.action === "created") {
-              // Covers both ways a project appears without a member event:
-              // the creator's implicit admin row and instance-admin
-              // visibility.
+            if (
+              event.entity === "project" &&
+              event.action === "updated" &&
+              visible.has(projectId)
+            ) {
+              // A rename moves the slug every later payload is stamped with,
+              // and nothing else in this loop would ever notice (T-156).
               try {
                 await recompute();
               } catch {
                 closed = true;
                 continue;
               }
-            } else if (event.action === "deleted") {
-              const row = visible.get(projectId);
-              if (row !== undefined) {
-                await send(row, event);
-                visible.delete(projectId);
-                syncWatcher();
-                // recompute() is deliberately not called on this path — the
-                // send above needs the project as it was — so the
-                // judgement's set has to be dropped by hand, or it would go
-                // on filtering references against a project that is gone.
-                crossRefVisible = null;
+            }
+
+            if (event.entity === "project" && scope.kind === "all") {
+              if (event.action === "created") {
+                // Covers both ways a project appears without a member event:
+                // the creator's implicit admin row and instance-admin
+                // visibility.
+                try {
+                  await recompute();
+                } catch {
+                  closed = true;
+                  continue;
+                }
+              } else if (event.action === "deleted") {
+                const row = visible.get(projectId);
+                if (row !== undefined) {
+                  await send(row, event);
+                  visible.delete(projectId);
+                  syncWatcher();
+                  // recompute() is deliberately not called on this path — the
+                  // send above needs the project as it was — so the
+                  // judgement's set has to be dropped by hand, or it would go
+                  // on filtering references against a project that is gone.
+                  crossRefVisible = null;
+                }
+                continue;
               }
+            }
+            if (
+              event.entity === "project" &&
+              scope.kind === "project" &&
+              projectId === scope.row.id &&
+              event.action === "deleted"
+            ) {
+              await send(scope.row, event);
+              closed = true;
               continue;
             }
-          }
-          if (
-            event.entity === "project" &&
-            scope.kind === "project" &&
-            projectId === scope.row.id &&
-            event.action === "deleted"
-          ) {
-            await send(scope.row, event);
-            closed = true;
-            continue;
-          }
 
-          const row = visible.get(projectId);
-          if (row !== undefined) await send(row, event);
+            const row = visible.get(projectId);
+            if (row !== undefined) await send(row, event);
+          } finally {
+            if (reshapesVisible(event)) reshaping--;
+          }
         }
         if (closed || stream.aborted || shutdown.aborted) break;
         // Heartbeat keeps proxies from idling the connection out. Sent as
@@ -568,13 +716,17 @@ function streamChanges(
           wake = resolve;
           heartbeat = setTimeout(() => {
             pingDue = true;
+            recheckDue = true;
             resolve();
-          }, HEARTBEAT_MS);
+          }, heartbeatMs);
         });
         clearTimeout(heartbeat);
         wake = null;
-        if (pingDue && !stream.aborted && !shutdown.aborted) {
-          await stream.writeSSE({ event: SSE_PING_EVENT, data: "{}" });
+        // Also the only re-check for what publishes no signal: expiry, and
+        // writes made by another process (the admin CLI).
+        await recheck();
+        if (pingDue && !closed && !stream.aborted && !shutdown.aborted) {
+          await write({ event: SSE_PING_EVENT, data: "{}" });
         }
       }
     } finally {
@@ -582,6 +734,7 @@ function streamChanges(
       (watcher as WatcherHandle | null)?.release();
       unsubscribe();
       unsubscribeMe?.();
+      unsubscribeCredentials();
       shutdown.removeEventListener("abort", onShutdown);
     }
   });
@@ -605,6 +758,7 @@ export function sseRoutes() {
       c,
       c.get("appCtx"),
       c.get("user"),
+      streamCredentialOf(c),
       { kind: "all" },
       query.inbox === "1",
       query.metadata,
@@ -626,6 +780,7 @@ export function sseRoutes() {
       c,
       ctx,
       user,
+      streamCredentialOf(c),
       { kind: "project", row: project },
       c.req.valid("query").inbox === "1",
       c.req.valid("query").metadata,

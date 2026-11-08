@@ -173,7 +173,7 @@ const restoreIssueRoute = createRoute({
 const moveIssueRoute = createRoute({
   method: "post",
   path: "/{slug}/issues/{number}/move",
-  summary: "Move an issue to another project (author or project admin)",
+  summary: "Move an issue to another project (admin of both projects)",
   description:
     "The card takes a new number in the destination and the old address " +
     "becomes a permanent tombstone that redirects: every link to it — " +
@@ -190,6 +190,9 @@ const timelineRoute = createRoute({
   method: "get",
   path: "/{slug}/issues/{number}/timeline",
   summary: "Merged comments × events stream with bidirectional cursors",
+  description:
+    "Each item's `cursor` (T-667) is that entry's own position: " +
+    "`after=<cursor>` resumes right after it.",
   request: { params: issueParams, query: TimelineQuery },
   responses: {
     200: { description: "Page", ...jsonBody(TimelinePage) },
@@ -218,6 +221,9 @@ const activityRoute = createRoute({
   path: "/{slug}/activity",
   summary:
     "Project-wide activity stream (forward cursor poll across all issues)",
+  description:
+    "Each item's `cursor` (T-667) is that entry's own position: " +
+    "`after=<cursor>` resumes right after it.",
   request: { params: slugParam, query: ActivityQuery },
   responses: { 200: { description: "Page", ...jsonBody(ActivityPage) } },
 });

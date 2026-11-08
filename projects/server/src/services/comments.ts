@@ -850,6 +850,9 @@ export async function hideCommentsInTx(
   },
 ): Promise<HideInTxResult> {
   const { input, issueNumber } = args;
+  // Settling counts one decline per entry it is handed, so a repeated id
+  // would take other comments' open questions off the card with it (T-651).
+  const ids = [...new Set(input.comment_ids)];
   const rows = await tx
     .select({
       id: comments.id,
@@ -860,19 +863,14 @@ export async function hideCommentsInTx(
       resolvedAt: comments.resolvedAt,
     })
     .from(comments)
-    .where(
-      and(
-        eq(comments.issueId, args.issueId),
-        inArray(comments.id, input.comment_ids),
-      ),
-    )
+    .where(and(eq(comments.issueId, args.issueId), inArray(comments.id, ids)))
     // In id order whatever the plan scans: the lock order on `lockIssueRows`.
     .orderBy(asc(comments.id))
     .for("update");
   const byId = new Map(rows.map((r) => [r.id, r]));
 
   const written: number[] = [];
-  for (const id of input.comment_ids) {
+  for (const id of ids) {
     const row = byId.get(id);
     // One foreign id fails the whole call: a client whose selection drifted
     // onto another card must not get half of it applied.
@@ -881,8 +879,8 @@ export async function hideCommentsInTx(
   }
   const moved = new Set(written);
   const result: HideInTxResult = {
-    hidden: input.comment_ids,
-    unchanged: input.comment_ids.filter((id) => !moved.has(id)),
+    hidden: ids,
+    unchanged: ids.filter((id) => !moved.has(id)),
     written,
     settled: null,
     events: [],
