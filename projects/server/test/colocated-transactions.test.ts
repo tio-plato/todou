@@ -8,7 +8,7 @@ import {
   it,
   vi,
 } from "vitest";
-import { refFormats, statuses } from "../src/db/project-schema.ts";
+import { issues, refFormats, statuses } from "../src/db/project-schema.ts";
 import { projects, refPrefixes, slugHistory } from "../src/db/system-schema.ts";
 import { routeInfoOf } from "../src/services/access.ts";
 import { syncRefPrefixMirror } from "../src/services/reference-directory.ts";
@@ -133,6 +133,36 @@ describe("colocated writes commit or roll back together (shared placement)", () 
     // at the registry row, so the compensating delete used to leave the
     // canonical statuses behind as orphans.
     expect((await statusCount()) - before).toBe(0);
+  });
+
+  it("keeps a deleted project's data whole when its cleanup fails midway", async () => {
+    expect((await create("ct-d")).status).toBe(201);
+    const card = await t.app.request("/api/projects/ct-d/issues", {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ title: "kept" }),
+    });
+    expect(card.status).toBe(201);
+    const project = await projectRow("ct-d");
+    if (!project) throw new Error("expected ct-d");
+    // After the cards are deleted, before the labels are.
+    armed = /delete from "labels"/;
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await t.app.request("/api/projects/ct-d", {
+      method: "DELETE",
+      headers: headers(),
+    });
+    // The registry row is gone, and the failed cleanup only logs.
+    expect(res.status).toBe(204);
+    expect(armed).toBeNull();
+    expect(await projectRow("ct-d")).toBeUndefined();
+    expect(
+      await t.ctx.router
+        .system()
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.projectId, project.id)),
+    ).toHaveLength(1);
   });
 
   it("refuses to seed the project tier when the route says it moved", async () => {
