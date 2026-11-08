@@ -172,14 +172,19 @@ export function baselineAncestor(
  * Return a fresh, insertion-safe clone of a baseline semantic node.
  * Positions and current-document source markers are removed recursively;
  * the cached baseline and its index remain untouched and reusable.
+ *
+ * `prepare` sees the clone while it still has its baseline positions, for
+ * whatever has to be read off them before they go.
  */
 export function extractBaselineNode(
   baseline: BaselineTree,
   block: BaselineBlockRef,
+  prepare?: (clone: Element) => void,
 ): Element | null {
   const original = baseline.nodes.get(baselineNodeKey(block));
   if (original === undefined) return null;
   const clone = structuredClone(original);
+  prepare?.(clone);
   stripSourceMetadata(clone);
   return clone;
 }
