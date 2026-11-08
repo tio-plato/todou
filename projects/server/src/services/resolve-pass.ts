@@ -849,11 +849,12 @@ class Resolver {
  *    upgraded.
  * 3. Cards before `project_meta`: creating a card locks the cards it
  *    touches, then takes a number; a same-database move locks its card, then
- *    the target's `project_meta`. No cycle depends on this order today; it
- *    is kept because keeping it costs nothing.
+ *    the target's `project_meta`; cleaning up a deleted project locks its
+ *    cards, then its `project_meta`, so a card still being created there
+ *    either finishes first or waits for the cleanup.
  * 4. Rows outside one card that a statement or a transaction locks several
- *    of (block edges, read positions) are locked first, `ORDER BY id FOR
- *    UPDATE`, and only then written. A background sweep that deletes rows
+ *    of (block edges, read positions, a deleted project's labels) are locked
+ *    first, `ORDER BY id FOR UPDATE`, and only then written. A background sweep that deletes rows
  *    writers lock (the draft reaper) skips the locked ones instead of
  *    waiting.
  * 5. A row a transaction will update is locked in that update's mode before
@@ -880,9 +881,9 @@ class Resolver {
  * the row again as it is now, so a card only referenced drops out of the
  * rows returned, though it stays locked until the transaction ends, and one
  * also written or updated comes back but its `referenceable`, read from the
- * locked row, keeps it out of the cards returned. Referencing a card therefore waits for the writes to it, and
- * several writes referencing one card queue on it. With no card at all
- * nothing is locked.
+ * locked row, keeps it out of the cards returned. Referencing a card
+ * therefore waits for the writes to it, and several writes referencing one
+ * card queue on it. With no card at all nothing is locked.
  *
  * The lock on a referenced card is also what makes a single-transaction
  * move wait: it takes FOR UPDATE on the same row, and without it an event

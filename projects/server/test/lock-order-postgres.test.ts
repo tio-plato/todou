@@ -585,6 +585,44 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
     }
   });
 
+  it("deleting a project waits for a card being created instead of deadlocking", async () => {
+    const p = await project();
+    const created = await send("POST", `/projects/${p.slug}/labels`, {
+      name: "L",
+    });
+    expect(created.status).toBe(201);
+    const label = (await json(created)).id as number;
+
+    // The holder creates a card with a label: it takes a number, then the
+    // foreign key of the card's label row takes KEY SHARE on the label.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        `UPDATE project_meta SET next_issue_number = next_issue_number + 1
+         WHERE project_id = $1`,
+        [p.id],
+      );
+      pending = send("DELETE", `/projects/${p.slug}`);
+      await waitForLockWaiters(1);
+      await holder.query("SELECT id FROM labels WHERE id = $1 FOR KEY SHARE", [
+        label,
+      ]);
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(204);
+      for (const table of ["labels", "project_meta"]) {
+        const left = await observer.query<{ count: string }>(
+          `SELECT count(*) FROM ${table} WHERE project_id = $1`,
+          [p.id],
+        );
+        expect(left.rows, table).toEqual([{ count: "0" }]);
+      }
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
   it("deleting a project waits for a label being deleted instead of deadlocking", async () => {
     const p = await project();
     const x = await card(p.slug, "X");
