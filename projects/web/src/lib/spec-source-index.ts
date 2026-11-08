@@ -600,6 +600,23 @@ export function lineStartsOf(source: string): number[] {
 }
 
 /**
+ * The text of 1-based line `line` of `source`, `lineStarts` its
+ * `lineStartsOf`: without its line ending, the `\r` of a `\r\n` included, so
+ * that a CRLF file's line reads as what a code row shows of it.
+ */
+export function lineTextOf(
+  source: string,
+  lineStarts: number[],
+  line: number,
+): string {
+  const start = lineStarts[line - 1];
+  if (start === undefined) return "";
+  const next = lineStarts[line];
+  const text = source.slice(start, next === undefined ? undefined : next - 1);
+  return text.endsWith("\r") ? text.slice(0, -1) : text;
+}
+
+/**
  * Index a markdown source for the decoration engine (T-142): what prose it
  * contains, and where each run of it lives in the source. Both directions
  * are needed — source offsets in, to place a word-diff range on the page;

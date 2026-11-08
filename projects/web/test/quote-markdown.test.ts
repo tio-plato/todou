@@ -231,7 +231,7 @@ describe("quoteOfSelection", () => {
   });
 
   describe("inside a code block", () => {
-    const quoted = "```ts\nconst b = 2;\nconst c = 3;\n```";
+    const quoted = "```ts\nb = 2;\nconst c\n```";
 
     it.each([
       ["a fence", "```ts\nconst a = 1;\nconst b = 2;\nconst c = 3;\n```"],
@@ -245,7 +245,7 @@ describe("quoteOfSelection", () => {
       ],
       ["a fence left open", "```ts\nconst a = 1;\nconst b = 2;\nconst c = 3;"],
     ])(
-      "quotes the selected lines of %s as a fence of their own",
+      "quotes the selected part of %s as a fence of its own",
       (_shape, source) => {
         expect(quoteOfSelection(source, span(source, "b = 2", "const c"))).toBe(
           quoted,
@@ -257,22 +257,60 @@ describe("quoteOfSelection", () => {
       const source =
         "Intro.\n\n    const a = 1;\n    const b = 2;\n    const c = 3;";
       expect(quoteOfSelection(source, span(source, "b = 2", "const c"))).toBe(
-        "```\nconst b = 2;\nconst c = 3;\n```",
+        "```\nb = 2;\nconst c\n```",
       );
     });
 
     it("fences an indented block holding a fence with a longer one", () => {
       const source = "Intro.\n\n    ```\n    const b = 2;\n";
       expect(quoteOfSelection(source, span(source, "```", "const b"))).toBe(
-        "````\n```\nconst b = 2;\n````",
+        "````\n```\nconst b\n````",
       );
     });
 
     it("fences an indented block holding an indented fence with a longer one", () => {
       const source = "Intro.\n\n      ```\n    x";
       expect(quoteOfSelection(source, span(source, "```", "x"))).toBe(
-        "````\n  ```\nx\n````",
+        "````\n```\nx\n````",
       );
+    });
+
+    it.each([
+      ["```ts\nconst alpha = 1;\n```", "alpha", "alpha", "`alpha`"],
+      ["> ```ts\n> const alpha = 1;\n> ```", "alpha", "alpha", "`alpha`"],
+      ["```sh\necho `date` now\n```", "`date`", "`date`", "`` `date` ``"],
+      ["```ts\r\nconst alpha = 1;\r\n```\r\n", "alpha", "alpha", "`alpha`"],
+    ])(
+      "quotes a few characters of one code line in %j as inline code",
+      (source, first, last, quote) => {
+        expect(quoteOfSelection(source, span(source, first, last))).toBe(quote);
+      },
+    );
+
+    it("leaves out a first line the selection starts at the end of", () => {
+      const source = "```ts\nconst a = 1;\nconst b = 2;\n```";
+      // Column 13 of line 2 is its line ending.
+      expect(
+        quoteOfSelection(source, {
+          lineStart: 2,
+          colStart: 13,
+          lineEnd: 3,
+          colEnd: 7,
+        }),
+      ).toBe("`const b`");
+    });
+
+    it("grows the fence a line cut down to a marker's run would close", () => {
+      const source = "```\nUse ```\nx\n```";
+      // From the backticks that end line 2.
+      expect(
+        quoteOfSelection(source, {
+          lineStart: 2,
+          colStart: 5,
+          lineEnd: 3,
+          colEnd: 1,
+        }),
+      ).toBe("````\n```\nx\n````");
     });
 
     it("quotes an empty fence as an empty fence", () => {
