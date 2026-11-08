@@ -1,4 +1,5 @@
 import type { Element, ElementContent, Root, RootContent, Text } from "hast";
+import type { Raw } from "./rehype-details.ts";
 import {
   OLD_FLAT_ATTR,
   OLD_LINE_ATTR,
@@ -1263,8 +1264,41 @@ function decorateText(
     }
     toValue = (offset, edge) => valueOffsetIn(pieces, offset, edge);
   }
+  return paintRuns(
+    node.value,
+    { from, to, hits, cuts, placed, toValue },
+    (value): Text => ({ type: "text", value }),
+  );
+}
 
-  const points = new Set<number>([0, length]);
+/**
+ * `value`, the text a node with the source span `[from, to)` shows, cut at
+ * the edges of the spans in `hits` and at the removed runs in `cuts`: each
+ * run of it, made into a node by `run`, wrapped in the marks covering it,
+ * and each removed run put back in place. `toValue` maps a source offset to
+ * one in `value`. Null when every hit fell on characters `value` does not
+ * show, such as a quote's prefix, and there is nothing to put back.
+ */
+function paintRuns(
+  value: string,
+  {
+    from,
+    to,
+    hits,
+    cuts,
+    placed,
+    toValue,
+  }: {
+    from: number;
+    to: number;
+    hits: SpanDecoration[];
+    cuts: DeletionDecoration[];
+    placed: Set<DeletionDecoration>;
+    toValue: (offset: number, edge: "start" | "end") => number;
+  },
+  run: (value: string) => ElementContent,
+): ElementContent[] | null {
+  const points = new Set<number>([0, value.length]);
   const spanAt = new Map<SpanDecoration, [number, number]>();
   for (const span of hits) {
     const start = toValue(Math.max(from, span.start), "start");
@@ -1281,7 +1315,6 @@ function decorateText(
     cutAt.set(cut, at);
     points.add(at);
   }
-  // Every hit fell on characters no piece holds, such as a quote's prefix.
   if (spanAt.size === 0 && cuts.length === 0) return null;
   const ordered = [...points].sort((a, b) => a - b);
 
@@ -1301,7 +1334,7 @@ function decorateText(
       return range !== undefined && range[0] <= at && range[1] >= next;
     });
     const kinds = kindsOf(covering);
-    const piece: Text = { type: "text", value: node.value.slice(at, next) };
+    const piece = run(value.slice(at, next));
     if (kinds.length === 0) out.push(piece);
     else
       out.push(
@@ -1309,6 +1342,42 @@ function decorateText(
       );
   }
   return out;
+}
+
+/**
+ * Paint the marks reaching into raw HTML, which the page shows as its own
+ * source text: react-markdown turns every `raw` node into text after the
+ * last rehype pass. Cut at the marks' edges, each run is still a `raw` node,
+ * so it still reaches the page as text and never as markup, and the marks
+ * around it are built like any other. Only a node whose position reads as
+ * its value is cut: `rehypeDetails` places the pieces it cuts out of a raw
+ * node inside a container short by the container's prefix, and those keep
+ * no mark. A removed run is never put back inside one; the text beside it
+ * takes it, as it always did.
+ */
+function decorateRaw(
+  node: Raw,
+  spans: SpanDecoration[],
+  source: string | null,
+): ElementContent[] | null {
+  const from = node.position?.start.offset;
+  const to = node.position?.end.offset;
+  if (from === undefined || to === undefined) return null;
+  if (source?.slice(from, to) !== node.value) return null;
+  const hits = hitsOf(spans, from, to);
+  if (hits.length === 0) return null;
+  return paintRuns(
+    node.value,
+    {
+      from,
+      to,
+      hits,
+      cuts: [],
+      placed: new Set(),
+      toValue: (offset) => Math.max(0, Math.min(to - from, offset - from)),
+    },
+    (value): Raw => ({ type: "raw", value }),
+  );
 }
 
 /**
@@ -1573,6 +1642,15 @@ function decorateTree(
       }
       decorateTree(child, paint, added);
       next.push(child);
+      continue;
+    }
+    if (child.type === "raw") {
+      const pieces = decorateRaw(child, paint.spans, paint.source);
+      if (pieces === null) next.push(child);
+      else {
+        next.push(...pieces);
+        changed = true;
+      }
       continue;
     }
     if (child.type !== "text") {

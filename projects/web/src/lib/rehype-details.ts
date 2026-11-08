@@ -8,7 +8,7 @@ import {
 type Point = NonNullable<Element["position"]>["start"];
 
 /** Raw HTML as `mdast-util-to-hast` leaves it, before react-markdown escapes it. */
-type Raw = Extract<RootContent, { type: "raw" }>;
+export type Raw = Extract<RootContent, { type: "raw" }>;
 
 /**
  * HTML whitespace, spelled out instead of `\s`: that class also matches NBSP
