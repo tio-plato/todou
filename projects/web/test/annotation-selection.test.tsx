@@ -627,6 +627,34 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
     });
   });
 
+  // The page shows raw HTML as its source text, tags and all.
+  it.each([
+    [
+      "a word after inline HTML",
+      "a <kbd>Ctrl</kbd> b c\n",
+      "b [c]",
+      { lineStart: 1, lineEnd: 1, colStart: 21, colEnd: 21 },
+    ],
+    [
+      "the text between two inline tags",
+      "a <kbd>Ctrl</kbd> b c\n",
+      "[Ctrl]",
+      { lineStart: 1, lineEnd: 1, colStart: 8, colEnd: 11 },
+    ],
+    [
+      "a table cell next to one holding a <br>",
+      "| a<br>b | cc |\n| - | - |\n| x | y |\n",
+      "[cc]",
+      { lineStart: 1, lineEnd: 1, colStart: 12, colEnd: 13 },
+    ],
+  ])("anchors %s to its own columns", async (_name, body, pick, anchor) => {
+    const { onStage, button } = await stageSelection(body, (container) =>
+      bracketedIn(container, pick),
+    );
+    fireEvent.click(button);
+    expect(onStage).toHaveBeenCalledWith(anchor);
+  });
+
   it("anchors a list item's own text after a code block in it", async () => {
     const { onStage, button } = await stageSelection(
       "- item text\n  ```\n  code\n  ```\n  more\n",
