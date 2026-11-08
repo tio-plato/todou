@@ -550,18 +550,28 @@ describe("quotableSelection", () => {
     );
   });
 
-  it("gives up quietly where getComposedRanges rejects the call", async () => {
+  it("quotes the selection where getComposedRanges refuses every call", async () => {
     const { a } = await renderTwo(comment(1, A), comment(2, B));
     const text = paragraph(a, 0);
     const selection = select(text, 10, text, 13);
-    const legacy = Object.assign(Object.create(selection), {
-      toString: () => selection.toString(),
-      getComposedRanges: () => {
+    Object.defineProperty(selection, "getComposedRanges", {
+      configurable: true,
+      value: () => {
         throw new TypeError("Failed to execute 'getComposedRanges'");
       },
-    }) as Selection;
-    expect(() => quotableSelection(legacy, document)).not.toThrow();
-    expect(quotableSelection(legacy, document)).toBeNull();
+    });
+    try {
+      const part = onlyPart(quotableSelection(selection, document), a);
+      expect(part?.el).toBe(a);
+      expect(part?.anchor).toEqual({
+        lineStart: 1,
+        lineEnd: 1,
+        colStart: 11,
+        colEnd: 13,
+      });
+    } finally {
+      delete (selection as { getComposedRanges?: unknown }).getComposedRanges;
+    }
   });
 });
 
