@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { reapDraftAttachments } from "../src/services/storage-admin.ts";
 import { addUserWithToken, makeTestApp, type TestApp } from "./helpers.ts";
 
 // biome-ignore lint/suspicious/noExplicitAny: test-side response poking
@@ -23,6 +24,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
   let owned: string | undefined;
   let t: TestApp;
   let seq: TestApp;
+  let indexed: TestApp;
   let holder: pg.Client;
   let observer: pg.Client;
   let holderPid: number;
@@ -64,6 +66,16 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       "-c enable_indexscan=off -c enable_bitmapscan=off",
     );
     seq = await makeTestApp("shared", { systemUrl: scanning.toString() });
+    const ordered = new URL(url);
+    ordered.searchParams.set(
+      "options",
+      "-c enable_seqscan=off -c enable_bitmapscan=off",
+    );
+    indexed = await makeTestApp("shared", { systemUrl: ordered.toString() });
+    const unscanned = (await indexed.ctx.router
+      .system()
+      .execute(sql`SHOW enable_seqscan`)) as { rows: unknown[] };
+    expect(unscanned.rows).toEqual([{ enable_seqscan: "off" }]);
     // The setting reaches the app's own connections: SHOW answers "off".
     const shown = (await seq.ctx.router
       .system()
@@ -89,6 +101,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       observer?.end(),
       t?.cleanup(),
       seq?.cleanup(),
+      indexed?.cleanup(),
     ]);
     try {
       if (owned) await admin?.query(`DROP DATABASE "${owned}"`);
@@ -138,30 +151,40 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       )
     ).rows.map((row) => Number(row.id));
 
+  const uploadDraft = async (slug: string, card: { number: number }) => {
+    const form = new FormData();
+    form.set("file", new File(["draft"], "draft.txt"));
+    form.set("issue_number", String(card.number));
+    form.set("draft", "true");
+    const res = await t.app.request(`/api/projects/${slug}/attachments`, {
+      method: "POST",
+      headers: author.headers,
+      body: form,
+    });
+    expect(res.status).toBe(201);
+    return (await json(res)).id as number;
+  };
+
   /** Requests queued behind the holder, directly or behind one another. */
+  const lockWaiters = async () => {
+    const result = await observer.query<{ count: string }>(
+      `WITH RECURSIVE blocked(pid) AS (
+         SELECT $1::integer
+         UNION
+         SELECT activity.pid
+         FROM pg_stat_activity activity
+         JOIN blocked ON blocked.pid = ANY(pg_blocking_pids(activity.pid))
+       )
+       SELECT count(*) FROM pg_stat_activity
+       WHERE pid IN (SELECT pid FROM blocked WHERE pid <> $1)
+         AND datname = current_database()
+         AND wait_event_type = 'Lock'`,
+      [holderPid],
+    );
+    return Number(result.rows[0]?.count);
+  };
   const waitForLockWaiters = (count: number) =>
-    expect
-      .poll(
-        async () => {
-          const result = await observer.query<{ count: string }>(
-            `WITH RECURSIVE blocked(pid) AS (
-               SELECT $1::integer
-               UNION
-               SELECT activity.pid
-               FROM pg_stat_activity activity
-               JOIN blocked ON blocked.pid = ANY(pg_blocking_pids(activity.pid))
-             )
-             SELECT count(*) FROM pg_stat_activity
-             WHERE pid IN (SELECT pid FROM blocked WHERE pid <> $1)
-               AND datname = current_database()
-               AND wait_event_type = 'Lock'`,
-            [holderPid],
-          );
-          return Number(result.rows[0]?.count);
-        },
-        { timeout: 5000, interval: 10 },
-      )
-      .toBe(count);
+    expect.poll(lockWaiters, { timeout: 5000, interval: 10 }).toBe(count);
 
   it("two renames of one project queue instead of deadlocking", async () => {
     const p = await project();
@@ -331,6 +354,73 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
     } finally {
       await holder.query("ROLLBACK");
       await Promise.allSettled([pending]);
+    }
+  });
+
+  it("the draft reaper skips drafts a write holds", async () => {
+    const p = await project();
+    const x = await card(p.slug, "X");
+    const d1 = await uploadDraft(p.slug, x);
+    const d2 = await uploadDraft(p.slug, x);
+    expect(d1).toBeLessThan(d2);
+    // Both past a 24-hour threshold, d2 the older: the reaper's index on
+    // created_at meets d2 first. Not a zero threshold, which would reach
+    // drafts other suites have on the server.
+    await observer.query(
+      "UPDATE attachments SET created_at = now() - interval '25 hours' WHERE id = $1",
+      [d1],
+    );
+    await observer.query(
+      "UPDATE attachments SET created_at = now() - interval '26 hours' WHERE id = $1",
+      [d2],
+    );
+
+    // The holder attaches both drafts the way a write does: the card, then
+    // the drafts in id order.
+    const lines: string[] = [];
+    await holder.query("BEGIN");
+    let reaping: ReturnType<typeof reapDraftAttachments> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issues WHERE id = $1 FOR NO KEY UPDATE",
+        [x.id],
+      );
+      await holder.query("UPDATE attachments SET draft = false WHERE id = $1", [
+        d1,
+      ]);
+      let settled = false;
+      // The storage the drafts were uploaded to, with the router whose
+      // connections scan by index.
+      reaping = reapDraftAttachments(indexed.ctx.router, t.ctx.storage, {
+        dryRun: false,
+        minAgeHours: 24,
+        log: (line) => lines.push(line),
+      }).finally(() => {
+        settled = true;
+      });
+      await expect
+        .poll(async () => settled || (await lockWaiters()) > 0, {
+          timeout: 5000,
+          interval: 10,
+        })
+        .toBe(true);
+      await holder.query("UPDATE attachments SET draft = false WHERE id = $1", [
+        d2,
+      ]);
+      await holder.query("COMMIT");
+      const report = await reaping;
+      expect(report.failedProjects).toBe(0);
+      expect(lines.filter((line) => line.startsWith("FAIL"))).toEqual([]);
+      const left = await observer.query<{ id: string; draft: boolean }>(
+        "SELECT id, draft FROM attachments WHERE id = ANY($1) ORDER BY id",
+        [[d1, d2]],
+      );
+      // d1 was attached; d2 was either reaped or attached.
+      expect(left.rows[0]).toEqual({ id: String(d1), draft: false });
+      expect(left.rows.slice(1).map((row) => row.draft)).not.toContain(true);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([reaping]);
     }
   });
 });
