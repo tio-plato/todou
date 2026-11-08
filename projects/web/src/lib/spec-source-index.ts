@@ -1,5 +1,6 @@
 import type { Nodes } from "mdast";
 import { decodeString } from "micromark-util-decode-string";
+import { trimLines } from "trim-lines";
 import { parseMarkdown } from "./markdown-processor.ts";
 import type { LineRange } from "./spec-changes.ts";
 
@@ -223,6 +224,11 @@ const ESCAPE_OR_REFERENCE =
 /** What a continuation line may open with that is not its text. */
 const CONTINUATION_PREFIX = /[> \t]/;
 
+/** A line ending, or part of one, as `trimLines` finds them. */
+function isLineEnding(char: string | undefined): boolean {
+  return char === "\n" || char === "\r";
+}
+
 /**
  * Line up a text node's value with its source span, `[start, end)`. A node
  * whose source is longer than its value cannot be entered by addition, and a
@@ -235,7 +241,10 @@ const CONTINUATION_PREFIX = /[> \t]/;
  *   to — so a quote cut from the source keeps the backslash;
  * - what a continuation line opens with — a quote's `> `, an item's indent,
  *   a paragraph's leading blanks — is in no piece at all;
- * - so are the blanks a soft line break drops from the end of a line.
+ * - so are the blanks a soft line break drops from the end of a line;
+ * - and so are the blanks the renderer drops on either side of a line break
+ *   (`trimLines`), when the value is what the page shows: those a reference
+ *   decodes to, and those written beside the line break `&#10;` stands for.
  *
  * Every other character is copied from the source to the value, and runs of
  * them are exact pieces; a newline ends the one it is in. Null when the two
@@ -340,16 +349,19 @@ function textLinePieces(
   while (j < value.length) {
     if (i >= end) return null;
     const char = source[i] ?? "";
+    // The escape or reference starting here, and what it decodes to.
+    let token = "";
+    let decoded = "";
     if (char === "\\" || char === "&") {
       ESCAPE_OR_REFERENCE.lastIndex = i;
-      const token = ESCAPE_OR_REFERENCE.exec(source)?.[0] ?? "";
-      const decoded = decodeString(token);
+      token = ESCAPE_OR_REFERENCE.exec(source)?.[0] ?? "";
+      decoded = decodeString(token);
       // `&foo;` names no character and reads as itself, like plain text.
-      if (
-        decoded !== token &&
-        i + token.length <= end &&
-        value.startsWith(decoded, j)
-      ) {
+      if (decoded === token || i + token.length > end) {
+        token = "";
+        decoded = "";
+      }
+      if (token !== "" && value.startsWith(decoded, j)) {
         closeRun();
         pieces.push({
           text: decoded,
@@ -386,6 +398,18 @@ function textLinePieces(
       closeRun();
       i = blank;
       continue;
+    }
+    // `mdast-util-to-hast` drops the blanks on either side of every line
+    // break in a value (`trimLines`), and so does `buildSegmentIndex`: what
+    // the source holds there — blanks, or a reference to them — shows nowhere.
+    if (isLineEnding(value[j]) || isLineEnding(value[j - 1])) {
+      const skip =
+        blank > i ? blank - i : /^[ \t]+$/.test(decoded) ? token.length : 0;
+      if (skip > 0) {
+        closeRun();
+        i += skip;
+        continue;
+      }
     }
     return null;
   }
@@ -594,6 +618,8 @@ export function buildSegmentIndex(source: string): SegmentIndex {
   const childCounts = new Map<number | null, number>();
   const lineStarts = lineStartsOf(source);
   const literals: SourceSegment[] = [];
+  // Inside a node whose text reaches the page through `hChildren`.
+  let verbatim = false;
 
   const pushBlock = (node: Nodes, type: SourceBlockType): number | null => {
     const start = node.position?.start.offset;
@@ -713,16 +739,24 @@ export function buildSegmentIndex(source: string): SegmentIndex {
       // A text node whose source is longer than its value goes in as the
       // runs `textPieces` finds, so that only an escape or a reference stays
       // indivisible rather than the whole node; inline code as the runs
-      // `codeSpanPieces` finds. Code goes in as the page shows it either
-      // way, so that a span it could not line up still leaves the rest of
-      // its paragraph aligned.
+      // `codeSpanPieces` finds. Both go in as the page shows them, so that a
+      // node that could not be lined up still leaves the rest of its
+      // paragraph aligned: code with its line endings as spaces, and text
+      // with the blanks around its line breaks dropped, as
+      // `mdast-util-to-hast` drops them. Text a node hands to the page
+      // through `hChildren` skips that step — a frontmatter cell's
+      // (`remarkFrontmatterTable`) — and goes in as it is.
       const value =
-        node.type === "inlineCode" ? shownCode(node.value) : node.value;
+        node.type === "inlineCode"
+          ? shownCode(node.value)
+          : verbatim
+            ? node.value
+            : trimLines(node.value);
       const pieces =
         node.type === "inlineCode"
           ? codeSpanPieces(source, start, end, node.value)
-          : end - start !== node.value.length
-            ? textPieces(source, start, end, node.value)
+          : end - start !== value.length
+            ? textPieces(source, start, end, value)
             : null;
       if (pieces !== null) {
         for (const piece of pieces) {
@@ -755,6 +789,8 @@ export function buildSegmentIndex(source: string): SegmentIndex {
     if (!("children" in node)) return;
     const outerGroup = group;
     const outerParent = parent;
+    const outerVerbatim = verbatim;
+    if ((node.data?.hChildren?.length ?? 0) > 0) verbatim = true;
     const type =
       FRONTMATTER_BLOCKS[node.type] ?? (node.type as SourceBlockType);
     const index = SOURCE_BLOCKS.has(type) ? pushBlock(node, type) : null;
@@ -772,6 +808,7 @@ export function buildSegmentIndex(source: string): SegmentIndex {
     }
     group = outerGroup;
     parent = outerParent;
+    verbatim = outerVerbatim;
   };
 
   visit(parseMarkdown(source));

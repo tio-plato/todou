@@ -377,6 +377,7 @@ describe("annotation highlights in text lined up piece by piece", () => {
       [2, 8, 2, 8],
       ["c"],
     ],
+    ["a reference for a line break", "x &#10; y z\n", [1, 11, 1, 11], ["z"]],
   ] as const)(
     "marks only the anchored characters of %s",
     async (_shape, body, [start, colStart, end, colEnd], marked) => {
