@@ -853,11 +853,7 @@ class Resolver {
  *    same-database move locks the card it moves, then the target project's
  *    `project_meta`.
  *
- * Three places keep another order, and none can form a cycle. The last
- * step of a cross-database move empties the frozen source before it writes
- * the card row: a write that locks a frozen card finds `moving_since` and
- * gives up, or, attaching drafts on it, skips each one whose row is taken
- * (`commitDraftAttachments`), so none waits for a row under it. A move back
+ * Two places keep another order, and neither can form a cycle. A move back
  * into a tombstone updates the tombstone after the card it moves, out of id
  * order, and locks nothing else in the tombstone's project before it:
  * whatever else locks a tombstone is a write about to be refused by the

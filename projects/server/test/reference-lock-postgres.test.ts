@@ -462,11 +462,11 @@ describe.skipIf(!PG_URL)("reference lock order", () => {
     expect(Number(added.rows[0]?.count)).toBe(0);
   });
 
-  // The last step of a move to another database empties the frozen card,
-  // its attachment rows included, and then writes the card row. A write
-  // that holds that card while it waits for one of those attachment rows
-  // closes a cycle; it has to skip a draft the move is deleting.
-  it("a comment linking a draft that a move is deleting skips it", async () => {
+  // The last step of a move to another database locks the frozen card,
+  // then empties it, its attachment rows included, and raises the
+  // tombstone. A write attaching a draft on that card waits for the card,
+  // and by the time it gets it the draft is gone.
+  it("a comment linking a draft on a card a move is retiring finds it gone", async () => {
     const f = await createCard(slug, "F");
     const a = await createCard(slug, "A");
     const draft = await uploadDraft(f, "moving.txt");
@@ -478,27 +478,14 @@ describe.skipIf(!PG_URL)("reference lock order", () => {
     await holder.query("BEGIN");
     let pending: Promise<Response> | undefined;
     try {
-      await holder.query("DELETE FROM attachments WHERE id = $1", [draft.id]);
-      let settled = false;
+      await holder.query("SELECT id FROM issues WHERE id = $1 FOR UPDATE", [
+        f.id,
+      ]);
       pending = send("POST", `/projects/${slug}/issues/${a.number}/comments`, {
         body: `![](${draft.url})`,
-      }).finally(() => {
-        settled = true;
       });
-      await expect
-        .poll(
-          async () => {
-            if (settled) return true;
-            const result = await observer.query<{ count: string }>(
-              `SELECT count(*) FROM pg_stat_activity
-               WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid))`,
-              [pid],
-            );
-            return Number(result.rows[0]?.count) > 0;
-          },
-          { timeout: 5000, interval: 10 },
-        )
-        .toBe(true);
+      await blockedBy(pid);
+      await holder.query("DELETE FROM attachments WHERE id = $1", [draft.id]);
       await holder.query(
         "UPDATE issues SET moved_at = now(), moving_since = NULL WHERE id = $1",
         [f.id],
