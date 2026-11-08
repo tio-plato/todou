@@ -166,23 +166,6 @@ function coversText(range: Range, body: Element): boolean {
   return inBody.toString().trim() !== "";
 }
 
-/**
- * `selectionEndpoints`, or null where it throws: some browsers know
- * `getComposedRanges` only by an older signature, and reject this one. No
- * selection is no reason to break the caller — the menu reads this on the
- * press that opens it, and a throw there keeps the menu shut.
- */
-function endpointsOf(
-  selection: Selection,
-  container: Element,
-): SelectionEndpoints | null {
-  try {
-    return selectionEndpoints(selection, container);
-  } catch {
-    return null;
-  }
-}
-
 /** Whether one of the endpoints is in a shadow root under `body`. */
 function endsInShadowOf(ends: SelectionEndpoints, body: Element): boolean {
   return [ends.start.node, ends.end.node].some(
@@ -220,7 +203,7 @@ export function quotableSelection(
 ): QuotableSelection | null {
   if (selection === null) return null;
   const scope = root instanceof Document ? root.documentElement : root;
-  const all = endpointsOf(selection, scope);
+  const all = selectionEndpoints(selection, scope);
   if (all === null || all.collapsed) return null;
   const ordered = orderedEndpoints(all);
   if (ordered === null) return null;
@@ -240,7 +223,7 @@ export function quotableSelection(
   const entry = entryOf(first);
   if (touched.some((el) => entryOf(el) !== entry)) return null;
   const [head, ...rest] = touched.flatMap((el) => {
-    const ends = endpointsOf(selection, el);
+    const ends = selectionEndpoints(selection, el);
     if (ends === null || ends.collapsed) return [];
     return anchorIn(el, ends) ?? [];
   });
