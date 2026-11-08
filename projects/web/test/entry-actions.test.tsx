@@ -506,6 +506,32 @@ describe("Quote reply on a question comment", () => {
     );
   });
 
+  it("quotes only the word selected in one of its options", async () => {
+    stubQuestions(null);
+    const onQuote = vi.fn();
+    const view = renderComment({
+      onQuote,
+      comment: comment({ component: QUESTIONS }),
+    });
+    // Before the verdict the card shows read-only rows, which the form
+    // replaces, and a selection in them with it.
+    await within(view.container).findByText("awaiting answer");
+    const label = within(view.container).getByText("jobs", { exact: false });
+    const text = label.firstChild as Text;
+    const from = (text.nodeValue ?? "").indexOf("jobs");
+    const range = document.createRange();
+    range.setStart(text, from);
+    range.setEnd(text, from + 4);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+
+    await openMenu(view);
+    fireEvent.click(menuItem("Quote reply"));
+    await waitFor(() =>
+      expect(onQuote).toHaveBeenCalledExactlyOnceWith("jobs"),
+    );
+  });
+
   it("still quotes the questions while the form is in a floating window", async () => {
     stubQuestions(null);
     // A Document Picture-in-Picture window of its own, as the card's tests
