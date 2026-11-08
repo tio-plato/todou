@@ -10,10 +10,12 @@
 // todou.toml: TODOU_DATABASE_SYSTEM (postgres:// only),
 // TODOU_DATABASE_PROJECTS_PLACEMENT, TODOU_DATABASE_PROJECTS_URL_TEMPLATE and
 // TODOU_DATABASE_POOL_MAX; TODOU_DATABASE_AUTO_MIGRATE defaults to true here.
-// Every database a template names must already exist. A bucketed template
-// such as `postgres://…/db_b${project.id % 2}` keeps the number of databases
-// fixed while projects are created and deleted, and a move between two
-// projects in one bucket takes the copy that shares the project database.
+// The system database must hold no projects yet, and every database a
+// template names must already exist. Files go to a scratch directory. A
+// bucketed template such as `postgres://…/db_b${project.id % 2}` keeps the
+// number of databases fixed while projects are created and deleted, and a
+// move between two projects in one bucket takes the copy that shares the
+// project database.
 //
 // The pool is the app's own, 10 connections per database unless
 // TODOU_DATABASE_POOL_MAX says otherwise; 40 brings out far more lock waits.
@@ -72,6 +74,31 @@ if (!/^postgres(ql)?:\/\//.test(systemUrl)) {
   process.exit(2);
 }
 
+// The draft reaper runs at a zero-hour threshold over every project the
+// system database registers, so a database with projects of its own would
+// lose every unsent draft. Checked before the app migrates anything.
+{
+  const client = new pg.Client({ connectionString: systemUrl });
+  await client.connect();
+  try {
+    const table = await client.query<{ name: string | null }>(
+      "SELECT to_regclass('public.projects')::text AS name",
+    );
+    const found =
+      table.rows[0]?.name == null
+        ? []
+        : (await client.query("SELECT 1 FROM projects LIMIT 1")).rows;
+    if (found.length > 0) {
+      console.error(
+        "TODOU_DATABASE_SYSTEM must name an empty database: this bench deletes every draft in every project it finds there",
+      );
+      process.exit(2);
+    }
+  } finally {
+    await client.end();
+  }
+}
+
 // ——— statement jitter and aborted statements ————————————————————————————
 
 /** Statements aborted by the deadlock detector, by their text. */
@@ -123,6 +150,8 @@ const config = loadConfig({
   tomlSource: "",
   env: {
     ...process.env,
+    // Files go to a scratch directory, whatever backend the environment names.
+    TODOU_STORAGE_BACKEND: "fs",
     TODOU_STORAGE_PATH: storagePath,
     TODOU_DATABASE_AUTO_MIGRATE:
       process.env.TODOU_DATABASE_AUTO_MIGRATE ?? "true",
