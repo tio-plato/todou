@@ -264,6 +264,15 @@ describe("quotableSelection", () => {
     ).toBe("Third item.");
   });
 
+  it("quotes the characters selected inside inline code as code", async () => {
+    const { a } = await renderTwo(comment(1, LIST), comment(2, B));
+    const code = a.querySelectorAll("li")[1]?.querySelector("code")?.firstChild;
+    if (!(code instanceof Text)) throw new Error("no inline code");
+    expect(quoted(quotableSelection(select(code, 1, code, 3), document))).toBe(
+      "`od`",
+    );
+  });
+
   it("keeps a code block that ends the selected prose", async () => {
     const { a } = await renderTwo(comment(1, PROSE_AND_CODE), comment(2, B));
     // Highlighted, the block shows pierre's rows and no plain text.
