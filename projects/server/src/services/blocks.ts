@@ -22,7 +22,7 @@ import {
   parseRefLocator,
   resolveClaim,
 } from "@todou/shared";
-import { and, eq, inArray, isNotNull, isNull, or } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, or } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import type { AppContext } from "../bootstrap.ts";
 import type { Db } from "../db/driver.ts";
@@ -392,6 +392,10 @@ export async function evaluateBlockerStatus(
  * The returned changes are re-ordered back onto `edges`: `UPDATE … RETURNING`
  * makes no promise about row order, and this list is what decides the order
  * the timeline entries land in.
+ *
+ * Each batch is a short transaction that locks its edges in id order before
+ * it writes them, as every write of several edges does (see lockIssueRows);
+ * no lock is held from one batch to the next.
  */
 async function applyVerdicts(
   system: Db,
@@ -424,11 +428,19 @@ async function applyVerdicts(
     [reblockedIds, { clearedAt: null, clearedNotifiedAt: null }],
   ] as const) {
     for (const slice of chunks(ids)) {
-      const rows = await system
-        .update(issueBlocks)
-        .set(values)
-        .where(inArray(issueBlocks.id, slice))
-        .returning();
+      const rows = await system.transaction(async (tx) => {
+        await tx
+          .select({ id: issueBlocks.id })
+          .from(issueBlocks)
+          .where(inArray(issueBlocks.id, slice))
+          .orderBy(asc(issueBlocks.id))
+          .for("update");
+        return tx
+          .update(issueBlocks)
+          .set(values)
+          .where(inArray(issueBlocks.id, slice))
+          .returning();
+      });
       for (const row of rows) updated.set(row.id, row);
     }
   }
@@ -628,6 +640,9 @@ async function blockerNumbersOf(
  * No timeline entry and no change event, deliberately — the four block events
  * are about the edge's verdict, and this moves no verdict. The flag travels
  * with the next read of either card.
+ *
+ * The edges are locked in id order before they are written, as every write
+ * of several edges does (see lockIssueRows).
  */
 export async function markBlockerDeleted(
   ctx: AppContext,
@@ -636,16 +651,22 @@ export async function markBlockerDeleted(
   deleted: boolean,
 ): Promise<void> {
   if (numbers.length === 0) return;
-  await ctx.router
-    .system()
-    .update(issueBlocks)
-    .set({ blockerDeletedAt: deleted ? new Date() : null })
-    .where(
-      and(
-        eq(issueBlocks.blockerProjectId, project.id),
-        inArray(issueBlocks.blockerNumber, numbers),
-      ),
-    );
+  const blocking = and(
+    eq(issueBlocks.blockerProjectId, project.id),
+    inArray(issueBlocks.blockerNumber, numbers),
+  );
+  await ctx.router.system().transaction(async (tx) => {
+    await tx
+      .select({ id: issueBlocks.id })
+      .from(issueBlocks)
+      .where(blocking)
+      .orderBy(asc(issueBlocks.id))
+      .for("update");
+    await tx
+      .update(issueBlocks)
+      .set({ blockerDeletedAt: deleted ? new Date() : null })
+      .where(blocking);
+  });
 }
 
 // ——— announcing ————————————————————————————————————————————————————————
@@ -1111,6 +1132,9 @@ export async function repairBlocks(
  * `blocker_deleted_at` back to null was one write per project per sweep for
  * nothing: the steady state is that nothing is in the trash, and the flag is
  * only ever read for its null-ness.
+ *
+ * Batched like `applyVerdicts`, and for the same reason one short transaction
+ * a batch, its edges locked in id order first.
  */
 async function syncBlockerTrash(
   system: Db,
@@ -1127,16 +1151,23 @@ async function syncBlockerTrash(
     if (state.deleted === (edge.blockerDeletedAt !== null)) continue;
     (state.deleted ? trashed : alive).push(edge.id);
   }
-  for (const slice of chunks(trashed)) {
-    await system
-      .update(issueBlocks)
-      .set({ blockerDeletedAt: new Date() })
-      .where(inArray(issueBlocks.id, slice));
-  }
-  for (const slice of chunks(alive)) {
-    await system
-      .update(issueBlocks)
-      .set({ blockerDeletedAt: null })
-      .where(inArray(issueBlocks.id, slice));
+  for (const [ids, blockerDeletedAt] of [
+    [trashed, new Date()],
+    [alive, null],
+  ] as const) {
+    for (const slice of chunks(ids)) {
+      await system.transaction(async (tx) => {
+        await tx
+          .select({ id: issueBlocks.id })
+          .from(issueBlocks)
+          .where(inArray(issueBlocks.id, slice))
+          .orderBy(asc(issueBlocks.id))
+          .for("update");
+        await tx
+          .update(issueBlocks)
+          .set({ blockerDeletedAt })
+          .where(inArray(issueBlocks.id, slice));
+      });
+    }
   }
 }

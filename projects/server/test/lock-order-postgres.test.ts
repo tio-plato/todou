@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { sql } from "drizzle-orm";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { addUserWithToken, makeTestApp, type TestApp } from "./helpers.ts";
@@ -12,12 +13,16 @@ const PG_URL = process.env.TODOU_TEST_POSTGRES_URL;
 // first row, waits for the request to queue behind it, then takes a second.
 // What the holder plays is always a path the server takes once fixed, so
 // neither side may be aborted as a deadlock.
+// Where the order a request takes rows in is the order a scan meets them,
+// the request goes to an app whose connections never use an index, and the
+// test puts the rows in the table out of id order first.
 // The suite makes a database of its own: test files that start together on
 // a new database race to create its migration tables.
 describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
   let admin: pg.Client | undefined;
   let owned: string | undefined;
   let t: TestApp;
+  let seq: TestApp;
   let holder: pg.Client;
   let observer: pg.Client;
   let holderPid: number;
@@ -25,9 +30,14 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
   const stamp = Date.now().toString(36);
   let projects = 0;
 
-  const send = (method: string, path: string, body?: unknown) =>
+  const send = (
+    method: string,
+    path: string,
+    body?: unknown,
+    via: TestApp = t,
+  ) =>
     Promise.resolve(
-      t.app.request(`/api${path}`, {
+      via.app.request(`/api${path}`, {
         method,
         headers: { ...author.headers, "content-type": "application/json" },
         body: body === undefined ? undefined : JSON.stringify(body),
@@ -48,6 +58,17 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
     url.searchParams.delete("database");
     url.searchParams.delete("dbname");
     t = await makeTestApp("shared", { systemUrl: url.toString() });
+    const scanning = new URL(url);
+    scanning.searchParams.set(
+      "options",
+      "-c enable_indexscan=off -c enable_bitmapscan=off",
+    );
+    seq = await makeTestApp("shared", { systemUrl: scanning.toString() });
+    // The setting reaches the app's own connections: SHOW answers "off".
+    const shown = (await seq.ctx.router
+      .system()
+      .execute(sql`SHOW enable_indexscan`)) as { rows: unknown[] };
+    expect(shown.rows).toEqual([{ enable_indexscan: "off" }]);
     holder = new pg.Client({ connectionString: url.toString() });
     observer = new pg.Client({ connectionString: url.toString() });
     await holder.connect();
@@ -67,6 +88,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       holder?.end(),
       observer?.end(),
       t?.cleanup(),
+      seq?.cleanup(),
     ]);
     try {
       if (owned) await admin?.query(`DROP DATABASE "${owned}"`);
@@ -86,6 +108,35 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
     expect(created.status).toBe(201);
     return { slug, id: (await json(created)).id as number };
   };
+
+  const card = async (slug: string, title: string) => {
+    const created = await send("POST", `/projects/${slug}/issues`, { title });
+    expect(created.status).toBe(201);
+    return (await json(created)) as { id: number; number: number };
+  };
+
+  /** `blocked` waits for `blocker`, both in the project `slug`. */
+  const block = async (
+    slug: string,
+    blocked: { number: number },
+    blocker: { number: number },
+  ) => {
+    const res = await send(
+      "POST",
+      `/projects/${slug}/issues/${blocked.number}/blocked-by`,
+      { ref: `#${blocker.number}` },
+    );
+    expect(res.status).toBe(200);
+  };
+
+  /** The rows' ids in the order a sequential scan meets them. */
+  const physicalOrder = async (table: string, ids: number[]) =>
+    (
+      await observer.query<{ id: string }>(
+        `SELECT id FROM ${table} WHERE id = ANY($1) ORDER BY ctid`,
+        [ids],
+      )
+    ).rows.map((row) => Number(row.id));
 
   /** Requests queued behind the holder, directly or behind one another. */
   const waitForLockWaiters = (count: number) =>
@@ -147,6 +198,129 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
     } finally {
       await holder.query("ROLLBACK");
       await Promise.allSettled(pending);
+    }
+  });
+
+  it("marking a trashed blocker locks its edges in id order", async () => {
+    const p = await project();
+    const x = await card(p.slug, "X");
+    const b1 = await card(p.slug, "B1");
+    const b2 = await card(p.slug, "B2");
+    await block(p.slug, b1, x);
+    await block(p.slug, b2, x);
+    const edges = await observer.query<{ id: string }>(
+      `SELECT id FROM issue_blocks
+       WHERE blocker_project_id = $1 AND blocker_number = $2 ORDER BY id`,
+      [p.id, x.number],
+    );
+    const [e1, e2] = edges.rows.map((row) => Number(row.id));
+    if (e1 === undefined || e2 === undefined) throw new Error("no edges");
+    // A new version of e1 lands behind e2, so a sequential scan meets e2
+    // first.
+    await observer.query(
+      "UPDATE issue_blocks SET cleared_at = cleared_at WHERE id = $1",
+      [e1],
+    );
+    expect(await physicalOrder("issue_blocks", [e1, e2])).toEqual([e2, e1]);
+
+    // The holder locks edges in id order, as every write of several does.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issue_blocks WHERE id = $1 FOR UPDATE",
+        [e1],
+      );
+      // Trashing commits the card, then marks its edges.
+      pending = send(
+        "DELETE",
+        `/projects/${p.slug}/issues/${x.number}`,
+        undefined,
+        seq,
+      );
+      await waitForLockWaiters(1);
+      await holder.query(
+        "SELECT id FROM issue_blocks WHERE id = $1 FOR UPDATE",
+        [e2],
+      );
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(204);
+      const marked = await observer.query<{ deleted: boolean }>(
+        `SELECT blocker_deleted_at IS NOT NULL AS deleted FROM issue_blocks
+         WHERE id = ANY($1)`,
+        [[e1, e2]],
+      );
+      expect(marked.rows).toEqual([{ deleted: true }, { deleted: true }]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("a move rewrites the edges at its address in id order", async () => {
+    const p = await project();
+    const q = await project();
+    const z = await card(p.slug, "Z");
+    const x = await card(p.slug, "X");
+    const w = await card(p.slug, "W");
+    await block(p.slug, x, z);
+    await block(p.slug, w, x);
+    const edgeAt = async (side: "blocker" | "blocked") => {
+      const rows = await observer.query<{ id: string }>(
+        `SELECT id FROM issue_blocks
+         WHERE ${side}_project_id = $1 AND ${side}_number = $2`,
+        [p.id, x.number],
+      );
+      return Number(rows.rows[0]?.id);
+    };
+    // X is on the blocked side of e1 and the blocker side of e2.
+    const e1 = await edgeAt("blocked");
+    const e2 = await edgeAt("blocker");
+    expect(e1).toBeLessThan(e2);
+
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issue_blocks WHERE id = $1 FOR UPDATE",
+        [e1],
+      );
+      pending = send("POST", `/projects/${p.slug}/issues/${x.number}/move`, {
+        to_project: q.slug,
+      });
+      await waitForLockWaiters(1);
+      await holder.query(
+        "SELECT id FROM issue_blocks WHERE id = $1 FOR UPDATE",
+        [e2],
+      );
+      await holder.query("COMMIT");
+      const moved = await pending;
+      expect(moved.status).toBe(200);
+      const at = (await json(moved)).moved_to.number as number;
+      const rows = await observer.query<{
+        id: string;
+        blocker_project_id: string;
+        blocker_number: string;
+        blocked_project_id: string;
+        blocked_number: string;
+      }>(
+        `SELECT id, blocker_project_id, blocker_number, blocked_project_id,
+                blocked_number
+         FROM issue_blocks WHERE id = ANY($1) ORDER BY id`,
+        [[e1, e2]],
+      );
+      const [first, second] = rows.rows;
+      expect([first?.blocked_project_id, first?.blocked_number]).toEqual([
+        String(q.id),
+        String(at),
+      ]);
+      expect([second?.blocker_project_id, second?.blocker_number]).toEqual([
+        String(q.id),
+        String(at),
+      ]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
     }
   });
 });
