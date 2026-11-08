@@ -712,6 +712,81 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
     expect(onStage).toHaveBeenCalledWith(anchor);
   });
 
+  describe("in a footnote definition", () => {
+    const FOOTNOTE = "text[^1] more words\n\n[^1]: note here\n";
+
+    /** The definition's text, and the text of its link back to the reference. */
+    function definitionNodes(container: HTMLElement): {
+      note: Node;
+      back: Node;
+    } {
+      const back = container.querySelector(
+        "a[data-footnote-backref]",
+      )?.firstChild;
+      const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if ((node as Text).data.startsWith("note here") && back) {
+          return { note: node, back };
+        }
+      }
+      throw new Error("no footnote definition");
+    }
+
+    it("anchors a word of the definition to its own columns", async () => {
+      const { onStage, button } = await stageSelection(
+        FOOTNOTE,
+        (container) => bracketedIn(container, "[note] here"),
+        { ready: "a[data-footnote-backref]" },
+      );
+      fireEvent.click(button);
+      expect(onStage).toHaveBeenCalledWith({
+        lineStart: 3,
+        lineEnd: 3,
+        colStart: 7,
+        colEnd: 10,
+      });
+    });
+
+    it("anchors a word on a definition's continuation line", async () => {
+      const { onStage, button } = await stageSelection(
+        "text[^1]\n\n[^1]: first line\n    continued\n",
+        (container) => bracketedIn(container, "[continued]"),
+        { ready: "a[data-footnote-backref]" },
+      );
+      fireEvent.click(button);
+      // "    continued": the indent is the definition's, not its text.
+      expect(onStage).toHaveBeenCalledWith({
+        lineStart: 4,
+        lineEnd: 4,
+        colStart: 5,
+        colEnd: 13,
+      });
+    });
+
+    it("ends a drag past the link back to the reference on the text", async () => {
+      const { onStage, button } = await stageSelection(
+        FOOTNOTE,
+        (container) => {
+          const { note, back } = definitionNodes(container);
+          return {
+            node: note,
+            from: 0,
+            endNode: back,
+            to: (back as Text).length,
+          };
+        },
+        { ready: "a[data-footnote-backref]" },
+      );
+      fireEvent.click(button);
+      expect(onStage).toHaveBeenCalledWith({
+        lineStart: 3,
+        lineEnd: 3,
+        colStart: 7,
+        colEnd: 15,
+      });
+    });
+  });
+
   it("anchors a list item's own text after a code block in it", async () => {
     const { onStage, button } = await stageSelection(
       "- item text\n  ```\n  code\n  ```\n  more\n",

@@ -121,6 +121,42 @@ export function stampSourceLines(node: Root | Element, attr: string): void {
 }
 
 /**
+ * Give back the blank `mdast-util-to-hast` appends to a footnote
+ * definition's last text, in front of the link back to the reference. The
+ * text keeps its position, which then no longer reads as its value: a
+ * highlight in it took the whole node, and a selection in it the whole line.
+ * The blank goes into a text node of its own with no position, like the one
+ * the renderer inserts when the definition does not end in text, which both
+ * the selection mapping and the highlights already pass over. Whatever the
+ * text's source holds, its last blank is the renderer's: it appends one to
+ * the definition's last text every time (its `lib/footer.js`), so no blank
+ * of the source is ever split off.
+ */
+function splitFootnoteBlank(parent: Element): void {
+  const at = parent.children.findIndex(
+    (child) =>
+      child.type === "element" &&
+      child.tagName === "a" &&
+      child.properties.dataFootnoteBackref !== undefined,
+  );
+  const text = parent.children[at - 1];
+  // One with no position is the renderer's own blank, already apart.
+  if (
+    text?.type !== "text" ||
+    text.position === undefined ||
+    !text.value.endsWith(" ")
+  ) {
+    return;
+  }
+  parent.children.splice(
+    at - 1,
+    1,
+    { ...text, value: text.value.slice(0, -1) },
+    { type: "text", value: " " },
+  );
+}
+
+/**
  * Rehype plugin stamping every block element with the markdown source line
  * range it was rendered from. This is the whole bridge between "what the
  * reviewer selected in the rendered document" and "which source lines the
@@ -131,14 +167,16 @@ export function rehypeSourceLines() {
   return (tree: Root) => {
     stampSourceLines(tree, SOURCE_LINE_ATTR);
     const visit = (node: Root | Element) => {
-      if (
-        node.type === "element" &&
-        SPAN_TAGS.has(node.tagName) &&
-        node.position?.start.offset !== undefined &&
-        node.position.end.offset !== undefined
-      ) {
-        node.properties[SOURCE_SPAN_ATTR] =
-          `${node.position.start.offset}-${node.position.end.offset}`;
+      if (node.type === "element") {
+        if (
+          SPAN_TAGS.has(node.tagName) &&
+          node.position?.start.offset !== undefined &&
+          node.position.end.offset !== undefined
+        ) {
+          node.properties[SOURCE_SPAN_ATTR] =
+            `${node.position.start.offset}-${node.position.end.offset}`;
+        }
+        splitFootnoteBlank(node);
       }
       for (const child of node.children) {
         if (child.type === "element") visit(child);
