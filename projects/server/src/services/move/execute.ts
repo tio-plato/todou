@@ -126,9 +126,9 @@ async function moveWithinDb(
   const moveToken = randomUUID();
 
   return db.transaction(async (tx) => {
-    // Pins the row for the whole move. Reference recording takes a share
-    // lock on the same row (see lockIssueRows), so an event cannot land
-    // on the card between the copy and the cleanup that would delete it.
+    // Pins the row for the whole move. Reference recording locks the same
+    // row (see lockIssueRows), so an event cannot land on the card between
+    // the copy and the cleanup that would delete it.
     const [locked] = await tx
       .select(gateColumns)
       .from(issues)
