@@ -49,6 +49,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { aboveDock } from "@/lib/dock-cover.ts";
 import { isQuestionLandingHash } from "@/lib/question-landing.ts";
 import {
+  conversationEnd,
   isHoldingTarget,
   landAtBottom,
   useOwnHold,
@@ -195,10 +196,11 @@ export function Timeline({
       ]),
     [headEnabled, head.data, tail.data],
   );
-  // Bottom of the document, not of the list: the composer is sticky, and
-  // the document end sits below its in-flow position — so this lands with
-  // the last item fully visible above the composer. Held, because the images
-  // above it are still arriving and push the end away (T-527).
+  // The end of the conversation the page declared, not of the list: the
+  // composer is sticky, and its in-flow position lies below the list — so
+  // this lands with the last item fully visible above the composer. Held,
+  // because the images above it are still arriving and push the end away
+  // (T-527).
   const keepHold = useOwnHold();
   const scrollToBottom = useCallback(() => {
     keepHold(landAtBottom());
@@ -278,7 +280,7 @@ export function Timeline({
     // scroll event before restoring the ordinary follow-bottom policy.
     atBottomRef.current = shouldFollowBottom(
       window.scrollY,
-      document.documentElement.scrollHeight,
+      conversationEnd(),
       window.innerHeight,
     );
     questionLanding.finish(error);
@@ -429,7 +431,7 @@ export function Timeline({
     const onScroll = () => {
       atBottomRef.current = shouldFollowBottom(
         window.scrollY,
-        document.documentElement.scrollHeight,
+        conversationEnd(),
         window.innerHeight,
       );
       if (atBottomRef.current) setNewBelow(false);
