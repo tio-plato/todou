@@ -708,8 +708,11 @@ describe("Composer buttons", () => {
     const view = mount();
     cmFocus(view.container);
     await waitFor(() => expect(maybeSubmit(view)).not.toBeNull());
-    const form = view.container.querySelector("form");
-    expect(form?.className).not.toContain("sm:flex-row");
+    // The box stacking the editor above the button row.
+    const box = view.container.querySelector(
+      '[data-slot="markdown-editor"]',
+    )?.parentElement;
+    expect(box?.className).not.toContain("sm:flex-row");
     expect(actionRow(view)?.className).not.toContain("sm:contents");
   });
 
@@ -718,6 +721,16 @@ describe("Composer buttons", () => {
     cmFocus(view.container);
     await waitFor(() => expect(maybeSubmit(view)).not.toBeNull());
     expect(actionRow(view)?.className).toContain("composer-actions-in");
+  });
+
+  // In iOS Chrome a contenteditable inside a <form> lags on every keystroke.
+  it("keeps the editor out of every form", () => {
+    const view = mount();
+    expect(
+      view.container
+        .querySelector('[data-slot="markdown-editor"]')
+        ?.closest("form"),
+    ).toBeNull();
   });
 });
 
