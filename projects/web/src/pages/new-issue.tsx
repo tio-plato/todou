@@ -23,6 +23,7 @@ import {
   statusesQuery,
   useCan,
 } from "@/api/queries.ts";
+import { questionsQuery } from "@/api/questions.ts";
 import { searchCommentRefQuery as commentRefQuery } from "@/api/search-refs.ts";
 import { AssigneePicker } from "@/components/issue/assignee-picker.tsx";
 import { LabelChips } from "@/components/issue/label-chip.tsx";
@@ -71,6 +72,7 @@ import {
   commandDecoration,
 } from "@/lib/editor/slash-commands.ts";
 import { quotedReference } from "@/lib/quote-markdown.ts";
+import { entryQuote } from "@/lib/quote-questions.ts";
 import {
   applyDraftCommands,
   newIssueSubmitLabel,
@@ -104,12 +106,41 @@ export function NewIssuePage() {
     ...issueQuery(from, quotedIssue ?? 0),
     enabled: quotedIssue !== undefined && quotedComment === undefined,
   });
+  // A question comment is quoted with its questions and their answers, which
+  // its card reads from the card it lives on now: `at`, not the link's own
+  // address, which a move leaves behind.
+  const at = comment.data?.at;
+  const asked =
+    comment.data?.component?.type === "questions"
+      ? comment.data.component.questions
+      : null;
+  const answers = useQuery({
+    ...questionsQuery(at?.slug ?? "", at?.number ?? 0),
+    enabled: asked !== null && at !== undefined,
+    // Asked afresh on every visit: the form reads its prefill once, and
+    // answers the card page cached a moment ago can predate the answer.
+    staleTime: 0,
+  });
+  const source = quotedComment === undefined ? issue : comment;
+  const settling =
+    source.isLoading || (answers.isFetching && !answers.isFetchedAfterMount);
+  // Once the form shows a quote it stays. A refetch, or a move that sends the
+  // answers to another address, would otherwise put the skeleton back and
+  // take the draft down with the form.
+  const quoting = `${from}/${quotedIssue}/${quotedComment}`;
+  const [shown, setShown] = useState<string | null>(null);
+  if (!settling && shown !== quoting) setShown(quoting);
 
   if (quotedIssue === undefined) return <NewIssueForm slug={slug} />;
-  const source = quotedComment === undefined ? issue : comment;
-  if (source.isLoading) return <PageSkeleton kind="sections" />;
+  if (settling && shown !== quoting) {
+    return <PageSkeleton kind="sections" />;
+  }
 
   const quoted = source.data ?? null;
+  // A failed request costs the quote its answers, not the page its form.
+  const answered =
+    answers.data?.items.find((i) => i.comment_id === at?.commentId)?.answer ??
+    null;
   const address = `${window.location.origin}/projects/${from}/issues/${quotedIssue}`;
   return (
     <NewIssueForm
@@ -118,7 +149,11 @@ export function NewIssuePage() {
         quoted === null
           ? ""
           : quotedReference({
-              body: quoted.body,
+              body: entryQuote({
+                body: quoted.body,
+                questions: asked,
+                answers: answered?.answers ?? null,
+              }),
               authorLogin: quoted.author.login,
               permalink:
                 quotedComment === undefined
