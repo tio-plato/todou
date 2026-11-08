@@ -158,13 +158,20 @@ const lineMarks = (root: ParentNode) =>
 async function renderDocument(
   body: string,
   annotations: DisplayedAnnotation[],
+  compared?: {
+    baselineBody: string;
+    baselineAnnotations: DisplayedAnnotation[];
+    wrappers?: string;
+  },
 ) {
   const view = renderWithProviders(
     <AnnotatedMarkdown
       slug="p"
       issueNumber={1}
       body={body}
+      baselineBody={compared?.baselineBody}
       annotations={annotations}
+      baselineAnnotations={compared?.baselineAnnotations}
       onStage={() => {}}
       onEditDraft={() => {}}
       onRemoveDraft={() => {}}
@@ -172,7 +179,9 @@ async function renderDocument(
     />,
   );
   const wrappers = await waitFor(() => {
-    const els = view.container.querySelectorAll("[data-loc-content-start]");
+    const els = view.container.querySelectorAll(
+      compared?.wrappers ?? "[data-loc-content-start]",
+    );
     if (els.length === 0) throw new Error("not rendered");
     return [...els];
   });
@@ -208,7 +217,65 @@ const TS_ROWS = `
   <div data-line="2"><span>const </span><span>bravo</span><span> = 2;</span></div>
   <div data-line="3"><span>const charlie = 3;</span></div>`;
 
+/** A block edited in place: v1 opens it two lines further down. */
+const EDITED_BEFORE =
+  "Intro.\n\nExtra paragraph.\n\n```ts\nconst a = 1;\nconst b = 2;\n```\n";
+const EDITED_AFTER = "Intro.\n\n```ts\nconst a = 1;\nconst b = 3;\n```\n";
+const EDITED_ROWS = `
+  <div data-line="1" data-line-type="context"><span>const a = 1;</span></div>
+  <div data-line="2" data-line-type="change-deletion"><span>const b = 2;</span></div>
+  <div data-line="2" data-line-type="change-addition"><span>const b = 3;</span></div>`;
+
 describe("code highlights in the rendered view", () => {
+  it("marks a deleted row and a current one in the same block", async () => {
+    stubHighlights();
+    // v1's line 7 is the deleted "const b = 2;"; the current line 5 is the
+    // "const b = 3;" that replaced it.
+    const { wrappers } = await renderDocument(
+      EDITED_AFTER,
+      [wholeLines("draft", 5, 5)],
+      {
+        baselineBody: EDITED_BEFORE,
+        baselineAnnotations: [wholeLines("comment", 7, 7)],
+      },
+    );
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    const shadow = await drawRows(wrapper, EDITED_ROWS);
+    expect(lineMarks(shadow)).toEqual([null, "comment", "draft"]);
+  });
+
+  it("paints the characters of a deleted row a baseline comment names", async () => {
+    const registry = stubHighlights();
+    // Columns 7–11 of v1's line 7, "const b = 2;", are "b = 2".
+    const { wrappers } = await renderDocument(EDITED_AFTER, [], {
+      baselineBody: EDITED_BEFORE,
+      baselineAnnotations: [onLine("comment", 7, 7, 11)],
+    });
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    await drawRows(wrapper, EDITED_ROWS);
+    expect(texts(registry, "spec-comment")).toEqual(["b = 2"]);
+  });
+
+  it("marks the row of a restored code block a baseline comment covers", async () => {
+    stubHighlights();
+    // v1's line 5 is "more();", the second row of the block v2 removed.
+    const { wrappers } = await renderDocument("Intro.\n\nOutro.\n", [], {
+      baselineBody: "Intro.\n\n```ts\nold();\nmore();\n```\n\nOutro.\n",
+      baselineAnnotations: [wholeLines("comment", 5, 5)],
+      wrappers: "[data-old-loc].markdown-fence",
+    });
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    const shadow = await drawRows(
+      wrapper,
+      `<div data-line="1"><span>old();</span></div>
+       <div data-line="2"><span>more();</span></div>`,
+    );
+    expect(lineMarks(shadow)).toEqual([null, "comment"]);
+  });
+
   it("paints the characters a comment's columns name, and only those", async () => {
     const registry = stubHighlights();
     // Line 5 is "const bravo = 2;", and columns 7–11 cut "bravo" out of it.

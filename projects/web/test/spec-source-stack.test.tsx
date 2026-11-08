@@ -704,6 +704,56 @@ describe("selecting deleted text in the rendered comparison", () => {
   });
 });
 
+describe("baseline comments in the rendered comparison", () => {
+  /** A comment on v1's `path`, line `line`, columns `from`–`to`. */
+  const onV1 = (path: string, line: number, from: number, to: number) => {
+    const base = comment(path, 1, line, "on the old word");
+    return {
+      ...base,
+      anchor: { ...base.anchor, col_start: from, col_end: to },
+      outdated: true,
+      current_line_start: null,
+      current_line_end: null,
+    };
+  };
+
+  it("paints a comment on a removed word and hangs it a chip", async () => {
+    // v1's line 1 is "The quick brown fox."; "brown" is columns 11 to 15.
+    mockSpec([onV1("words.md", 1, 11, 15)], {
+      1: { "words.md": "The quick brown fox.\n" },
+      2: { "words.md": "The quick red fox.\n" },
+    });
+    const view = renderSpecView("?v=2&file=words.md&compare=1&view=rendered");
+    await waitFor(() =>
+      expect(
+        [
+          ...view.container.querySelectorAll(
+            "del.spec-del mark.spec-mark-comment",
+          ),
+        ].map((mark) => mark.textContent),
+      ).toEqual(["brown"]),
+    );
+    expect(
+      await view.findByRole("button", { name: "1 comment(s) on this block" }),
+    ).toBeTruthy();
+  });
+
+  it("paints a renamed file's comment from under its old path", async () => {
+    // drift.md in v1 ends "delta", columns 1 to 5 of line 4.
+    mockSpec([onV1("drift.md", 4, 1, 5)]);
+    const view = renderSpecView("?v=2&file=drifted.md&compare=1&view=rendered");
+    await waitFor(() =>
+      expect(
+        [
+          ...view.container.querySelectorAll(
+            "del.spec-del mark.spec-mark-comment",
+          ),
+        ].map((mark) => mark.textContent),
+      ).toEqual(["delta"]),
+    );
+  });
+});
+
 describe("staged drafts in the source view", () => {
   it("hangs a draft under its line, and Discard takes it away", async () => {
     stageDraft("d1", "drift.md", 1, 2, "say it plainer");
