@@ -130,6 +130,10 @@ describe("usableViewport (T-299)", () => {
   it.each([
     ["iOS WebKit, at the visual viewport's top", 2000, 48],
     ["CSSOM View, at the layout viewport's top", 2100, 148],
+    // The page has just scrolled itself up from 2150: iOS moves `scrollY` and
+    // client rects at once, but `pageTop` only at the visual viewport's next
+    // update, as measured on a real iPhone with the keyboard up.
+    ["iOS WebKit, before pageTop catches up with the page's scroll", 2150, 48],
   ])(
     "measures the strip inside the visual viewport, from where the engine puts client coordinates: %s",
     (_engine, pageTop, top) => {
