@@ -502,12 +502,17 @@ describe("tableOf (T-221)", () => {
     });
 
     it("keeps an image and the words beside it in source order", () => {
-      const cell = secondCell(
-        "| 名 | 证据 |\n| --- | --- |\n| a | ![](/a.png) 旧形态 |\n",
-      );
+      const source =
+        "| 名 | 证据 |\n| --- | --- |\n| a | ![](/a.png) 旧形态 |\n";
+      const cell = secondCell(source);
       expect(cell?.parts).toEqual([
         { kind: "image", url: "/a.png", alt: "" },
-        { kind: "text", text: "旧形态" },
+        // Where the words sit in the flattened text, past the space.
+        {
+          kind: "text",
+          text: "旧形态",
+          origin: { flat: buildSegmentIndex(source).text.indexOf("旧形态") },
+        },
       ]);
       // The flattened text keeps the space the image left behind; the part is
       // rendered on its own, so it does not.
@@ -533,12 +538,15 @@ describe("tableOf (T-221)", () => {
 
     it("says exactly what `text` says when no image is involved", () => {
       // The equivalence every T-221 assertion rests on: `parts` is a second
-      // view of the same cell, not a different reading of it.
+      // view of the same cell, not a different reading of it, from the same
+      // place in the flattened text.
       const { matrix } = matrixOf(TABLE3);
       for (const row of matrix?.rows ?? []) {
         for (const cell of row.cells) {
           if (cell === null) continue;
-          expect(cell.parts).toEqual([{ kind: "text", text: cell.text }]);
+          expect(cell.parts).toEqual([
+            { kind: "text", text: cell.text, origin: { flat: cell.at } },
+          ]);
         }
       }
       const { matrix: ragged } = matrixOf(

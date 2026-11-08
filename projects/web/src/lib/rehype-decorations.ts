@@ -1,5 +1,11 @@
 import type { Element, ElementContent, Root, RootContent, Text } from "hast";
 import {
+  OLD_FLAT_ATTR,
+  OLD_LINE_ATTR,
+  OLD_SOURCE_ATTR,
+  stampSourceLines,
+} from "./rehype-source-lines.ts";
+import {
   type BaselineTree,
   baselineAncestor,
   extractBaselineNode,
@@ -8,6 +14,7 @@ import {
   type CellPart,
   type SegmentIndex,
   type SourceRange,
+  type TextOrigin,
   type TextPiece,
   textPieces,
 } from "./spec-source-index.ts";
@@ -43,11 +50,13 @@ export type DeletionDecoration = {
   at: number;
   text: string;
   block: boolean;
+  /** Where in the baseline `text` came from, for an inline deletion. */
+  origin?: TextOrigin;
   /**
-   * The same content cut around the images inside it (T-223). Present only on
-   * a block marker that actually holds one, so `text` stays what it was and
-   * every path that reads it — the inline marker, the `title` attribute — is
-   * untouched.
+   * A block marker's content as runs of text that know where in the baseline
+   * they came from, and the images between them (T-223). `text` stays what
+   * it was, so every path that reads it — the inline marker, the `title`
+   * attribute — is untouched.
    */
   parts?: DeletionPart[];
 };
@@ -206,11 +215,30 @@ function fullyInside(element: Element, ranges: SourceRange[]): boolean {
   return ranges.some((range) => range.start <= start && range.end >= end);
 }
 
+/** `origin` as the attribute a run of removed text carries it in. */
+function originProps(origin: TextOrigin | undefined): Record<string, string> {
+  if (origin === undefined) return {};
+  return "flat" in origin
+    ? { [OLD_FLAT_ATTR]: String(origin.flat) }
+    : { [OLD_SOURCE_ATTR]: String(origin.source) };
+}
+
+/** `origin` moved on by `n` characters of the text it starts. */
+function originAfter(origin: TextOrigin, n: number): TextOrigin {
+  return "flat" in origin
+    ? { flat: origin.flat + n }
+    : { source: origin.source + n };
+}
+
 function inlineDeletion(deletion: DeletionDecoration): Element {
   return {
     type: "element",
     tagName: "del",
-    properties: { className: ["spec-del"], title: deletion.text },
+    properties: {
+      className: ["spec-del"],
+      title: deletion.text,
+      ...originProps(deletion.origin),
+    },
     // Plain text on purpose: the removed source may be half a markdown
     // construct, and re-rendering it would inject stray emphasis or worse.
     children: [{ type: "text", value: deletion.text }],
@@ -241,14 +269,15 @@ function blockDeletion(deletion: DeletionDecoration): Element {
 }
 
 /**
- * A marker cut around its images (T-223). Images are the one construct that
+ * A marker cut into its parts (T-223). Images are the one construct that
  * gets rendered rather than quoted, because quoting one shows the reader a url
  * where the marker's whole job is to show them what went. Everything else
- * stays source text, on the reasoning above.
+ * stays source text, on the reasoning above, and a run that knows where in
+ * the baseline it came from says so on a `<span>` of its own.
  *
  * The head and the tail are trimmed, which is what `text.trim()` does to the
  * undivided marker; whitespace between two parts is the document's own and is
- * left alone.
+ * left alone. A run trimmed at its head starts that much further on.
  */
 function deletionParts(parts: DeletionPart[]): ElementContent[] {
   const out: ElementContent[] = [];
@@ -263,9 +292,25 @@ function deletionParts(parts: DeletionPart[]): ElementContent[] {
       return;
     }
     let value = part.text;
-    if (i === 0) value = value.trimStart();
+    let origin = part.origin;
+    if (i === 0) {
+      value = value.trimStart();
+      if (origin !== undefined) {
+        origin = originAfter(origin, part.text.length - value.length);
+      }
+    }
     if (i === parts.length - 1) value = value.trimEnd();
-    if (value !== "") out.push({ type: "text", value });
+    if (value === "") return;
+    out.push(
+      origin === undefined
+        ? { type: "text", value }
+        : {
+            type: "element",
+            tagName: "span",
+            properties: originProps(origin),
+            children: [{ type: "text", value }],
+          },
+    );
   });
   return out;
 }
@@ -362,7 +407,12 @@ function partNodes(parts: CellPart[]): ElementContent[] {
           },
           children: [],
         }
-      : inlineDeletion({ at: 0, text: part.text, block: false }),
+      : inlineDeletion({
+          at: 0,
+          text: part.text,
+          block: false,
+          origin: part.origin,
+        }),
   );
 }
 
@@ -884,7 +934,19 @@ function fallbackStructure(
   record: StructuralDeletion,
   previous: Map<number, Element>,
 ): void {
-  const marker = blockDeletion({ ...record.fallback, block: true });
+  const marker = blockDeletion({
+    ...record.fallback,
+    block: true,
+    // The marker quotes the removed block's source, which starts where the
+    // block does.
+    parts: record.fallback.parts ?? [
+      {
+        kind: "text",
+        text: record.fallback.text,
+        origin: { source: record.old.start },
+      },
+    ],
+  });
   const at = record.fallback.at;
   const last = previous.get(at);
   const lastIndex = last === undefined ? -1 : tree.children.indexOf(last);
@@ -930,7 +992,9 @@ function applyStructures(tree: Root, options: Decorations): void {
         (oldBlock.start === record.old.start &&
           oldBlock.end === record.old.end &&
           oldBlock.type === record.old.type))
-        ? extractBaselineNode(baselineTree, record.old)
+        ? extractBaselineNode(baselineTree, record.old, (clone) =>
+            stampSourceLines(clone, OLD_LINE_ATTR),
+          )
         : null;
     if (oldNode === null) {
       fallbackStructure(tree, record, fallbackAtSeam);
