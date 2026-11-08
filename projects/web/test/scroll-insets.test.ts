@@ -377,17 +377,39 @@ describe("landing on the end of the conversation", () => {
     expect(targets).toEqual([2000 - VIEWPORT, 2600 - VIEWPORT]);
   });
 
-  it("puts it above an on-screen keyboard", () => {
+  /**
+   * A keyboard 300 high, with the page pushed 100 down the layout viewport.
+   * Chromium and Firefox measure client coordinates from the layout
+   * viewport, Safari on iOS from the visual one, whose page offset is then
+   * the window's own, as measured on a real iPhone.
+   */
+  function keyboard(origin: "layout" | "visual") {
     const vv = new EventTarget();
     Object.defineProperties(vv, {
-      offsetTop: { value: 0 },
-      height: { value: VIEWPORT - 300 },
+      offsetTop: { value: 100 },
+      height: { value: VIEWPORT - 300 - 100 },
       scale: { value: 1 },
+      pageTop: {
+        get: () => window.scrollY + (origin === "layout" ? 100 : 0),
+      },
     });
     vi.stubGlobal("visualViewport", vv);
+  }
+
+  it("puts it above an on-screen keyboard", () => {
+    keyboard("layout");
     const { targets } = page({ y: 2000 });
     landAtBottom();
-    expect(targets).toEqual([2000 - (VIEWPORT - 300)]);
+    // The keyboard's top edge, 100 + 400 down the layout viewport.
+    expect(targets).toEqual([2000 - 500]);
+  });
+
+  it("puts it above an on-screen keyboard where client coordinates start at the visual viewport", () => {
+    keyboard("visual");
+    const { targets } = page({ y: 2000 });
+    landAtBottom();
+    // The keyboard's top edge, 400 down the visual viewport.
+    expect(targets).toEqual([2000 - 400]);
   });
 
   it.each([
