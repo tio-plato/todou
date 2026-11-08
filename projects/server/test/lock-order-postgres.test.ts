@@ -513,4 +513,61 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       await Promise.allSettled([pending]);
     }
   });
+
+  it("deleting a project waits for writers instead of deadlocking", async () => {
+    const p = await project();
+    const a = await card(p.slug, "a");
+    const b = await card(p.slug, "b");
+    expect(a.id).toBeLessThan(b.id);
+    const commented = await send(
+      "POST",
+      `/projects/${p.slug}/issues/${a.number}/comments`,
+      { body: "on a" },
+    );
+    expect(commented.status).toBe(201);
+    const read = await send(
+      "PUT",
+      `/projects/${p.slug}/issues/${b.number}/read`,
+      {},
+    );
+    expect(read.status).toBe(204);
+    // A new version of a, behind b in the table.
+    const edited = await send(
+      "PATCH",
+      `/projects/${p.slug}/issues/${a.number}`,
+      {
+        title: "a, edited",
+      },
+    );
+    expect(edited.status).toBe(200);
+    expect(await physicalOrder("issues", [a.id, b.id])).toEqual([b.id, a.id]);
+
+    // The holder is a write on both cards, locking them in id order.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issues WHERE id = $1 FOR NO KEY UPDATE",
+        [a.id],
+      );
+      pending = send("DELETE", `/projects/${p.slug}`, undefined, seq);
+      await waitForLockWaiters(1);
+      await holder.query(
+        "SELECT id FROM issues WHERE id = $1 FOR NO KEY UPDATE",
+        [b.id],
+      );
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(204);
+      for (const table of ["issues", "comments", "issue_reads"]) {
+        const left = await observer.query<{ count: string }>(
+          `SELECT count(*) FROM ${table} WHERE project_id = $1`,
+          [p.id],
+        );
+        expect(left.rows, table).toEqual([{ count: "0" }]);
+      }
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
 });

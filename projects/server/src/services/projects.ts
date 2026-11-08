@@ -7,7 +7,7 @@ import type {
   ProjectUpdateInput,
 } from "@todou/shared";
 import { CANONICAL_STATUSES } from "@todou/shared";
-import { and, asc, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne, or } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import { uniqueViolation } from "../auth/provision.ts";
 import type { AppContext } from "../bootstrap.ts";
@@ -18,13 +18,19 @@ import {
   comments,
   insightsSettings,
   issueEvents,
+  issueReads,
   issues,
   labels,
   projectMeta,
   refFormats,
   statuses,
 } from "../db/project-schema.ts";
-import { projectMembers, projects, slugHistory } from "../db/system-schema.ts";
+import {
+  issueBlocks,
+  projectMembers,
+  projects,
+  slugHistory,
+} from "../db/system-schema.ts";
 import {
   ConflictError,
   SlugReservedError,
@@ -558,7 +564,23 @@ export async function deleteProject(
 
   // Remove the registry row FIRST so the project stops routing; cleanup
   // failures below only leave orphaned data behind (logged, not fatal).
-  await system.delete(projects).where(eq(projects.id, project.id));
+  await system.transaction(async (tx) => {
+    // The delete cascades to the block edges at either end of this project:
+    // locked first in id order, as every write of several edges does (see
+    // lockIssueRows).
+    await tx
+      .select({ id: issueBlocks.id })
+      .from(issueBlocks)
+      .where(
+        or(
+          eq(issueBlocks.blockerProjectId, project.id),
+          eq(issueBlocks.blockedProjectId, project.id),
+        ),
+      )
+      .orderBy(asc(issueBlocks.id))
+      .for("update");
+    await tx.delete(projects).where(eq(projects.id, project.id));
+  });
 
   try {
     const others = (
@@ -583,17 +605,42 @@ export async function deleteProject(
       await rm(url.slice("pglite://".length), { recursive: true, force: true });
     } else {
       const db = await ctx.router.forProject(routeInfoOf(project));
-      // issues cascade to assignees/labels/comments/events/attachments.
-      await db.delete(issues).where(eq(issues.projectId, project.id));
-      await db.delete(comments).where(eq(comments.projectId, project.id));
-      await db.delete(issueEvents).where(eq(issueEvents.projectId, project.id));
-      await db.delete(attachments).where(eq(attachments.projectId, project.id));
-      await db.delete(labels).where(eq(labels.projectId, project.id));
-      await db
-        .delete(insightsSettings)
-        .where(eq(insightsSettings.projectId, project.id));
-      await db.delete(statuses).where(eq(statuses.projectId, project.id));
-      await db.delete(projectMeta).where(eq(projectMeta.projectId, project.id));
+      // One transaction, so a failure leaves the data whole rather than half
+      // deleted. It first waits for the writes still at work on these cards,
+      // taking the cards in id order the way those writes do, then the read
+      // positions in the order marking everything read takes them (see
+      // lockIssueRows). The order the deletes meet them in no longer matters.
+      await db.transaction(async (tx) => {
+        await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(eq(issues.projectId, project.id))
+          .orderBy(asc(issues.id))
+          .for("update");
+        await tx
+          .select({ id: issueReads.id })
+          .from(issueReads)
+          .where(eq(issueReads.projectId, project.id))
+          .orderBy(asc(issueReads.id))
+          .for("update");
+        // issues cascade to assignees/labels/comments/events/attachments.
+        await tx.delete(issues).where(eq(issues.projectId, project.id));
+        await tx.delete(comments).where(eq(comments.projectId, project.id));
+        await tx
+          .delete(issueEvents)
+          .where(eq(issueEvents.projectId, project.id));
+        await tx
+          .delete(attachments)
+          .where(eq(attachments.projectId, project.id));
+        await tx.delete(labels).where(eq(labels.projectId, project.id));
+        await tx
+          .delete(insightsSettings)
+          .where(eq(insightsSettings.projectId, project.id));
+        await tx.delete(statuses).where(eq(statuses.projectId, project.id));
+        await tx
+          .delete(projectMeta)
+          .where(eq(projectMeta.projectId, project.id));
+      });
     }
     // The icon blob lives outside every table above, so nothing cascades to
     // it; left behind it would be unreachable storage nobody can name.
