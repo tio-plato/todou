@@ -77,17 +77,95 @@ describe("remarkIssueRefs keeps the source span on every piece", () => {
     expect(link?.position?.end).toMatchObject({ line: 2, column: 6 });
   });
 
-  it("gives every piece the whole node when the two disagree", () => {
+  it("places each piece by the source when it is longer than the value", () => {
     // A continuation indent stretches the source span past the value, so
-    // no offset counted inside the value can be trusted.
+    // an offset counted inside the value is mapped through the source
+    // react-markdown hands the plugin, the indent belonging to no piece.
     const source = "- 见 T-161，\n  换行继续。\n";
     const original = firstParagraph(plain.runSync(plain.parse(source)) as Root);
-    const children = firstParagraph(parse(source)).children;
+    const children = firstParagraph(
+      linkified.runSync(linkified.parse(source), source) as Root,
+    ).children;
+    expect(original.children).toHaveLength(1);
+    // "见 " | "T-161" | "，\n  换行继续。"
+    expect(children.map(spanOf)).toEqual([
+      [2, 4],
+      [4, 9],
+      [9, 18],
+    ]);
+    expect(children[1]?.position?.start).toMatchObject({ line: 1, column: 5 });
+    expect(children[1]?.position?.end).toMatchObject({ line: 1, column: 10 });
+  });
+
+  it("ends a piece before a continuation prefix and starts the next after it", () => {
+    // "见\n" | "T-161" | " 的做法。": the item's indent between the first
+    // two belongs to neither.
+    const source = "- 见\n  T-161 的做法。\n";
+    const children = firstParagraph(
+      linkified.runSync(linkified.parse(source), source) as Root,
+    ).children;
+    expect(children.map(spanOf)).toEqual([
+      [2, 4],
+      [6, 11],
+      [11, 16],
+    ]);
+  });
+
+  it("gives every piece the whole node when its pieces cannot be found", () => {
+    // A bare CR ends the quote's line: the `> ` after it lines up nowhere.
+    const source = "> 见\r> T-161 的做法。\n";
+    const original = firstParagraph(plain.runSync(plain.parse(source)) as Root);
+    const children = firstParagraph(
+      linkified.runSync(linkified.parse(source), source) as Root,
+    ).children;
     expect(original.children).toHaveLength(1);
     expect(children).toHaveLength(3);
     for (const child of children) {
       expect(spanOf(child)).toEqual(spanOf(original.children[0] as Nodes));
     }
+  });
+
+  it("cuts text that holds its own source by addition, `&amp;` and all", () => {
+    // How a rejected link's text is left: as written, not decoded.
+    const source = "T-161 &amp; more";
+    const tree = {
+      type: "root",
+      children: [
+        {
+          type: "paragraph",
+          children: [
+            {
+              type: "text",
+              value: source,
+              position: {
+                start: { line: 1, column: 1, offset: 0 },
+                end: { line: 1, column: 17, offset: 16 },
+              },
+            },
+          ],
+        },
+      ],
+    };
+    remarkIssueRefs(CONFIG)(tree, { value: source });
+    const children = (tree.children[0] as { children: Nodes[] }).children;
+    expect(children.map(spanOf)).toEqual([
+      [0, 5],
+      [5, 16],
+    ]);
+  });
+
+  it("places the pieces of a long wrapped paragraph in time that grows with it", () => {
+    // 20,000 references on as many lines took seconds when each piece's
+    // position was counted again from the start of the text.
+    const source = `${Array.from({ length: 20_000 }, (_, i) => `T-${i + 1}`).join("\n")}\n`;
+    const tree = linkified.parse(source);
+    const began = performance.now();
+    linkified.runSync(tree, source);
+    expect(performance.now() - began).toBeLessThan(2000);
+    const children = firstParagraph(tree as Root).children;
+    expect(children).toHaveLength(39_999);
+    const last = children.at(-1);
+    expect(last?.position?.start).toMatchObject({ line: 20_000, column: 1 });
   });
 
   it("adds no position where the node had none", () => {
