@@ -39,7 +39,7 @@ export type CodeRowSource = {
  * roots host by host: pierre draws a code block inside one, under the
  * stamped wrapper.
  */
-function stampedAbove(
+export function stampedAbove(
   el: Element,
   selector = `[${SOURCE_LINE_ATTR}]`,
 ): Element | null {

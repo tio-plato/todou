@@ -1078,6 +1078,53 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
     });
   });
 
+  it("takes a code card whole for a selection in one of its rows", async () => {
+    const url = "/api/projects/p/attachments/9/download/a.ts";
+    const body = `see ![a.ts](${url}) after\n`;
+    const client = chipClient();
+    client.setQueryData(attachmentsQuery("p", 1).queryKey, [
+      attachment(9, "a.ts", "text/plain"),
+    ]);
+    client.setQueryData(attachmentTextQuery(url).queryKey, "const a = 1;\n");
+    const view = renderWithProviders(
+      <AnnotatedMarkdown
+        slug="p"
+        issueNumber={1}
+        body={body}
+        annotations={[]}
+        onStage={() => {}}
+        onEditDraft={() => {}}
+        onRemoveDraft={() => {}}
+        onResolve={() => {}}
+      />,
+      client,
+    );
+    const container = await waitFor(() => {
+      const el = view.getByTestId("annotated-markdown");
+      if (!el.querySelector("[data-loc] pre code")) throw new Error("no card");
+      return el;
+    });
+    // pierre draws the card's rows in a shadow root, which the mock does not.
+    const host = document.createElement("diffs-container");
+    container.querySelector("[data-loc] pre")?.after(host);
+    const shadow = host.shadowRoot ?? host.attachShadow({ mode: "open" });
+    shadow.innerHTML = '<div data-line="1"><span>const a = 1;</span></div>';
+    const row = shadow.querySelector("span")?.firstChild;
+    // The "a" of "const a = 1;": the whole "![a.ts](…)", columns 5 to 56.
+    expect(
+      anchorForSelection(
+        container,
+        buildSegmentIndex(body),
+        ends(row, 6, row, 7),
+      ),
+    ).toEqual({
+      lineStart: 1,
+      lineEnd: 1,
+      colStart: 5,
+      colEnd: body.indexOf(" after"),
+    });
+  });
+
   /** A project whose `JIRA-42` links out to its tracker. */
   function autolinkClient(): QueryClient {
     const client = chipClient();
@@ -1745,6 +1792,38 @@ describe("AnnotatedMarkdown entry placement and shadow fallback (T-384)", () => 
     // The shape ⌘/Ctrl-A produces on a real page: the selection's rect is as
     // tall as the document, while the file it anchors to is a short box.
     expect(await topWith(rect(0, 52), rect(0, 3150))).toBe(52);
+  });
+
+  it("keeps the line for an end in a shadow root that is in no card", () => {
+    // The shadow root's text reads like the rest of the line, but only a
+    // card's rows map, to the whole card.
+    const container = document.createElement("div");
+    const prose = document.createElement("p");
+    prose.setAttribute("data-loc", "1-1");
+    prose.append("alpha ");
+    const host = document.createElement("span");
+    const shadow = host.attachShadow({ mode: "open" });
+    const row = document.createElement("span");
+    row.textContent = "beta";
+    shadow.append(row);
+    prose.append(host);
+    container.append(prose);
+    document.body.append(container);
+    try {
+      const anchor = anchorForSelection(
+        container,
+        buildSegmentIndex("alpha beta\n"),
+        ends(prose.firstChild, 0, row.firstChild, 2),
+      );
+      expect(anchor).toEqual({
+        lineStart: 1,
+        lineEnd: 1,
+        colStart: null,
+        colEnd: null,
+      });
+    } finally {
+      container.remove();
+    }
   });
 
   it("widens to whole lines when an endpoint sits in a shadow root", () => {
