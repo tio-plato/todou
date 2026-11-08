@@ -189,12 +189,60 @@ describe("word-level diff in the rendered view (T-142)", () => {
       "z",
     ],
     ["an inline code span", "a `foo bar` b\n", "a `foo baz` b\n", "baz", "bar"],
+    [
+      "a link's text",
+      "see [foo bar](https://e.example) end\n",
+      "see [foo baz](https://e.example) end\n",
+      "baz",
+      "bar",
+    ],
   ])(
     "marks the one replaced word in %s",
     async (_name, before, after, ins, del) => {
       const { container } = await renderDiff(before, after);
       expect(texts(container, "ins.spec-ins")).toEqual([ins]);
       expect(texts(container, "del.spec-del")).toEqual([del]);
+    },
+  );
+
+  // Prose removed at either edge of a link's text was removed beside the
+  // link, and is put back beside it, on that side, not inside it.
+  it.each([
+    [
+      "after a link",
+      "see [foo](https://e.example) now.\n",
+      "see [foo](https://e.example).\n",
+      "now",
+      "after",
+    ],
+    [
+      "before a link that opens the line",
+      "first [foo](https://e.example) bar\n",
+      "[foo](https://e.example) bar\n",
+      "first",
+      "before",
+    ],
+    [
+      "after a link holding only an image that opens the line",
+      "[![logo](https://e.example/x.png)](https://e.example) now.\n",
+      "[![logo](https://e.example/x.png)](https://e.example).\n",
+      "now",
+      "after",
+    ],
+  ])(
+    "puts prose removed %s outside it",
+    async (_where, before, after, del, side) => {
+      const { container } = await renderDiff(before, after);
+      expect(texts(container, "del.spec-del")).toEqual([del]);
+      const removed = container.querySelector("del.spec-del");
+      const link = container.querySelector("a");
+      if (!removed || !link) throw new Error("nothing rendered");
+      expect(link.contains(removed)).toBe(false);
+      const follows = Boolean(
+        link.compareDocumentPosition(removed) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      );
+      expect(follows ? "after" : "before").toBe(side);
     },
   );
 
