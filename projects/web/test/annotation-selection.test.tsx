@@ -705,6 +705,12 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
       "[cc]",
       { lineStart: 1, lineEnd: 1, colStart: 12, colEnd: 13 },
     ],
+    [
+      "a word after inline HTML a list item wraps",
+      "- a <kbd\n  x>b</kbd> c\n",
+      " [c]",
+      { lineStart: 2, lineEnd: 2, colStart: 13, colEnd: 13 },
+    ],
   ])("anchors %s to its own columns", async (_name, body, pick, anchor) => {
     const { onStage, button } = await stageSelection(body, (container) =>
       bracketedIn(container, pick),

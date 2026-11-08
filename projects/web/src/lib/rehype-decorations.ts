@@ -1349,10 +1349,13 @@ function paintRuns(
  * source text: react-markdown turns every `raw` node into text after the
  * last rehype pass. Cut at the marks' edges, each run is still a `raw` node,
  * so it still reaches the page as text and never as markup, and the marks
- * around it are built like any other. Only a node whose position reads as
- * its value is cut: `rehypeDetails` places the pieces it cuts out of a raw
- * node inside a container short by the container's prefix, and those keep
- * no mark. A removed run is never put back inside one; the text beside it
+ * around it are built like any other. A node whose position reads as its
+ * value is cut by addition; one a line's container prefix cuts into, inline
+ * HTML in a list item say, through the runs `textPieces` lines it up in,
+ * as `buildSegmentIndex` records them. A node that lines up neither way is
+ * left alone: `rehypeDetails` places the pieces it cuts out of a raw node
+ * inside a container short by the container's prefix, and those keep no
+ * mark. A removed run is never put back inside one; the text beside it
  * takes it, as it always did.
  */
 function decorateRaw(
@@ -1362,20 +1365,19 @@ function decorateRaw(
 ): ElementContent[] | null {
   const from = node.position?.start.offset;
   const to = node.position?.end.offset;
-  if (from === undefined || to === undefined) return null;
-  if (source?.slice(from, to) !== node.value) return null;
+  if (from === undefined || to === undefined || source === null) return null;
   const hits = hitsOf(spans, from, to);
   if (hits.length === 0) return null;
+  let toValue = (offset: number, _edge: "start" | "end") =>
+    Math.max(0, Math.min(to - from, offset - from));
+  if (source.slice(from, to) !== node.value) {
+    const pieces = textPieces(source, from, to, node.value, false);
+    if (pieces === null) return null;
+    toValue = (offset, edge) => valueOffsetIn(pieces, offset, edge);
+  }
   return paintRuns(
     node.value,
-    {
-      from,
-      to,
-      hits,
-      cuts: [],
-      placed: new Set(),
-      toValue: (offset) => Math.max(0, Math.min(to - from, offset - from)),
-    },
+    { from, to, hits, cuts: [], placed: new Set(), toValue },
     (value): Raw => ({ type: "raw", value }),
   );
 }

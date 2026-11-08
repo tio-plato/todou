@@ -439,6 +439,15 @@ describe("annotation highlights on raw HTML", () => {
     expect(texts(container, "mark.spec-mark-comment")).toEqual([]);
   });
 
+  it("marks the anchored characters of inline HTML a list item wraps", async () => {
+    // "x" is column 3 of line 2, past the item's indent.
+    const { container } = await renderSpec({
+      body: "- a <kbd\n  x>b</kbd> c\n",
+      annotations: [anchored("comment", 2, 3, 2, 3)],
+    });
+    expect(texts(container, "mark.spec-mark-comment")).toEqual(["x"]);
+  });
+
   // [shape, body, the anchor's line, column, line, column, what is marked].
   it.each([
     [

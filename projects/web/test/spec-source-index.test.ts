@@ -169,6 +169,24 @@ describe("buildSegmentIndex", () => {
     ).toEqual(literals);
   });
 
+  // [source, the literals' texts, where each starts]. The item's indent is
+  // in none of them, and a reference is kept as written, as the page shows.
+  it.each([
+    ["- a <kbd\n  x>b</kbd> c\n", ["<kbd\n", "x>", "</kbd>"], [4, 11, 14]],
+    [
+      '- a <span title="&amp;\n  x">b</span> c\n',
+      ['<span title="&amp;\n', 'x">', "</span>"],
+      [4, 25, 29],
+    ],
+  ])(
+    "records the runs of a wrapped inline tag in %j",
+    (source, texts, starts) => {
+      const { literals } = buildSegmentIndex(source);
+      expect(literals.map((literal) => literal.text)).toEqual(texts);
+      expect(literals.map((literal) => literal.start)).toEqual(starts);
+    },
+  );
+
   it("keeps a fold's summary out of the flattened prose", () => {
     const source =
       "<details><summary>Fold here</summary>\n\nbody text\n\n</details>\n";
