@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useRouterState } from "@tanstack/react-router";
 import type { TimelineComment, TimelineItem } from "@todou/shared";
 import { answersByComment, enumValue } from "@todou/shared";
-import { ArrowDownIcon } from "lucide-react";
+import { ArrowDownIcon, ArrowUpIcon } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -54,9 +54,15 @@ import {
   conversationEnd,
   isHoldingTarget,
   landAtBottom,
+  revealAboveEnd,
+  usableViewport,
   useOwnHold,
 } from "@/lib/scroll-insets.ts";
-import { parseTimelineAnchor } from "@/lib/timeline-anchors.ts";
+import {
+  commentAnchor,
+  eventAnchor,
+  parseTimelineAnchor,
+} from "@/lib/timeline-anchors.ts";
 import { useReadFailure } from "@/lib/use-read-failure.ts";
 import { cn } from "@/lib/utils";
 
@@ -70,9 +76,14 @@ const IDLE_BUDGET_MS = 50;
  */
 const PILL_GAP = 12;
 
+/** The key an item renders under, and its identity across fetches. */
+function itemKey(item: TimelineItem): string {
+  return `${item.type}-${item.id}`;
+}
+
 /** The key a unit renders under, and its identity across fills. */
 function unitKey(unit: RenderUnit): string {
-  if (unit.kind === "item") return `${unit.item.type}-${unit.item.id}`;
+  if (unit.kind === "item") return itemKey(unit.item);
   if (unit.kind === "hidden") return hiddenRunKey(unit);
   return `group-${unit.events[0]?.id}`;
 }
@@ -120,7 +131,10 @@ export function Timeline({
   };
   const anchorHash = useRouterState({ select: (s) => s.location.hash });
   const atBottomRef = useRef(true);
-  const [newBelow, setNewBelow] = useState(false);
+  // While New messages is up, the last item the reader had seen when new ones
+  // arrived below it.
+  const [lastSeen, setLastSeen] = useState<string | null>(null);
+  const newBelow = lastSeen !== null;
   const didInitialScroll = useRef(false);
   const blockRef = useRef<HTMLDivElement>(null);
   // Chunk-insert compensation, captured at click time (T-30): the document
@@ -258,6 +272,10 @@ export function Timeline({
   const fill = useRef({ keys: unitKeys, index: fillIndex });
   fill.current = { keys: unitKeys, index: fillIndex };
   const listRef = useRef<HTMLDivElement>(null);
+  // Whether the reader is past the end of the list, in what follows it: a
+  // phone's sidebar, or the comment box with the list's end gone under the
+  // header. Only New messages asks, so only measured while it is up.
+  const [pastEnd, setPastEnd] = useState(false);
   // Milliseconds per unit, as the last fill measured them.
   const fillRate = useRef<number | null>(null);
   useEffect(() => {
@@ -366,7 +384,7 @@ export function Timeline({
     ) {
       scrollToBottom();
       didInitialScroll.current = true;
-      setNewBelow(false);
+      setLastSeen(null);
       finishQuestionLanding();
     }
   });
@@ -424,7 +442,7 @@ export function Timeline({
   const lastKey = lastPending
     ? `pending-${lastPending.key}`
     : lastItem
-      ? `${lastItem.type}-${lastItem.id}`
+      ? itemKey(lastItem)
       : null;
   const prevLastKey = useRef(lastKey);
   useEffect(() => {
@@ -433,12 +451,15 @@ export function Timeline({
       lastKey !== prevLastKey.current &&
       prevLastKey.current !== null
     ) {
-      if (atBottomRef.current) {
-        // An anchor or a question still held is where the untouched reader
-        // was sent, and following would yank them off it (T-520).
-        if (!isHoldingTarget()) scrollToBottom();
+      // An anchor, a question or New messages' own landing still held is
+      // where the untouched reader was sent, and following would yank them
+      // off it (T-520): like a reader away from the end, they are told.
+      if (atBottomRef.current && !isHoldingTarget()) {
+        scrollToBottom();
       } else {
-        setNewBelow(true);
+        // The end the reader left, kept through later arrivals.
+        const seen = prevLastKey.current;
+        setLastSeen((kept) => kept ?? seen);
       }
     }
     prevLastKey.current = lastKey;
@@ -454,26 +475,98 @@ export function Timeline({
         conversationEnd(),
         window.innerHeight,
       );
-      if (atBottomRef.current) setNewBelow(false);
+      if (atBottomRef.current) setLastSeen(null);
     };
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
+  // The list's end moves with a scroll, a resize or a rotation, and with
+  // content loading or arriving on either side of it.
+  useEffect(() => {
+    if (!newBelow) return;
+    const measure = () => {
+      const list = listRef.current;
+      if (list !== null)
+        setPastEnd(list.getBoundingClientRect().bottom < usableViewport().top);
+    };
+    measure();
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(measure);
+    observer?.observe(document.body);
+    window.addEventListener("scroll", measure, { passive: true });
+    window.addEventListener("resize", measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("scroll", measure);
+      window.removeEventListener("resize", measure);
+    };
+  }, [newBelow]);
+
   // Back at the end, or past it, the next showing waits for a scroll down.
   if (endBelow === false && revealed) setRevealed(false);
   const shown = newBelow || (revealed && endBelow === true);
+  // Past the end, the new items are above the reader, and the column the
+  // layer is stuck in has gone out of sight above them too.
+  const current = !newBelow ? "plain" : pastEnd ? "up" : "new";
   // Kept while hidden, so what fades out is the button the reader just saw.
-  const [look, setLook] = useState<"new" | "plain">("plain");
-  if (shown && look !== (newBelow ? "new" : "plain"))
-    setLook(newBelow ? "new" : "plain");
+  const [look, setLook] = useState<"new" | "up" | "plain">("plain");
+  if (shown && look !== current) setLook(current);
   const motion = cn(
     "transition-[opacity,translate] duration-200 ease-out",
     shown ? "translate-y-0 opacity-100" : "opacity-0 motion-safe:translate-y-2",
   );
   const toBottom = () => {
     scrollToBottom();
-    setNewBelow(false);
+    setLastSeen(null);
+    setRevealed(false);
+  };
+  // Where an item lands: its own anchor, or, folded into a group or a hidden
+  // run with no box of its own, the unit holding it.
+  const landingFor = (key: string): HTMLElement | null => {
+    const list = listRef.current;
+    if (list === null) return null;
+    const item = items.find((i) => itemKey(i) === key);
+    const anchor =
+      item?.type === "comment"
+        ? commentAnchor(item.id)
+        : item?.type === "event"
+          ? eventAnchor(item.id)
+          : null;
+    const own =
+      anchor === null ? null : list.querySelector<HTMLElement>(`#${anchor}`);
+    if (own !== null) return own;
+    const holder = [...unitsAbove, ...unitsBelow].find((unit) =>
+      unit.kind === "item"
+        ? itemKey(unit.item) === key
+        : unit.kind === "group"
+          ? unit.events.some((event) => itemKey(event) === key)
+          : unit.comments.some((comment) => itemKey(comment) === key),
+    );
+    const unit = holder === undefined ? key : unitKey(holder);
+    return list.querySelector<HTMLElement>(`[data-unit="${unit}"]`);
+  };
+  // New messages goes to the first item the reader has not seen, under the
+  // header rather than at the end, which would skip the ones above it. Found
+  // now rather than on arrival: the reader's own comment arrives as a pending
+  // row and is replaced by the comment it became.
+  const toFirstNew = () => {
+    const order = [
+      ...items.map(itemKey),
+      ...pendingComments.map((pending) => `pending-${pending.key}`),
+    ];
+    const at = lastSeen === null ? -1 : order.indexOf(lastSeen);
+    const first = at === -1 ? undefined : order[at + 1];
+    const el = first === undefined ? null : landingFor(first);
+    if (el === null) {
+      toBottom();
+      return;
+    }
+    forgetScroll();
+    keepHold(revealAboveEnd(el));
+    setLastSeen(null);
     setRevealed(false);
   };
 
@@ -493,7 +586,11 @@ export function Timeline({
   const renderItem = (item: TimelineItem) => {
     const type = enumValue(item.type, "timeline item type");
     return (
-      <div key={`${type}-${item.id}`} className="pb-2">
+      <div
+        key={`${type}-${item.id}`}
+        data-unit={`${type}-${item.id}`}
+        className="pb-2"
+      >
         {item.type === "comment" ? (
           <CommentItem
             slug={slug}
@@ -531,7 +628,7 @@ export function Timeline({
     const key = unitKey(unit);
     if (unfilled.has(key)) {
       return (
-        <div key={key} className="pb-2" data-unfilled>
+        <div key={key} data-unit={key} className="pb-2" data-unfilled>
           <Skeleton className="h-16 w-full" />
         </div>
       );
@@ -539,7 +636,7 @@ export function Timeline({
     if (unit.kind === "item") return renderItem(unit.item);
     if (unit.kind === "hidden") {
       return (
-        <div key={key} className="pb-2">
+        <div key={key} data-unit={key} className="pb-2">
           <HiddenBlock
             count={unit.comments.length}
             onReveal={() => reveal(key)}
@@ -548,7 +645,7 @@ export function Timeline({
       );
     }
     return (
-      <div key={key} className="pb-2">
+      <div key={key} data-unit={key} className="pb-2">
         <EventGroup
           family={unit.family}
           events={unit.events}
@@ -636,7 +733,11 @@ export function Timeline({
         )}
         {unitsBelow.map(renderUnit)}
         {pendingComments.map((pending) => (
-          <div key={`pending-${pending.key}`} className="pb-2">
+          <div
+            key={`pending-${pending.key}`}
+            data-unit={`pending-${pending.key}`}
+            className="pb-2"
+          >
             <CommentItem
               slug={slug}
               issueNumber={issueNumber}
@@ -652,21 +753,30 @@ export function Timeline({
           within its parent, and the page's column is what lets this one
           float over the whole card, title and body included. It holds no
           height, the button rising out of it, and `mb-0` takes back the gap
-          the column's `space-y-4` would otherwise leave below it. */}
+          the column's `space-y-4` would otherwise leave below it. Pointing
+          up it is fixed instead, since the column is above the viewport. */}
       <div
         data-scroll-to-bottom=""
         data-state={shown ? "shown" : "hidden"}
         inert={!shown}
-        className="sticky z-10 mb-0 flex h-0 items-end justify-center"
+        className={cn(
+          "z-10 mb-0 flex h-0 items-end justify-center",
+          look === "up" ? "fixed inset-x-0" : "sticky",
+        )}
         style={{ bottom: aboveDock(PILL_GAP) }}
       >
-        {look === "new" ? (
+        {look !== "plain" ? (
           <Button
             size="sm"
             className={cn("shadow-lg", motion)}
-            onClick={toBottom}
+            onClick={toFirstNew}
           >
-            <ArrowDownIcon className="size-4" /> New messages
+            {look === "up" ? (
+              <ArrowUpIcon className="size-4" />
+            ) : (
+              <ArrowDownIcon className="size-4" />
+            )}{" "}
+            New messages
           </Button>
         ) : (
           <Button

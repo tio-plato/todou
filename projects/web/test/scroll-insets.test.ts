@@ -7,6 +7,7 @@ import {
   isHoldingTarget,
   landAtBottom,
   restingScrollY,
+  revealAboveEnd,
   usableViewport,
   useScrollInsets,
 } from "../src/lib/scroll-insets.ts";
@@ -332,6 +333,8 @@ describe("landing on the end of the conversation", () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     FakeResizeObserver.instances = [];
+    for (const el of document.querySelectorAll("[data-top]")) el.remove();
+    document.documentElement.style.removeProperty("scroll-padding-top");
   });
 
   /** A page whose declared end sits at `end.y`; returns every scroll target. */
@@ -353,9 +356,11 @@ describe("landing on the end of the conversation", () => {
     });
     vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
       function (this: Element) {
-        const bottom =
-          (this as HTMLElement).dataset?.end === "" ? end.y - scroll.y : 0;
-        return { top: 0, bottom, height: 0, width: 0, left: 0 } as DOMRect;
+        const { dataset } = this as HTMLElement;
+        const bottom = dataset?.end === "" ? end.y - scroll.y : 0;
+        const top =
+          dataset?.top === undefined ? 0 : Number(dataset.top) - scroll.y;
+        return { top, bottom, height: 0, width: 0, left: 0 } as DOMRect;
       },
     );
     render(createElement(EndHarness));
@@ -393,5 +398,53 @@ describe("landing on the end of the conversation", () => {
     const { targets } = page({ y });
     landAtBottom();
     expect(targets).toEqual([landed]);
+  });
+
+  /** An item at page coordinate `y`. */
+  function item(y: number) {
+    const el = document.createElement("div");
+    el.dataset.top = String(y);
+    document.body.append(el);
+    return el;
+  }
+
+  // New messages' landing on the first new item.
+  it("puts an item under the top overlays when enough of the page follows it", () => {
+    const { targets } = page({ y: 2000 });
+    // What the page's own overlays left there, set aside for a round number.
+    document.documentElement.style.scrollPaddingTop = "100px";
+    const el = item(500);
+    revealAboveEnd(el);
+    expect(targets).toEqual([500 - 100]);
+    expect(el.classList.contains("anchor-flash")).toBe(true);
+  });
+
+  it("holds an item it put under the overlays there as the page grows", () => {
+    const end = { y: 2000 };
+    const { targets } = page(end);
+    revealAboveEnd(item(500));
+    expect(isHoldingTarget()).toBe(true);
+    end.y = 2600;
+    resizePage();
+    expect(targets).toEqual([
+      500 - usableViewport().top,
+      500 - usableViewport().top,
+    ]);
+  });
+
+  it("stops at the end while too little follows the item, and lets it rise as more loads", () => {
+    const end = { y: 2000 };
+    const { targets } = page(end);
+    const el = item(1500);
+    revealAboveEnd(el);
+    expect(targets).toEqual([2000 - VIEWPORT]);
+    expect(el.classList.contains("anchor-flash")).toBe(true);
+    // A landing on the end for now: what arrives meanwhile is followed.
+    expect(isHoldingTarget()).toBe(false);
+    // Images below it load, and there is room for it to go all the way up.
+    end.y = 2600;
+    resizePage();
+    expect(targets).toEqual([2000 - VIEWPORT, 1500 - usableViewport().top]);
+    expect(isHoldingTarget()).toBe(true);
   });
 });

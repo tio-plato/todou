@@ -1,5 +1,11 @@
 import { act, fireEvent, waitFor, within } from "@testing-library/react";
-import type { TimelineComment, TimelinePage } from "@todou/shared";
+import type {
+  TimelineComment,
+  TimelineEvent,
+  TimelineItem,
+  TimelinePage,
+} from "@todou/shared";
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Timeline } from "../src/components/timeline/timeline.tsx";
 import { FakeResizeObserver, resizePage } from "./fake-resize-observer.ts";
@@ -35,8 +41,35 @@ const comment = (id: number): TimelineComment => ({
   agent_context: null,
 });
 
+/** One of two labels added in a burst, which the timeline folds into a group. */
+const labelAdded = (id: number): TimelineEvent => ({
+  type: "event",
+  id,
+  event_type: "label_added",
+  actor: author,
+  payload: { label: { id, name: `label-${id}`, color: "#0f0" } },
+  created_at: "2026-09-08T10:00:00Z",
+  agent_context: null,
+});
+
 const HEIGHT = 10_000;
 const VIEWPORT = 800;
+
+type Pending = Array<{ key: number; comment: TimelineComment }>;
+/** The page's own comments still being sent, set from the test. */
+let setPending: (pending: Pending) => void = () => {};
+function TimelineWithPending() {
+  const [pending, set] = useState<Pending>([]);
+  setPending = set;
+  return (
+    <Timeline
+      slug="p"
+      issueNumber={7}
+      pendingComments={pending}
+      viewer={{ id: 1, isAdmin: false, role: "writer" }}
+    />
+  );
+}
 
 /**
  * The card's timeline, with a page geometry to scroll in. `bottoms` counts the
@@ -44,7 +77,7 @@ const VIEWPORT = 800;
  * gesture first, the way a browser delivers it.
  */
 async function open(hash = "") {
-  const items = [comment(101), comment(102), comment(103)];
+  const items: TimelineItem[] = [comment(101), comment(102), comment(103)];
   vi.stubGlobal("fetch", (async (input: unknown) => {
     const url = String(input);
     const page: TimelinePage = {
@@ -76,7 +109,9 @@ async function open(hash = "") {
     VIEWPORT,
   );
   let bottoms = 0;
+  let scrolls = 0;
   vi.spyOn(window, "scrollTo").mockImplementation((...args: unknown[]) => {
+    scrolls += 1;
     // The largest offset there is, never `scrollHeight` itself: iOS takes
     // the overshoot literally for a frame and shows a blank screen (T-585).
     if (args[1] === HEIGHT - VIEWPORT) {
@@ -91,29 +126,30 @@ async function open(hash = "") {
     reveals.push(this.id);
   });
   const client = testQueryClient();
-  const view = renderWithProviders(
-    <Timeline
-      slug="p"
-      issueNumber={7}
-      pendingComments={[]}
-      viewer={{ id: 1, isAdmin: false, role: "writer" }}
-    />,
-    client,
-    { initialEntry: `/${hash}` },
-  );
+  const view = renderWithProviders(<TimelineWithPending />, client, {
+    initialEntry: `/${hash}`,
+  });
   await view.findByText("body 103");
-  const arrive = async (id: number) => {
-    items.push(comment(id));
-    await act(() =>
+  const refetch = () =>
+    act(() =>
       client.refetchQueries({ queryKey: ["timeline", "p", 7, "tail"] }),
     );
+  const arrive = async (id: number) => {
+    items.push(comment(id));
+    await refetch();
     await view.findByText(`body ${id}`);
   };
   return {
     view,
     arrive,
+    items,
+    refetch,
+    pending: (next: Pending) => act(() => setPending(next)),
     reveals,
     bottoms: () => bottoms,
+    scrolls: () => scrolls,
+    /** What a landing flashed, the way an anchor's is. */
+    flashed: () => [...view.container.querySelectorAll(".anchor-flash")],
     at: () => state.y,
     /** Where a reveal put the viewport, which is no gesture of the reader's. */
     revealedAt: (y: number) => {
@@ -185,6 +221,13 @@ function trackWindowListeners() {
   return () => [...live].map((entry) => entry.type);
 }
 
+/** A click as a browser delivers it: the press first, which ends a hold. */
+function clickNewMessages(view: ReturnType<typeof renderWithProviders>) {
+  const button = view.getByRole("button", { name: "New messages" });
+  fireEvent.pointerDown(button);
+  fireEvent.click(button);
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -235,17 +278,76 @@ describe("landings on the end of the timeline (T-527)", () => {
     expect(page.bottoms()).toBe(3);
   });
 
-  it("New messages holds the end it jumps to", async () => {
+  it("New messages holds the first new item it jumps to", async () => {
     const page = await open();
     await waitFor(() => expect(page.bottoms()).toBe(1));
     page.readerAt(0);
     await page.arrive(104);
-    const button = page.view.getByRole("button", { name: "New messages" });
-    fireEvent.pointerDown(button);
-    fireEvent.click(button);
-    expect(page.bottoms()).toBe(2);
+    await page.arrive(105);
+    clickNewMessages(page.view);
+    // The first the reader has not seen, not the last that arrived.
+    expect(page.flashed().map((el) => el.id)).toEqual(["comment-104"]);
+    expect(page.bottoms()).toBe(1);
+    const placed = page.scrolls();
     resizePage();
-    expect(page.bottoms()).toBe(3);
+    expect(page.scrolls()).toBe(placed + 1);
+    expect(page.bottoms()).toBe(1);
+  });
+
+  it("New messages lands on the group an event arrived folded into", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(0);
+    page.items.push(labelAdded(200), labelAdded(201));
+    await page.refetch();
+    const group = await page.view.findByTestId("event-group");
+    clickNewMessages(page.view);
+    expect(page.flashed()).toEqual([group.parentElement]);
+    expect(page.bottoms()).toBe(1);
+  });
+
+  it("New messages finds the reader's own comment under its new name", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(0);
+    // Sent while away: first a pending row, then the comment it became.
+    await page.pending([{ key: 1, comment: comment(104) }]);
+    page.items.push(comment(104));
+    await page.refetch();
+    await page.pending([]);
+    clickNewMessages(page.view);
+    expect(page.flashed().map((el) => el.id)).toEqual(["comment-104"]);
+    expect(page.bottoms()).toBe(1);
+  });
+
+  it("New messages goes to the end when the last item seen is gone", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(0);
+    await page.arrive(104);
+    page.items.splice(
+      page.items.findIndex((item) => item.id === 103),
+      1,
+    );
+    await page.refetch();
+    await waitFor(() => expect(page.view.queryByText("body 103")).toBeNull());
+    clickNewMessages(page.view);
+    expect(page.bottoms()).toBe(2);
+  });
+
+  it("New messages, holding the first new item, announces what comes next", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(0);
+    await page.arrive(104);
+    clickNewMessages(page.view);
+    // Where the landing put the page, within a screen of the end.
+    page.revealedAt(HEIGHT - VIEWPORT - 300);
+    expect(newMessagesShown(page.view)).toBe(false);
+    await page.arrive(105);
+    // Not followed off the item the reader was sent to, but told.
+    expect(page.bottoms()).toBe(1);
+    expect(newMessagesShown(page.view)).toBe(true);
   });
 
   it("lets go when the timeline unmounts", async () => {
@@ -265,6 +367,7 @@ describe("landings on the end of the timeline (T-527)", () => {
     resizePage();
     expect(page.bottoms()).toBe(0);
     expect(page.reveals.at(-1)).toBe("comment-102");
+    expect(newMessagesShown(page.view)).toBe(true);
   });
 });
 
@@ -470,6 +573,67 @@ describe("the scroll-to-bottom button", () => {
     page.endBelow(false);
     expect(page.shown()).toBe(false);
     page.endBelow(true);
+    expect(page.shown()).toBe(false);
+  });
+
+  it("points New messages up at items above a reader past the end", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(0);
+    // The list's end above the viewport, as in a phone's sidebar below the
+    // comment box; read as the item arrives, with no scroll to say so.
+    const list = page.view.getByTestId("timeline-scroll");
+    const measure = Element.prototype.getBoundingClientRect;
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: Element) {
+        return this === list
+          ? ({ top: -900, bottom: -100, height: 800 } as DOMRect)
+          : measure.call(this);
+      },
+    );
+    await page.arrive(104);
+    expect(newMessagesShown(page.view)).toBe(true);
+    const button = page.view.getByRole("button", { name: "New messages" });
+    expect(button.querySelector(".lucide-arrow-up")).not.toBeNull();
+    clickNewMessages(page.view);
+    expect(page.flashed().map((el) => el.id)).toEqual(["comment-104"]);
+  });
+
+  it("turns New messages back down when a resize brings the list's end below the header", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(0);
+    const list = page.view.getByTestId("timeline-scroll");
+    const bottom = { y: -100 };
+    const measure = Element.prototype.getBoundingClientRect;
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: Element) {
+        return this === list
+          ? ({ top: bottom.y - 800, bottom: bottom.y, height: 800 } as DOMRect)
+          : measure.call(this);
+      },
+    );
+    await page.arrive(104);
+    const arrow = () =>
+      page.view
+        .getByRole("button", { name: "New messages" })
+        .querySelector(".lucide-arrow-up, .lucide-arrow-down")
+        ?.getAttribute("class");
+    expect(arrow()).toContain("lucide-arrow-up");
+    // A rotation, with no scroll: the list's end is now on screen below.
+    bottom.y = 500;
+    fireEvent(window, new Event("resize"));
+    expect(arrow()).toContain("lucide-arrow-down");
+  });
+
+  it("takes no direction from the landing New messages makes", async () => {
+    const page = await openAway();
+    await page.arrive(104);
+    // Turned just before the click: the landing comes within a second.
+    fireEvent.wheel(window, { deltaY: 100 });
+    clickNewMessages(page.view);
+    // Down to the first new item, the page's own scroll.
+    page.revealedAt(page.at() + 500);
     expect(page.shown()).toBe(false);
   });
 
