@@ -91,7 +91,7 @@ if (!/^postgres(ql)?:\/\//.test(systemUrl)) {
   await client.connect();
   try {
     const table = await client.query<{ name: string | null }>(
-      "SELECT to_regclass('public.projects')::text AS name",
+      "SELECT to_regclass('projects')::text AS name",
     );
     const found =
       table.rows[0]?.name == null
