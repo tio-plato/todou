@@ -28,12 +28,22 @@ export function visualViewportInsets(): { top: number; bottom: number } {
  *
  * iOS WebKit measures client rects and `scrollY` from the visual viewport's
  * top, so this is 0 there; an engine that follows CSSOM View measures them
- * from the layout viewport's top and gets `offsetTop`. Zero under a pinch
- * zoom, like the insets above.
+ * from the layout viewport's top and gets `offsetTop`, which is also what
+ * `pageTop - scrollY` reads there. Zero under a pinch zoom, like the insets
+ * above.
+ *
+ * With the keyboard up, iOS moves `scrollY` and client rects as soon as the
+ * page scrolls itself, but `pageTop` only at the visual viewport's next
+ * update, a frame or two later: read in between, `pageTop - scrollY` is the
+ * distance just scrolled, not 0. So that difference only tells which of the
+ * two origins the engine uses.
  */
 export function visualViewportClientTop(): number {
   const vv = unzoomedVisualViewport();
-  return vv === null ? 0 : vv.pageTop - window.scrollY;
+  if (vv === null) return 0;
+  return Math.abs(vv.pageTop - window.scrollY - vv.offsetTop) < 1
+    ? vv.offsetTop
+    : 0;
 }
 
 /** `null` where the page should behave as if there were no visual viewport. */
