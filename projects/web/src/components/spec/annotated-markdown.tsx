@@ -50,6 +50,10 @@ import {
   useCodeHighlights,
 } from "@/lib/code-highlights.ts";
 import { codeBodyLines, codeRowSource } from "@/lib/code-rows.ts";
+import {
+  type CompareAnchor,
+  compareAnchorForSelection,
+} from "@/lib/compare-anchor.ts";
 import { rangeInRow, rowText } from "@/lib/pierre-rows.ts";
 import {
   INS_BLOCK_CLASS,
@@ -370,8 +374,12 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
    * spec-view owns that judgement, and the reader's preference.
    */
   foldUnchanged?: boolean;
-  /** Stage a draft for the selected source range of the viewed version. */
-  onStage: (range: AnchorRange) => void;
+  /**
+   * Stage a draft for the selected source range: of the viewed version, or
+   * of the compare baseline where `baseline` says the selection was in what
+   * the comparison put back of it.
+   */
+  onStage: (range: CompareAnchor) => void;
   /** Load a staged draft back into the composer for rewriting (T-159). */
   onEditDraft: (draft: SpecReviewDraft) => void;
   onRemoveDraft: (id: string) => void;
@@ -389,12 +397,6 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
   const remarkPlugins = useMarkdownRemarkPlugins(slug, { document: true });
 
   const index = useMemo(() => buildSegmentIndex(body), [body]);
-  const resolveSelection = useCallback(
-    (container: Element, ends: SelectionEndpoints) =>
-      anchorForSelection(container, index, ends),
-    [index],
-  );
-  const { pending, clear } = useSelectionEntry(containerRef, resolveSelection);
   const baselineIndex = useMemo(
     () => (baselineBody === undefined ? null : buildSegmentIndex(baselineBody)),
     [baselineBody],
@@ -437,6 +439,22 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       baselineIndex === null ? undefined : pairedFences(baselineIndex, index),
     [baselineIndex, index],
   );
+  const resolveSelection = useCallback(
+    (container: Element, ends: SelectionEndpoints): CompareAnchor | null => {
+      if (baselineIndex === null || fenceBaselines === undefined) {
+        return anchorForSelection(container, index, ends);
+      }
+      return compareAnchorForSelection(
+        container,
+        index,
+        baselineIndex,
+        fenceBaselines,
+        ends,
+      );
+    },
+    [index, baselineIndex, fenceBaselines],
+  );
+  const { pending, clear } = useSelectionEntry(containerRef, resolveSelection);
   const annotationRanges = useMemo(
     () => annotations.map((a) => ({ start: a.start, end: a.end })),
     [annotations],
