@@ -26,8 +26,11 @@ import {
 } from "@/components/project-listbox.tsx";
 import { useQuoteReply } from "@/components/timeline/quote-reply.tsx";
 import {
+  entryOf,
   type QuotableSelection,
   quotableSelection,
+  quoteOfQuotable,
+  wholeQuoteOf,
 } from "@/components/timeline/selection-quote.tsx";
 import { Button } from "@/components/ui/button";
 import {
@@ -42,7 +45,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { copyToClipboard } from "@/lib/clipboard.ts";
-import { quoteOfSelection } from "@/lib/quote-markdown.ts";
 import { rehypeSourceLines } from "@/lib/rehype-source-lines.ts";
 import { commentAnchor } from "@/lib/timeline-anchors.ts";
 
@@ -92,9 +94,15 @@ export function EntryActionsMenu({
   issueNumber: number;
   /** Absent for the issue body, whose permalink is the card itself. */
   commentId?: number;
-  /** The stored markdown, which is what gets copied and quoted. */
+  /**
+   * The stored markdown, which is what gets copied, and quoted along with
+   * the questions the entry's card shows.
+   */
   body: string;
-  /** The rendered body, to tell a selection in it from one anywhere else. */
+  /**
+   * The rendered body, to tell a selection in this entry from one anywhere
+   * else, and to find the entry's question card.
+   */
   bodyRef: RefObject<HTMLElement | null>;
   label: string;
   /** For callers whose own dialogs have to hand focus back here on close. */
@@ -147,11 +155,12 @@ export function EntryActionsMenu({
     // and the live selection is still the one to read.
     const picked =
       selected.current ?? quotableSelection(window.getSelection(), document);
-    // A selection in some other entry's body says nothing about this one.
+    const rendered = bodyRef.current;
+    const entry = rendered === null ? null : entryOf(rendered);
+    // A selection in some other entry says nothing about this one; one in
+    // this entry's question card is this entry's as much as its body is.
     const cut =
-      picked === null || picked.body !== bodyRef.current
-        ? ""
-        : quoteOfSelection(picked.source, picked.anchor);
+      picked === null || picked.entry !== entry ? "" : quoteOfQuotable(picked);
     // The comment box takes the focus inside this press, the only focus iOS
     // raises the keyboard for, and an open menu traps the focus and would pull
     // it straight back. So the menu closes first, by hand, which leaves Radix
@@ -160,7 +169,7 @@ export function EntryActionsMenu({
     quoted.current = true;
     selected.current = null;
     flushSync(() => setOpen(false));
-    quote(cut.trim() === "" ? body : cut);
+    quote(cut.trim() === "" ? wholeQuoteOf(entry, body) : cut);
   };
 
   return (

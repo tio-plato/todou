@@ -25,17 +25,23 @@ import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { api } from "@/api/queries.ts";
 import { questionsQuery } from "@/api/questions.ts";
+import { QUOTE_REHYPE_PLUGINS } from "@/components/issue/entry-actions-menu.tsx";
 import { LoadFailure } from "@/components/shared/load-failure.tsx";
 import { MarkdownEditor } from "@/components/shared/markdown-editor.tsx";
 import { MarkdownView } from "@/components/shared/markdown-view.tsx";
 import { UserChip } from "@/components/shared/user-chip.tsx";
 import type { Target } from "@/components/timeline/comment-item.tsx";
+import {
+  useQuotablePart,
+  useQuotableQuestions,
+} from "@/components/timeline/selection-quote.tsx";
 import { useTimelineSettlement } from "@/components/timeline/timeline-answers.tsx";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog.tsx";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useRefCompletion } from "@/lib/editor/ref-completion.ts";
+import type { QuotePart } from "@/lib/quote-questions.ts";
 import { holdRevealed, revealBlock, useOwnHold } from "@/lib/scroll-insets.ts";
 import { useDirtySource } from "@/lib/unsaved-guard.ts";
 import { documentPip, useDocumentPip } from "@/lib/use-document-pip.ts";
@@ -108,22 +114,37 @@ function selectingInside(row: HTMLElement): boolean {
  * Markdown that sits inside an option row: kill the paragraph margins.
  * Those rows are horizontal flex, so whichever item holds markdown carries
  * `flex-1` — a code fence has no intrinsic width of its own, see `CodeBlock`.
+ *
+ * Each one is a quotable part of the comment: text selected in it quotes
+ * from its markdown, as text selected in the body does.
  */
 function InlineMarkdown({
   slug,
   issueNumber,
+  part,
   children,
   className = "",
 }: {
   slug: string;
   issueNumber: number;
+  /** Which text of which question this is, for Quote reply. */
+  part: QuotePart;
   /** created_at of the content this text belongs to (T-80 time cutoff). */
   children: string;
   className?: string;
 }) {
+  const quotableRef = useQuotablePart(children, part);
   return (
-    <div className={`min-w-0 [&_.markdown-body>p]:m-0 ${className}`}>
-      <MarkdownView slug={slug} issueNumber={issueNumber}>
+    <div
+      ref={quotableRef}
+      data-quote-body=""
+      className={`min-w-0 [&_.markdown-body>p]:m-0 ${className}`}
+    >
+      <MarkdownView
+        slug={slug}
+        issueNumber={issueNumber}
+        rehypePlugins={QUOTE_REHYPE_PLUGINS}
+      >
         {children}
       </MarkdownView>
     </div>
@@ -190,32 +211,43 @@ export function QuestionsCard({
   const settlement =
     established ??
     settlementOf(status.data?.items.find((i) => i.comment_id === commentId));
+  // Around whichever of the three below renders, so that a quote of the
+  // whole comment finds the questions even with the form popped out. A
+  // withdrawn card shows its questions and no answers, and is quoted so.
+  const quotableRef = useQuotableQuestions(
+    component,
+    settlement?.kind === "answered" ? settlement.answer.answers : null,
+  );
 
   if (settlement) {
     const hasDescriptions = component.questions.some((q) =>
       q.options.some((o) => o.description !== undefined),
     );
     return (
-      <SettledCard
-        slug={slug}
-        issueNumber={issueNumber}
-        component={component}
-        settlement={settlement}
-        hasDescriptions={hasDescriptions}
-      />
+      <div ref={quotableRef} data-quote-questions="">
+        <SettledCard
+          slug={slug}
+          issueNumber={issueNumber}
+          component={component}
+          settlement={settlement}
+          hasDescriptions={hasDescriptions}
+        />
+      </div>
     );
   }
   if (status.isSuccess) {
     return (
-      <AnswerForm
-        slug={slug}
-        issueNumber={issueNumber}
-        commentId={commentId}
-        component={component}
-        onAnswered={(record) => {
-          if (record.comment_id === commentId) setSubmitted(record);
-        }}
-      />
+      <div ref={quotableRef} data-quote-questions="">
+        <AnswerForm
+          slug={slug}
+          issueNumber={issueNumber}
+          commentId={commentId}
+          component={component}
+          onAnswered={(record) => {
+            if (record.comment_id === commentId) setSubmitted(record);
+          }}
+        />
+      </div>
     );
   }
   // Neutral: the verdict is not established. The answered card's grey frame
@@ -223,27 +255,29 @@ export function QuestionsCard({
   // footer slot — the one cell whose content the verdict decides — waits
   // as a skeleton, or names the failure when /questions failed.
   return (
-    <div className="mt-1 space-y-3 rounded-md border bg-muted/20 p-3">
-      {component.questions.map((q) => (
-        <AnsweredQuestion
-          key={q.key}
-          slug={slug}
-          issueNumber={issueNumber}
-          question={q}
-          known={false}
-        />
-      ))}
-      {status.isError ? (
-        <LoadFailure
-          message="Failed to load answer status."
-          detail={status.error.message}
-          onRetry={() => status.refetch()}
-          retrying={status.isFetching}
-          size="xs"
-        />
-      ) : (
-        <Skeleton className="h-4 w-40" />
-      )}
+    <div ref={quotableRef} data-quote-questions="">
+      <div className="mt-1 space-y-3 rounded-md border bg-muted/20 p-3">
+        {component.questions.map((q) => (
+          <AnsweredQuestion
+            key={q.key}
+            slug={slug}
+            issueNumber={issueNumber}
+            question={q}
+            known={false}
+          />
+        ))}
+        {status.isError ? (
+          <LoadFailure
+            message="Failed to load answer status."
+            detail={status.error.message}
+            onRetry={() => status.refetch()}
+            retrying={status.isFetching}
+            size="xs"
+          />
+        ) : (
+          <Skeleton className="h-4 w-40" />
+        )}
+      </div>
     </div>
   );
 }
@@ -618,12 +652,17 @@ function QuestionForm({
           <InlineMarkdown
             slug={slug}
             issueNumber={issueNumber}
+            part={{ kind: "header", question: question.key }}
             className="text-xs font-semibold text-muted-foreground uppercase"
           >
             {question.header}
           </InlineMarkdown>
         )}
-        <InlineMarkdown slug={slug} issueNumber={issueNumber}>
+        <InlineMarkdown
+          slug={slug}
+          issueNumber={issueNumber}
+          part={{ kind: "prompt", question: question.key }}
+        >
           {question.question}
         </InlineMarkdown>
       </legend>
@@ -654,13 +693,26 @@ function QuestionForm({
                 )}
               </span>
               <span className="min-w-0 flex-1 space-y-0.5">
-                <InlineMarkdown slug={slug} issueNumber={issueNumber}>
+                <InlineMarkdown
+                  slug={slug}
+                  issueNumber={issueNumber}
+                  part={{
+                    kind: "label",
+                    question: question.key,
+                    option: index,
+                  }}
+                >
                   {option.label}
                 </InlineMarkdown>
                 {option.description !== undefined && (
                   <InlineMarkdown
                     slug={slug}
                     issueNumber={issueNumber}
+                    part={{
+                      kind: "description",
+                      question: question.key,
+                      option: index,
+                    }}
                     className="text-xs text-muted-foreground"
                   >
                     {option.description}
@@ -739,12 +791,17 @@ function AnsweredQuestion({
           <InlineMarkdown
             slug={slug}
             issueNumber={issueNumber}
+            part={{ kind: "header", question: question.key }}
             className="text-xs font-semibold text-muted-foreground uppercase"
           >
             {question.header}
           </InlineMarkdown>
         )}
-        <InlineMarkdown slug={slug} issueNumber={issueNumber}>
+        <InlineMarkdown
+          slug={slug}
+          issueNumber={issueNumber}
+          part={{ kind: "prompt", question: question.key }}
+        >
           {question.question}
         </InlineMarkdown>
       </div>
@@ -768,7 +825,15 @@ function AnsweredQuestion({
                 )}
               </span>
               <div className="min-w-0 flex-1 space-y-0.5">
-                <InlineMarkdown slug={slug} issueNumber={issueNumber}>
+                <InlineMarkdown
+                  slug={slug}
+                  issueNumber={issueNumber}
+                  part={{
+                    kind: "label",
+                    question: question.key,
+                    option: index,
+                  }}
+                >
                   {option.label}
                 </InlineMarkdown>
                 {showDescriptions && option.description !== undefined && (
@@ -778,6 +843,11 @@ function AnsweredQuestion({
                   <InlineMarkdown
                     slug={slug}
                     issueNumber={issueNumber}
+                    part={{
+                      kind: "description",
+                      question: question.key,
+                      option: index,
+                    }}
                     className="text-xs opacity-80"
                   >
                     {option.description}
@@ -800,6 +870,7 @@ function AnsweredQuestion({
             <InlineMarkdown
               slug={slug}
               issueNumber={issueNumber}
+              part={{ kind: "other", question: question.key }}
               className="flex-1"
             >
               {record.other}
