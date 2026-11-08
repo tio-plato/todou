@@ -123,8 +123,8 @@ describe.skipIf(!PG_URL)("reference lock order", () => {
   });
 
   // The holder is the write on B that references A: it writes B's row, then
-  // share-locks A. B has the smaller id, so that is also the order the fixed
-  // server takes them in. `prepare` runs before the holder starts, and what
+  // locks A. B has the smaller id, so that is also the order the fixed server
+  // takes them in. `prepare` runs before the holder starts, and what
   // it returns reaches `request`.
   const race = async <P = undefined>(
     request: (a: Card, b: Card, prepared: P) => Promise<Response>,
@@ -325,8 +325,8 @@ describe.skipIf(!PG_URL)("reference lock order", () => {
   it("a new card locks the card its draft is on before taking a number", async () => {
     const c = await createCard(slug, "C");
     const draft = await uploadDraft(c, "new.txt");
-    // The holder creates a card that references C: it share-locks C, then
-    // takes this project's project_meta.
+    // The holder creates a card that references C: it locks C, then takes
+    // this project's project_meta.
     const response = await contend(
       () => lockCard(c.id, "SHARE"),
       () =>
@@ -523,9 +523,8 @@ describe.skipIf(!PG_URL)("reference lock order", () => {
     await expectAttached(draft.id, f.id);
   });
 
-  // Only a draft on a frozen card is skipped when its row is taken. On any
-  // other card the write waits, so a delete that rolls back leaves it to
-  // attach.
+  // A write attaching a draft waits for a delete holding its row, so a
+  // delete that rolls back leaves it to attach.
   it("a comment linking a draft whose delete rolls back attaches it", async () => {
     const x = await createCard(slug, "X");
     const a = await createCard(slug, "A");
