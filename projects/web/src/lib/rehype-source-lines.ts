@@ -36,6 +36,18 @@ const BLOCK_TAGS = new Set([
 export const SOURCE_LINE_ATTR = "data-loc";
 
 /**
+ * The absolute source offsets `start-end` (half-open) a link or an image
+ * was rendered from. A chip shows a title where the source says `#12`, and a
+ * document card shows a file the source names by address, so neither reads
+ * like its source; this is how a selection touching one still finds where
+ * it lies, and takes it whole.
+ */
+export const SOURCE_SPAN_ATTR = "data-loc-span";
+
+/** Inline elements whose rendered text may differ from their source. */
+const SPAN_TAGS = new Set(["a", "img"]);
+
+/**
  * Where a code block's contents begin in the source (T-52). The stamped
  * range starts at the ``` marker for fenced blocks but at the first code
  * line for indented ones; the renderer records the resolved start so
@@ -66,6 +78,7 @@ export function parseSourceLoc(
  * range it was rendered from. This is the whole bridge between "what the
  * reviewer selected in the rendered document" and "which source lines the
  * anchor stores" — remark/rehype keep positions intact, so no offset math.
+ * Links and images get their source offsets as well (`SOURCE_SPAN_ATTR`).
  */
 export function rehypeSourceLines() {
   return (tree: Root) => {
@@ -78,6 +91,15 @@ export function rehypeSourceLines() {
       ) {
         node.properties[SOURCE_LINE_ATTR] =
           `${node.position.start.line}-${node.position.end.line}`;
+      }
+      if (
+        node.type === "element" &&
+        SPAN_TAGS.has(node.tagName) &&
+        node.position?.start.offset !== undefined &&
+        node.position.end.offset !== undefined
+      ) {
+        node.properties[SOURCE_SPAN_ATTR] =
+          `${node.position.start.offset}-${node.position.end.offset}`;
       }
       if ("children" in node) {
         for (const child of node.children) {
