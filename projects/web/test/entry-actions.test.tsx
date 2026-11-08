@@ -2,12 +2,14 @@ import type { QueryClient } from "@tanstack/react-query";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import type {
   Issue,
+  IssueListItem,
   Project,
   QuestionsComponent,
   TimelineComment,
 } from "@todou/shared";
 import { Window as HappyWindow } from "happy-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { issueRefQuery } from "../src/api/issue-refs.ts";
 import { projectQuery } from "../src/api/queries.ts";
 import { CommentItem } from "../src/components/timeline/comment-item.tsx";
 import {
@@ -33,6 +35,39 @@ const author = {
 };
 
 const BODY = "First paragraph.\n\nSecond **paragraph**.";
+
+/** The issue a chip to #12 draws its title and status from. */
+const refItem = (number: number): IssueListItem => ({
+  id: number,
+  number,
+  title: "A referenced issue",
+  status: {
+    id: 1,
+    name: "In Progress",
+    category: "open",
+    color: "#bf8700",
+    position: 2,
+    is_default: false,
+  },
+  author,
+  assignees: [],
+  labels: [],
+  created_at: "2026-08-12T00:00:00Z",
+  updated_at: "2026-08-12T00:00:00Z",
+  body_edited_at: null,
+  open_questions: 0,
+  spec_version: null,
+  spec_review_status: null,
+  spec_unresolved_comments: 0,
+  deleted_at: null,
+  deleted_by: null,
+  unread: false,
+  unread_comments: 0,
+  muted: null,
+  blocked_by: [],
+  blocks: [],
+  moves: [],
+});
 
 function comment(overrides: Partial<TimelineComment> = {}): TimelineComment {
   return {
@@ -93,8 +128,15 @@ function renderComment(
     projects?: Project[];
     /** The project the comment lives in, as its own query answers for it. */
     current?: Project;
+    /** Anything else the comment's body reads, such as a chip's issue. */
+    seed?: (client: QueryClient) => void;
   } = {},
 ) {
+  const client = clientWith(
+    options.projects ?? [project("p"), project("other")],
+    options.current,
+  );
+  options.seed?.(client);
   return renderWithProviders(
     <QuoteReplyProvider>
       {options.onQuote && <Sink onQuote={options.onQuote} />}
@@ -105,10 +147,7 @@ function renderComment(
         viewer={options.viewer ?? null}
       />
     </QuoteReplyProvider>,
-    clientWith(
-      options.projects ?? [project("p"), project("other")],
-      options.current,
-    ),
+    client,
   );
 }
 
@@ -306,8 +345,8 @@ describe("EntryActionsMenu on a comment", () => {
   });
 
   it("cuts an action line's quote from the source the line renders", async () => {
-    // The line renders `- checks …` from an escaped `\- checks …`, and a
-    // cut made in the stored text would land one character off.
+    // The line renders `- checks …` from an escaped `\- checks …`: a cut
+    // made in the stored text would land one character off, on `hecks `.
     const onQuote = vi.fn();
     const view = renderComment({
       onQuote,
@@ -331,7 +370,42 @@ describe("EntryActionsMenu on a comment", () => {
     await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
     fireEvent.click(menuItem("Quote reply"));
     await waitFor(() =>
-      expect(onQuote).toHaveBeenCalledExactlyOnceWith("\\- checks the list"),
+      expect(onQuote).toHaveBeenCalledExactlyOnceWith("checks"),
+    );
+  });
+
+  it("cuts the words beside a ref chip without the chip", async () => {
+    const onQuote = vi.fn();
+    const view = renderComment({
+      onQuote,
+      comment: comment({
+        body: "see [#12](/projects/1/issues/12) here and there",
+      }),
+      seed: (client) =>
+        client.setQueryData(issueRefQuery("p", 12).queryKey, refItem(12)),
+    });
+    const text = await waitFor(() => {
+      const chip = view.container.querySelector("a[data-issue-link]");
+      if (!chip?.textContent?.includes("A referenced issue")) {
+        throw new Error("chip not drawn yet");
+      }
+      const node = [...(chip.closest("p")?.childNodes ?? [])].find(
+        (n) => n.nodeType === Node.TEXT_NODE && n.nodeValue?.includes("here"),
+      );
+      if (!node) throw new Error("no text after the chip");
+      return node;
+    });
+    const at = text.nodeValue?.indexOf("here") ?? -1;
+    const range = document.createRange();
+    range.setStart(text, at);
+    range.setEnd(text, at + 4);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+
+    await openMenu(view);
+    fireEvent.click(menuItem("Quote reply"));
+    await waitFor(() =>
+      expect(onQuote).toHaveBeenCalledExactlyOnceWith("here"),
     );
   });
 

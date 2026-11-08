@@ -10,6 +10,7 @@ import {
   CODE_CONTENT_START_ATTR,
   parseSourceLoc,
   SOURCE_LINE_ATTR,
+  SOURCE_SPAN_ATTR,
 } from "./rehype-source-lines.ts";
 import {
   composedContains,
@@ -21,6 +22,7 @@ import {
   columnsOfOffsets,
   lineColAt,
   type SegmentIndex,
+  type SourceSegment,
   segmentsInLines,
   sourceOffsetOfRendered,
 } from "./spec-source-index.ts";
@@ -70,51 +72,303 @@ function columnBlockOf(
 const INJECTED =
   "[data-annotation-ui], .spec-del, .spec-del-block, .spec-del-structure, .spec-list-number";
 
+/** A link or a document card a selection takes whole (`alignBlock`). */
+type Atom = { el: Element; start: number; end: number };
+
+/** A block's text nodes lined up against the segments it renders. */
+type BlockAlignment = {
+  /** The block's own segments, in source order, an atom standing in one. */
+  segments: SourceSegment[];
+  /** Where each text node starts in those segments' joined text. */
+  offsets: Map<Node, number>;
+  /** Text nodes the renderer inserted, which take no room there. */
+  inserted: Set<Node>;
+  atoms: Atom[];
+};
+
+/** What an atom stands for in the joined text: one character. */
+const ATOM_TEXT = "\uFFFC";
+
 /**
- * Text nodes of a block as the *document* has them — the injected nodes
- * would shift every offset after them.
+ * Segments with atoms in, and which of them are the atoms' placeholders: a
+ * placeholder is told by identity, never by its text, which a source can
+ * hold too.
  */
-function sourceTextWalker(block: Element): TreeWalker {
-  return document.createTreeWalker(
-    block,
-    NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT,
-    {
-      acceptNode: (node) => {
-        if (node.nodeType !== Node.ELEMENT_NODE)
-          return NodeFilter.FILTER_ACCEPT;
-        return (node as Element).matches(INJECTED)
-          ? NodeFilter.FILTER_REJECT
-          : NodeFilter.FILTER_SKIP;
-      },
-    },
-  );
+type WithAtoms = {
+  segments: SourceSegment[];
+  placeholders: Set<SourceSegment>;
+};
+
+/** The text of `el`'s subtree, injected nodes left out. */
+function textUnder(el: Element): string {
+  let text = "";
+  const walk = (parent: Node) => {
+    for (const child of parent.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) text += child.nodeValue ?? "";
+      else if (child instanceof Element && !child.matches(INJECTED)) {
+        walk(child);
+      }
+    }
+  };
+  walk(el);
+  return text;
 }
 
-function renderedTextOf(block: Element): string {
-  const walker = sourceTextWalker(block);
+/**
+ * The text `segments` hold within the source span `[start, end)`, exact ones
+ * cut at its edges; null when an indivisible one crosses an edge.
+ */
+function textInSpan(
+  segments: SourceSegment[],
+  start: number,
+  end: number,
+): string | null {
   let text = "";
-  for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
-    text += n.nodeValue ?? "";
+  for (const segment of segments) {
+    if (segment.end <= start || segment.start >= end) continue;
+    if (segment.start >= start && segment.end <= end) {
+      text += segment.text;
+      continue;
+    }
+    if (!segment.exact) return null;
+    text += segment.text.slice(
+      Math.max(start, segment.start) - segment.start,
+      Math.min(end, segment.end) - segment.start,
+    );
   }
   return text;
 }
 
-/** Offset of a text-node position within the block's rendered text. */
-function renderedOffsetIn(
-  block: Element,
-  node: Node,
-  offset: number,
-): number | null {
-  const walker = sourceTextWalker(block);
-  let seen = 0;
-  for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
-    if (n === node) return seen + offset;
-    seen += n.nodeValue?.length ?? 0;
+/**
+ * `segments` with each atom's span cut out and one `ATOM_TEXT` character in
+ * its place; null when an indivisible segment crosses an atom's edge.
+ */
+function withAtoms(
+  index: SegmentIndex,
+  segments: SourceSegment[],
+  atoms: Atom[],
+): WithAtoms | null {
+  const placeholders = new Set<SourceSegment>();
+  let out = segments;
+  for (const atom of atoms) {
+    const next: SourceSegment[] = [];
+    for (const segment of out) {
+      if (segment.end <= atom.start || segment.start >= atom.end) {
+        next.push(segment);
+        continue;
+      }
+      if (segment.start >= atom.start && segment.end <= atom.end) continue;
+      if (!segment.exact) return null;
+      if (segment.start < atom.start) {
+        const length = atom.start - segment.start;
+        next.push({
+          ...segment,
+          text: segment.text.slice(0, length),
+          end: atom.start,
+        });
+      }
+      if (segment.end > atom.end) {
+        const skip = atom.end - segment.start;
+        next.push({
+          ...segment,
+          text: segment.text.slice(skip),
+          at: segment.at + skip,
+          start: atom.end,
+        });
+      }
+    }
+    // Not in the flattened text, so no `at` and no group of its own.
+    const placeholder: SourceSegment = {
+      text: ATOM_TEXT,
+      at: -1,
+      start: atom.start,
+      end: atom.end,
+      line: lineColAt(index, atom.start).line,
+      endLine: lineColAt(index, atom.end - 1).line,
+      exact: false,
+      group: -1,
+    };
+    placeholders.add(placeholder);
+    next.push(placeholder);
+    out = next;
   }
-  return null;
+  return { segments: out.sort((a, b) => a.start - b.start), placeholders };
 }
 
-/** Source offset one selection endpoint maps to, or null to give up. */
+/**
+ * Line a block's text nodes up against its own segments, or null when they
+ * do not read alike — text the source does not hold — since a wrong column
+ * is worse than none.
+ *
+ * Two things in a block are not its own text. A block nested in it — a
+ * sublist in a list item, a code block in a compact one — is stamped and
+ * mapped by itself: its subtree is skipped, and so are the segments lying
+ * wholly on its lines. Two sibling blocks never share a source line, and a
+ * container whose first line opens its first child (`- ## Title`) has no
+ * text of its own there, so taking out whole lines is exact. And
+ * `mdast-util-to-hast` puts whitespace-only text nodes the source does not
+ * have between the blocks of a list item and after a `<br>`: one is matched
+ * as text first, since a blank between two emphases is the source's, and
+ * only when that fails is it taken as inserted. Inserted ones sit on block
+ * edges, where the segments never start with a blank — mdast keeps none at
+ * the start of a paragraph or after a hard break.
+ *
+ * A link or a document card carries its source span (`SOURCE_SPAN_ATTR`).
+ * One whose text reads like the source in its span — a plain link, an
+ * attachment link's file name, an autolink cut out of a longer text — is
+ * walked like any other element. One that does not — a chip showing a title
+ * where the source says `#12`, a document card, a footnote reference — is an
+ * atom: it stands in the segments as one character in place of its span,
+ * and a selection reaching into it takes its whole span.
+ *
+ * Inline HTML is shown as its own source text (`SegmentIndex.literals`), so
+ * it lines up like any other exact segment.
+ *
+ * The injected nodes `INJECTED` names are skipped as they always were: they
+ * would shift every offset after them.
+ */
+function alignBlock(
+  index: SegmentIndex,
+  block: { el: Element; loc: { start: number; end: number } },
+): BlockAlignment | null {
+  const nested = mergedLines(
+    [...block.el.querySelectorAll(`[${SOURCE_LINE_ATTR}]`)]
+      .filter((el) => el.closest(INJECTED) === null)
+      .flatMap((el) => parseSourceLoc(el.getAttribute(SOURCE_LINE_ATTR)) ?? []),
+  );
+  // Inline HTML shows as its own source text, so it is the block's text
+  // here, though never part of the flattened prose.
+  const literals = index.literals.filter(
+    (literal) =>
+      literal.line <= block.loc.end && literal.endLine >= block.loc.start,
+  );
+  const own = [...segmentsInLines(index, block.loc), ...literals]
+    .filter(
+      (segment) =>
+        !nested.some(
+          (loc) => segment.line >= loc.start && segment.endLine <= loc.end,
+        ),
+    )
+    .sort((a, b) => a.start - b.start);
+  // A block whose text nodes all line up with every element walked into is
+  // mapped character by character, which no atom can improve on, so atoms
+  // are only looked for when that fails. Trying them first would also trust
+  // a span that is not its element's own: `remarkIssueRefs` cuts a project
+  // autolink out of a text node, and when that node's source is longer than
+  // its value every piece gets the whole node's position.
+  return (
+    lineUp(index, own, itemsOf(block.el, own, false)) ??
+    lineUp(index, own, itemsOf(block.el, own, true))
+  );
+}
+
+/**
+ * Line ranges with the touching and overlapping ones merged: a long sublist
+ * is one range rather than one per item, for the filter that runs on every
+ * segment of the block.
+ */
+function mergedLines(
+  ranges: Array<{ start: number; end: number }>,
+): Array<{ start: number; end: number }> {
+  const merged: Array<{ start: number; end: number }> = [];
+  for (const range of [...ranges].sort((a, b) => a.start - b.start)) {
+    const last = merged.at(-1);
+    if (last !== undefined && range.start <= last.end + 1) {
+      last.end = Math.max(last.end, range.end);
+    } else {
+      merged.push({ ...range });
+    }
+  }
+  return merged;
+}
+
+/**
+ * A block's text nodes and atoms, in document order. With `takeAtoms` off,
+ * every element is walked into, whatever its text.
+ */
+function itemsOf(
+  el: Element,
+  own: SourceSegment[],
+  takeAtoms: boolean,
+): { items: Node[]; atoms: Atom[] } {
+  const items: Node[] = [];
+  const atoms: Atom[] = [];
+  const walk = (parent: Node) => {
+    for (const child of parent.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        items.push(child);
+        continue;
+      }
+      if (
+        !(child instanceof Element) ||
+        child.matches(INJECTED) ||
+        child.hasAttribute(SOURCE_LINE_ATTR)
+      ) {
+        continue;
+      }
+      // Same `start-end` shape as a line range, but absolute offsets.
+      const span = takeAtoms
+        ? parseSourceLoc(child.getAttribute(SOURCE_SPAN_ATTR))
+        : null;
+      if (
+        span !== null &&
+        textUnder(child) !== textInSpan(own, span.start, span.end)
+      ) {
+        atoms.push({ el: child, ...span });
+        items.push(child);
+        continue;
+      }
+      walk(child);
+    }
+  };
+  walk(el);
+  return { items, atoms };
+}
+
+/** Line `items` up against `own`, each atom standing in for its span. */
+function lineUp(
+  index: SegmentIndex,
+  own: SourceSegment[],
+  { items, atoms }: { items: Node[]; atoms: Atom[] },
+): BlockAlignment | null {
+  const cut =
+    atoms.length === 0
+      ? { segments: own, placeholders: new Set<SourceSegment>() }
+      : withAtoms(index, own, atoms);
+  // A block holding no text but a document card still lines up, as the card.
+  if (cut === null || cut.segments.length === 0) return null;
+  const { segments, placeholders } = cut;
+  let joined = "";
+  const atomAt: number[] = [];
+  for (const segment of segments) {
+    if (placeholders.has(segment)) atomAt.push(joined.length);
+    joined += segment.text;
+  }
+  const offsets = new Map<Node, number>();
+  const inserted = new Set<Node>();
+  let at = 0;
+  for (const item of items) {
+    if (item.nodeType !== Node.TEXT_NODE) {
+      if (!atomAt.includes(at)) return null;
+      at += 1;
+      continue;
+    }
+    const data = item.nodeValue ?? "";
+    offsets.set(item, at);
+    const fits =
+      joined.startsWith(data, at) &&
+      !atomAt.some((p) => p >= at && p < at + data.length);
+    if (fits) at += data.length;
+    else if (/\S/.test(data)) return null;
+    else inserted.add(item);
+  }
+  return at === joined.length ? { segments, offsets, inserted, atoms } : null;
+}
+
+/**
+ * Source offset one selection endpoint maps to, or null to give up. One in
+ * an atom takes the atom's edge: its start for a start, its end for an end.
+ */
 function sourceOffsetOfEndpoint(
   index: SegmentIndex,
   node: Node,
@@ -124,17 +378,32 @@ function sourceOffsetOfEndpoint(
   if (isOldEndpoint(node) || node.nodeType !== Node.TEXT_NODE) return null;
   const block = columnBlockOf(node);
   if (block === null) return null;
-  const segments = segmentsInLines(index, block.loc);
-  if (segments.length === 0) return null;
-  // The mapping assumes the block renders its source prose and nothing
-  // else. An attachment card or any other injected text breaks that, and
-  // a wrong column is worse than none — bail out to the line anchor.
-  if (renderedTextOf(block.el) !== segments.map((s) => s.text).join("")) {
-    return null;
-  }
-  const rendered = renderedOffsetIn(block.el, node, offset);
-  if (rendered === null) return null;
-  return sourceOffsetOfRendered(segments, rendered, edge);
+  const aligned = alignBlock(index, block);
+  if (aligned === null) return null;
+  const atom = aligned.atoms.find((a) => a.el.contains(node));
+  if (atom !== undefined) return edge === "start" ? atom.start : atom.end;
+  const at = aligned.offsets.get(node);
+  if (at === undefined) return null;
+  const rendered = aligned.inserted.has(node) ? at : at + offset;
+  const source = sourceOffsetOfRendered(aligned.segments, rendered, edge);
+  return edge === "start"
+    ? pastPrefix(index, aligned.segments, source)
+    : source;
+}
+
+/**
+ * A start on the newline that ends a line of a quote or a list item begins,
+ * on the page, where the next line's text does: the `> ` or the indent in
+ * between is the container's, shown nowhere, and no column may name it.
+ */
+function pastPrefix(
+  index: SegmentIndex,
+  segments: SourceSegment[],
+  at: number | null,
+): number | null {
+  if (at === null || index.source[at] !== "\n") return at;
+  const next = segments.find((segment) => segment.end > at + 1);
+  return next !== undefined && next.start > at + 1 ? next.start : at;
 }
 
 /**
@@ -335,7 +604,7 @@ type Point = { node: Node; offset: number };
 const CODE_BLOCK = `[${CODE_CONTENT_START_ATTR}]`;
 
 /**
- * Old content no selection can anchor to: what `sourceTextWalker` skips, and
+ * Old content no selection can anchor to: what `alignBlock` skips, and
  * the rows, cells and images a compared table puts back (T-221, T-229). Their
  * prose already sits in `.spec-del` runs; an old image put back into a
  * current cell sits in nothing else.

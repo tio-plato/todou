@@ -132,9 +132,19 @@ describe("buildSegmentIndex", () => {
     ]);
   });
 
-  it("marks inline code and escapes inexact", () => {
+  it("marks inline code and escapes inexact, and nothing around them", () => {
+    // The text around an escape still reads like its source, so only the
+    // two escapes themselves are indivisible.
     const inexact = index.segments.filter((s) => !s.exact).map((s) => s.text);
-    expect(inexact).toEqual(["code", " 与 *转义* 文本。"]);
+    expect(inexact).toEqual(["code", "*", "*"]);
+  });
+
+  it("keeps inline HTML out of the flattened prose", () => {
+    // The page shows the tags as text, but they are markup, not prose: a
+    // word diff that weighed them would mark an edited attribute as words.
+    expect(buildSegmentIndex("a <kbd>Ctrl</kbd> b c\n").text).toBe(
+      "a Ctrl b c",
+    );
   });
 
   it("leaves fenced code out entirely", () => {
