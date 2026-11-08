@@ -1,5 +1,5 @@
 import type { BulkReadInput, IssueReadInput, MuteReason } from "@todou/shared";
-import { and, asc, eq, gt, inArray, max, ne, sql } from "drizzle-orm";
+import { and, asc, count, eq, gt, inArray, max, ne, sql } from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import type { UserRow } from "../auth/pat.ts";
 import type { AppContext } from "../bootstrap.ts";
@@ -484,13 +484,19 @@ export async function bulkMarkRead(
       );
       // Locked first, in id order: the update alone takes them in whatever
       // order its plan meets them, and two of these by one reader could meet
-      // them in opposite orders (see lockIssueRows).
+      // them in opposite orders (see lockIssueRows). Counted rather than
+      // returned, so the ids never come back to this process.
       await tx
-        .select({ id: issueReads.id })
-        .from(issueReads)
-        .where(mine)
-        .orderBy(asc(issueReads.id))
-        .for("update");
+        .select({ locked: count() })
+        .from(
+          tx
+            .select({ id: issueReads.id })
+            .from(issueReads)
+            .where(mine)
+            .orderBy(asc(issueReads.id))
+            .for("update")
+            .as("locked"),
+        );
       await tx
         .update(issueReads)
         .set({ lastSeenAt: sql`greatest(${issueReads.lastSeenAt}, ${at})` })
