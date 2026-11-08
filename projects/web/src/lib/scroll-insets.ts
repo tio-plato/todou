@@ -6,14 +6,16 @@ import {
   useRef,
 } from "react";
 import {
+  headerHidden,
   VIEWPORT_CHROME_EVENT,
+  visualViewportClientTop,
   visualViewportInsets,
 } from "@/lib/viewport-chrome.ts";
 
 /** Page coordinates of the thing to be revealed. */
 export type ScrollBlock = { top: number; height: number };
 
-/** Viewport coordinates of the strip no overlay covers. */
+/** Client coordinates of the strip no overlay covers. */
 export type UsableViewport = { top: number; height: number };
 
 /**
@@ -60,6 +62,10 @@ function pixelsOf(value: string): number {
 }
 
 /**
+ * The part of the visual viewport no overlay covers, in client coordinates,
+ * so that it pairs with `getBoundingClientRect()` plus `scrollY` as page
+ * coordinates.
+ *
  * Read back off `<html>` rather than passed down: the calls that land a target
  * sit deep inside components that know nothing about the page's overlays, and
  * `scroll-padding` is already the value the engine itself obeys.
@@ -68,7 +74,11 @@ export function usableViewport(): UsableViewport {
   const style = getComputedStyle(document.documentElement);
   const top = pixelsOf(style.scrollPaddingTop);
   const bottom = pixelsOf(style.scrollPaddingBottom);
-  return { top, height: window.innerHeight - top - bottom };
+  const edges = visualViewportInsets();
+  return {
+    top: visualViewportClientTop() + top,
+    height: window.innerHeight - edges.top - edges.bottom - top - bottom,
+  };
 }
 
 /** One-shot highlight; restartable when the same target is revealed again. */
@@ -280,19 +290,23 @@ export function useScrollInsets({
         (pressed !== null && el.contains(pressed))
           ? 0
           : el.getBoundingClientRect().height;
-      // A keyboard covers the layout viewport's bottom and can pan its top
-      // out of view; the sticky edges follow it (T-585), and so must the
-      // padding, or a reveal would centre its target behind the keyboard.
-      const edges = visualViewportInsets();
-      // What the header covers runs to its bottom edge, not its height: it
-      // rides the visual viewport's top and may have slid partly away.
+      // Both engines resolve the root's scroll-padding against the visual
+      // viewport, which already ends at an on-screen keyboard: WebKit grows
+      // the target by it inside `visualViewportRect()`
+      // (`LocalFrameView::scrollRectToVisible`), Blink shrinks the visual
+      // viewport by it (`RootFrameViewport::VisibleScrollSnapportRect`). So
+      // every term is measured from the visual viewport's edges. Adding its
+      // offsets as well counted the keyboard twice and moved the padding with
+      // every pan, and iOS, which reveals the caret on each keystroke, threw
+      // the page past the caret to the other side every time.
+      // The header counts its height less the share it has slid away, not its
+      // bottom edge: that edge carries `offsetTop` in Blink and lags a pan by
+      // a frame in WebKit.
       let topInset =
         BREATHING_ROOM +
-        (shell === null || extent(shell) === 0
-          ? edges.top
-          : Math.max(edges.top, shell.getBoundingClientRect().bottom));
+        (shell === null ? 0 : Math.max(0, extent(shell) - headerHidden()));
       if (shell !== null) watch(shell);
-      let bottomInset = edges.bottom;
+      let bottomInset = 0;
       for (const el of sources.current.top.map((r) => r.current)) {
         if (el === null) continue;
         topInset += extent(el);
