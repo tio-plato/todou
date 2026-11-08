@@ -21,6 +21,7 @@ import {
   columnsOfOffsets,
   lineColAt,
   type SegmentIndex,
+  type SourceSegment,
   segmentsInLines,
   sourceOffsetOfRendered,
 } from "./spec-source-index.ts";
@@ -134,7 +135,23 @@ function sourceOffsetOfEndpoint(
   }
   const rendered = renderedOffsetIn(block.el, node, offset);
   if (rendered === null) return null;
-  return sourceOffsetOfRendered(segments, rendered, edge);
+  const source = sourceOffsetOfRendered(segments, rendered, edge);
+  return edge === "start" ? pastPrefix(index, segments, source) : source;
+}
+
+/**
+ * A start on the newline that ends a line of a quote or a list item begins,
+ * on the page, where the next line's text does: the `> ` or the indent in
+ * between is the container's, shown nowhere, and no column may name it.
+ */
+function pastPrefix(
+  index: SegmentIndex,
+  segments: SourceSegment[],
+  at: number | null,
+): number | null {
+  if (at === null || index.source[at] !== "\n") return at;
+  const next = segments.find((segment) => segment.end > at + 1);
+  return next !== undefined && next.start > at + 1 ? next.start : at;
 }
 
 /**

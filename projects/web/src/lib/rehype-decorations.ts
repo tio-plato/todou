@@ -4,10 +4,12 @@ import {
   baselineAncestor,
   extractBaselineNode,
 } from "./spec-baseline-tree.ts";
-import type {
-  CellPart,
-  SegmentIndex,
-  SourceRange,
+import {
+  type CellPart,
+  type SegmentIndex,
+  type SourceRange,
+  type TextPiece,
+  textPieces,
 } from "./spec-source-index.ts";
 import type {
   StructuralBlockRef,
@@ -992,15 +994,48 @@ function applyStructures(tree: Root, options: Decorations): void {
 }
 
 /**
+ * Where a source offset falls in a node's value, through the node's pieces.
+ * Inside an exact piece it maps by addition; inside an escape or a reference
+ * the start of a range takes the piece's beginning and the end its end, so a
+ * highlight touching one wraps all of it. On a character no piece holds — a
+ * continuation prefix, the blanks before a soft break — a start moves on to
+ * the next piece and an end back to the previous one.
+ */
+function valueOffsetIn(
+  pieces: TextPiece[],
+  offset: number,
+  edge: "start" | "end",
+): number {
+  let at = 0;
+  for (const piece of pieces) {
+    if (edge === "start" && offset < piece.end) {
+      return piece.exact && offset > piece.start
+        ? at + (offset - piece.start)
+        : at;
+    }
+    if (edge === "end" && offset <= piece.start) return at;
+    if (edge === "end" && offset < piece.end && piece.exact) {
+      return at + (offset - piece.start);
+    }
+    at += piece.text.length;
+  }
+  return at;
+}
+
+/**
  * Split one text node around the decorations that touch it. Returns null
  * when nothing applies, so untouched nodes keep their identity (T-60: a
  * rebuilt text node collapses any live selection sitting in it).
+ *
+ * `source` is the markdown the tree was rendered from, needed only for a
+ * node whose source is longer than its value.
  */
 function decorateText(
   node: Text,
   spans: SpanDecoration[],
   deletions: DeletionDecoration[],
   placed: Set<DeletionDecoration>,
+  source: string | null,
 ): ElementContent[] | null {
   const from = node.position?.start.offset;
   const to = node.position?.end.offset;
@@ -1012,23 +1047,45 @@ function decorateText(
   );
   if (hits.length === 0 && cuts.length === 0) return null;
 
-  // Entities and escapes make the source span longer than the value, so
-  // offsets inside the node mean nothing. Decorate it whole or not at all.
-  if (to - from !== node.value.length) {
-    if (hits.length === 0) return null;
-    return wrap(
-      [{ type: "text", value: node.value }],
-      kindsOf(hits),
-      hits.find((h) => h.key !== undefined)?.key,
-    );
+  const length = node.value.length;
+  let toValue = (offset: number, _edge: "start" | "end") =>
+    Math.max(0, Math.min(length, offset - from));
+  // Escapes, references and continuation prefixes make the source span
+  // longer than the value, so offsets inside the node map through its
+  // pieces. Only a node whose pieces cannot be found is decorated whole.
+  if (to - from !== length) {
+    const pieces =
+      source === null ? null : textPieces(source, from, to, node.value);
+    if (pieces === null) {
+      if (hits.length === 0) return null;
+      return wrap(
+        [{ type: "text", value: node.value }],
+        kindsOf(hits),
+        hits.find((h) => h.key !== undefined)?.key,
+      );
+    }
+    toValue = (offset, edge) => valueOffsetIn(pieces, offset, edge);
   }
 
-  const points = new Set<number>([0, node.value.length]);
+  const points = new Set<number>([0, length]);
+  const spanAt = new Map<SpanDecoration, [number, number]>();
   for (const span of hits) {
-    points.add(Math.max(0, span.start - from));
-    points.add(Math.min(node.value.length, span.end - from));
+    const start = toValue(Math.max(from, span.start), "start");
+    const end = toValue(Math.min(to, span.end), "end");
+    if (end <= start) continue;
+    spanAt.set(span, [start, end]);
+    points.add(start);
+    points.add(end);
   }
-  for (const cut of cuts) points.add(cut.at - from);
+  // A removed run is put back where a range starting there would start.
+  const cutAt = new Map<DeletionDecoration, number>();
+  for (const cut of cuts) {
+    const at = toValue(cut.at, "start");
+    cutAt.set(cut, at);
+    points.add(at);
+  }
+  // Every hit fell on characters no piece holds, such as a quote's prefix.
+  if (spanAt.size === 0 && cuts.length === 0) return null;
   const ordered = [...points].sort((a, b) => a - b);
 
   const out: ElementContent[] = [];
@@ -1036,15 +1093,16 @@ function decorateText(
     const at = ordered[i];
     if (at === undefined) continue;
     for (const cut of cuts) {
-      if (cut.at - from !== at || placed.has(cut)) continue;
+      if (cutAt.get(cut) !== at || placed.has(cut)) continue;
       placed.add(cut);
       out.push(inlineDeletion(cut));
     }
     const next = ordered[i + 1];
     if (next === undefined || next <= at) continue;
-    const covering = hits.filter(
-      (h) => h.start - from <= at && h.end - from >= next,
-    );
+    const covering = hits.filter((h) => {
+      const range = spanAt.get(h);
+      return range !== undefined && range[0] <= at && range[1] >= next;
+    });
     const kinds = kindsOf(covering);
     const piece: Text = { type: "text", value: node.value.slice(at, next) };
     if (kinds.length === 0) out.push(piece);
@@ -1144,7 +1202,10 @@ export function rehypeDecorations(options: Decorations = NO_DECORATIONS) {
   const blocks = options.blocks;
   const tables = options.tables;
   const images = options.images;
-  return (tree: Root) => {
+  // react-markdown hands every plugin the string it renders as `file.value`,
+  // the same string the segment index was built from.
+  return (tree: Root, file?: { value?: unknown }) => {
+    const source = typeof file?.value === "string" ? file.value : null;
     if (
       spans.length === 0 &&
       deletions.length === 0 &&
@@ -1225,7 +1286,7 @@ export function rehypeDecorations(options: Decorations = NO_DECORATIONS) {
           next.push(child);
           continue;
         }
-        const pieces = decorateText(child, spans, inline, placed);
+        const pieces = decorateText(child, spans, inline, placed, source);
         if (pieces === null) next.push(child);
         else {
           next.push(...pieces);
