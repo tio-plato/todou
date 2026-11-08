@@ -338,6 +338,30 @@ it("builds no element the whitelist does not name", async () => {
   expect(seen.has("summary")).toBe(true);
 });
 
+it("paints raw HTML a highlight covers as text, never as markup", async () => {
+  const source = "a <img src=x onerror=alert(1)> b\n";
+  const container = await mount(source, {
+    slug: "demo",
+    issueNumber: 7,
+    rehypePlugins: [
+      rehypeSourceLines,
+      [
+        rehypeDecorations,
+        {
+          ...NO_DECORATIONS,
+          spans: [{ kind: "comment", start: 0, end: source.length - 1 }],
+        },
+      ],
+    ],
+  });
+  expect(container.querySelector(".markdown-body img")).toBeNull();
+  expect(container.textContent).toContain("<img src=x onerror=alert(1)>");
+  const marks = [...container.querySelectorAll("mark")];
+  expect(marks.map((mark) => mark.textContent)).toContain(
+    "<img src=x onerror=alert(1)>",
+  );
+});
+
 /**
  * The one third-party contract this renderer's escaping rests on. react-markdown
  * replaces every `raw` node with a text node holding its source; were that to
