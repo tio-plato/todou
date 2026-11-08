@@ -160,6 +160,40 @@ describe("word-level diff in the rendered view (T-142)", () => {
     expect(texts(container, "del.spec-del")).toEqual(["fox"]);
   });
 
+  // Each source is longer than the text it shows — a quote's or an item's
+  // continuation prefix, a character reference — which used to mark the
+  // whole paragraph new and drop the old word.
+  it.each([
+    [
+      "a blockquote's continuation line",
+      "> one two\n> three four\n",
+      "> one two\n> three five\n",
+      "five",
+      "four",
+    ],
+    [
+      "a list item's continuation line",
+      "- item one\n  continues here\n",
+      "- item one\n  continues there\n",
+      "there",
+      "here",
+    ],
+    [
+      "a paragraph holding a character reference",
+      "x &amp; y z\n",
+      "x &amp; y w\n",
+      "w",
+      "z",
+    ],
+  ])(
+    "marks the one replaced word in %s",
+    async (_name, before, after, ins, del) => {
+      const { container } = await renderDiff(before, after);
+      expect(texts(container, "ins.spec-ins")).toEqual([ins]);
+      expect(texts(container, "del.spec-del")).toEqual([del]);
+    },
+  );
+
   it("keeps emphasis markers out of the highlight", async () => {
     const { container } = await renderDiff(
       "这是 **强调** 的段落。\n",
