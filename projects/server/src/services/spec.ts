@@ -162,7 +162,8 @@ async function lockSpecCard(tx: Db | Tx, gate: WriteGate) {
     .select({ specReviewStatus: issues.specReviewStatus })
     .from(issues)
     .where(eq(issues.id, gate.id));
-  if (!row) throw new NotFoundError("issue not found");
+  // The row is locked by this transaction, so it cannot have gone.
+  if (!row) throw new Error("locked issue read returned no row");
   return row;
 }
 
