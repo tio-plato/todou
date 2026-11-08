@@ -119,7 +119,6 @@ function fakeWatchers(path, number) {
 /** The composer and its popovers, read back from the rendered DOM. */
 function readState() {
   const editor = document.querySelector('[aria-label="Write a comment"]');
-  const root = editor.closest("form").parentElement;
   const open = [
     ...document.querySelectorAll('[data-slot="popover-content"]'),
   ].filter((node) => {
@@ -140,7 +139,7 @@ function readState() {
   });
   return {
     onTop,
-    folded: root.hasAttribute("data-collapsed"),
+    folded: editor.closest("[data-collapsed]") !== null,
     help: open.some((node) => node.querySelector("table") !== null),
     watchers: open.some((node) => node.textContent.includes("Watching")),
     focusInEditor: editor.contains(active),
