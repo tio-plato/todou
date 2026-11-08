@@ -72,6 +72,10 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       "-c enable_seqscan=off -c enable_bitmapscan=off",
     );
     indexed = await makeTestApp("shared", { systemUrl: ordered.toString() });
+    const unscanned = (await indexed.ctx.router
+      .system()
+      .execute(sql`SHOW enable_seqscan`)) as { rows: unknown[] };
+    expect(unscanned.rows).toEqual([{ enable_seqscan: "off" }]);
     // The setting reaches the app's own connections: SHOW answers "off".
     const shown = (await seq.ctx.router
       .system()
@@ -296,6 +300,13 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
     const e1 = await edgeAt("blocked");
     const e2 = await edgeAt("blocker");
     expect(e1).toBeLessThan(e2);
+    // A new version of e1 lands behind e2, so a sequential scan meets e2
+    // first.
+    await observer.query(
+      "UPDATE issue_blocks SET cleared_at = cleared_at WHERE id = $1",
+      [e1],
+    );
+    expect(await physicalOrder("issue_blocks", [e1, e2])).toEqual([e2, e1]);
 
     await holder.query("BEGIN");
     let pending: Promise<Response> | undefined;
@@ -304,9 +315,12 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
         "SELECT id FROM issue_blocks WHERE id = $1 FOR UPDATE",
         [e1],
       );
-      pending = send("POST", `/projects/${p.slug}/issues/${x.number}/move`, {
-        to_project: q.slug,
-      });
+      pending = send(
+        "POST",
+        `/projects/${p.slug}/issues/${x.number}/move`,
+        { to_project: q.slug },
+        seq,
+      );
       await waitForLockWaiters(1);
       await holder.query(
         "SELECT id FROM issue_blocks WHERE id = $1 FOR UPDATE",
@@ -892,19 +906,31 @@ describe.skipIf(!PG_URL)("lock order of moves across databases", () => {
     return (await json(res)).id as number;
   };
 
+  /** Waits for the pause, or fails if the move ends before reaching it. */
+  const reach = (atStep: Promise<void>, moving: Promise<Response>) =>
+    Promise.race([
+      atStep,
+      moving.then((res) => {
+        throw new Error(`the move ended before its pause: ${res.status}`);
+      }),
+    ]);
+
   // The holder attaches two drafts on the frozen card the way a write does:
   // the card, then the drafts. The step that deletes the card's attachment
   // rows meets d2 first, so it has to wait for the card before it touches
   // either.
-  const draftsRace = async (to: { slug: string }, after: 2 | 4) => {
-    const [from] = projects;
-    if (!from) throw new Error("no projects");
-    const f = await card(from.slug, "F");
+  const draftsRace = async (
+    from: { slug: string; url: string },
+    to: { slug: string },
+    after: 2 | 4,
+    f: { id: number; number: number },
+  ) => {
     const d1 = await uploadDraft(from.slug, f.number);
     const d2 = await uploadDraft(from.slug, f.number);
     const holder = await connect(from.url);
     const observer = await connect(from.url);
-    // A new version of d1 lands behind d2 in the table and in the index.
+    // A new version of d1 lands behind d2 in the table, which these
+    // databases scan without an index.
     await observer.query(
       "UPDATE attachments SET filename = filename WHERE id = $1",
       [d1],
@@ -919,13 +945,11 @@ describe.skipIf(!PG_URL)("lock order of moves across databases", () => {
     const moving = send(
       "POST",
       `/projects/${from.slug}/issues/${f.number}/move`,
-      {
-        to_project: to.slug,
-      },
+      { to_project: to.slug },
     );
     const pid = await pidOf(holder);
     try {
-      await paused.atStep;
+      await reach(paused.atStep, moving);
       await holder.query("BEGIN");
       await holder.query(
         "SELECT id FROM issues WHERE id = $1 FOR NO KEY UPDATE",
@@ -942,12 +966,14 @@ describe.skipIf(!PG_URL)("lock order of moves across databases", () => {
         d2,
       ]);
       await holder.query("COMMIT");
-      expect((await moving).status).toBe(200);
+      const moved = await moving;
+      expect(moved.status).toBe(200);
       const source = await observer.query<{ moved: boolean }>(
         "SELECT moved_at IS NOT NULL AS moved FROM issues WHERE id = $1",
         [f.id],
       );
       expect(source.rows).toEqual([{ moved: true }]);
+      return (await json(moved)) as { reinhabited: boolean };
     } finally {
       paused.release();
       await holder.query("ROLLBACK");
@@ -956,11 +982,38 @@ describe.skipIf(!PG_URL)("lock order of moves across databases", () => {
   };
 
   it("the last step of a move locks the card before it empties it", async () => {
-    await draftsRace(projects[1] as { slug: string }, 4);
+    const [from, to] = projects;
+    if (!from || !to) throw new Error("no projects");
+    await draftsRace(from, to, 4, await card(from.slug, "F"));
   });
 
   it("the copy of a move within one database locks the card before it deletes its files", async () => {
-    await draftsRace(projects[2] as { slug: string }, 2);
+    const [from, , to] = projects;
+    if (!from || !to) throw new Error("no projects");
+    await draftsRace(from, to, 2, await card(from.slug, "F"));
+  });
+
+  it("the copy of a move back into its tombstone locks the card first too", async () => {
+    const [home, , away] = projects;
+    if (!home || !away) throw new Error("no projects");
+    const f = await card(home.slug, "F");
+    const out = await send(
+      "POST",
+      `/projects/${home.slug}/issues/${f.number}/move`,
+      {
+        to_project: away.slug,
+      },
+    );
+    expect(out.status).toBe(200);
+    const landed = (await json(out)) as {
+      moved_to: { number: number };
+      issue: { id: number };
+    };
+    const back = await draftsRace(away, home, 2, {
+      id: landed.issue.id,
+      number: landed.moved_to.number,
+    });
+    expect(back.reinhabited).toBe(true);
   });
 
   // Publishing the move rewrites the edges at the card's address on the
@@ -1016,7 +1069,7 @@ describe.skipIf(!PG_URL)("lock order of moves across databases", () => {
     const [firstPid, secondPid] = [await pidOf(first), await pidOf(second)];
     let queued: Promise<unknown> | undefined;
     try {
-      await paused.atStep;
+      await reach(paused.atStep, moving);
       await first.query("BEGIN");
       await first.query(
         "SELECT id FROM issue_blocks WHERE id = $1 FOR UPDATE",
