@@ -9,13 +9,18 @@ import {
 } from "@tanstack/react-router";
 import { act, fireEvent, render } from "@testing-library/react";
 import type { Me, SpecComments, SpecFiles, SpecInfo } from "@todou/shared";
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, meQuery, projectQuery } from "../src/api/queries.ts";
 import { specFilesQuery, specQuery } from "../src/api/spec.ts";
 import { AppShell } from "../src/components/shell.tsx";
+import {
+  AnnotatedMarkdown,
+  type DisplayedAnnotation,
+} from "../src/components/spec/annotated-markdown.tsx";
 import { parseSpecSearch } from "../src/lib/spec-search.ts";
 import { SpecViewPage } from "../src/pages/spec-view.tsx";
-import { testQueryClient } from "./render.tsx";
+import { renderWithProviders, testQueryClient } from "./render.tsx";
 
 // T-601: the counter beside ↑↓ moves as the reader scrolls past changed
 // blocks, and while the page held it, each step re-rendered the document and
@@ -249,6 +254,51 @@ describe("scrolling the spec page (T-601)", () => {
     // Opening the composer is page state that never reaches the document.
     fireEvent.click(view.getByRole("button", { name: "Comment file" }));
     await view.findByLabelText("Spec comment");
+    expect(counts.annotated).toBeGreaterThan(annotated);
+    expect(counts.chips).toBe(chips);
+  });
+
+  it("keeps the chips still when the document re-renders under them", async () => {
+    // The document's own memo stops the page's re-renders before they reach
+    // a chip, so this one goes past it: a fresh `onStage`, which no chip is
+    // handed. Whatever else the chips are handed has to hold still with it.
+    const annotations: DisplayedAnnotation[] = [
+      {
+        key: "c41",
+        kind: "comment",
+        item: COMMENTS.items[0],
+        start: 3,
+        end: 3,
+      },
+    ];
+    const noop = () => {};
+    function Harness() {
+      const [, setRound] = useState(0);
+      return (
+        <>
+          <button type="button" onClick={() => setRound((n) => n + 1)}>
+            again
+          </button>
+          <AnnotatedMarkdown
+            slug="demo"
+            issueNumber={7}
+            body={"alpha\n\nbravo\n"}
+            annotations={annotations}
+            onStage={() => {}}
+            onEditDraft={noop}
+            onRemoveDraft={noop}
+            onResolve={noop}
+          />
+        </>
+      );
+    }
+    const view = renderWithProviders(<Harness />);
+    await view.findByRole("button", { name: "1 comment(s) on this block" });
+    await act(async () => {});
+    const annotated = counts.annotated;
+    const chips = counts.chips;
+    fireEvent.click(view.getByRole("button", { name: "again" }));
+    await act(async () => {});
     expect(counts.annotated).toBeGreaterThan(annotated);
     expect(counts.chips).toBe(chips);
   });
