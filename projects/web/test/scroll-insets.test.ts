@@ -312,3 +312,86 @@ describe("one hold per page (T-527)", () => {
     expect(isHoldingTarget()).toBe(false);
   });
 });
+
+function EndHarness() {
+  const end = useRef<HTMLDivElement>(null);
+  useScrollInsets({ end });
+  return createElement("div", { ref: end, "data-end": "" });
+}
+
+/**
+ * The bottom of the conversation, not of the document: on a phone the sidebar
+ * follows the comment box, and a landing at the document's end buried the box
+ * under it.
+ */
+describe("landing on the end of the conversation", () => {
+  const VIEWPORT = 800;
+  const HEIGHT = 5000;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    FakeResizeObserver.instances = [];
+  });
+
+  /** A page whose declared end sits at `end.y`; returns every scroll target. */
+  function page(end: { y: number }) {
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    const scroll = { y: 0 };
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(VIEWPORT);
+    vi.spyOn(window, "scrollY", "get").mockImplementation(() => scroll.y);
+    vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
+      HEIGHT,
+    );
+    vi.spyOn(document.documentElement, "clientHeight", "get").mockReturnValue(
+      VIEWPORT,
+    );
+    const targets: number[] = [];
+    vi.spyOn(window, "scrollTo").mockImplementation((...args: unknown[]) => {
+      scroll.y = Number(args[1]);
+      targets.push(scroll.y);
+    });
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: Element) {
+        const bottom =
+          (this as HTMLElement).dataset?.end === "" ? end.y - scroll.y : 0;
+        return { top: 0, bottom, height: 0, width: 0, left: 0 } as DOMRect;
+      },
+    );
+    render(createElement(EndHarness));
+    return { targets };
+  }
+
+  it("puts the declared end on the viewport's bottom, again as the page grows", () => {
+    const end = { y: 2000 };
+    const { targets } = page(end);
+    landAtBottom();
+    expect(targets).toEqual([2000 - VIEWPORT]);
+    end.y = 2600;
+    resizePage();
+    expect(targets).toEqual([2000 - VIEWPORT, 2600 - VIEWPORT]);
+  });
+
+  it("puts it above an on-screen keyboard", () => {
+    const vv = new EventTarget();
+    Object.defineProperties(vv, {
+      offsetTop: { value: 0 },
+      height: { value: VIEWPORT - 300 },
+      scale: { value: 1 },
+    });
+    vi.stubGlobal("visualViewport", vv);
+    const { targets } = page({ y: 2000 });
+    landAtBottom();
+    expect(targets).toEqual([2000 - (VIEWPORT - 300)]);
+  });
+
+  it.each([
+    // Past the largest offset iOS shows a blank frame (T-585).
+    ["past the document's end", 6000, HEIGHT - VIEWPORT],
+    ["within the first screen", 300, 0],
+  ])("stays within the page for an end %s", (_, y, landed) => {
+    const { targets } = page({ y });
+    landAtBottom();
+    expect(targets).toEqual([landed]);
+  });
+});

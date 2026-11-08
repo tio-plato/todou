@@ -43,6 +43,7 @@ import {
   ProjectRouteError,
 } from "../src/pages/project-layout.tsx";
 import { router as appRouter } from "../src/router.tsx";
+import { stubConversationEnd } from "./conversation-end.ts";
 import { FakeResizeObserver, resizePage } from "./fake-resize-observer.ts";
 
 // These imports deliberately reach the production keyed Timeline through the
@@ -561,8 +562,9 @@ type Scrolling = {
 
 /** happy-dom cannot lay out the page. Observe production reveal/flash and
  * scroll order, modelling the viewport change without firing a native scroll
- * event; releasing landing ownership must reconcile follow-bottom itself. */
-function scrolling(): Scrolling {
+ * event; releasing landing ownership must reconcile follow-bottom itself.
+ * `below` is what follows the page's column: a phone's sidebar. */
+function scrolling({ below = 0 }: { below?: number } = {}): Scrolling {
   const state = { y: 0, height: 10_000, events: [] as string[] };
   const commits: Scrolling["commits"] = [];
   vi.spyOn(window, "innerHeight", "get").mockReturnValue(800);
@@ -576,7 +578,13 @@ function scrolling(): Scrolling {
       typeof first === "object" && first !== null
         ? ((first as ScrollToOptions).top ?? state.y)
         : Number(args[1] ?? 0);
-    state.events.push(top >= state.height ? "bottom" : `scroll:${top}`);
+    // The end of the conversation on the viewport's bottom is a landing on
+    // the bottom as much as the document's end is.
+    state.events.push(
+      top >= state.height || top === state.height - below - 800
+        ? "bottom"
+        : `scroll:${top}`,
+    );
     state.y = Math.max(0, Math.min(top, state.height - 800));
   });
   vi.spyOn(window, "scrollBy").mockImplementation((...args: unknown[]) => {
@@ -588,6 +596,9 @@ function scrolling(): Scrolling {
     state.events.push(`prepend:${delta}`);
     state.y = Math.max(0, Math.min(state.y + delta, state.height - 800));
   });
+  // The page's column, where its conversation ends, ends with the document
+  // but for what follows it.
+  stubConversationEnd(() => state.height - below - state.y);
   vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
     this: Element,
   ) {
@@ -1524,6 +1535,29 @@ describe("question landing through the real issue route", () => {
     expect(scroll.bottoms()).toBe(2);
     expect(view.getByRole("button", { name: "New messages" })).toBeTruthy();
     expect(server.questions()).toHaveLength(0);
+  });
+
+  it("C13 following new tail items is measured from the conversation's end, not the sidebar below it", async () => {
+    const model = card([], [comment(1), comment(2)]);
+    serve({ "p/7": model });
+    // Taller than a screen, as a phone's sidebar can be.
+    const scroll = scrolling({ below: 2_000 });
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText("comment body 2");
+    await waitFor(() => expect(scroll.bottoms()).toBe(1));
+    // At the comment box, two screens above the document's end: followed.
+    scroll.userAt(10_000 - 2_000 - 800);
+    model.items = [...model.items, comment(3)];
+    await refetchTail(view);
+    await waitFor(() => expect(scroll.bottoms()).toBe(2));
+    // A whole screen down into the sidebar: left there, and told instead.
+    scroll.userAt(10_000 - 800);
+    model.items = [...model.items, comment(4)];
+    await refetchTail(view);
+    await view.findByText("comment body 4");
+    expect(scroll.bottoms()).toBe(2);
+    expect(scroll.position()).toBe(10_000 - 800);
+    expect(view.getByRole("button", { name: "New messages" })).toBeTruthy();
   });
 
   it.each([

@@ -407,6 +407,14 @@ describe("shouldFollowBottom", () => {
   it("does not follow when scrolled far up", () => {
     expect(shouldFollowBottom(100, 3000, 800)).toBe(false);
   });
+  // What follows the conversation, the sidebar on a phone, can be taller than
+  // a screen: a reader reading it is not pulled back up.
+  it("does not follow a reader a whole screen past the end", () => {
+    expect(shouldFollowBottom(3000, 2500, 800)).toBe(false);
+  });
+  it("follows while the end is on screen", () => {
+    expect(shouldFollowBottom(2000, 2500, 800)).toBe(true);
+  });
 });
 
 describe("timeline paging helpers", () => {

@@ -257,11 +257,16 @@ export function remainingCount(
   return Math.max(0, totalCount - above.length - below.length);
 }
 
-/** Follow the bottom only when the user is within one viewport of it. */
+/**
+ * Follow the bottom only when the reader is within one viewport of the
+ * conversation's end, `endY` in page coordinates, and not entirely past it:
+ * what follows the conversation, the sidebar on a phone, can be taller than a
+ * screen, and a reader in it would be pulled back up.
+ */
 export function shouldFollowBottom(
   scrollTop: number,
-  scrollHeight: number,
+  endY: number,
   clientHeight: number,
 ): boolean {
-  return scrollHeight - scrollTop - clientHeight < clientHeight;
+  return endY - scrollTop - clientHeight < clientHeight && endY > scrollTop;
 }

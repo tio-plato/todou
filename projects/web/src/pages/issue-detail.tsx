@@ -124,7 +124,14 @@ export function IssueDetailPage() {
   // timeline anchor, including before the mirror becomes visible (T-299).
   const rowRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
-  useScrollInsets({ top: [rowRef], bottom: [composerRef] });
+  // The column's bottom edge, the composer's or a trashed card's timeline's,
+  // is where the conversation ends: on a phone the sidebar follows it.
+  const columnRef = useRef<HTMLDivElement>(null);
+  useScrollInsets({
+    top: [rowRef],
+    bottom: [composerRef],
+    end: columnRef,
+  });
   const [end, setEnd] = useState<HTMLDivElement | null>(null);
   const atEnd = useInView(end);
   // For what floats above the composer, the New messages pill among them.
@@ -171,7 +178,7 @@ export function IssueDetailPage() {
               rowRef={rowRef}
               mirror={<RevealAllEye />}
             />
-            <div className="space-y-4">
+            <div ref={columnRef} className="space-y-4">
               {trashed && <TrashBanner slug={slug} issue={issue.data} />}
               {/* The back control rides with the heading rather than with the
                   sticky row above, so it scrolls away with the title it

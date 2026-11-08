@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /**
  * Real-browser regression for the folded comment composer at the page end
- * (T-532, T-538), and for the New messages pill staying above whatever floats
- * at the bottom, clickable, however tall the composer grows.
+ * (T-532, T-538), for opening a card on the comment box rather than on the
+ * page end, and for the New messages pill staying above whatever floats at the
+ * bottom, clickable, however tall the composer grows.
  * Usage: node scripts/composer-dock-smoke.mjs [--keep] [--help]
  * Requires the same installed dependencies, Node 24+, flock and CHROMIUM
  * (default /usr/bin/chromium) as the other browser smokes.
@@ -25,10 +26,12 @@ Seeds a card long enough to scroll, opens it on a 390px touch phone and on a
 composer must be the one-line box while the page is at its end and the
 floating Comment button anywhere above; the swap must not move the page or
 flip back and forth, must not break the bottom landing on open (T-527), and
-anchors must still land clear of the dock (T-519). With the reader scrolled
-away and a comment arriving, the New messages pill must stay above the folded
-dock or Comment button, the opened box, a tall draft and a simulated keyboard,
-and take the click at its centre.
+anchors must still land clear of the dock (T-519). Opening the card must put
+the comment box on the viewport's bottom edge, with the phone's sidebar below
+the viewport rather than the box a sidebar's height above it. With the reader
+scrolled away and a comment arriving, the New messages pill must stay above
+the folded dock or Comment button, the opened box, a tall draft and a
+simulated keyboard, and take the click at its centre.
 
 --keep  Retain isolated artifacts under .tmp/ after cleanup.
 Exit codes: 0 pass, 1 assertion, 2 infrastructure error.
@@ -113,6 +116,8 @@ function readState() {
     openerShown: openerRect !== undefined && openerRect.width > 0,
     dockTop: dock.getBoundingClientRect().top,
     dockHeight: dock.getBoundingClientRect().height,
+    dockBottom: dock.getBoundingClientRect().bottom,
+    asideTop: document.querySelector("aside")?.getBoundingClientRect().top,
     scrollY: window.scrollY,
     maxScroll: doc.scrollHeight - window.innerHeight,
     paddingBottom: getComputedStyle(doc).scrollPaddingBottom,
@@ -166,10 +171,10 @@ function readPill() {
     actionsShown: dock.querySelector(".composer-actions-in") !== null,
     headerBottom: document.querySelector("header").getBoundingClientRect()
       .bottom,
+    // From the end of the conversation, the column the dock ends, which is
+    // what following new comments is measured against.
     fromEnd:
-      document.documentElement.scrollHeight -
-      window.scrollY -
-      window.innerHeight,
+      dock.parentElement.getBoundingClientRect().bottom - window.innerHeight,
     innerHeight: window.innerHeight,
   };
 }
@@ -276,6 +281,8 @@ function input(page) {
 }
 
 const atEnd = (s) => s.scrollY >= s.maxScroll - 1;
+/** The comment box on the viewport's bottom edge, where a card opens. */
+const boxAtBottom = (s) => Math.abs(s.dockBottom - s.innerHeight) <= 1;
 
 async function phoneCases(page) {
   const io = input(page);
@@ -286,7 +293,7 @@ async function phoneCases(page) {
   const s0 = await io.state();
   check(
     "opens-at-end-with-box",
-    atEnd(s0) && s0.maxScroll > 1000 && s0.boxShown && !s0.openerShown,
+    boxAtBottom(s0) && s0.maxScroll > 1000 && s0.boxShown && !s0.openerShown,
     s0,
   );
 
@@ -427,6 +434,35 @@ async function anchorCase(context, fixture, index) {
   } finally {
     await page.close();
   }
+}
+
+/**
+ * Opening the card lands on the end of the conversation, not of the document:
+ * below it are the shell's footer and, on a phone, the sidebar, which a
+ * landing at the document's end put between the box and the viewport's edge.
+ */
+async function landingCases(context, fixture) {
+  const out = [];
+  for (const [viewport, label] of [
+    [PHONE, "phone"],
+    [DESKTOP, "desktop"],
+  ]) {
+    const page = await openCard(context, fixture, viewport);
+    try {
+      const s = await evaluate(page, readState);
+      out.push({
+        name: `landing-${label}-box-at-bottom`,
+        ok:
+          boxAtBottom(s) &&
+          s.boxShown &&
+          (!viewport.mobile || s.asideTop >= s.innerHeight),
+        detail: s,
+      });
+    } finally {
+      await page.close();
+    }
+  }
+  return out;
 }
 
 async function desktopCases(page) {
@@ -599,6 +635,7 @@ async function main() {
       } finally {
         await page.close();
       }
+      record("landing", await landingCases(context, fixture));
       // Last: each viewport posts a comment, and the anchors above count on
       // the seeded one being the card's last.
       const pills = [];
