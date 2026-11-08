@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   attachmentsQuery,
   attachmentTextQuery,
+  deletedAttachmentsQuery,
 } from "../src/api/attachments.ts";
 import { issueRefQuery } from "../src/api/issue-refs.ts";
 import { projectsQuery } from "../src/api/queries.ts";
@@ -906,32 +907,32 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
 
   const DOC_URL = "/api/projects/p/attachments/6/download/doc.md";
 
+  /** File `id` of issue 1 in project `p`. */
+  const attachment = (id: number, filename: string, contentType: string) => ({
+    id,
+    filename,
+    content_type: contentType,
+    size: 26,
+    url: `/api/projects/p/attachments/${id}/download/${filename}`,
+    uploader: {
+      id: 1,
+      login: "user",
+      display_name: "User",
+      kind: "human" as const,
+      avatar_url: null,
+      owner: null,
+    },
+    created_at: "2026-01-01T00:00:00.000Z",
+    aliases: [],
+  });
+
   /** A project whose issue 1 has `doc.md`, drawn as a document card. */
-  function docClient(): QueryClient {
+  function docClient(text = "# Embedded\n\nhello from doc\n"): QueryClient {
     const client = chipClient();
     client.setQueryData(attachmentsQuery("p", 1).queryKey, [
-      {
-        id: 6,
-        filename: "doc.md",
-        content_type: "text/markdown",
-        size: 26,
-        url: DOC_URL,
-        uploader: {
-          id: 1,
-          login: "user",
-          display_name: "User",
-          kind: "human",
-          avatar_url: null,
-          owner: null,
-        },
-        created_at: "2026-01-01T00:00:00.000Z",
-        aliases: [],
-      },
+      attachment(6, "doc.md", "text/markdown"),
     ]);
-    client.setQueryData(
-      attachmentTextQuery(DOC_URL).queryKey,
-      "# Embedded\n\nhello from doc\n",
-    );
+    client.setQueryData(attachmentTextQuery(DOC_URL).queryKey, text);
     return client;
   }
 
@@ -967,6 +968,113 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
       lineEnd: 1,
       colStart: 1,
       colEnd: line.length,
+    });
+  });
+
+  it("keeps an image attachment a triple-click ends past to its columns", async () => {
+    const client = chipClient();
+    client.setQueryData(attachmentsQuery("p", 1).queryKey, [
+      attachment(7, "pic.png", "image/png"),
+    ]);
+    // The click leaves the end at the start of the next paragraph, and the
+    // end moves back to the element boundary after the image.
+    const { onStage, button } = await stageSelection(
+      "See ![pic.png](/api/projects/p/attachments/7/download/pic.png)\n\nnext\n",
+      (container) => {
+        const [first, second] = container.querySelectorAll("p[data-loc]");
+        if (!first?.firstChild || !second) throw new Error("no paragraphs");
+        return { node: first.firstChild, from: 0, endNode: second, to: 0 };
+      },
+      { client, ready: "p[data-loc] img" },
+    );
+    fireEvent.click(button);
+    expect(onStage).toHaveBeenCalledWith({
+      lineStart: 1,
+      lineEnd: 1,
+      colStart: 1,
+      colEnd: 62,
+    });
+  });
+
+  it("anchors a selection starting on the element boundary before a picture", async () => {
+    const { onStage, button } = await stageSelection(
+      "![pic](x.png) after\n",
+      (container) => {
+        const paragraph = container.querySelector("p[data-loc]");
+        const after = paragraph?.lastChild;
+        if (!paragraph || !after) throw new Error("no paragraph");
+        return {
+          node: paragraph,
+          from: 0,
+          endNode: after,
+          to: (after as Text).length,
+        };
+      },
+      { ready: "p[data-loc] img" },
+    );
+    fireEvent.click(button);
+    // "![pic](x.png) after" is columns 1 to 19.
+    expect(onStage).toHaveBeenCalledWith({
+      lineStart: 1,
+      lineEnd: 1,
+      colStart: 1,
+      colEnd: 19,
+    });
+  });
+
+  it("anchors the word after a deleted image attachment to its columns", async () => {
+    const client = chipClient();
+    client.setQueryData(attachmentsQuery("p", 1).queryKey, []);
+    client.setQueryData(deletedAttachmentsQuery("p", 1).queryKey, [
+      {
+        id: 8,
+        filename: "gone.png",
+        deleted_by: attachment(8, "gone.png", "image/png").uploader,
+        deleted_at: "2026-01-02T00:00:00.000Z",
+      },
+    ]);
+    // The page shows "gone.png deleted" where the source has the image.
+    const { onStage, button } = await stageSelection(
+      "see ![gone.png](/api/projects/p/attachments/8/download/gone.png) after\n",
+      (container) => bracketedIn(container, " [after]"),
+      { client, ready: "[data-attachment-deleted]" },
+    );
+    fireEvent.click(button);
+    expect(onStage).toHaveBeenCalledWith({
+      lineStart: 1,
+      lineEnd: 1,
+      colStart: 66,
+      colEnd: 70,
+    });
+  });
+
+  it("takes a document card whole for an end beside a picture in it", async () => {
+    const body = `see ![doc.md](${DOC_URL}) after\n`;
+    const { onStage, button } = await stageSelection(
+      body,
+      (container) => {
+        const image = container.querySelector("[data-loc] .markdown-body img");
+        const parent = image?.parentNode;
+        const see = container.querySelector(
+          "p[data-loc], div[data-loc]",
+        )?.firstChild;
+        if (!image || !parent || !see) throw new Error("no card picture");
+        // Past the picture, on the element boundary a triple-click leaves.
+        const at = Array.prototype.indexOf.call(parent.childNodes, image);
+        return { node: see, from: 0, endNode: parent, to: at + 1 };
+      },
+      {
+        client: docClient("![x](/y.png)\n\nhello from doc\n"),
+        ready: "[data-loc] .markdown-body img",
+      },
+    );
+    fireEvent.click(button);
+    // "see " and the whole "![doc.md](…)", columns 1 to 60.
+    expect(onStage).toHaveBeenCalledWith({
+      lineStart: 1,
+      lineEnd: 1,
+      colStart: 1,
+      colEnd: body.indexOf(" after"),
     });
   });
 
@@ -2382,6 +2490,7 @@ describe("endpoints that select nothing", () => {
   });
 
   it("keeps an image the selection ends past", async () => {
+    // The end moves beside the image, which takes its whole `![…](…)`.
     const source = "See ![pic](x.png)\n\nnext\n";
     const container = await rendered(source, "p[data-loc] img");
     const [first, second] = [...container.querySelectorAll("p[data-loc]")];
@@ -2391,7 +2500,7 @@ describe("endpoints that select nothing", () => {
         buildSegmentIndex(source),
         ends(first?.firstChild, 0, second, 0),
       ),
-    ).toEqual({ lineStart: 1, lineEnd: 1, colStart: null, colEnd: null });
+    ).toEqual({ lineStart: 1, lineEnd: 1, colStart: 1, colEnd: 17 });
   });
 
   it("stops before an old image a compared table put back", async () => {

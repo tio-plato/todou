@@ -13,6 +13,7 @@ import {
 import { MarkdownLink } from "@/components/shared/issue-link.tsx";
 import { isTextEmbedName } from "@/lib/attachment-preview.ts";
 import type { AttachmentRef } from "@/lib/attachment-refs.ts";
+import { SOURCE_SPAN_ATTR } from "@/lib/rehype-source-lines.ts";
 
 /**
  * The markdown overrides for attachment addresses (T-242).
@@ -108,6 +109,7 @@ export function MarkdownAttachmentImage({
   issueNumber,
   address,
   embedded,
+  sourceSpan,
   node: _node,
   ...props
 }: ComponentProps<"img"> & {
@@ -116,6 +118,11 @@ export function MarkdownAttachmentImage({
   address: AttachmentRef;
   /** Inside a document card already: embeds become links, not nested cards. */
   embedded: boolean;
+  /**
+   * The image's source offsets (`SOURCE_SPAN_ATTR`), for whatever this draws
+   * in its place to wear. A document card's wrapper wears them instead.
+   */
+  sourceSpan?: string;
   node?: unknown;
 }): ReactNode {
   const { id, viaAlias, url, deleted } = useResolved(
@@ -128,12 +135,13 @@ export function MarkdownAttachmentImage({
       <DeletedAttachmentMark
         name={address.name ?? (props.alt || "image")}
         className={props.className}
+        sourceSpan={sourceSpan}
       />
     );
   }
   if (id === null) {
     // biome-ignore lint/a11y/useAltText: alt is forwarded via props when the markdown provides one
-    return <img {...props} />;
+    return <img {...props} {...{ [SOURCE_SPAN_ATTR]: sourceSpan }} />;
   }
   // An alias was written when the file lived elsewhere; its canonical URL
   // saves every reader a 301 and is certainly readable from this project.
@@ -177,6 +185,7 @@ export function MarkdownAttachmentImage({
       // than on a wrapper, so the classes have to survive this swap or the
       // decoration is lost (T-223).
       className={props.className}
+      sourceSpan={sourceSpan}
     />
   );
 }
