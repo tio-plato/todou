@@ -866,8 +866,9 @@ class Resolver {
  * into a tombstone updates the tombstone after the card it moves, out of id
  * order, and locks nothing else in the tombstone's project before it:
  * whatever else locks a tombstone is a write about to be refused by the
- * gate, which waits on nothing more while it holds it, or a write attaching
- * a draft that was on the card before it moved, which waits only on rows of
+ * gate, which while it holds it waits only for other cards of the
+ * tombstone's project, none of which the move holds, or a write attaching a
+ * draft that was on the card before it moved, which waits only on rows of
  * that project, and references skip tombstones. And a single autocommit
  * statement that writes one row under a card without the card's lock (a
  * read position, a mute, a block event, a cross-project reference, a
@@ -877,9 +878,9 @@ class Resolver {
  * locking clause belong to the same query, never a subquery. A card it
  * waits for may stop being referenceable meanwhile; PostgreSQL then checks
  * the row again as it is now, so a card only referenced drops out of the
- * lock, and one also written or updated is still locked but its
- * `referenceable`, read from the locked row, keeps it out of the cards
- * returned. Referencing a card therefore waits for the writes to it, and
+ * rows returned, though it stays locked until the transaction ends, and one
+ * also written or updated comes back but its `referenceable`, read from the
+ * locked row, keeps it out of the cards returned. Referencing a card therefore waits for the writes to it, and
  * several writes referencing one card queue on it. With no card at all
  * nothing is locked.
  *

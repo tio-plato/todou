@@ -364,8 +364,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
     const d2 = await uploadDraft(p.slug, x);
     expect(d1).toBeLessThan(d2);
     // Both past a 24-hour threshold, d2 the older: the reaper's index on
-    // created_at meets d2 first. Not a zero threshold, which would reach
-    // drafts other suites have on the server.
+    // created_at meets d2 first.
     await observer.query(
       "UPDATE attachments SET created_at = now() - interval '25 hours' WHERE id = $1",
       [d1],
