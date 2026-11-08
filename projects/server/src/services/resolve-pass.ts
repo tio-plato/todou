@@ -854,9 +854,9 @@ class Resolver {
  *    either finishes first or waits for the cleanup.
  * 4. Rows outside one card that a statement or a transaction locks several
  *    of (block edges, read positions, a deleted project's labels) are locked
- *    first, `ORDER BY id FOR UPDATE`, and only then written. A background sweep that deletes rows
- *    writers lock (the draft reaper) skips the locked ones instead of
- *    waiting.
+ *    first, `ORDER BY id FOR UPDATE`, and only then written. A background
+ *    sweep that deletes rows writers lock (the draft reaper) skips the locked
+ *    ones instead of waiting.
  * 5. A row a transaction will update is locked in that update's mode before
  *    any statement of the transaction takes a weaker lock on it, such as the
  *    KEY SHARE a foreign-key check takes on the parent of a row it inserts:

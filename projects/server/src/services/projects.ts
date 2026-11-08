@@ -609,7 +609,8 @@ export async function deleteProject(
       // deleted. It first waits for the writes still at work on these cards,
       // taking the cards in id order the way those writes do, then for a
       // card still being created, through the project_meta row it takes its
-      // number from (cards before project_meta), then the read positions in
+      // number from (cards before project_meta), which also keeps it from
+      // holding a status the delete below waits for, then the read positions in
       // the order marking everything read takes them, then the labels,
       // before deleting the cards cascades to their label rows: a label
       // deleted meanwhile takes the label first and then those rows (see
