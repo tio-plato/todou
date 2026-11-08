@@ -1,4 +1,5 @@
-import type { Element, Root } from "hast";
+import type { Element, ElementContent, Root, RootContent } from "hast";
+import { advance, type Raw } from "./rehype-details.ts";
 
 /**
  * Block-level tags that make useful annotation anchors. Inline elements are
@@ -157,6 +158,82 @@ function splitFootnoteBlank(parent: Element): void {
 }
 
 /**
+ * Wrap each run of raw HTML at the top level in a stamped `div`.
+ *
+ * A block of HTML outside every container renders as text straight under the
+ * root (react-markdown turns `raw` into text), in no stamped block, so a
+ * selection in it had no anchor at all. A run is a `raw` node and every `raw`
+ * or blank text node after it, the trailing blanks left out: `rehypeDetails`
+ * leaves the tags it could not pair as `raw` nodes beside the text between
+ * them, and two blocks of HTML a blank line apart have nothing between them but
+ * a `"\n"`. All of that reads as one line of text today, and one wrapper keeps
+ * it so where a wrapper each would break it into lines. A run of blank `raw`
+ * nodes is no block.
+ *
+ * The wrapper is built from constants, its children are the run's nodes as they
+ * were, and a `div` adds no margin, so the page looks as it did, but for one
+ * thing: at the end of a body the wrapper is the last child, so the block
+ * before it keeps its bottom margin, the gap a block of HTML anywhere else
+ * already had above it.
+ *
+ * It carries the run's `position`, from its first character that is not blank
+ * to its last (a run cut out after a fold opens with the ending of the fold's
+ * line, and would claim that line too): a comparison folds the top-level
+ * elements its changes and annotations do not reach, by their lines, and places
+ * a structural deletion by their offsets; without one it would fold away under
+ * an annotation. Being one, it now folds with the unchanged blocks around it,
+ * where the bare text stayed out in the middle of a fold. A run whose ends have
+ * no position is left unwrapped. Only the top level: a quote, a list item and a
+ * fold already stamp the block their HTML sits in, and a compact list item
+ * holds its inline HTML directly.
+ */
+function wrapRawRuns(tree: Root): void {
+  const out: RootContent[] = [];
+  const children = tree.children;
+  for (let i = 0; i < children.length; i++) {
+    const first = children[i];
+    if (first?.type !== "raw") {
+      if (first !== undefined) out.push(first);
+      continue;
+    }
+    let end = i + 1;
+    while (end < children.length && isRunPart(children[end])) end++;
+    let last = end - 1;
+    while (last > i && children[last]?.type !== "raw") last--;
+    const run = children.slice(i, last + 1);
+    const shown = run.filter(
+      (node): node is Raw => node.type === "raw" && /\S/.test(node.value),
+    );
+    const head = shown[0];
+    const tail = shown.at(-1);
+    const from = head?.position?.start;
+    const to = tail?.position?.start;
+    if (head === undefined || tail === undefined || !from || !to) {
+      out.push(...run);
+    } else {
+      const start = advance(from, head.value.slice(0, head.value.search(/\S/)));
+      const end = advance(to, tail.value.trimEnd());
+      out.push({
+        type: "element",
+        tagName: "div",
+        properties: { [SOURCE_LINE_ATTR]: `${start.line}-${end.line}` },
+        position: { start, end },
+        children: run as ElementContent[],
+      });
+    }
+    i = last;
+  }
+  tree.children = out;
+}
+
+/** Whether `node` can continue a run of raw HTML (`wrapRawRuns`). */
+function isRunPart(node: RootContent | undefined): boolean {
+  return (
+    node?.type === "raw" || (node?.type === "text" && !/\S/.test(node.value))
+  );
+}
+
+/**
  * Rehype plugin stamping every block element with the markdown source line
  * range it was rendered from. This is the whole bridge between "what the
  * reviewer selected in the rendered document" and "which source lines the
@@ -165,6 +242,7 @@ function splitFootnoteBlank(parent: Element): void {
  */
 export function rehypeSourceLines() {
   return (tree: Root) => {
+    wrapRawRuns(tree);
     stampSourceLines(tree, SOURCE_LINE_ATTR);
     const visit = (node: Root | Element) => {
       if (node.type === "element") {

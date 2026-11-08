@@ -216,6 +216,20 @@ describe("quoteOfSelection", () => {
     });
   });
 
+  describe("inside a block of HTML", () => {
+    // The page shows block HTML as its source, a fold's tags aside.
+    it.each([
+      ["<div>block words</div>", "words", "words"],
+      [
+        "<details><summary>Fold here</summary>\n\nbody text\n\n</details>",
+        "Fold",
+        "Fold",
+      ],
+    ])("quotes %j, selected on %j, as %j", (source, selected, quote) => {
+      expect(quoteOfSelection(source, span(source, selected))).toBe(quote);
+    });
+  });
+
   describe("inside a code block", () => {
     const quoted = "```ts\nconst b = 2;\nconst c = 3;\n```";
 
