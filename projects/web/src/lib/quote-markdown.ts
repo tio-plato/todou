@@ -5,6 +5,7 @@ import { parseMarkdown } from "./markdown-processor.ts";
 import {
   codeSpanPieces,
   lineStartsOf,
+  lineTextOf,
   type TextPiece,
 } from "./spec-source-index.ts";
 
@@ -428,10 +429,67 @@ function codeBlockOf(node: Nodes, anchor: AnchorRange): Code | null {
 }
 
 /**
- * A code block's selected lines as a code block of their own. Cutting its
- * source lines instead would carry whatever container held it: a list item's
- * indent, which under the quote's `>` reads as an indented block, or the `>`
- * of a quote it sat in.
+ * A code block's body: its lines as mdast reads them, the source line the
+ * first of them is on, and how many fence markers its source spans besides
+ * them — one or two, or none for an indented block.
+ */
+type CodeBody = { lines: string[]; first: number; fences: number };
+
+function codeBodyOf(code: Code): CodeBody | null {
+  if (code.position === undefined) return null;
+  const { start, end } = code.position;
+  const lines = code.value === "" ? [] : code.value.split("\n");
+  const fences = end.line - start.line + 1 - lines.length;
+  if (fences < 0 || fences > 2) return null;
+  return { lines, first: fences === 0 ? start.line : start.line + 1, fences };
+}
+
+/**
+ * The fence a quote writes `picked`, lines of `code`, in. An indented block
+ * gets backticks enough that none of its lines reads as one; a fenced block
+ * keeps its opening line, info string and all, and its marker — grown when a
+ * line cut out of a longer one is that marker's run alone, which would
+ * close the fence. The backtick is spelled `\x60` so that no scan of this
+ * file reads it as a template.
+ */
+function quoteFence(
+  source: string,
+  code: Code,
+  fenced: boolean,
+  picked: string[],
+): { open: string; marker: string } | null {
+  if (!fenced) {
+    // A line indented up to three spaces still closes a fence.
+    const longest = Math.max(
+      0,
+      ...picked.map((line) => /^ {0,3}(\x60*)/.exec(line)?.[1]?.length ?? 0),
+    );
+    const marker = "\x60".repeat(Math.max(3, longest + 1));
+    return { open: marker, marker };
+  }
+  const offset = code.position?.start.offset ?? 0;
+  const lineEnd = source.indexOf("\n", offset);
+  const open = source
+    .slice(offset, lineEnd === -1 ? undefined : lineEnd)
+    .trim();
+  const found = /^(\x60{3,}|~{3,})/.exec(open)?.[1];
+  if (found === undefined) return null;
+  const closing = Math.max(
+    0,
+    ...picked.map((line) => {
+      const run = /^ {0,3}(\x60+|~+)[ \t]*$/.exec(line)?.[1];
+      return run?.[0] === found[0] ? run.length + 1 : 0;
+    }),
+  );
+  const marker = (found[0] ?? "").repeat(Math.max(found.length, closing));
+  return { open: marker + open.slice(found.length), marker };
+}
+
+/**
+ * A code block's selected lines as a code block of their own, for an anchor
+ * with no columns. Cutting its source lines instead would carry whatever
+ * container held it: a list item's indent, which under the quote's `>` reads
+ * as an indented block, or the `>` of a quote it sat in.
  */
 function codeLines(
   source: string,
@@ -439,14 +497,9 @@ function codeLines(
   anchor: AnchorRange,
 ): string | null {
   const code = codeBlockOf(tree, anchor);
-  if (code?.position === undefined) return null;
-  const { start, end } = code.position;
-  const lines = code.value === "" ? [] : code.value.split("\n");
-  // The lines the block spans that its body does not: one or two fence
-  // markers, or none for an indented block.
-  const fences = end.line - start.line + 1 - lines.length;
-  if (fences < 0 || fences > 2) return null;
-  const first = fences === 0 ? start.line : start.line + 1;
+  const body = code === null ? null : codeBodyOf(code);
+  if (code === null || body === null) return null;
+  const { lines, first } = body;
   let from = Math.max(anchor.lineStart - first, 0);
   let to = Math.min(anchor.lineEnd - first, lines.length - 1);
   // Only a fence marker selected: that still means this block.
@@ -455,28 +508,77 @@ function codeLines(
     to = lines.length - 1;
   }
   const picked = lines.slice(from, to + 1);
-  // The backtick is spelled `\x60` so that no scan of this file reads it as
-  // a template.
-  let open: string;
-  let marker: string;
-  if (fences === 0) {
-    // A line indented up to three spaces still closes a fence.
-    const longest = Math.max(
-      0,
-      ...picked.map((line) => /^ {0,3}(\x60*)/.exec(line)?.[1]?.length ?? 0),
-    );
-    marker = "\x60".repeat(Math.max(3, longest + 1));
-    open = marker;
-  } else {
-    const lineEnd = source.indexOf("\n", start.offset ?? 0);
-    open = source
-      .slice(start.offset, lineEnd === -1 ? undefined : lineEnd)
-      .trim();
-    const found = /^(\x60{3,}|~{3,})/.exec(open)?.[1];
-    if (found === undefined) return null;
-    marker = found;
+  const fence = quoteFence(source, code, body.fences > 0, picked);
+  return fence === null
+    ? null
+    : [fence.open, ...picked, fence.marker].join("\n");
+}
+
+/**
+ * The characters selected inside one code block, as the page shows them: a
+ * few of one line as inline code, as `cutInLeaf` writes a cut into a code
+ * span, and a run across lines as a fence of its own, its first and last
+ * lines cut where the selection starts and ends. A column maps onto a line
+ * past the prefix its source line holds in front of it — a list item's
+ * indent, a quote's `> `, an indented block's four spaces — and an end on a
+ * fence marker onto the edge of the body it borders. Null when a line's
+ * source does not end with the line, when both ends are on one marker, or
+ * when only blanks are selected: the caller then takes whole lines.
+ */
+function codeCut(
+  source: string,
+  code: Code,
+  anchor: AnchorRange,
+  lineStarts: number[],
+): string | null {
+  const body = codeBodyOf(code);
+  if (body === null || anchor.colStart === null || anchor.colEnd === null) {
+    return null;
   }
-  return [open, ...picked, marker].join("\n");
+  const lines = body.lines.map((line) => line.replace(/\r$/, ""));
+  const last = body.first + lines.length - 1;
+  if (
+    lines.length === 0 ||
+    anchor.lineStart > last ||
+    anchor.lineEnd < body.first
+  ) {
+    return null;
+  }
+  // Where offset `at` of source line `line` falls among the block's lines.
+  const place = (line: number, at: number) => {
+    if (line < body.first) return { row: 0, at: 0 };
+    if (line > last) {
+      return { row: lines.length - 1, at: lines.at(-1)?.length ?? 0 };
+    }
+    const row = line - body.first;
+    const text = lines[row] ?? "";
+    const own = lineTextOf(source, lineStarts, line);
+    if (!own.endsWith(text)) return null;
+    const prefix = own.length - text.length;
+    return { row, at: Math.min(Math.max(at - prefix, 0), text.length) };
+  };
+  // Columns are 1-based and inclusive; the cut is half-open.
+  let from = place(anchor.lineStart, anchor.colStart - 1);
+  const to = place(anchor.lineEnd, anchor.colEnd);
+  if (from === null || to === null) return null;
+  // A start on a line's ending selects none of that line.
+  if (from.row < to.row && from.at === (lines[from.row] ?? "").length) {
+    from = { row: from.row + 1, at: 0 };
+  }
+  if (from.row === to.row) {
+    const value = (lines[from.row] ?? "").slice(from.at, to.at);
+    if (value.trim() === "") return null;
+    return toMarkdown({ type: "inlineCode", value }).replace(/\n$/, "");
+  }
+  const picked = [
+    (lines[from.row] ?? "").slice(from.at),
+    ...lines.slice(from.row + 1, to.row),
+    (lines[to.row] ?? "").slice(0, to.at),
+  ];
+  const fence = quoteFence(source, code, body.fences > 0, picked);
+  return fence === null
+    ? null
+    : [fence.open, ...picked, fence.marker].join("\n");
 }
 
 /**
@@ -512,8 +614,9 @@ function wholeBlocks(source: string, tree: Nodes, anchor: AnchorRange): string {
 /**
  * The markdown that quotes what the reader selected in a body rendered from
  * `source`. A selection inside one paragraph, heading or table cell is cut
- * to the characters selected, formatting kept; one inside a code block takes
- * its lines and their fence; anything else takes the whole blocks its two
+ * to the characters selected, formatting kept; one inside a code block is
+ * cut to them too, as code, and takes whole lines and their fence only for
+ * an anchor with no columns; anything else takes the whole blocks its two
  * ends are in.
  */
 export function quoteOfSelection(source: string, anchor: AnchorRange): string {
@@ -539,6 +642,11 @@ export function quoteOfSelection(source: string, anchor: AnchorRange): string {
       );
       if (from !== null && to !== null && from.leaf === to.leaf) {
         const cut = cutInLeaf(source, from.leaf, from.at, to.at);
+        if (cut !== null) return cut;
+      }
+      const code = codeBlockOf(tree, anchor);
+      if (code !== null) {
+        const cut = codeCut(source, code, anchor, starts);
         if (cut !== null) return cut;
       }
     }
