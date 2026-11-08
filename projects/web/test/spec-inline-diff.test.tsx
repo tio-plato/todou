@@ -8,6 +8,7 @@ import {
   AnnotatedMarkdown,
   type DisplayedAnnotation,
 } from "../src/components/spec/annotated-markdown.tsx";
+import { MARK_KEY_ATTR } from "../src/lib/rehype-decorations.ts";
 import { changedLineRanges } from "../src/lib/spec-changes.ts";
 import {
   changeDecorations,
@@ -87,6 +88,7 @@ async function renderDiff(
   before: string,
   after: string,
   annotations: DisplayedAnnotation[] = [],
+  baselineAnnotations: DisplayedAnnotation[] = [],
 ) {
   const view = renderWithProviders(
     <AnnotatedMarkdown
@@ -95,6 +97,7 @@ async function renderDiff(
       body={after}
       baselineBody={before}
       annotations={annotations}
+      baselineAnnotations={baselineAnnotations}
       changedRanges={changedLineRanges(before, after)}
       onStage={() => {}}
       onEditDraft={() => {}}
@@ -2735,5 +2738,308 @@ describe("pictures pair by identity, inside their own table (T-239)", () => {
     expect(decorations.deletions.filter((d) => d.block)).toEqual([]);
     expect(decorations.structures).toEqual([]);
     expect(decorations.blocks).toEqual([]);
+  });
+});
+
+/**
+ * An annotation on the baseline, v1 here: `text` on line `line` of
+ * `before`, by its columns there, or the whole line without `text`.
+ */
+function onBaseline(
+  kind: "comment" | "draft",
+  before: string,
+  line: number,
+  text?: string,
+): DisplayedAnnotation {
+  const source = before.split("\n")[line - 1] ?? "";
+  const at = text === undefined ? -1 : source.indexOf(text);
+  if (text !== undefined && at < 0) throw new Error(`no ${text} on ${line}`);
+  const colStart = text === undefined ? null : at + 1;
+  const colEnd = text === undefined ? null : at + text.length;
+  const key = `${kind}-v1-${line}-${text ?? "line"}`;
+  const anchor = {
+    path: "design.md",
+    version: 1,
+    line_start: line,
+    line_end: line,
+    col_start: colStart,
+    col_end: colEnd,
+  };
+  const at1 = { key, start: line, end: line, colStart, colEnd };
+  return kind === "comment"
+    ? { ...at1, kind, item: comment(line, anchor) }
+    : { ...at1, kind, draft: { id: key, anchor, quote: "", body: "note" } };
+}
+
+/** Let a frame pass, so that a chip that would show has. */
+async function settleChips(): Promise<void> {
+  await act(async () => {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+}
+
+describe("baseline annotations on deleted text", () => {
+  const WORD_BEFORE = "The quick brown fox jumps.\n";
+  const WORD_AFTER = "The quick red fox jumps.\n";
+  const PARAGRAPH_BEFORE =
+    "# Title\n\nFirst para.\n\nRemoved paragraph with words.\n\nLast para.\n";
+  const PARAGRAPH_AFTER = "# Title\n\nFirst para.\n\nLast para.\n";
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("paints a baseline draft on the removed word it covers", async () => {
+    const { container } = await renderDiff(
+      WORD_BEFORE,
+      WORD_AFTER,
+      [],
+      [onBaseline("draft", WORD_BEFORE, 1, "brown")],
+    );
+    const marks = container.querySelectorAll(
+      `del.spec-del mark.spec-mark-draft[${MARK_KEY_ATTR}]`,
+    );
+    expect([...marks].map((mark) => mark.textContent)).toEqual(["brown"]);
+  });
+
+  it("paints only the part of a removed word its columns cover", async () => {
+    const { container } = await renderDiff(
+      WORD_BEFORE,
+      WORD_AFTER,
+      [],
+      [onBaseline("draft", WORD_BEFORE, 1, "row")],
+    );
+    expect(texts(container, "del.spec-del mark")).toEqual(["row"]);
+    expect(container.querySelector("del.spec-del")?.textContent).toBe("brown");
+  });
+
+  it("leaves the unchanged text a baseline comment also covers alone", async () => {
+    const { container } = await renderDiff(
+      WORD_BEFORE,
+      WORD_AFTER,
+      [],
+      [onBaseline("comment", WORD_BEFORE, 1, "brown fox")],
+    );
+    // `fox` is still in the version shown, at another place in its source.
+    expect(texts(container, "mark")).toEqual(["brown"]);
+  });
+
+  it("paints every removed word on a line a baseline comment takes whole", async () => {
+    const before = "one two three four five six seven\n";
+    const after = "one 2 three four five 6 seven\n";
+    const { container } = await renderDiff(
+      before,
+      after,
+      [],
+      [onBaseline("comment", before, 1)],
+    );
+    expect(texts(container, "del.spec-del")).toEqual(["two", "six"]);
+    expect(texts(container, "del.spec-del mark.spec-mark-comment")).toEqual([
+      "two",
+      "six",
+    ]);
+  });
+
+  it.each([
+    [
+      "a restored paragraph",
+      PARAGRAPH_BEFORE,
+      PARAGRAPH_AFTER,
+      5,
+      "paragraph",
+      "p.spec-del-structure mark",
+    ],
+    [
+      "a marker",
+      "- retained alpha\n- **deleted middle**\n- retained omega\n",
+      "- retained alpha\n\n| separator |\n| --- |\n| divider |\n\n- retained omega\n",
+      2,
+      "deleted",
+      "del.spec-del-block mark",
+    ],
+    [
+      "a removed table row's stand-in",
+      "| name | kept |\n| --- | --- |\n| alpha | gamma |\n| delta | epsilon |\n| eta | iota |\n",
+      "| name | kept |\n| --- | --- |\n| alpha | gamma |\n| eta | iota |\n",
+      4,
+      "epsilon",
+      "tr.spec-del-row mark",
+    ],
+  ])(
+    "paints a baseline comment in %s",
+    async (_name, before, after, line, text, selector) => {
+      const { container } = await renderDiff(
+        before,
+        after,
+        [],
+        [onBaseline("comment", before, line, text)],
+      );
+      expect(texts(container, selector)).toEqual([text]);
+    },
+  );
+
+  it("shares the chip of the block a removed word sits in", async () => {
+    const { view } = await renderDiff(
+      WORD_BEFORE,
+      WORD_AFTER,
+      [wholeLines("draft", 1, 1)],
+      [onBaseline("draft", WORD_BEFORE, 1, "brown")],
+    );
+    const chips = await view.findAllByRole("button", {
+      name: /comment\(s\) on this block/,
+    });
+    expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
+      "2 comment(s) on this block",
+    ]);
+  });
+
+  it("gives a restored paragraph a chip of its own, at its top", async () => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        const old = this.classList.contains("spec-del-structure");
+        return DOMRect.fromRect({
+          y: old ? 300 : this.tagName === "P" ? 100 : 0,
+        });
+      },
+    );
+    const { view } = await renderDiff(
+      PARAGRAPH_BEFORE,
+      PARAGRAPH_AFTER,
+      [wholeLines("comment", 3, 3)],
+      [onBaseline("comment", PARAGRAPH_BEFORE, 5, "with")],
+    );
+    const chips = await view.findAllByRole("button", {
+      name: /comment\(s\) on this block/,
+    });
+    expect(chips.map((chip) => chip.style.top)).toEqual(["100px", "300px"]);
+    expect(chips.map((chip) => chip.textContent)).toEqual(["1", "1"]);
+  });
+
+  it("hangs each of two baseline annotations on the same removed word", async () => {
+    const { view } = await renderDiff(
+      WORD_BEFORE,
+      WORD_AFTER,
+      [],
+      [
+        onBaseline("draft", WORD_BEFORE, 1, "brown"),
+        onBaseline("comment", WORD_BEFORE, 1, "brown"),
+      ],
+    );
+    const chips = await view.findAllByRole("button", {
+      name: /comment\(s\) on this block/,
+    });
+    expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
+      "2 comment(s) on this block",
+    ]);
+  });
+
+  it("hangs a baseline comment on a restored block that holds no text", async () => {
+    // The removed paragraph is a picture alone, which takes a wash and no mark.
+    const before = "Intro.\n\n![shot](/a.png)\n\nLast.\n";
+    const { view, container } = await renderDiff(
+      before,
+      "Intro.\n\nLast.\n",
+      [],
+      [onBaseline("comment", before, 3)],
+    );
+    expect(container.querySelector(".spec-del-structure img")).not.toBeNull();
+    expect(
+      await view.findByRole("button", { name: "1 comment(s) on this block" }),
+    ).toBeTruthy();
+  });
+
+  it("shares one chip where a restored block starts a current one", async () => {
+    // The item's padding puts the paragraph a few pixels below its top.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        const top = { LI: 100, P: 104 }[this.tagName] ?? 0;
+        return DOMRect.fromRect({ y: top });
+      },
+    );
+    // The item's opening paragraph went; it is put back as the item's first
+    // block, where the item's own chip already hangs.
+    const before = "- Removed opening paragraph.\n\n  Kept paragraph.\n";
+    const after = "- Kept paragraph.\n";
+    const { view, container } = await renderDiff(
+      before,
+      after,
+      [wholeLines("comment", 1, 1)],
+      [onBaseline("comment", before, 1, "opening")],
+    );
+    expect(
+      container.querySelector("li > .spec-del-structure:first-child"),
+    ).not.toBeNull();
+    const chips = await view.findAllByRole("button", {
+      name: /comment\(s\) on this block/,
+    });
+    expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
+      "2 comment(s) on this block",
+    ]);
+  });
+
+  it("joins the chip of a restored block it would draw over", async () => {
+    // Two restored paragraphs, drawn closer than a chip is tall.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (!this.classList.contains("spec-del-structure")) {
+          return DOMRect.fromRect({ y: 0 });
+        }
+        return DOMRect.fromRect({
+          y: (this.textContent ?? "").startsWith("Old A") ? 300 : 310,
+        });
+      },
+    );
+    const before = "Para one.\n\nOld A here.\n\nOld B here.\n\nPara two.\n";
+    const { view } = await renderDiff(
+      before,
+      "Para one.\n\nPara two.\n",
+      [],
+      [
+        onBaseline("comment", before, 3, "A"),
+        onBaseline("comment", before, 5, "B"),
+      ],
+    );
+    const chips = await view.findAllByRole("button", {
+      name: /comment\(s\) on this block/,
+    });
+    expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
+      "2 comment(s) on this block",
+    ]);
+  });
+
+  it("hangs a baseline comment on the innermost restored block it reaches", async () => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        const top = { TABLE: 300, TR: 340 }[this.tagName] ?? 0;
+        return DOMRect.fromRect({ y: top });
+      },
+    );
+    // From the unchanged line 1 on into the removed table's header row.
+    const before = "Intro.\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\nEnd.\n";
+    const comment = onBaseline("comment", before, 1);
+    const { view, container } = await renderDiff(
+      before,
+      "Intro.\n\nEnd.\n",
+      [],
+      [{ ...comment, end: 3 }],
+    );
+    expect(container.querySelector("table.spec-del-structure")).not.toBeNull();
+    const chips = await view.findAllByRole("button", {
+      name: /comment\(s\) on this block/,
+    });
+    expect(chips.map((chip) => chip.style.top)).toEqual(["340px"]);
+  });
+
+  it("hangs no chip for a baseline line that nothing removed shows", async () => {
+    const { view } = await renderDiff(
+      PARAGRAPH_BEFORE,
+      PARAGRAPH_AFTER,
+      [],
+      [onBaseline("comment", PARAGRAPH_BEFORE, 3, "First")],
+    );
+    await settleChips();
+    expect(
+      view.queryAllByRole("button", { name: /comment\(s\) on this block/ }),
+    ).toEqual([]);
   });
 });

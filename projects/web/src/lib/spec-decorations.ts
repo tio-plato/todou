@@ -848,13 +848,42 @@ export function annotationDecorations(
   return spans;
 }
 
-/** Both decoration sources, merged into what the rehype plugin takes. */
+/**
+ * The whole lines each annotation without columns covers, as one source
+ * span from its first line's start to its last line's end. Whole lines on
+ * the version shown wash their blocks instead; this is for the baseline,
+ * whose removed text a comparison puts back in runs that have no block of
+ * their own to wash.
+ */
+export function lineDecorations(
+  index: SegmentIndex,
+  annotations: AnchoredAnnotation[],
+): SpanDecoration[] {
+  const spans: SpanDecoration[] = [];
+  for (const annotation of annotations) {
+    if (annotation.colStart !== null && annotation.colEnd !== null) continue;
+    const start = index.lineStarts[annotation.start - 1];
+    if (start === undefined) continue;
+    const next = index.lineStarts[annotation.end];
+    const end = next === undefined ? index.source.length : next - 1;
+    if (end <= start) continue;
+    spans.push({ kind: annotation.kind, start, end, key: annotation.key });
+  }
+  return spans;
+}
+
+/**
+ * The decoration sources, merged into what the rehype plugin takes.
+ * `oldSpans` are annotations on the compare baseline, in its offsets.
+ */
 export function mergeDecorations(
   changes: Decorations,
   annotations: SpanDecoration[],
+  oldSpans: SpanDecoration[] = [],
 ): Decorations {
   return {
     spans: [...changes.spans, ...annotations],
+    oldSpans,
     deletions: changes.deletions,
     blocks: changes.blocks,
     tables: changes.tables,
