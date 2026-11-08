@@ -347,6 +347,63 @@ export function landAtBottom(): () => void {
 }
 
 /**
+ * Where `revealBlock` in `"start"` mode puts the page for `el`, in page
+ * coordinates.
+ */
+export function startTarget(el: HTMLElement): number {
+  const rect = el.getBoundingClientRect();
+  return restingScrollY(
+    { top: rect.top + window.scrollY, height: rect.height },
+    usableViewport(),
+    "start",
+  );
+}
+
+/**
+ * Bring `el`'s top under the top overlays, as `revealBlock` does in `"start"`
+ * mode, but no further down than a landing on the bottom goes: what follows
+ * `el` may be shorter than a screen, and the rest of the way down is the
+ * footer or, on a phone, the sidebar below the comment box. Flash it unless
+ * told not to, and hold it there; see `hold`. Each placement measures both
+ * again, so `el` rises as what follows it loads. While stopped short at the
+ * bottom it is a landing on the bottom, and what arrives meanwhile is
+ * followed.
+ */
+export function revealAboveEnd(
+  el: HTMLElement,
+  { flash: highlight = true }: { flash?: boolean } = {},
+): () => void {
+  openEnclosingFolds(el);
+  if (highlight) flash(el);
+  // Where it goes, and whether that stops it short at the bottom.
+  const spot = () => {
+    const start = startTarget(el);
+    const end = endTarget();
+    return { y: Math.max(0, Math.min(start, end)), onEnd: start >= end };
+  };
+  const place = () => {
+    const { y, onEnd } = spot();
+    window.scrollTo(0, y);
+    return onEnd;
+  };
+  // Placed before it is held, so the hold starts from where it put the page.
+  const onEnd = place();
+  return hold(
+    document.body,
+    (release) => {
+      // Gone with a route change nobody touched the page for.
+      if (!el.isConnected) release();
+      else {
+        const nowOnEnd = place();
+        if (held?.release === release) held.onEnd = nowOnEnd;
+      }
+    },
+    onEnd,
+    () => spot().y,
+  );
+}
+
+/**
  * Keep the release of the last hold this component started, and call it on
  * unmount: a page left without input would otherwise go on being held.
  */
