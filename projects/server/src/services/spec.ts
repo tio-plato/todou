@@ -156,7 +156,7 @@ export const utf8Size = (body: string) => Buffer.byteLength(body, "utf8");
  * that column waits for this lock, so the value read holds until the
  * transaction ends.
  */
-async function lockSpecCard(tx: Db | Tx, gate: WriteGate) {
+async function lockSpecCard(tx: Tx, gate: WriteGate) {
   await lockWritableIssue(tx, gate);
   const [row] = await tx
     .select({ specReviewStatus: issues.specReviewStatus })
