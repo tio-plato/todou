@@ -1282,6 +1282,10 @@ export function sourceOffsetOfText(
   return null;
 }
 
+/** A segment, or a piece of a text node, which has no `lead`. */
+type RenderedRun = Pick<SourceSegment, "text" | "start" | "end" | "exact"> &
+  Partial<Pick<SourceSegment, "lead">>;
+
 /**
  * Map an offset into a block's *rendered* text onto a source offset. The
  * DOM has no separator between leaf blocks — `textContent` of a table row
@@ -1292,28 +1296,45 @@ export function sourceOffsetOfText(
  * whichever of its edges the caller is looking for.
  */
 export function sourceOffsetOfRendered(
-  segments: SourceSegment[],
+  segments: RenderedRun[],
   offset: number,
   edge: "start" | "end",
 ): number | null {
+  return sourceOffsetsOfRendered(segments)(offset, edge);
+}
+
+/**
+ * `sourceOffsetOfRendered` for offsets that never go back, such as the edges
+ * of the runs a text node is cut into, taken in order: each call goes on
+ * from where the last one stopped, so mapping all of them walks the
+ * segments once.
+ */
+export function sourceOffsetsOfRendered(
+  segments: RenderedRun[],
+): (offset: number, edge: "start" | "end") => number | null {
+  let i = 0;
   let seen = 0;
-  for (let i = 0; i < segments.length; i++) {
-    const segment = segments[i];
-    if (segment === undefined) continue;
-    const next = seen + segment.text.length;
-    // On a boundary the two sides disagree about who owns the offset: a
-    // selection's start reaches forward into the next segment, its end
-    // back into this one. The last segment owns its own far edge.
-    const owns =
-      offset < next ||
-      (offset === next && (edge === "end" || i === segments.length - 1));
-    if (owns) {
-      if (!segment.exact) return edge === "start" ? segment.start : segment.end;
-      return segment.start + segment.lead + (offset - seen);
+  return (offset, edge) => {
+    for (; i < segments.length; i++) {
+      const segment = segments[i];
+      if (segment === undefined) continue;
+      const next = seen + segment.text.length;
+      // On a boundary the two sides disagree about who owns the offset: a
+      // selection's start reaches forward into the next segment, its end
+      // back into this one. The last segment owns its own far edge.
+      const owns =
+        offset < next ||
+        (offset === next && (edge === "end" || i === segments.length - 1));
+      if (owns) {
+        if (!segment.exact) {
+          return edge === "start" ? segment.start : segment.end;
+        }
+        return segment.start + (segment.lead ?? 0) + (offset - seen);
+      }
+      seen = next;
     }
-    seen = next;
-  }
-  return null;
+    return null;
+  };
 }
 
 /** 1-based line and UTF-16 code-unit column of a source offset. */
