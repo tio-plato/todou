@@ -29,6 +29,7 @@ import {
   type SpecFile,
   type SpecInfo,
 } from "@todou/shared";
+import { remapLineRange } from "@todou/shared/spec-remap";
 import { diffLines } from "diff";
 import {
   ArrowDownIcon,
@@ -1176,12 +1177,15 @@ function SpecViewBody({
   // Comments that can hang inline on the viewed version of the selected
   // file; everything else (outdated, anchored to another version while an
   // old one is viewed) lands in the flat list below the document. A rendered
-  // comparison puts back what its baseline had and the viewed version does
-  // not, so what is anchored on the baseline, under the path the file had
-  // there, hangs on that as well (`baselineDisplayed`), at the baseline's
-  // lines. A comment among them on this file's own path stays in the list,
-  // since the viewed version has no place for it; one under a renamed
-  // file's old path never was in it, and still is not.
+  // comparison hangs what is anchored on its baseline, under the path the
+  // file had there, as well. Lines the viewed version kept byte for byte
+  // hang it on the viewed version, at the lines they moved to, by the rule
+  // the server remaps a comment onto the current version with, and a comment
+  // hung there leaves the list. Lines that reach a change hang it on what
+  // the comparison puts back of the baseline (`baselineDisplayed`), at the
+  // baseline's lines; a comment among those on this file's own path stays in
+  // the list, since the viewed version has no place for it, and one under a
+  // renamed file's old path never was in it, and still is not.
   const renderedBaseline = baselineBody !== undefined;
   const { displayed, unplaced, fileLevel, baselineDisplayed } = useMemo(() => {
     const displayed: DisplayedAnnotation[] = [];
@@ -1215,11 +1219,34 @@ function SpecViewBody({
       colStart: item.anchor.col_start,
       colEnd: item.anchor.col_end,
     });
+    /**
+     * Hangs an annotation at the baseline's lines: on the viewed version, at
+     * the lines they moved to, when it kept them byte for byte, so that the
+     * columns cut the same characters there; on the baseline otherwise. True
+     * when it went to the viewed version.
+     */
+    const placeOnBaseline = (annotation: DisplayedAnnotation): boolean => {
+      const viewedBody = selected?.body;
+      if (baselineBody !== undefined && viewedBody !== undefined) {
+        const moved = remapLineRange(
+          baselineBody,
+          viewedBody,
+          annotation.start,
+          annotation.end,
+        );
+        if (!moved.outdated && moved.start !== null && moved.end !== null) {
+          displayed.push({ ...annotation, start: moved.start, end: moved.end });
+          return true;
+        }
+      }
+      baselineDisplayed.push(annotation);
+      return false;
+    };
     for (const item of comments.data.items) {
       if (item.anchor.path !== selectedPath) {
         // A renamed file's comments on the baseline are under its old path.
         if (onBaseline(item.anchor)) {
-          baselineDisplayed.push(onBaselineComment(item));
+          placeOnBaseline(onBaselineComment(item));
         }
         continue;
       }
@@ -1255,15 +1282,15 @@ function SpecViewBody({
           colEnd: item.anchor.col_end,
         });
       } else {
-        unplaced.push(item);
-        if (onBaseline(item.anchor)) {
-          baselineDisplayed.push(onBaselineComment(item));
-        }
+        // One on the baseline may have a place on the viewed version still.
+        const placed =
+          onBaseline(item.anchor) && placeOnBaseline(onBaselineComment(item));
+        if (!placed) unplaced.push(item);
       }
     }
     for (const draft of drafts.drafts) {
       if (onBaseline(draft.anchor)) {
-        baselineDisplayed.push({
+        placeOnBaseline({
           key: draft.id,
           kind: "draft",
           draft,
@@ -1298,6 +1325,8 @@ function SpecViewBody({
     renderedBaseline,
     baseline,
     renamedFrom,
+    baselineBody,
+    selected?.body,
   ]);
 
   const fileLevelDrafts = drafts.drafts.filter(
