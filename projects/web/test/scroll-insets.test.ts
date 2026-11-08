@@ -8,6 +8,7 @@ import {
   isHoldingTarget,
   landAtBottom,
   restingScrollY,
+  revealAboveEnd,
   usableViewport,
   useScrollInsets,
 } from "../src/lib/scroll-insets.ts";
@@ -333,6 +334,7 @@ describe("landing on the end of the conversation", () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     FakeResizeObserver.instances = [];
+    for (const el of document.querySelectorAll("[data-top]")) el.remove();
     document.documentElement.style.removeProperty("scroll-padding-top");
   });
 
@@ -361,9 +363,11 @@ describe("landing on the end of the conversation", () => {
     });
     vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
       function (this: Element) {
-        const bottom =
-          (this as HTMLElement).dataset?.end === "" ? end.y - scroll.y : 0;
-        return { top: 0, bottom, height: 0, width: 0, left: 0 } as DOMRect;
+        const { dataset } = this as HTMLElement;
+        const bottom = dataset?.end === "" ? end.y - scroll.y : 0;
+        const top =
+          dataset?.top === undefined ? 0 : Number(dataset.top) - scroll.y;
+        return { top, bottom, height: 0, width: 0, left: 0 } as DOMRect;
       },
     );
     render(createElement(EndHarness));
@@ -451,6 +455,65 @@ describe("landing on the end of the conversation", () => {
     expect(targets).toEqual([landed]);
   });
 
+  /** An item at page coordinate `y`. */
+  function item(y: number) {
+    const el = document.createElement("div");
+    el.dataset.top = String(y);
+    document.body.append(el);
+    return el;
+  }
+
+  // New messages' landing on the first new item.
+  it("puts an item under the top overlays when enough of the page follows it", () => {
+    const { targets } = page({ y: 2000 });
+    // What the page's own overlays left there, set aside for a round number.
+    document.documentElement.style.scrollPaddingTop = "100px";
+    const el = item(500);
+    revealAboveEnd(el);
+    expect(targets).toEqual([500 - 100]);
+    expect(el.classList.contains("anchor-flash")).toBe(true);
+  });
+
+  it("holds an item it put under the overlays there as the page grows", () => {
+    const end = { y: 2000 };
+    const { targets } = page(end);
+    revealAboveEnd(item(500));
+    expect(isHoldingTarget()).toBe(true);
+    end.y = 2600;
+    resizePage();
+    expect(targets).toEqual([
+      500 - usableViewport().top,
+      500 - usableViewport().top,
+    ]);
+  });
+
+  it("stops at the end while too little follows the item, and lets it rise as more loads", () => {
+    const end = { y: 2000 };
+    const { targets } = page(end);
+    const el = item(1500);
+    revealAboveEnd(el);
+    expect(targets).toEqual([2000 - VIEWPORT]);
+    expect(el.classList.contains("anchor-flash")).toBe(true);
+    // A landing on the end for now: what arrives meanwhile is followed.
+    expect(isHoldingTarget()).toBe(false);
+    // Images below it load, and there is room for it to go all the way up.
+    end.y = 2600;
+    resizePage();
+    expect(targets).toEqual([2000 - VIEWPORT, 1500 - usableViewport().top]);
+    expect(isHoldingTarget()).toBe(true);
+  });
+
+  // iOS scrolling to the top at a tap on the status bar, find in page
+  // scrolling to a match: neither sends an input a hold hears.
+  it("lets go of New messages' landing once the page is moved off it with no input", () => {
+    const { targets, moveTo } = page({ y: 2000 });
+    revealAboveEnd(item(500));
+    moveTo(0);
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([500 - usableViewport().top]);
+  });
+
   it("keeps holding through the scroll its own placement made", () => {
     const { targets } = page({ y: 2000 });
     landAtBottom();
@@ -497,6 +560,38 @@ describe("landing on the end of the conversation", () => {
     fireEvent.scroll(window);
     resizePage();
     expect(targets).toEqual([2000 - VIEWPORT, 2300 - VIEWPORT]);
+  });
+
+  it("keeps holding an item above what grew, as the page moves by just what it grew", () => {
+    const end = { y: 2000 };
+    const { targets, moveTo, setHeight } = page(end);
+    revealAboveEnd(item(500));
+    const placed = 500 - usableViewport().top;
+    // An image below the item loads, and scroll anchoring on the comment
+    // box below moves the page down with the box, away from the item.
+    end.y = 2300;
+    setHeight(HEIGHT + 300);
+    moveTo(placed + 300);
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([placed, placed]);
+  });
+
+  it("keeps holding through anchoring after it has put the page back on a taller one", () => {
+    const end = { y: 2000 };
+    const { targets, moveTo, setHeight } = page(end);
+    revealAboveEnd(item(500));
+    const placed = 500 - usableViewport().top;
+    end.y = 2600;
+    setHeight(HEIGHT + 600);
+    resizePage();
+    // Shrunk by 300 below the item, the page moving up with the comment box.
+    end.y = 2300;
+    setHeight(HEIGHT + 300);
+    moveTo(placed - 300);
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([placed, placed, placed]);
   });
 
   it("keeps holding through anchoring on what grew above, as more grows below", () => {
