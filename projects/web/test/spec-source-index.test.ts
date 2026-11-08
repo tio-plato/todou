@@ -132,9 +132,11 @@ describe("buildSegmentIndex", () => {
     ]);
   });
 
-  it("marks escapes inexact, and inline code exact past its backticks", () => {
+  it("marks only the escapes inexact, and inline code exact past its backticks", () => {
+    // The text around an escape still reads like its source, so only the
+    // two escapes themselves are indivisible.
     const inexact = index.segments.filter((s) => !s.exact).map((s) => s.text);
-    expect(inexact).toEqual([" 与 *转义* 文本。"]);
+    expect(inexact).toEqual(["*", "*"]);
     const code = index.segments.find((s) => s.text === "code");
     expect(code?.lead).toBe(1);
   });
