@@ -993,11 +993,38 @@ function endOn(content: Content, end: Point, walk: Walk): Point {
 }
 
 /**
+ * `ends` with an endpoint outside `container` put on the container's own
+ * edge. Clamped to the first or last block instead, it would name that
+ * block and cover all of it. On the edge it selects nothing, and
+ * `endsOnContent` moves it onto the first or last character selected: a drag
+ * past the end of a file, or a triple-click on a comment's last block, which
+ * ends outside the comment, takes that block's text, and ⌘/Ctrl-A all of it.
+ */
+export function onContainerEdges(
+  container: Element,
+  ends: SelectionEndpoints,
+): SelectionEndpoints {
+  const ordered = orderedEndpoints(ends);
+  if (ordered === null) return ends;
+  const { start, end } = ordered.ends;
+  const before = sideOf(container, start.node, start.offset) === "before";
+  const after = sideOf(container, end.node, end.offset) === "after";
+  if (!before && !after) return ends;
+  return {
+    start: before ? { node: container, offset: 0 } : start,
+    end: after ? { node: container, offset: container.childNodes.length } : end,
+    collapsed: ends.collapsed,
+  };
+}
+
+/**
  * The anchor a selection points at, or null when it points at nothing in
- * this file. Endpoints outside the container are clamped to its first or
- * last block instead of forfeiting the anchor: a drag that overshoots the
- * end of the prose, or ⌘/Ctrl-A, still means "this file, from here to
- * there". Only a selection lying wholly on one side of the container has
+ * this file. Endpoints outside the container are put on its edges first
+ * (`onContainerEdges`), so a drag that overshoots the end of the prose, or
+ * ⌘/Ctrl-A, anchors to the characters it selects, columns and all. Should
+ * that leave a file of some unforeseen shape no anchor, the endpoints as
+ * selected are clamped to its first or last block instead, which keeps the
+ * lines. Only a selection lying wholly on one side of the container has
  * nothing to say about it. Endpoints inside it that select nothing are first
  * moved onto what the selection does select (`endsOnContent`).
  *
@@ -1014,6 +1041,19 @@ export function anchorForSelection(
   // current source; a line fallback would silently attach to nearby prose.
   if (isOldEndpoint(selected.start.node) || isOldEndpoint(selected.end.node))
     return null;
+  const placed = onContainerEdges(container, selected);
+  return (
+    anchorOfEndpoints(container, index, placed) ??
+    (placed === selected ? null : anchorOfEndpoints(container, index, selected))
+  );
+}
+
+/** `anchorForSelection` for endpoints as they are, edges or not. */
+function anchorOfEndpoints(
+  container: Element,
+  index: SegmentIndex,
+  selected: SelectionEndpoints,
+): AnchorRange | null {
   const ends = endsOnContent(container, selected);
   const startSide = sideOf(container, ends.start.node, ends.start.offset);
   const endSide = sideOf(container, ends.end.node, ends.end.offset);
