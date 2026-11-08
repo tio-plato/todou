@@ -40,8 +40,10 @@ import { HiddenBlock } from "@/components/timeline/hidden-block.tsx";
 import { useRevealedRuns } from "@/components/timeline/revealed-runs.tsx";
 import { SpecVersionCard } from "@/components/timeline/spec-version-card.tsx";
 import { TimelineSettlementsProvider } from "@/components/timeline/timeline-answers.tsx";
+import { useBelowViewport } from "@/components/timeline/use-below-viewport.ts";
 import { useKeepReading } from "@/components/timeline/use-keep-reading.ts";
 import { useQuestionLanding } from "@/components/timeline/use-question-landing.ts";
+import { useReaderScroll } from "@/components/timeline/use-reader-scroll.ts";
 import { useTimelineAnchor } from "@/components/timeline/use-timeline-anchor.ts";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -56,12 +58,16 @@ import {
 } from "@/lib/scroll-insets.ts";
 import { parseTimelineAnchor } from "@/lib/timeline-anchors.ts";
 import { useReadFailure } from "@/lib/use-read-failure.ts";
+import { cn } from "@/lib/utils";
 
 /** Units the first render draws, counted up from the bottom (T-602). */
 const FIRST_PASS_UNITS = 6;
 /** The longest idle period browsers grant, for where there are none. */
 const IDLE_BUDGET_MS = 50;
-/** The New messages pill's clearance above the floating composer. */
+/**
+ * The scroll-to-bottom button's clearance above the floating composer, New
+ * messages included.
+ */
 const PILL_GAP = 12;
 
 /** Whether the reader is at the end of the conversation, and where they are. */
@@ -204,15 +210,29 @@ export function Timeline({
       ]),
     [headEnabled, head.data, tail.data],
   );
+  // The scroll-to-bottom button. New messages is a notice and shows whichever
+  // way the reader scrolls; the plain arrow is a way back, offered once the
+  // reader scrolls down with the end of the conversation still below. The
+  // end is this list's own, mounted with its content, so a card opens with
+  // nothing to flash.
+  const [listEnd, setListEnd] = useState<HTMLDivElement | null>(null);
+  const endBelow = useBelowViewport(listEnd);
+  const [revealed, setRevealed] = useState(false);
+  const forgetScroll = useReaderScroll((direction) => {
+    if (direction < 0) setRevealed(false);
+    else if (endBelow === true) setRevealed(true);
+  });
   // The end of the conversation the page declared, not of the list: the
   // composer is sticky, and its in-flow position lies below the list — so
   // this lands with the last item fully visible above the composer. Held,
   // because the images above it are still arriving and push the end away
-  // (T-527).
+  // (T-527). It is the page scrolling itself, however soon after the reader's
+  // last input it comes, so that input is not taken for its direction.
   const keepHold = useOwnHold();
   const scrollToBottom = useCallback(() => {
+    forgetScroll();
     keepHold(landAtBottom());
-  }, [keepHold]);
+  }, [keepHold, forgetScroll]);
   const questionLanding = useQuestionLanding(slug, issueNumber);
   const timelineReady = tail.isSuccess && (!headEnabled || head.isSuccess);
 
@@ -481,6 +501,23 @@ export function Timeline({
     };
   }, [list]);
 
+  // Back at the end, or past it, the next showing waits for a scroll down.
+  if (endBelow === false && revealed) setRevealed(false);
+  const shown = newBelow || (revealed && endBelow === true);
+  // Kept while hidden, so what fades out is the button the reader just saw.
+  const [look, setLook] = useState<"new" | "plain">("plain");
+  if (shown && look !== (newBelow ? "new" : "plain"))
+    setLook(newBelow ? "new" : "plain");
+  const motion = cn(
+    "transition-[opacity,translate] duration-200 ease-out",
+    shown ? "translate-y-0 opacity-100" : "opacity-0 motion-safe:translate-y-2",
+  );
+  const toBottom = () => {
+    scrollToBottom();
+    setNewBelow(false);
+    setRevealed(false);
+  };
+
   const onLoadMore = useCallback(() => {
     const blockTop =
       blockRef.current?.getBoundingClientRect().top ?? Number.POSITIVE_INFINITY;
@@ -649,21 +686,47 @@ export function Timeline({
             />
           </div>
         ))}
-        {newBelow && (
-          <div
-            className="sticky z-10 flex h-0 items-end justify-center"
-            style={{ bottom: aboveDock(PILL_GAP) }}
+        {/* The list's end, after the comments still being sent. */}
+        <div ref={setListEnd} />
+      </div>
+      {/* A sibling of the list, not its last child: a sticky box moves only
+          within its parent, and the page's column is what lets this one
+          float over the whole card, title and body included. It holds no
+          height, the button rising out of it, and `mb-0` takes back the gap
+          the column's `space-y-4` would otherwise leave below it. */}
+      <div
+        data-scroll-to-bottom=""
+        data-state={shown ? "shown" : "hidden"}
+        inert={!shown}
+        className="sticky z-10 mb-0 flex h-0 items-end justify-center"
+        style={{ bottom: aboveDock(PILL_GAP) }}
+      >
+        {look === "new" ? (
+          <Button className={cn("shadow-lg", motion)} onClick={toBottom}>
+            <ArrowDownIcon className="size-4" /> New messages
+          </Button>
+        ) : (
+          <Button
+            size="icon"
+            variant="outline"
+            aria-label="Scroll to bottom"
+            title="Scroll to bottom"
+            // Opaque in the dark theme too, where the outline's own fill is
+            // see-through and the comment under it would show. Border and
+            // arrow take the theme's primary colour in every theme, so the
+            // outline's dark border is overridden as well, and the colour
+            // sits on the icon, out of reach of the outline's hover text.
+            className={cn(
+              "rounded-full border-[1.5px] border-primary shadow-lg dark:border-primary dark:bg-background dark:hover:bg-muted",
+              motion,
+            )}
+            onClick={toBottom}
           >
-            <Button
-              className="shadow-lg"
-              onClick={() => {
-                scrollToBottom();
-                setNewBelow(false);
-              }}
-            >
-              <ArrowDownIcon className="size-4" /> New messages
-            </Button>
-          </div>
+            <ArrowDownIcon
+              className="size-4.5 text-primary"
+              strokeWidth={2.5}
+            />
+          </Button>
         )}
       </div>
     </TimelineSettlementsProvider>
