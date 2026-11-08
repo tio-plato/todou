@@ -79,7 +79,6 @@ import {
 } from "@/components/shared/return-link.tsx";
 import { UserChip } from "@/components/shared/user-chip.tsx";
 import {
-  type AnchorRange,
   AnnotatedMarkdown,
   type DisplayedAnnotation,
 } from "@/components/spec/annotated-markdown.tsx";
@@ -126,6 +125,7 @@ import {
   CODE_HIGHLIGHT_CSS,
   useCodeHighlights,
 } from "@/lib/code-highlights.ts";
+import type { CompareAnchor } from "@/lib/compare-anchor.ts";
 import {
   COLLAPSED_CONTEXT_THRESHOLD,
   hangLine,
@@ -1135,17 +1135,29 @@ function SpecViewBody({
   // Stable, because the document and every chip on it are memoised against
   // them: a fresh closure per render re-renders the lot (T-601).
   const stageRange = useCallback(
-    (range: AnchorRange) => {
+    (range: CompareAnchor) => {
       if (selected === undefined) return;
+      // A selection in what the comparison put back of the baseline anchors
+      // to the baseline, under the path the file had there.
+      const on = !range.baseline
+        ? { path: selected.path, version, body: selected.body }
+        : baseline === null || baselineBody === undefined
+          ? null
+          : {
+              path: renamedFrom.get(selected.path) ?? selected.path,
+              version: baseline,
+              body: baselineBody,
+            };
+      if (on === null) return;
       session.retarget({
-        path: selected.path,
-        version,
+        path: on.path,
+        version: on.version,
         lineStart: range.lineStart,
         lineEnd: range.lineEnd,
         colStart: range.colStart,
         colEnd: range.colEnd,
         quote: quoteOf(
-          selected.body,
+          on.body,
           range.lineStart,
           range.lineEnd,
           range.colStart,
@@ -1153,7 +1165,7 @@ function SpecViewBody({
         ),
       });
     },
-    [session, selected, version],
+    [session, selected, version, baseline, baselineBody, renamedFrom],
   );
   const { mutate: resolveMutate } = resolve;
   const resolveComment = useCallback(
