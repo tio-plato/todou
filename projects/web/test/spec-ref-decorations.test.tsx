@@ -425,6 +425,48 @@ describe("annotation highlights in a footnote definition", () => {
   });
 });
 
+// The page shows raw HTML as its own source, and its text can be anchored.
+describe("annotation highlights on raw HTML", () => {
+  it("paints nothing on raw HTML whose position does not read as its source", async () => {
+    // A fold in one block of HTML in a quote: the parser's value has no
+    // `> `, so the summary's place, counted in the value, falls short of
+    // its place in the source. "Fold" is columns 12 to 15 of line 2.
+    const { container } = await renderSpec({
+      body: "> <details>\n> <summary>Fold here</summary>\n> </details>\n",
+      annotations: [anchored("comment", 2, 12, 2, 15)],
+      ready: "summary",
+    });
+    expect(texts(container, "mark.spec-mark-comment")).toEqual([]);
+  });
+
+  // [shape, body, the anchor's line, column, line, column, what is marked].
+  it.each([
+    [
+      // "<details><summary>" is columns 1 to 18; "Fold" 19 to 22.
+      "a fold's summary",
+      "<details><summary>Fold here</summary>\n\nbody text\n\n</details>\n",
+      [1, 19, 1, 22],
+      ["Fold"],
+    ],
+    [
+      // "<div>block " is columns 1 to 11; "words" 12 to 16.
+      "a block of HTML",
+      "<div>block words</div>\n\nafter text\n",
+      [1, 12, 1, 16],
+      ["words"],
+    ],
+  ] as const)(
+    "marks only the anchored characters of %s",
+    async (_shape, body, [start, colStart, end, colEnd], marked) => {
+      const { container } = await renderSpec({
+        body,
+        annotations: [anchored("comment", start, colStart, end, colEnd)],
+      });
+      expect(texts(container, "mark.spec-mark-comment")).toEqual(marked);
+    },
+  );
+});
+
 describe("annotation highlights beside an autolink", () => {
   it("marks only the anchored word of text an autolink is cut from", async () => {
     const client = seeded();
