@@ -704,6 +704,111 @@ describe("selecting deleted text in the rendered comparison", () => {
   });
 });
 
+describe("baseline comments in the rendered comparison", () => {
+  /** A comment on v1's `path`, line `line`, columns `from`–`to`. */
+  const onV1 = (path: string, line: number, from: number, to: number) => {
+    const base = comment(path, 1, line, "on the old word");
+    return {
+      ...base,
+      anchor: { ...base.anchor, col_start: from, col_end: to },
+      outdated: true,
+      current_line_start: null,
+      current_line_end: null,
+    };
+  };
+
+  it("paints a comment on a removed word and hangs it a chip", async () => {
+    // v1's line 1 is "The quick brown fox."; "brown" is columns 11 to 15.
+    mockSpec([onV1("words.md", 1, 11, 15)], {
+      1: { "words.md": "The quick brown fox.\n" },
+      2: { "words.md": "The quick red fox.\n" },
+    });
+    const view = renderSpecView("?v=2&file=words.md&compare=1&view=rendered");
+    await waitFor(() =>
+      expect(
+        [
+          ...view.container.querySelectorAll(
+            "del.spec-del mark.spec-mark-comment",
+          ),
+        ].map((mark) => mark.textContent),
+      ).toEqual(["brown"]),
+    );
+    expect(
+      await view.findByRole("button", { name: "1 comment(s) on this block" }),
+    ).toBeTruthy();
+  });
+
+  it("paints a renamed file's comment from under its old path", async () => {
+    // drift.md in v1 ends "delta", columns 1 to 5 of line 4.
+    mockSpec([onV1("drift.md", 4, 1, 5)]);
+    const view = renderSpecView("?v=2&file=drifted.md&compare=1&view=rendered");
+    await waitFor(() =>
+      expect(
+        [
+          ...view.container.querySelectorAll(
+            "del.spec-del mark.spec-mark-comment",
+          ),
+        ].map((mark) => mark.textContent),
+      ).toEqual(["delta"]),
+    );
+  });
+
+  it("lists a resolved comment on a removed word instead of painting it", async () => {
+    // v2, the current version, drops "brown" (columns 11 to 15 of v1's line
+    // 1) and keeps line 3, where the server carries a comment on v1.
+    const resolved = { by: AUTHOR, at: "2026-01-07T00:00:00Z" };
+    const onBrown = onV1("words.md", 1, 11, 15);
+    mockSpec(
+      [
+        { ...onBrown, comment_id: 1, body: "still open" },
+        { ...onBrown, comment_id: 2, body: "settled on brown", resolved },
+        { ...comment("words.md", 1, 3, "settled on kept"), resolved },
+      ],
+      {
+        1: { "words.md": "The quick brown fox.\n\nKept line.\n" },
+        2: { "words.md": "The quick red fox.\n\nKept line.\n" },
+      },
+    );
+    const view = renderSpecView("?v=2&file=words.md&compare=1&view=rendered");
+    // The open one keeps its chip on the removed word, and the resolved one
+    // the server carried still hangs on the kept line.
+    await waitFor(() =>
+      expect(
+        view
+          .queryAllByRole("button", { name: /comment\(s\) on this block/ })
+          .map((chip) => chip.getAttribute("aria-label")),
+      ).toEqual(["1 comment(s) on this block", "1 comment(s) on this block"]),
+    );
+    expect(
+      view.getByText(/Comments without a place in v2/).parentElement
+        ?.textContent,
+    ).toContain("settled on brown");
+  });
+
+  it("leaves out a resolved comment under a renamed file's old path", async () => {
+    // drift.md in v1 ends "delta", columns 1 to 5 of line 4.
+    const onDelta = onV1("drift.md", 4, 1, 5);
+    mockSpec([
+      { ...onDelta, comment_id: 1, body: "still open" },
+      {
+        ...onDelta,
+        comment_id: 2,
+        body: "settled on delta",
+        resolved: { by: AUTHOR, at: "2026-01-07T00:00:00Z" },
+      },
+    ]);
+    const view = renderSpecView("?v=2&file=drifted.md&compare=1&view=rendered");
+    await waitFor(() =>
+      expect(
+        view
+          .queryAllByRole("button", { name: /comment\(s\) on this block/ })
+          .map((chip) => chip.getAttribute("aria-label")),
+      ).toEqual(["1 comment(s) on this block"]),
+    );
+    expect(view.queryByText("settled on delta")).toBeNull();
+  });
+});
+
 describe("staged drafts in the source view", () => {
   it("hangs a draft under its line, and Discard takes it away", async () => {
     stageDraft("d1", "drift.md", 1, 2, "say it plainer");

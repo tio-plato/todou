@@ -1292,13 +1292,60 @@ function SpecViewBody({
 
   // Comments that can hang inline on the viewed version of the selected
   // file; everything else (outdated, anchored to another version while an
-  // old one is viewed) lands in the flat list below the document.
-  const { displayed, unplaced, fileLevel } = useMemo(() => {
+  // old one is viewed) lands in the flat list below the document. A rendered
+  // comparison puts back what its baseline had and the viewed version does
+  // not, so what is anchored on the baseline, under the path the file had
+  // there, and has no place on the viewed version hangs on that as well
+  // (`baselineDisplayed`), at the baseline's lines. A comment among them on
+  // this file's own path stays in the list, since the viewed version has no
+  // place for it; one under a renamed file's old path never was in it, and
+  // still is not.
+  const renderedBaseline = baselineBody !== undefined;
+  const { displayed, unplaced, fileLevel, baselineDisplayed } = useMemo(() => {
     const displayed: DisplayedAnnotation[] = [];
     const unplaced: SpecCommentItem[] = [];
     const fileLevel: SpecCommentItem[] = [];
+    const baselineDisplayed: DisplayedAnnotation[] = [];
+    const baselinePath =
+      renderedBaseline &&
+      baseline !== null &&
+      baseline !== version &&
+      selectedPath !== undefined
+        ? (renamedFrom.get(selectedPath) ?? selectedPath)
+        : null;
+    const onBaseline = (
+      anchor: Pick<
+        SpecCommentItem["anchor"],
+        "path" | "version" | "line_start" | "line_end"
+      >,
+    ) =>
+      baselinePath !== null &&
+      anchor.path === baselinePath &&
+      anchor.version === baseline &&
+      anchor.line_start !== null &&
+      anchor.line_end !== null;
+    // A resolved comment hangs nothing from the baseline: on this file's own
+    // path it stays in the list, as any other the viewed version has no place
+    // for does, and under a renamed file's old path it is not on this page.
+    const openOnBaseline = (item: SpecCommentItem) =>
+      item.resolved === null && onBaseline(item.anchor);
+    const onBaselineComment = (item: SpecCommentItem): DisplayedAnnotation => ({
+      key: `c${item.comment_id}`,
+      kind: "comment",
+      item,
+      start: item.anchor.line_start ?? 0,
+      end: item.anchor.line_end ?? 0,
+      colStart: item.anchor.col_start,
+      colEnd: item.anchor.col_end,
+    });
     for (const item of comments.data.items) {
-      if (item.anchor.path !== selectedPath) continue;
+      if (item.anchor.path !== selectedPath) {
+        // A renamed file's comments on the baseline are under its old path.
+        if (openOnBaseline(item)) {
+          baselineDisplayed.push(onBaselineComment(item));
+        }
+        continue;
+      }
       if (item.anchor.line_start === null || item.anchor.line_end === null) {
         // File-level comments (T-61) sit above the document, not on a block.
         fileLevel.push(item);
@@ -1332,13 +1379,31 @@ function SpecViewBody({
         });
       } else {
         unplaced.push(item);
+        if (openOnBaseline(item)) {
+          baselineDisplayed.push(onBaselineComment(item));
+        }
       }
     }
     for (const draft of drafts.drafts) {
-      if (draft.anchor.path !== selectedPath) continue;
-      const placement = placements.get(draft.id);
+      const placement =
+        draft.anchor.path === selectedPath
+          ? placements.get(draft.id)
+          : undefined;
       // File-level drafts render in the file-level strip below.
-      if (placement?.kind !== "line") continue;
+      if (placement?.kind !== "line") {
+        if (onBaseline(draft.anchor)) {
+          baselineDisplayed.push({
+            key: draft.id,
+            kind: "draft",
+            draft,
+            start: draft.anchor.line_start ?? 0,
+            end: draft.anchor.line_end ?? 0,
+            colStart: draft.anchor.col_start,
+            colEnd: draft.anchor.col_end,
+          });
+        }
+        continue;
+      }
       displayed.push({
         key: draft.id,
         kind: "draft",
@@ -1351,8 +1416,17 @@ function SpecViewBody({
         colEnd: draft.anchor.col_end,
       });
     }
-    return { displayed, unplaced, fileLevel };
-  }, [comments.data, drafts.drafts, placements, selectedPath, version]);
+    return { displayed, unplaced, fileLevel, baselineDisplayed };
+  }, [
+    comments.data,
+    drafts.drafts,
+    placements,
+    selectedPath,
+    version,
+    renderedBaseline,
+    baseline,
+    renamedFrom,
+  ]);
 
   const draftsPlacedAs = (kind: DraftPlacement["kind"]) =>
     drafts.drafts.filter(
@@ -2015,6 +2089,7 @@ function SpecViewBody({
                       body={selected.body}
                       baselineBody={baselineBody}
                       annotations={displayed}
+                      baselineAnnotations={baselineDisplayed}
                       changedRanges={changedRanges}
                       foldUnchanged={foldUnchanged}
                       onStage={stageRange}
