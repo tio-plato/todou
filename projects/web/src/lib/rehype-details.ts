@@ -85,7 +85,7 @@ function foldElement(tagName: "details" | "summary", open: boolean): Element {
  * the front of each line (`> ` in a blockquote), and the fold, stamp and
  * decoration passes all read lines.
  */
-function advance(start: Point, consumed: string): Point {
+export function advance(start: Point, consumed: string): Point {
   const lines = consumed.split("\n");
   const breaks = lines.length - 1;
   return {
