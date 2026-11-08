@@ -139,6 +139,14 @@ describe("buildSegmentIndex", () => {
     expect(inexact).toEqual(["code", "*", "*"]);
   });
 
+  it("keeps inline HTML out of the flattened prose", () => {
+    // The page shows the tags as text, but they are markup, not prose: a
+    // word diff that weighed them would mark an edited attribute as words.
+    expect(buildSegmentIndex("a <kbd>Ctrl</kbd> b c\n").text).toBe(
+      "a Ctrl b c",
+    );
+  });
+
   it("leaves fenced code out entirely", () => {
     expect(index.text).not.toContain("code()");
   });
