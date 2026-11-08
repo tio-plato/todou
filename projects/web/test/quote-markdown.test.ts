@@ -140,7 +140,22 @@ describe("quoteOfSelection", () => {
         "now",
         "[docs](https://x.test/a) now",
       ],
-      ["run `pnpm test` first", "test`", "fir", "`pnpm test` fir"],
+      ["run `pnpm test` first", "test`", "fir", "`test` fir"],
+      ["run `pnpm test` first", "npm", "npm", "`npm`"],
+      ["run `pnpm test` first", "run", "pn", "run `pn`"],
+      // Covering all of the code takes the span as written, not rewritten.
+      ["a `` x`y `` b", "x", "y", "`` x`y ``"],
+      ["a `` x`y `` b", "`y", "`y", "`` `y ``"],
+      ["a ` code ` b", "od", "od", "`od`"],
+      ["x **a `code` b** y", "od", "od", "**`od`**"],
+      // What the page shows: a space for the line ending, no `>`.
+      ["> a `co\n> de` b", "o", "d", "`o d`"],
+      ["a `code` b", "o", "o", "`o`"],
+      // What the page shows: `|`, not the table's `\|`.
+      ["| `a\\|b` | c |\n| - | - |", "\\|b", "\\|b", "`|b`"],
+      // The page collapses a run of blanks in code, and WebKit starts a drag
+      // from the word after one at the run's start: the blanks are not quoted.
+      ["- a `co\n      de` b", "    de", "de", "`de`"],
       ["go to https://x.test/a/b now", "x.test", "/a", "https://x.test/a/b"],
       [
         "see <https://x.test/a/b> now",
