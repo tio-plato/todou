@@ -12,9 +12,11 @@ import {
 } from "./spec-baseline-tree.ts";
 import {
   type CellPart,
+  codeSpanPieces,
   flatCoverage,
   type SegmentIndex,
   type SourceRange,
+  type SourceSegment,
   type TextOrigin,
   type TextPiece,
   textPieces,
@@ -1093,6 +1095,7 @@ function paintRestored(
       blocks: [],
       images: [],
       source: baseline?.source ?? null,
+      baseline,
     },
     false,
   );
@@ -1223,6 +1226,7 @@ function decorateText(
   deletions: DeletionDecoration[],
   placed: Set<DeletionDecoration>,
   source: string | null,
+  inCode: boolean,
 ): ElementContent[] | null {
   const from = node.position?.start.offset;
   const to = node.position?.end.offset;
@@ -1238,11 +1242,17 @@ function decorateText(
   let toValue = (offset: number, _edge: "start" | "end") =>
     Math.max(0, Math.min(length, offset - from));
   // Escapes, references and continuation prefixes make the source span
-  // longer than the value, so offsets inside the node map through its
-  // pieces. Only a node whose pieces cannot be found is decorated whole.
+  // longer than the value, and so do the backticks of inline code, whose
+  // one text node carries the whole span's position; offsets inside the
+  // node map through its pieces. Only a node whose pieces cannot be found
+  // is decorated whole.
   if (to - from !== length) {
     const pieces =
-      source === null ? null : textPieces(source, from, to, node.value);
+      source === null
+        ? null
+        : inCode
+          ? codeSpanPieces(source, from, to, node.value)
+          : textPieces(source, from, to, node.value);
     if (pieces === null) {
       if (hits.length === 0) return null;
       return wrap(
@@ -1346,6 +1356,92 @@ function decorateAtomic(
 }
 
 /**
+ * Whether a removed run was code taken off the ends of a code span that
+ * survived, by the baseline it came from: all of the run lies in the span's
+ * code, and some of that code lies outside the run. A whole span removed, or
+ * a run reaching into the prose beside one, is not; neither belongs in the
+ * code of a span that is still there.
+ */
+function removedFromCode(
+  deletion: DeletionDecoration,
+  baseline: SegmentIndex | undefined,
+): boolean {
+  const origin = deletion.origin;
+  if (baseline === undefined || origin === undefined || !("flat" in origin)) {
+    return false;
+  }
+  const from = origin.flat;
+  const to = from + deletion.text.length;
+  const { segments } = baseline;
+  const at = segments.findIndex((s) => from < s.at + s.text.length);
+  const holder = segments[at];
+  if (holder?.code !== true || holder.at > from) return false;
+  // One span's pieces run on in the flattened text with nothing between.
+  const joined = (a?: SourceSegment, b?: SourceSegment) =>
+    a?.code === true && b?.code === true && a.at + a.text.length === b.at;
+  let first = at;
+  while (joined(segments[first - 1], segments[first])) first--;
+  let last = at;
+  while (joined(segments[last], segments[last + 1])) last++;
+  const start = segments[first]?.at ?? from;
+  const end = (segments[last]?.at ?? 0) + (segments[last]?.text.length ?? 0);
+  return to <= end && (start < from || to < end);
+}
+
+/** Removed runs an inline `<code>` puts back beside itself. */
+type BesideCode = { before: DeletionDecoration[]; after: DeletionDecoration[] };
+
+/**
+ * Where the removed runs at the ends of each inline `<code>` among `parent`'s
+ * children go. A run at the first character of a span's code or before it,
+ * or at the last or after it, is as often prose removed beside the code as
+ * code removed from its ends, and its offset cannot tell which; the baseline
+ * can (`removedFromCode`). Prose is returned to be put back beside the span,
+ * and is marked placed. Code is left to the span's text node to put back at
+ * that end, and returned in `kept`, which the prose in front must not claim.
+ * A run strictly inside the code is left to the text node too.
+ */
+function besideCode(
+  parent: Root | Element,
+  paint: TreePaint,
+): { spans: Map<Element, BesideCode>; kept: Set<DeletionDecoration> } {
+  const spans = new Map<Element, BesideCode>();
+  const kept = new Set<DeletionDecoration>();
+  const codes = (parent.children as ElementContent[]).filter(
+    (child): child is Element =>
+      child.type === "element" && child.tagName === "code",
+  );
+  if (codes.length === 0 || paint.source === null) return { spans, kept };
+  const open = paint.inline.filter((d) => !paint.placed.has(d));
+  if (open.length === 0) return { spans, kept };
+  for (const code of codes) {
+    const text = code.children[0];
+    const from = text?.position?.start.offset;
+    const to = text?.position?.end.offset;
+    if (text?.type !== "text" || from === undefined || to === undefined) {
+      continue;
+    }
+    const pieces = codeSpanPieces(paint.source, from, to, text.value);
+    const first = pieces?.[0];
+    const last = pieces?.at(-1);
+    if (first === undefined || last === undefined) continue;
+    const beside: BesideCode = { before: [], after: [] };
+    for (const cut of open) {
+      if (cut.at < from || cut.at > to) continue;
+      if (cut.at > first.start && cut.at < last.end) continue;
+      if (removedFromCode(cut, paint.baseline)) {
+        kept.add(cut);
+        continue;
+      }
+      paint.placed.add(cut);
+      (cut.at <= first.start ? beside.before : beside.after).push(cut);
+    }
+    spans.set(code, beside);
+  }
+  return { spans, kept };
+}
+
+/**
  * The whole-block class a `<pre>` or an `<img>` wears when a mark reaches
  * into it, or null. pierre owns the inside of a code block (T-31), and an
  * image has no inside, so a span crossing one has no text node to land on
@@ -1375,6 +1471,8 @@ type TreePaint = {
   blocks: SourceRange[];
   images: ImageSwap[];
   source: string | null;
+  /** The version `inline` was removed from, when there is one. */
+  baseline?: SegmentIndex;
 };
 
 /**
@@ -1390,6 +1488,12 @@ function decorateTree(
 ): void {
   const next: ElementContent[] = [];
   let changed = false;
+  const beside = besideCode(parent, paint);
+  // Removed code kept for a `<code>` is not for the text around it.
+  const inline =
+    beside.kept.size === 0
+      ? paint.inline
+      : paint.inline.filter((d) => !beside.kept.has(d));
   for (const child of parent.children as ElementContent[]) {
     if (child.type === "element") {
       // The class goes on the outermost element of a wholly-new range
@@ -1418,6 +1522,15 @@ function decorateTree(
         const wash = markBlockClass(child, paint.spans);
         if (wash !== null) addClass(child, wash);
         next.push(child);
+        continue;
+      }
+      const edges = beside.spans.get(child);
+      if (edges !== undefined) {
+        for (const cut of edges.before) next.push(inlineDeletion(cut));
+        decorateTree(child, paint, added);
+        next.push(child);
+        for (const cut of edges.after) next.push(inlineDeletion(cut));
+        if (edges.before.length + edges.after.length > 0) changed = true;
         continue;
       }
       // A swapped image is marked on the `<img>` itself, never through
@@ -1466,12 +1579,14 @@ function decorateTree(
       next.push(child);
       continue;
     }
+    // The walk never enters a `<pre>`, so a `<code>` here is inline code.
     const pieces = decorateText(
       child,
       paint.spans,
-      paint.inline,
+      inline,
       paint.placed,
       paint.source,
+      parent.type === "element" && parent.tagName === "code",
     );
     if (pieces === null) next.push(child);
     else {
@@ -1529,6 +1644,7 @@ export function rehypeDecorations(options: Decorations = NO_DECORATIONS) {
         blocks,
         images,
         source,
+        baseline: options.baselineIndex,
       },
       false,
     );
