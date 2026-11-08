@@ -1,5 +1,5 @@
 import type { BulkReadInput, IssueReadInput, MuteReason } from "@todou/shared";
-import { and, eq, gt, inArray, max, ne, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, max, ne, sql } from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import type { UserRow } from "../auth/pat.ts";
 import type { AppContext } from "../bootstrap.ts";
@@ -478,15 +478,23 @@ export async function bulkMarkRead(
       // project_id is not redundant: several projects may share one
       // database (placement=shared), and marking these read must not touch
       // their neighbours.
+      const mine = and(
+        inArray(issueReads.projectId, ids),
+        eq(issueReads.userId, actor.id),
+      );
+      // Locked first, in id order: the update alone takes them in whatever
+      // order its plan meets them, and two of these by one reader could meet
+      // them in opposite orders (see lockIssueRows).
+      await tx
+        .select({ id: issueReads.id })
+        .from(issueReads)
+        .where(mine)
+        .orderBy(asc(issueReads.id))
+        .for("update");
       await tx
         .update(issueReads)
         .set({ lastSeenAt: sql`greatest(${issueReads.lastSeenAt}, ${at})` })
-        .where(
-          and(
-            inArray(issueReads.projectId, ids),
-            eq(issueReads.userId, actor.id),
-          ),
-        );
+        .where(mine);
       await tx
         .insert(readFrontiers)
         .values(
