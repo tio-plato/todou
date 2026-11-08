@@ -26,7 +26,9 @@ import { MARKDOWN_SYNTAX_PLUGINS } from "@/lib/markdown-processor.ts";
 import { rehypeDetails } from "@/lib/rehype-details.ts";
 import {
   CODE_CONTENT_START_ATTR,
+  codeContentStart,
   FENCE_PATCH_ATTR,
+  OLD_LINE_ATTR,
   parseSourceLoc,
   SOURCE_LINE_ATTR,
   SOURCE_SPAN_ATTR,
@@ -36,6 +38,7 @@ import {
   REF_REPEAT_ATTR,
   remarkRefOccurrences,
 } from "@/lib/remark-ref-occurrences.ts";
+import type { SourceFence } from "@/lib/spec-source-index.ts";
 import { useRefChipFlow } from "@/lib/use-ref-chip-flow.ts";
 
 /**
@@ -138,7 +141,7 @@ function MarkdownPre({
   ...props
 }: ComponentProps<"pre"> & {
   node?: unknown;
-  fenceBaselines?: Map<number, string>;
+  fenceBaselines?: Map<number, SourceFence>;
 }) {
   const fence = parseFence(node);
   if (fence === null) return <pre {...props}>{children}</pre>;
@@ -149,7 +152,8 @@ function MarkdownPre({
   const stamp = (props as Record<string, unknown>)[SOURCE_LINE_ATTR];
   const loc = typeof stamp === "string" ? parseSourceLoc(stamp) : null;
   const filename = fenceFilename(fence.tag);
-  const baseline = loc === null ? undefined : fenceBaselines?.get(loc.start);
+  const baseline =
+    loc === null ? undefined : fenceBaselines?.get(loc.start)?.value;
   // A changed diagram stays a source diff: there is no per-line red and green
   // to draw on a picture. A changed patch likewise — a diff of a diff is
   // only readable as its text.
@@ -168,25 +172,26 @@ function MarkdownPre({
     ) : (
       <CodeBlock filename={filename} contents={fence.text} offThread />
     );
+  const oldStamp = (props as Record<string, unknown>)[OLD_LINE_ATTR];
   const wrapperProps =
     loc === null
       ? {
-          // Restored old fences keep deletion identity without a current loc.
+          // Restored old fences keep deletion identity without a current loc,
+          // and their baseline lines, which their rows are anchored by.
+          ...(typeof oldStamp === "string"
+            ? { [OLD_LINE_ATTR]: oldStamp }
+            : {}),
+          ...(patch ? { [FENCE_PATCH_ATTR]: "" } : {}),
           className: ["markdown-fence", props.className]
             .filter(Boolean)
             .join(" "),
         }
       : {
           [SOURCE_LINE_ATTR]: stamp,
-          [CODE_CONTENT_START_ATTR]: (() => {
-            // Whether there is a marker line to skip is answered by the line
-            // count, not by reading the opening line: a fence inside a
-            // blockquote opens on "> ```ts", whose `>` survives trimStart().
-            const span = loc.end - loc.start + 1;
-            const contentLines =
-              fence.text === "" ? 0 : fence.text.split("\n").length;
-            return loc.start + (span - contentLines >= 1 ? 1 : 0);
-          })(),
+          [CODE_CONTENT_START_ATTR]: codeContentStart(
+            loc,
+            fence.text === "" ? 0 : fence.text.split("\n").length,
+          ),
           ...(patch ? { [FENCE_PATCH_ATTR]: "" } : {}),
           // Decoration classes ride on the <pre> too (T-158: a fence inside
           // a wholly-new range) and would otherwise vanish in the swap.
@@ -237,11 +242,11 @@ type MarkdownViewProps = {
    */
   rehypePlugins?: ComponentProps<typeof Markdown>["rehypePlugins"];
   /**
-   * The baseline body of each code block that was edited in place, by the
+   * The baseline block of each code block that was edited in place, by the
    * source line it opens on (T-343). A fence found here renders as a diff of
    * the two versions instead of as its own contents.
    */
-  fenceBaselines?: Map<number, string>;
+  fenceBaselines?: Map<number, SourceFence>;
 };
 
 export type MarkdownRemarkPlugins = NonNullable<

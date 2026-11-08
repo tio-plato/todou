@@ -5,6 +5,7 @@ import { MarkdownView } from "../src/components/shared/markdown-view.tsx";
 import { CODE_RENDERED_EVENT } from "../src/lib/code-highlights.ts";
 import { errorSummary, viewBoxWidth } from "../src/lib/mermaid.ts";
 import { rehypeSourceLines } from "../src/lib/rehype-source-lines.ts";
+import type { SourceFence } from "../src/lib/spec-source-index.ts";
 import { renderWithProviders } from "./render.tsx";
 
 vi.mock("@pierre/diffs/react", () => ({
@@ -48,7 +49,10 @@ beforeEach(() => {
   renderDiagram.mockClear();
 });
 
-async function mount(source: string, fenceBaselines?: Map<number, string>) {
+async function mount(
+  source: string,
+  fenceBaselines?: Map<number, SourceFence>,
+) {
   const { container } = renderWithProviders(
     <MarkdownView
       rehypePlugins={[rehypeSourceLines]}
@@ -161,7 +165,10 @@ describe("mermaid fences (T-523)", () => {
       "const x = 1;",
     );
 
-    const changed = await mount(FENCE, new Map([[1, "flowchart LR\n  A"]]));
+    const changed = await mount(
+      FENCE,
+      new Map([[1, { value: "flowchart LR\n  A", line: 1 }]]),
+    );
     expect((await screen.findByTestId("fence-diff")).textContent).toContain(
       "游戏连接或回放",
     );
