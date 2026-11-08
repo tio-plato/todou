@@ -44,8 +44,11 @@ import {
 const SWEEP_UPDATE = /update "issue_reads"/;
 const SWEEP_UPSERT = /insert into "read_frontiers"/;
 
-/** Per project database: the sweep's UPDATE and its frontier upsert. */
-const STATEMENTS_PER_GROUP = 2;
+/**
+ * Per project database: the sweep's UPDATE, its frontier upsert, and the
+ * read positions locked in id order ahead of the UPDATE.
+ */
+const STATEMENTS_PER_GROUP = 3;
 
 const matching = (log: StatementLog, re: RegExp) =>
   log.statements.filter((s) => re.test(s.sql));

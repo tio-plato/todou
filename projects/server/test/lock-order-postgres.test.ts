@@ -521,4 +521,56 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       await Promise.allSettled([pending]);
     }
   });
+
+  it("marking everything read locks read positions in id order", async () => {
+    const p = await project();
+    const a = await card(p.slug, "a");
+    const b = await card(p.slug, "b");
+    // Reading a again writes a new version of its position, behind b's.
+    for (const x of [a, b, a]) {
+      const read = await send(
+        "PUT",
+        `/projects/${p.slug}/issues/${x.number}/read`,
+        {},
+      );
+      expect(read.status).toBe(204);
+    }
+    const positions = await observer.query<{ id: string; issue_id: string }>(
+      "SELECT id, issue_id FROM issue_reads WHERE issue_id = ANY($1)",
+      [[a.id, b.id]],
+    );
+    const idOf = (x: { id: number }) =>
+      Number(positions.rows.find((row) => Number(row.issue_id) === x.id)?.id);
+    const [ra, rb] = [idOf(a), idOf(b)];
+    expect(ra).toBeLessThan(rb);
+    expect(await physicalOrder("issue_reads", [ra, rb])).toEqual([rb, ra]);
+    const [start] = (await observer.query<{ now: Date }>("SELECT now() AS now"))
+      .rows;
+
+    // The holder is another "mark all read" by the same reader.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issue_reads WHERE id = $1 FOR UPDATE",
+        [ra],
+      );
+      pending = send("PUT", "/me/read", { projects: [p.slug] }, seq);
+      await waitForLockWaiters(1);
+      await holder.query(
+        "SELECT id FROM issue_reads WHERE id = $1 FOR UPDATE",
+        [rb],
+      );
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(204);
+      const after = await observer.query<{ seen: boolean }>(
+        "SELECT last_seen_at >= $2 AS seen FROM issue_reads WHERE id = ANY($1)",
+        [[ra, rb], start?.now],
+      );
+      expect(after.rows).toEqual([{ seen: true }, { seen: true }]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
 });
