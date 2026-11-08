@@ -6,10 +6,15 @@ import {
   render,
   waitFor,
 } from "@testing-library/react";
-import type { IssueListItem } from "@todou/shared";
+import type { IssueListItem, ReferenceConfig } from "@todou/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  attachmentsQuery,
+  attachmentTextQuery,
+} from "../src/api/attachments.ts";
 import { issueRefQuery } from "../src/api/issue-refs.ts";
 import { projectsQuery } from "../src/api/queries.ts";
+import { referenceConfigQuery } from "../src/api/references.ts";
 import { MarkdownView } from "../src/components/shared/markdown-view.tsx";
 import { AnnotatedMarkdown } from "../src/components/spec/annotated-markdown.tsx";
 import { rehypeSourceLines } from "../src/lib/rehype-source-lines.ts";
@@ -650,7 +655,8 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
     });
   });
 
-  it("gives up columns on a line holding a ref chip", async () => {
+  /** The query data a chip to issue 12 and a project `p` are drawn from. */
+  function chipClient(): QueryClient {
     const client = testQueryClient();
     client.setQueryData(
       issueRefQuery("p", 12).queryKey,
@@ -665,24 +671,280 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
         created_at: "2026-01-01T00:00:00.000Z",
       },
     ]);
+    return client;
+  }
+
+  const CHIP_LINE = "see [#12](/projects/1/issues/12) here\n";
+
+  /** The text node of the chip's title, and the one after the chip. */
+  function chipNodes(container: HTMLElement): { title: Node; after: Node } {
+    const chip = container.querySelector("a[data-issue-link]");
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    let title: Node | null = null;
+    let after: Node | null = null;
+    for (
+      let node = walker.nextNode();
+      node !== null;
+      node = walker.nextNode()
+    ) {
+      if ((node as Text).data === "A referenced issue") title = node;
+      if ((node as Text).data === " here" && !chip?.contains(node))
+        after = node;
+    }
+    if (title === null || after === null) throw new Error("no chip text");
+    return { title, after };
+  }
+
+  it("anchors the words beside a ref chip to their columns", async () => {
     const { container, onStage, button } = await stageSelection(
-      "see [#12](/projects/1/issues/12) here\n",
+      CHIP_LINE,
       (c) => {
         const node = c.querySelector("p[data-loc]")?.firstChild;
         if (!node) throw new Error("no paragraph");
         return { node, from: 0, to: 3 };
       },
-      { client, ready: "a[data-issue-link]" },
+      { client: chipClient(), ready: "a[data-issue-link]" },
     );
-    // The chip renders the issue's title where the source says "#12", so
-    // rendered offsets no longer line up with source ones at all.
+    // The chip renders the issue's title where the source says "#12".
     expect(container.textContent).toContain("A referenced issue");
     fireEvent.click(button);
     expect(onStage).toHaveBeenCalledWith({
       lineStart: 1,
       lineEnd: 1,
-      colStart: null,
-      colEnd: null,
+      colStart: 1,
+      colEnd: 3,
+    });
+  });
+
+  it.each([
+    [
+      "from inside a ref chip to the word after it",
+      (container: HTMLElement) => {
+        const { title, after } = chipNodes(container);
+        return { node: title, from: 1, to: 3, endNode: after };
+      },
+      // From the link's "[" in column 5 to the "he" of "here".
+      { lineStart: 1, lineEnd: 1, colStart: 5, colEnd: 35 },
+    ],
+    [
+      "with both ends inside a ref chip",
+      (container: HTMLElement) => {
+        const { title } = chipNodes(container);
+        return { node: title, from: 1, to: 3 };
+      },
+      // The whole link, "[" through ")".
+      { lineStart: 1, lineEnd: 1, colStart: 5, colEnd: 32 },
+    ],
+  ])("takes the whole link for a selection %s", async (_name, pick, anchor) => {
+    const { onStage, button } = await stageSelection(CHIP_LINE, pick, {
+      client: chipClient(),
+      ready: "a[data-issue-link]",
+    });
+    fireEvent.click(button);
+    expect(onStage).toHaveBeenCalledWith(anchor);
+  });
+
+  const DOC_URL = "/api/projects/p/attachments/6/download/doc.md";
+
+  /** A project whose issue 1 has `doc.md`, drawn as a document card. */
+  function docClient(): QueryClient {
+    const client = chipClient();
+    client.setQueryData(attachmentsQuery("p", 1).queryKey, [
+      {
+        id: 6,
+        filename: "doc.md",
+        content_type: "text/markdown",
+        size: 26,
+        url: DOC_URL,
+        uploader: {
+          id: 1,
+          login: "user",
+          display_name: "User",
+          kind: "human",
+          avatar_url: null,
+          owner: null,
+        },
+        created_at: "2026-01-01T00:00:00.000Z",
+        aliases: [],
+      },
+    ]);
+    client.setQueryData(
+      attachmentTextQuery(DOC_URL).queryKey,
+      "# Embedded\n\nhello from doc\n",
+    );
+    return client;
+  }
+
+  it("anchors the word after a document card to its columns", async () => {
+    const body = `see ![doc.md](${DOC_URL}) after\n`;
+    const { container, onStage, button } = await stageSelection(
+      body,
+      (c) => bracketedIn(c, " [after]"),
+      { client: docClient(), ready: "[data-loc] .markdown-body" },
+    );
+    // The card shows the document, which the paragraph's source does not.
+    expect(container.textContent).toContain("hello from doc");
+    fireEvent.click(button);
+    const column = body.indexOf("after") + 1;
+    expect(onStage).toHaveBeenCalledWith({
+      lineStart: 1,
+      lineEnd: 1,
+      colStart: column,
+      colEnd: column + 4,
+    });
+  });
+
+  it("takes a document card on a line of its own whole", async () => {
+    const line = `![doc.md](${DOC_URL})`;
+    const { onStage, button } = await stageSelection(
+      `${line}\n`,
+      (c) => bracketedIn(c, "hello [from] doc"),
+      { client: docClient(), ready: "[data-loc] .markdown-body" },
+    );
+    fireEvent.click(button);
+    expect(onStage).toHaveBeenCalledWith({
+      lineStart: 1,
+      lineEnd: 1,
+      colStart: 1,
+      colEnd: line.length,
+    });
+  });
+
+  /** A project whose `JIRA-42` links out to its tracker. */
+  function autolinkClient(): QueryClient {
+    const client = chipClient();
+    client.setQueryData(referenceConfigQuery("p").queryKey, {
+      format: { prefix: null, history: [] },
+      autolinks: [
+        {
+          id: 1,
+          prefix: "JIRA-",
+          url_template: "https://tracker.example/<num>",
+        },
+      ],
+    } satisfies ReferenceConfig);
+    return client;
+  }
+
+  const JIRA_42 = "a[href='https://tracker.example/42']";
+
+  // A chip makes the block fail to line up with every element walked into,
+  // so these take the path that looks for atoms.
+  it.each([
+    [
+      "a plain link",
+      "[#12](/projects/1/issues/12) read [the docs](https://x.example) now\n",
+      "the [docs]",
+      // The chip's link takes columns 1 to 28.
+      { colStart: 40, colEnd: 43 },
+    ],
+    [
+      "a project autolink",
+      "[#12](/projects/1/issues/12) fixes JIRA-42 today\n",
+      "[JIRA]-42",
+      { colStart: 36, colEnd: 39 },
+    ],
+  ])(
+    "anchors a word inside %s beside a chip to its own columns",
+    async (_name, body, pick, columns) => {
+      const { onStage, button } = await stageSelection(
+        body,
+        (container) => bracketedIn(container, pick),
+        { client: autolinkClient(), ready: "a[data-issue-link]" },
+      );
+      fireEvent.click(button);
+      expect(onStage).toHaveBeenCalledWith({
+        lineStart: 1,
+        lineEnd: 1,
+        ...columns,
+      });
+    },
+  );
+
+  it("anchors a word inside a plain link to its own columns", async () => {
+    const { onStage, button } = await stageSelection(
+      "read [the docs](https://x.example) now\n",
+      (container) => bracketedIn(container, "the [docs]"),
+    );
+    fireEvent.click(button);
+    expect(onStage).toHaveBeenCalledWith({
+      lineStart: 1,
+      lineEnd: 1,
+      colStart: 11,
+      colEnd: 14,
+    });
+  });
+
+  it.each([
+    ["inside", "[JIRA]-42", { colStart: 7, colEnd: 10 }],
+    ["after", " [today]", { colStart: 15, colEnd: 19 }],
+  ])(
+    "anchors a word %s a project autolink to its own columns",
+    async (_name, pick, columns) => {
+      // The renderer cuts the autolink out of a text node the index holds whole.
+      const { onStage, button } = await stageSelection(
+        "fixes JIRA-42 today\n",
+        (container) => bracketedIn(container, pick),
+        { client: autolinkClient(), ready: JIRA_42 },
+      );
+      fireEvent.click(button);
+      expect(onStage).toHaveBeenCalledWith({
+        lineStart: 1,
+        lineEnd: 1,
+        ...columns,
+      });
+    },
+  );
+
+  it("keeps the columns beside an autolink cut from text with an escape", async () => {
+    // Each piece of a text node whose source is longer than its value gets
+    // the whole node's position, so the link carries a span not its own.
+    const { onStage, button } = await stageSelection(
+      "**bold** fixes JIRA-42 \\* today\n",
+      (container) => bracketedIn(container, "[bold]"),
+      { client: autolinkClient(), ready: JIRA_42 },
+    );
+    fireEvent.click(button);
+    expect(onStage).toHaveBeenCalledWith({
+      lineStart: 1,
+      lineEnd: 1,
+      colStart: 3,
+      colEnd: 6,
+    });
+  });
+
+  it("anchors a word inside an autolink cut from a continuation line", async () => {
+    // Both pieces of "\n  JIRA-7" carry the whole node's span; the blank one
+    // must not let the link pass for an atom spanning the indent.
+    const { onStage, button } = await stageSelection(
+      "- *em*\n  JIRA-7\n",
+      (container) => bracketedIn(container, "J[IR]A-7"),
+      {
+        client: autolinkClient(),
+        ready: "a[href='https://tracker.example/7']",
+      },
+    );
+    fireEvent.click(button);
+    expect(onStage).toHaveBeenCalledWith({
+      lineStart: 2,
+      lineEnd: 2,
+      colStart: 4,
+      colEnd: 5,
+    });
+  });
+
+  it("anchors a word in text holding an object replacement character", async () => {
+    const { onStage, button } = await stageSelection(
+      "alpha \uFFFC beta gamma\n",
+      (container) => bracketedIn(container, "beta [gamma]"),
+    );
+    fireEvent.click(button);
+    // "alpha ", the character and " beta " take columns 1 to 13.
+    expect(onStage).toHaveBeenCalledWith({
+      lineStart: 1,
+      lineEnd: 1,
+      colStart: 14,
+      colEnd: 18,
     });
   });
 });
