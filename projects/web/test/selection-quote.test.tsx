@@ -1,6 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, waitFor } from "@testing-library/react";
-import type { TimelineComment } from "@todou/shared";
+import type { QuestionsComponent, TimelineComment } from "@todou/shared";
 import { useRef, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QUOTE_REHYPE_PLUGINS } from "../src/components/issue/entry-actions-menu.tsx";
@@ -15,10 +15,10 @@ import {
 } from "../src/components/timeline/quote-reply.tsx";
 import {
   quotableSelection,
+  quoteOfQuotable,
   SelectionQuote,
 } from "../src/components/timeline/selection-quote.tsx";
 import { inlineActionSource } from "../src/lib/action-text.ts";
-import { quoteOfSelection } from "../src/lib/quote-markdown.ts";
 import { POINTER_FINE } from "../src/lib/use-media-query.ts";
 import { renderWithProviders, testQueryClient } from "./render.tsx";
 
@@ -83,10 +83,13 @@ function inDocumentOrder(a: Element, b: Element): number {
 const A = "Alpha one two.\n\nAlpha **three** four.";
 const B = "Bravo five six.";
 
-/** The bodies of the entries under `container`, in document order. */
+/** Each entry's body under `container`, in document order. */
 function bodiesIn(container: Element): HTMLElement[] {
-  return [...targets.keys()]
-    .filter((el): el is HTMLElement => container.contains(el))
+  return [...targets.entries()]
+    .filter(
+      ([el, target]) => container.contains(el) && target.part().kind === "body",
+    )
+    .map(([el]) => el as HTMLElement)
     .sort(inDocumentOrder);
 }
 
@@ -182,9 +185,95 @@ const PROSE_AND_CODE =
 
 /** The markdown a picked selection quotes, as the composer receives it. */
 function quoted(picked: ReturnType<typeof quotableSelection>): string | null {
-  return picked === null
-    ? null
-    : quoteOfSelection(picked.source, picked.anchor);
+  return picked === null ? null : quoteOfQuotable(picked);
+}
+
+/**
+ * The one part a selection picked, once it is shown to be the only one and
+ * to belong to the entry `body` sits in: the root of its comment or line.
+ */
+function onlyPart(picked: ReturnType<typeof quotableSelection>, body: Element) {
+  expect(picked?.parts).toHaveLength(1);
+  expect(picked?.entry).toBe(body.closest("[data-comment-id]"));
+  return picked?.parts[0];
+}
+
+const ASKING: QuestionsComponent = {
+  type: "questions",
+  questions: [
+    {
+      key: "storage",
+      header: "Storage",
+      question: "Where should X live?",
+      multiple: false,
+      options: [
+        { label: "Reuse the **jobs** table", description: "Fewer tables." },
+        { label: "A new table for X" },
+      ],
+    },
+  ],
+};
+
+const ANSWER = {
+  event_id: 7,
+  actor: author,
+  created_at: "2026-08-12T00:00:00Z",
+  answers: [
+    {
+      key: "storage",
+      selected: [{ index: 0, label: "Reuse the **jobs** table" }],
+      other: "Keep it small.",
+      declined: false,
+    },
+  ],
+};
+
+/**
+ * `/questions` for the card, answering for comment 1 with `answer`: the form
+ * for null, the answered card otherwise.
+ */
+function stubQuestions(answer: typeof ANSWER | null) {
+  vi.stubGlobal("fetch", async (input: unknown) => {
+    const url = String(input);
+    if (url.includes("/questions")) {
+      return Response.json({
+        items: [
+          {
+            comment_id: 1,
+            author,
+            created_at: "2026-08-11T00:00:00Z",
+            questions: ASKING.questions,
+            answer,
+          },
+        ],
+        open: answer === null ? 1 : 0,
+      });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  });
+}
+
+/** The first text node under `root` that holds `text`. */
+function textWith(root: Element, text: string): Text {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node.nodeValue?.includes(text)) return node as Text;
+  }
+  throw new Error(`no text "${text}"`);
+}
+
+/** A question comment of body A, then B, its card settled as `answer` says. */
+async function renderAsking(answer: typeof ANSWER | null) {
+  stubQuestions(answer);
+  const { view, a, b } = await renderTwo(
+    comment(1, A, { component: ASKING }),
+    comment(2, B),
+  );
+  await view.findByText(answer === null ? "awaiting answer" : "answered by");
+  const prompt = await view.findByText("Where should X live?");
+  const card = prompt.closest("[data-question-key]");
+  if (card === null) throw new Error("no question card");
+  return { view, a, b, card };
 }
 
 afterEach(() => {
@@ -197,14 +286,51 @@ describe("quotableSelection", () => {
     const { a } = await renderTwo(comment(1, A), comment(2, B));
     const text = paragraph(a, 0);
     const picked = quotableSelection(select(text, 10, text, 13), targets);
-    expect(picked?.body).toBe(a);
-    expect(picked?.source).toBe(A);
-    expect(picked?.anchor).toEqual({
+    const part = onlyPart(picked, a);
+    expect(part?.el).toBe(a);
+    expect(part?.source).toBe(A);
+    expect(part?.anchor).toEqual({
       lineStart: 1,
       lineEnd: 1,
       colStart: 11,
       colEnd: 13,
     });
+  });
+
+  it("passes over a question form popped out into a window of its own", async () => {
+    const { a } = await renderTwo(comment(1, A), comment(2, B));
+    // Its texts render into that window's document, and register there.
+    // Browsers refuse to compare points across documents, which happy-dom
+    // does not: the refusal is put back for this test.
+    const compare = Range.prototype.comparePoint;
+    vi.spyOn(Range.prototype, "comparePoint").mockImplementation(function (
+      this: Range,
+      node: Node,
+      offset: number,
+    ) {
+      if (node.getRootNode() !== this.startContainer.getRootNode()) {
+        throw new DOMException("other document", "WrongDocumentError");
+      }
+      return compare.call(this, node, offset);
+    });
+    const away = document.implementation.createHTMLDocument("popped out");
+    const text = away.createElement("div");
+    text.textContent = "Where should X live?";
+    away.body.append(text);
+    const shared = targets as Map<Element, QuoteTarget>;
+    shared.set(text, {
+      body: () => "Where should X live?",
+      frame: () => text,
+      part: () => ({ kind: "prompt", question: "storage" }),
+    });
+    try {
+      const word = paragraph(a, 0);
+      const picked = quotableSelection(select(word, 10, word, 13), targets);
+      expect(onlyPart(picked, a)?.el).toBe(a);
+    } finally {
+      shared.delete(text);
+      vi.restoreAllMocks();
+    }
   });
 
   it("quotes nothing from a selection across two comments", async () => {
@@ -224,7 +350,7 @@ describe("quotableSelection", () => {
       select(paragraph(a, 1), 6, between, 4),
       targets,
     );
-    expect(picked?.body).toBe(a);
+    expect(onlyPart(picked, a)?.el).toBe(a);
     expect(quoted(picked)).toBe("**three** four.");
   });
 
@@ -315,9 +441,10 @@ describe("quotableSelection", () => {
       select(paragraph(a, 1), 0, paragraph(b, 0), 0),
       targets,
     );
-    expect(picked?.body).toBe(a);
-    expect(picked?.anchor.lineStart).toBe(3);
-    expect(picked?.anchor.lineEnd).toBe(3);
+    const part = onlyPart(picked, a);
+    expect(part?.el).toBe(a);
+    expect(part?.anchor.lineStart).toBe(3);
+    expect(part?.anchor.lineEnd).toBe(3);
   });
 
   it("counts no next comment whose selected part is only whitespace", async () => {
@@ -333,7 +460,7 @@ describe("quotableSelection", () => {
       select(paragraph(a, 1), 0, item, 0),
       targets,
     );
-    expect(picked?.body).toBe(a);
+    expect(onlyPart(picked, a)?.el).toBe(a);
   });
 
   it("anchors in the body as it reads after an edit", async () => {
@@ -365,8 +492,9 @@ describe("quotableSelection", () => {
     });
     const picked = quotableSelection(select(text, 7, text, 12), targets);
     expect(bodiesIn(view.container)[0]).toBe(before);
-    expect(picked?.source).toBe(edited);
-    expect(picked?.anchor).toEqual({
+    const part = onlyPart(picked, before);
+    expect(part?.source).toBe(edited);
+    expect(part?.anchor).toEqual({
       lineStart: 1,
       lineEnd: 1,
       colStart: 8,
@@ -396,9 +524,10 @@ describe("quotableSelection", () => {
     );
     const text = paragraph(b, 0);
     const picked = quotableSelection(select(text, 2, text, 8), targets);
-    expect(picked?.body).toBe(b);
-    expect(picked?.source).toBe(inlineActionSource(body));
-    expect(picked?.source).not.toBe(body);
+    const part = onlyPart(picked, b);
+    expect(part?.el).toBe(b);
+    expect(part?.source).toBe(inlineActionSource(body));
+    expect(part?.source).not.toBe(body);
   });
 
   it("finds the comment a selection inside its code rows belongs to", async () => {
@@ -418,8 +547,9 @@ describe("quotableSelection", () => {
       ]),
       targets,
     );
-    expect(picked?.body).toBe(a);
-    expect(picked?.anchor).toEqual({
+    const part = onlyPart(picked, a);
+    expect(part?.el).toBe(a);
+    expect(part?.anchor).toEqual({
       lineStart: 5,
       lineEnd: 5,
       colStart: 7,
@@ -446,6 +576,44 @@ describe("quotableSelection", () => {
         targets,
       ),
     ).toBeNull();
+  });
+
+  it("quotes from a question's prompt into its second option as a list", async () => {
+    const { card } = await renderAsking(null);
+    const prompt = textWith(card, "Where should X live?");
+    const second = textWith(card, "A new table for X");
+    expect(
+      quoted(quotableSelection(select(prompt, 15, second, 5), targets)),
+    ).toBe(
+      [
+        "live?",
+        "",
+        "- Reuse the **jobs** table — Fewer tables.",
+        "- A new",
+      ].join("\n"),
+    );
+  });
+
+  it("quotes from a comment's body into its question, the header whole", async () => {
+    const { a, card } = await renderAsking(null);
+    const prompt = textWith(card, "Where should X live?");
+    expect(
+      quoted(
+        quotableSelection(
+          select(textWith(a, " four."), 1, prompt, 12),
+          targets,
+        ),
+      ),
+    ).toBe(["four.", "", "**Storage**", "", "Where should"].join("\n"));
+  });
+
+  it("quotes from an answered card's last option into its other text", async () => {
+    const { card } = await renderAsking(ANSWER);
+    const last = textWith(card, "A new table for X");
+    const other = textWith(card, "Keep it small.");
+    expect(quoted(quotableSelection(select(last, 6, other, 7), targets))).toBe(
+      ["- table for X", "", "other: Keep it"].join("\n"),
+    );
   });
 
   it("gives up quietly where getComposedRanges rejects the call", async () => {
@@ -727,5 +895,27 @@ describe("floating Quote reply on a comment", () => {
       expect(view.queryByRole("button", { name: "Quote reply" })).toBeNull(),
     );
     expect(window.getSelection()?.toString()).toBe("");
+  });
+
+  it("quotes a word selected in an option of a question's form", async () => {
+    stubQuestions(null);
+    const onQuote = vi.fn();
+    const view = renderWithProviders(
+      <QuoteReplyProvider>
+        <Targets />
+        <CommentItem
+          slug="p"
+          issueNumber={7}
+          comment={comment(1, A, { component: ASKING })}
+        />
+        <Sink onQuote={onQuote} />
+        <SelectionQuote />
+      </QuoteReplyProvider>,
+    );
+    await view.findByText("awaiting answer");
+    const jobs = await waitFor(() => textWith(view.container, "jobs"));
+    select(jobs, 0, jobs, 4);
+    fireEvent.click(await view.findByRole("button", { name: "Quote reply" }));
+    expect(onQuote).toHaveBeenCalledExactlyOnceWith("**jobs**");
   });
 });
