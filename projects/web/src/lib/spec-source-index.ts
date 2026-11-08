@@ -601,6 +601,64 @@ export function sourceRangesOfText(
   return ranges;
 }
 
+/**
+ * Which characters of `[flat, flat + length)` of the flattened text come
+ * from source inside `span`, as ranges relative to `flat`: the other way
+ * round from `sourceRangesOfText`. An exact segment is cut at the span's
+ * edges; an indivisible one is taken whole when its source reaches into the
+ * span at all. What lies between segments — the newline joining two blocks —
+ * comes from no source and is never covered.
+ */
+export function flatCoverage(
+  index: SegmentIndex,
+  flat: number,
+  length: number,
+  span: SourceRange,
+): SourceRange[] {
+  const covered: SourceRange[] = [];
+  const { segments } = index;
+  // Segments run in flattened order, so the first the run reaches is found
+  // by halving, and the walk stops at the first past its end.
+  let first = 0;
+  for (let high = segments.length; first < high; ) {
+    const mid = (first + high) >> 1;
+    const segment = segments[mid];
+    if (segment !== undefined && segment.at + segment.text.length <= flat) {
+      first = mid + 1;
+    } else high = mid;
+  }
+  for (let i = first; i < segments.length; i++) {
+    const segment = segments[i];
+    if (segment === undefined) continue;
+    if (segment.at >= flat + length) break;
+    const segEnd = segment.at + segment.text.length;
+    const from = Math.max(flat, segment.at);
+    const to = Math.min(flat + length, segEnd);
+    if (to <= from) continue;
+    let start = from;
+    let end = to;
+    if (segment.exact) {
+      const sourceStart = Math.max(
+        span.start,
+        segment.start + (from - segment.at),
+      );
+      const sourceEnd = Math.min(span.end, segment.start + (to - segment.at));
+      if (sourceEnd <= sourceStart) continue;
+      start = segment.at + (sourceStart - segment.start);
+      end = segment.at + (sourceEnd - segment.start);
+    } else if (segment.end <= span.start || segment.start >= span.end) {
+      continue;
+    }
+    const last = covered.at(-1);
+    if (last !== undefined && last.end >= start - flat) {
+      last.end = Math.max(last.end, end - flat);
+    } else {
+      covered.push({ start: start - flat, end: end - flat });
+    }
+  }
+  return covered;
+}
+
 /** Flattened-text extent of each leaf group; holes where a group has no prose. */
 function groupRangesOf(index: SegmentIndex): Array<SourceRange | undefined> {
   const ranges: Array<SourceRange | undefined> = [];
