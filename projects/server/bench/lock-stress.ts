@@ -59,12 +59,21 @@ const { values: flags } = parseArgs({
   },
 });
 
-const SECONDS = Number(flags.seconds);
-const WORKERS = Number(flags.workers);
-const JITTER_MS = Number(flags["jitter-ms"]);
+/** A flag's value as a number, or the run stops: NaN would run nothing. */
+function count(name: keyof typeof flags, min: number): number {
+  const value = Number(flags[name]);
+  if (!Number.isInteger(value) || value < min) {
+    console.error(`--${name} must be a whole number of at least ${min}`);
+    process.exit(2);
+  }
+  return value;
+}
+const SECONDS = count("seconds", 1);
+const WORKERS = count("workers", 1);
+const JITTER_MS = count("jitter-ms", 0);
 /** Cards made in each project before the run starts. */
-const CARDS = Number(flags.cards);
-const HANG_MS = Number(flags["hang-ms"]);
+const CARDS = count("cards", 1);
+const HANG_MS = count("hang-ms", 1);
 
 const systemUrl = process.env.TODOU_DATABASE_SYSTEM ?? "";
 if (!/^postgres(ql)?:\/\//.test(systemUrl)) {
