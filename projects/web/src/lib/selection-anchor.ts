@@ -221,6 +221,9 @@ function withAtoms(
  * atom: it stands in the segments as one character in place of its span,
  * and a selection reaching into it takes its whole span.
  *
+ * Inline HTML is shown as its own source text (`SegmentIndex.literals`), so
+ * it lines up like any other exact segment.
+ *
  * The injected nodes `INJECTED` names are skipped as they always were: they
  * would shift every offset after them.
  */
@@ -233,12 +236,20 @@ function alignBlock(
       .filter((el) => el.closest(INJECTED) === null)
       .flatMap((el) => parseSourceLoc(el.getAttribute(SOURCE_LINE_ATTR)) ?? []),
   );
-  const own = segmentsInLines(index, block.loc).filter(
-    (segment) =>
-      !nested.some(
-        (loc) => segment.line >= loc.start && segment.endLine <= loc.end,
-      ),
+  // Inline HTML shows as its own source text, so it is the block's text
+  // here, though never part of the flattened prose.
+  const literals = index.literals.filter(
+    (literal) =>
+      literal.line <= block.loc.end && literal.endLine >= block.loc.start,
   );
+  const own = [...segmentsInLines(index, block.loc), ...literals]
+    .filter(
+      (segment) =>
+        !nested.some(
+          (loc) => segment.line >= loc.start && segment.endLine <= loc.end,
+        ),
+    )
+    .sort((a, b) => a.start - b.start);
   // A block whose text nodes all line up with every element walked into is
   // mapped character by character, which no atom can improve on, so atoms
   // are only looked for when that fails. Trying them first would also trust
