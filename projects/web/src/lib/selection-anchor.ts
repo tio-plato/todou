@@ -653,7 +653,7 @@ const CODE_BLOCK = `[${CODE_CONTENT_START_ATTR}]`;
 const OLD_OR_INJECTED = `${INJECTED}, ${OLD_TABLE_PARTS}`;
 
 /** The wrapper of a code block a comparison put back from its baseline. */
-const OLD_CODE_BLOCK = `.markdown-fence[${OLD_LINE_ATTR}]`;
+export const OLD_CODE_BLOCK = `.markdown-fence[${OLD_LINE_ATTR}]`;
 
 /**
  * What `endsOnContent` takes for content. `skip` is never content and never
