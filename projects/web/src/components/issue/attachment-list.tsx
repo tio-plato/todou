@@ -40,6 +40,7 @@ import {
   previewKind,
 } from "@/lib/attachment-preview.ts";
 import { attachmentAnchorHref, attachmentHref } from "@/lib/attachment-refs.ts";
+import { SOURCE_SPAN_ATTR } from "@/lib/rehype-source-lines.ts";
 import { cn } from "@/lib/utils.ts";
 
 /** Modifier-clicks (new tab, forced download) keep native link behavior. */
@@ -488,6 +489,7 @@ export function AttachmentInlineImage({
   src,
   alt,
   className,
+  sourceSpan,
 }: {
   slug: string;
   issueNumber: number;
@@ -500,6 +502,8 @@ export function AttachmentInlineImage({
    * are painted on the element itself rather than on a wrapper (T-223).
    */
   className?: string;
+  /** The image's source offsets (`SOURCE_SPAN_ATTR`), on the `<img>` too. */
+  sourceSpan?: string;
 }) {
   const attachments = useQuery(attachmentsQuery(slug, issueNumber));
   const [viewer, setViewer] = useState<ViewerState | null>(null);
@@ -515,6 +519,7 @@ export function AttachmentInlineImage({
       <img
         src={src}
         alt={alt}
+        {...{ [SOURCE_SPAN_ATTR]: sourceSpan }}
         className={cn("cursor-zoom-in", className)}
         onClick={() =>
           setViewer(
@@ -547,12 +552,16 @@ export function AttachmentInlineImage({
 export function DeletedAttachmentMark({
   name,
   className,
+  sourceSpan,
 }: {
   name: string;
   className?: string;
+  /** The source offsets (`SOURCE_SPAN_ATTR`) of the image this stands for. */
+  sourceSpan?: string;
 }) {
   return (
     <span
+      {...{ [SOURCE_SPAN_ATTR]: sourceSpan }}
       className={cn(
         "inline-flex items-center gap-1 rounded border border-dashed px-1.5 text-sm text-muted-foreground",
         className,
