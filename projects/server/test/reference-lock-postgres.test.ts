@@ -124,8 +124,8 @@ describe.skipIf(!PG_URL)("reference lock order", () => {
   });
 
   // The holder is the write on B that references A: it writes B's row, then
-  // share-locks A. B has the smaller id, so that is also the order the fixed
-  // server takes them in. `prepare` runs before the holder starts, and what
+  // locks A. B has the smaller id, so that is also the order the fixed server
+  // takes them in. `prepare` runs before the holder starts, and what
   // it returns reaches `request`.
   const race = async <P = undefined>(
     request: (a: Card, b: Card, prepared: P) => Promise<Response>,
@@ -326,8 +326,8 @@ describe.skipIf(!PG_URL)("reference lock order", () => {
   it("a new card locks the card its draft is on before taking a number", async () => {
     const c = await createCard(slug, "C");
     const draft = await uploadDraft(c, "new.txt");
-    // The holder creates a card that references C: it share-locks C, then
-    // takes this project's project_meta.
+    // The holder creates a card that references C: it locks C, then takes
+    // this project's project_meta.
     const response = await contend(
       () => lockCard(c.id, "SHARE"),
       () =>
@@ -408,6 +408,35 @@ describe.skipIf(!PG_URL)("reference lock order", () => {
     }
   });
 
+  // X is referenced and updated, and goes to the trash while the request
+  // waits for it: the request still locks it to attach the draft, but owes
+  // it no reference any more.
+  it("a write that references the card its draft is on records nothing on it once it is trashed", async () => {
+    const x = await createCard(slug, "X");
+    const a = await createCard(slug, "A");
+    const draft = await uploadDraft(x, "trashed.txt");
+    // The holder trashes X: it locks the card, then marks it.
+    const response = await contend(
+      () => lockCard(x.id, "NO KEY UPDATE"),
+      () =>
+        send("POST", `/projects/${slug}/issues/${a.number}/comments`, {
+          body: `see #${x.number} ![](${draft.url})`,
+        }),
+      () =>
+        holder.query("UPDATE issues SET deleted_at = now() WHERE id = $1", [
+          x.id,
+        ]),
+    );
+    expect(response.status).toBe(201);
+    await expectAttached(draft.id, x.id);
+    const referenced = await observer.query<{ count: string }>(
+      `SELECT count(*) FROM issue_events
+       WHERE issue_id = $1 AND type = 'referenced'`,
+      [x.id],
+    );
+    expect(Number(referenced.rows[0]?.count)).toBe(0);
+  });
+
   it("a write attaching drafts on several cards locks them in id order", async () => {
     const c1 = await createCard(slug, "C1");
     const c2 = await createCard(slug, "C2");
@@ -460,11 +489,11 @@ describe.skipIf(!PG_URL)("reference lock order", () => {
     expect(Number(added.rows[0]?.count)).toBe(0);
   });
 
-  // The last step of a move to another database empties the frozen card,
-  // its attachment rows included, and then writes the card row. A write
-  // that holds that card while it waits for one of those attachment rows
-  // closes a cycle; it has to skip a draft the move is deleting.
-  it("a comment linking a draft that a move is deleting skips it", async () => {
+  // The last step of a move to another database locks the frozen card,
+  // then empties it, its attachment rows included, and raises the
+  // tombstone. A write attaching a draft on that card waits for the card,
+  // and by the time it gets it the draft is gone.
+  it("a comment linking a draft on a card a move is retiring finds it gone", async () => {
     const f = await createCard(slug, "F");
     const a = await createCard(slug, "A");
     const draft = await uploadDraft(f, "moving.txt");
@@ -476,27 +505,14 @@ describe.skipIf(!PG_URL)("reference lock order", () => {
     await holder.query("BEGIN");
     let pending: Promise<Response> | undefined;
     try {
-      await holder.query("DELETE FROM attachments WHERE id = $1", [draft.id]);
-      let settled = false;
+      await holder.query("SELECT id FROM issues WHERE id = $1 FOR UPDATE", [
+        f.id,
+      ]);
       pending = send("POST", `/projects/${slug}/issues/${a.number}/comments`, {
         body: `![](${draft.url})`,
-      }).finally(() => {
-        settled = true;
       });
-      await expect
-        .poll(
-          async () => {
-            if (settled) return true;
-            const result = await observer.query<{ count: string }>(
-              `SELECT count(*) FROM pg_stat_activity
-               WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid))`,
-              [pid],
-            );
-            return Number(result.rows[0]?.count) > 0;
-          },
-          { timeout: 5000, interval: 10 },
-        )
-        .toBe(true);
+      await blockedBy(pid);
+      await holder.query("DELETE FROM attachments WHERE id = $1", [draft.id]);
       await holder.query(
         "UPDATE issues SET moved_at = now(), moving_since = NULL WHERE id = $1",
         [f.id],
@@ -534,9 +550,8 @@ describe.skipIf(!PG_URL)("reference lock order", () => {
     await expectAttached(draft.id, f.id);
   });
 
-  // Only a draft on a frozen card is skipped when its row is taken. On any
-  // other card the write waits, so a delete that rolls back leaves it to
-  // attach.
+  // A write attaching a draft waits for a delete holding its row, so a
+  // delete that rolls back leaves it to attach.
   it("a comment linking a draft whose delete rolls back attaches it", async () => {
     const x = await createCard(slug, "X");
     const a = await createCard(slug, "A");

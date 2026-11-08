@@ -9,7 +9,8 @@
     "start": "node src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "bench:db": "node bench/db-workers.ts"
+    "bench:db": "node bench/db-workers.ts",
+    "bench:locks": "node bench/lock-stress.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.4",

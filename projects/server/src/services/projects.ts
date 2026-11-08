@@ -7,7 +7,7 @@ import type {
   ProjectUpdateInput,
 } from "@todou/shared";
 import { CANONICAL_STATUSES } from "@todou/shared";
-import { and, asc, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, ne, or } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import { uniqueViolation } from "../auth/provision.ts";
 import type { AppContext } from "../bootstrap.ts";
@@ -18,6 +18,7 @@ import {
   comments,
   insightsSettings,
   issueEvents,
+  issueReads,
   issues,
   labels,
   pendingUploads,
@@ -25,7 +26,12 @@ import {
   refFormats,
   statuses,
 } from "../db/project-schema.ts";
-import { projectMembers, projects, slugHistory } from "../db/system-schema.ts";
+import {
+  issueBlocks,
+  projectMembers,
+  projects,
+  slugHistory,
+} from "../db/system-schema.ts";
 import {
   ConflictError,
   SlugReservedError,
@@ -499,16 +505,22 @@ export async function updateProject(
     Object.keys(registryPatch).length === 0
       ? [project]
       : await system.transaction(async (tx) => {
+          // The project row first: changing the slug takes it FOR UPDATE, and
+          // the history row's foreign-key check then takes KEY SHARE on a row
+          // this transaction already holds. Inserting first, two renames
+          // would each hold KEY SHARE and wait for the other's to update the
+          // row (see lockIssueRows).
+          const updated = await tx
+            .update(projects)
+            .set(registryPatch)
+            .where(eq(projects.id, project.id))
+            .returning();
           if (rename !== null) {
             await tx
               .insert(slugHistory)
               .values({ projectId: project.id, slug: rename });
           }
-          return tx
-            .update(projects)
-            .set(registryPatch)
-            .where(eq(projects.id, project.id))
-            .returning();
+          return updated;
         });
   const row = updated[0];
   if (!row) throw new Error("project update returned no row");
@@ -553,7 +565,23 @@ export async function deleteProject(
 
   // Remove the registry row FIRST so the project stops routing; cleanup
   // failures below only leave orphaned data behind (logged, not fatal).
-  await system.delete(projects).where(eq(projects.id, project.id));
+  await system.transaction(async (tx) => {
+    // The delete cascades to the block edges at either end of this project:
+    // locked first in id order, as every write of several edges does (see
+    // lockIssueRows).
+    await tx
+      .select({ id: issueBlocks.id })
+      .from(issueBlocks)
+      .where(
+        or(
+          eq(issueBlocks.blockerProjectId, project.id),
+          eq(issueBlocks.blockedProjectId, project.id),
+        ),
+      )
+      .orderBy(asc(issueBlocks.id))
+      .for("update");
+    await tx.delete(projects).where(eq(projects.id, project.id));
+  });
 
   try {
     const others = (
@@ -578,22 +606,81 @@ export async function deleteProject(
       await rm(url.slice("pglite://".length), { recursive: true, force: true });
     } else {
       const db = await ctx.router.forProject(routeInfoOf(project));
-      // issues cascade to assignees/labels/comments/events/attachments.
-      await db.delete(issues).where(eq(issues.projectId, project.id));
-      await db.delete(comments).where(eq(comments.projectId, project.id));
-      await db.delete(issueEvents).where(eq(issueEvents.projectId, project.id));
-      await db.delete(attachments).where(eq(attachments.projectId, project.id));
-      // A direct upload of a draft with no card yet has no issue to cascade
-      // from, and `gcPendingUploads` walks live projects only.
-      await db
-        .delete(pendingUploads)
-        .where(eq(pendingUploads.projectId, project.id));
-      await db.delete(labels).where(eq(labels.projectId, project.id));
-      await db
-        .delete(insightsSettings)
-        .where(eq(insightsSettings.projectId, project.id));
-      await db.delete(statuses).where(eq(statuses.projectId, project.id));
-      await db.delete(projectMeta).where(eq(projectMeta.projectId, project.id));
+      // One transaction, so a failure leaves the data whole rather than half
+      // deleted. It first waits for the writes still at work on these cards,
+      // taking the cards in id order the way those writes do, then for a
+      // card still being created, through the project_meta row it takes its
+      // number from (cards before project_meta), which also keeps it from
+      // holding a status the delete below waits for, then the read positions in
+      // the order marking everything read takes them, then the labels,
+      // before deleting the cards cascades to their label rows: a label
+      // deleted meanwhile takes the label first and then those rows (see
+      // lockIssueRows). The order the deletes meet them in no longer
+      // matters. Counted rather than returned, so a large project's ids
+      // never come back to this process; each lock still sorts before it
+      // locks.
+      await db.transaction(async (tx) => {
+        await tx
+          .select({ locked: count() })
+          .from(
+            tx
+              .select({ id: issues.id })
+              .from(issues)
+              .where(eq(issues.projectId, project.id))
+              .orderBy(asc(issues.id))
+              .for("update")
+              .as("locked"),
+          );
+        await tx
+          .select({ projectId: projectMeta.projectId })
+          .from(projectMeta)
+          .where(eq(projectMeta.projectId, project.id))
+          .for("update");
+        await tx
+          .select({ locked: count() })
+          .from(
+            tx
+              .select({ id: issueReads.id })
+              .from(issueReads)
+              .where(eq(issueReads.projectId, project.id))
+              .orderBy(asc(issueReads.id))
+              .for("update")
+              .as("locked"),
+          );
+        await tx
+          .select({ locked: count() })
+          .from(
+            tx
+              .select({ id: labels.id })
+              .from(labels)
+              .where(eq(labels.projectId, project.id))
+              .orderBy(asc(labels.id))
+              .for("update")
+              .as("locked"),
+          );
+        // issues cascade to assignees/labels/comments/events/attachments.
+        await tx.delete(issues).where(eq(issues.projectId, project.id));
+        await tx.delete(comments).where(eq(comments.projectId, project.id));
+        await tx
+          .delete(issueEvents)
+          .where(eq(issueEvents.projectId, project.id));
+        await tx
+          .delete(attachments)
+          .where(eq(attachments.projectId, project.id));
+        // A direct upload of a draft with no card yet has no issue to cascade
+        // from, and `gcPendingUploads` walks live projects only.
+        await tx
+          .delete(pendingUploads)
+          .where(eq(pendingUploads.projectId, project.id));
+        await tx.delete(labels).where(eq(labels.projectId, project.id));
+        await tx
+          .delete(insightsSettings)
+          .where(eq(insightsSettings.projectId, project.id));
+        await tx.delete(statuses).where(eq(statuses.projectId, project.id));
+        await tx
+          .delete(projectMeta)
+          .where(eq(projectMeta.projectId, project.id));
+      });
     }
     // The icon blob lives outside every table above, so nothing cascades to
     // it; left behind it would be unreachable storage nobody can name.

@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, lt } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, lt } from "drizzle-orm";
 import type { Db } from "../db/driver.ts";
 import { attachments, pendingUploads } from "../db/project-schema.ts";
 import type { DbRouter } from "../db/router.ts";
@@ -210,9 +210,9 @@ export type DraftReapReport = {
  * Unlike `gcPendingUploads` the row goes first, because a draft can still be
  * claimed: a text that links it turns it into an attachment with one
  * `UPDATE … WHERE draft`, and the `DELETE … WHERE draft` here races that
- * statement for the row. Whichever commits first keeps it, so this pass never
- * deletes the bytes of a file a text just made public. The cost is that an
- * object whose delete fails has no row left to retry from; it is logged.
+ * statement for the row. Whichever takes the row first keeps it, so this pass
+ * never deletes the bytes of a file a text just made public. The cost is that
+ * an object whose delete fails has no row left to retry from; it is logged.
  *
  * Every backend, not only s3: drafts come from the multipart route too.
  *
@@ -280,9 +280,22 @@ export async function reapDraftAttachments(
         }
         continue;
       }
+      // Only the drafts no write holds: a write attaching or deleting
+      // several holds some of them while it waits for others, and waiting
+      // here could close a cycle (see lockIssueRows). A draft skipped is
+      // looked at again on the next pass.
       const deleted = await db
         .delete(attachments)
-        .where(stale)
+        .where(
+          inArray(
+            attachments.id,
+            db
+              .select({ id: attachments.id })
+              .from(attachments)
+              .where(stale)
+              .for("update", { skipLocked: true }),
+          ),
+        )
         .returning({ id: attachments.id, key: attachments.storageKey });
       report.deletedRows += deleted.length;
       for (const row of deleted) {

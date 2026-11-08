@@ -55,6 +55,7 @@ import {
   gateColumns,
   lockWritableIssue,
   type TrashFields,
+  type WriteGate,
 } from "./trash.ts";
 import { getUserRefs } from "./users.ts";
 
@@ -149,6 +150,23 @@ async function filesOfVersion(db: Db | Tx, versionId: number) {
 
 export const utf8Size = (body: string) => Buffer.byteLength(body, "utf8");
 
+/**
+ * Lock the card for a spec write and ask the write gate under the lock (see
+ * lockWritableIssue), then read where its review stands. Every update of
+ * that column waits for this lock, so the value read holds until the
+ * transaction ends.
+ */
+async function lockSpecCard(tx: Tx, gate: WriteGate) {
+  await lockWritableIssue(tx, gate);
+  const [row] = await tx
+    .select({ specReviewStatus: issues.specReviewStatus })
+    .from(issues)
+    .where(eq(issues.id, gate.id));
+  // The row is locked by this transaction, so it cannot have gone.
+  if (!row) throw new Error("locked issue read returned no row");
+  return row;
+}
+
 export async function pushSpec(
   ctx: AppContext,
   actor: UserRow,
@@ -196,13 +214,7 @@ export async function pushSpec(
   const result = await db.transaction(async (tx) => {
     // Serialize concurrent pushes on the issue row; the unique
     // (issue, number) index backstops anything that slips through.
-    const [locked] = await tx
-      .select({ ...gateColumns, specReviewStatus: issues.specReviewStatus })
-      .from(issues)
-      .where(eq(issues.id, issue.id))
-      .for("update");
-    if (!locked) throw new NotFoundError("issue not found");
-    assertIssueWritable(locked, actor, role);
+    const locked = await lockSpecCard(tx, { id: issue.id, actor, role });
 
     const current = await currentVersionRow(tx, issue.id);
     const currentNumber = current?.number ?? 0;
@@ -379,13 +391,7 @@ export async function withdrawSpec(
   const events: ChangeEvent[] = [];
   const result = await db.transaction(
     async (tx): Promise<SpecWithdrawResult> => {
-      const [locked] = await tx
-        .select({ ...gateColumns, specReviewStatus: issues.specReviewStatus })
-        .from(issues)
-        .where(eq(issues.id, issue.id))
-        .for("update");
-      if (!locked) throw new NotFoundError("issue not found");
-      assertIssueWritable(locked, actor, role);
+      const locked = await lockSpecCard(tx, { id: issue.id, actor, role });
       const current = await currentVersionRow(tx, issue.id);
       if (!current) throw new NotFoundError("this issue has no spec");
       if (input.version !== current.number) {
@@ -769,13 +775,7 @@ export async function submitSpecReview(
   const result = await db.transaction(async (tx) => {
     // Same lock as pushSpec: a review and a push racing on one issue
     // serialize, so the version check below cannot go stale mid-commit.
-    const [locked] = await tx
-      .select({ ...gateColumns, specReviewStatus: issues.specReviewStatus })
-      .from(issues)
-      .where(eq(issues.id, issue.id))
-      .for("update");
-    if (!locked) throw new NotFoundError("issue not found");
-    assertIssueWritable(locked, actor, role);
+    const locked = await lockSpecCard(tx, { id: issue.id, actor, role });
 
     const current = await currentVersionRow(tx, issue.id);
     if (!current) throw new NotFoundError("this issue has no spec");
@@ -1053,8 +1053,6 @@ export async function resolveSpecComments(
           inArray(comments.id, input.comment_ids),
         ),
       )
-      // In id order whatever the plan scans: the lock order on `lockIssueRows`.
-      .orderBy(asc(comments.id))
       .for("update");
     const byId = new Map(rows.map((r) => [r.id, r]));
     const paths: string[] = [];
