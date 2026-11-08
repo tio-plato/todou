@@ -1771,6 +1771,63 @@ describe("whole-line annotations wash every block they cover", () => {
     ]);
     expect(washed(container)).toEqual(["1-1"]);
   });
+
+  /** Paragraphs reading "First…" sit 60px down the container, "Second…" 120px. */
+  const placeParagraphs = () =>
+    vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        const text = this.textContent ?? "";
+        const y =
+          this.tagName === "P" && text.startsWith("First")
+            ? 60
+            : this.tagName === "P" && text.startsWith("Second")
+              ? 120
+              : 0;
+        return DOMRect.fromRect({ y });
+      });
+
+  it("hangs the chip by the first block it washes, not the block above a blank first line", async () => {
+    placeParagraphs();
+    try {
+      // Line 2 is blank: the range washes the two paragraphs, not the title.
+      const body = "# Title\n\nFirst paragraph.\n\nSecond paragraph.\n";
+      const { view } = await renderDiff(body, body, [
+        wholeLines("comment", 2, 6),
+      ]);
+      const chip = await view.findByRole("button", {
+        name: /comment\(s\) on this block/,
+      });
+      expect(chip.style.top).toBe("60px");
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("hangs a column-anchored annotation's chip by the block holding its line", async () => {
+    placeParagraphs();
+    try {
+      // Columns 1–6 of line 5 are "Second"; they wash no block.
+      const body = "# Title\n\nFirst paragraph.\n\nSecond paragraph.\n";
+      const { view } = await renderDiff(body, body, [
+        {
+          key: "c1",
+          kind: "comment",
+          item: comment(1, { line_start: 5, line_end: 5 }),
+          start: 5,
+          end: 5,
+          colStart: 1,
+          colEnd: 6,
+        },
+      ]);
+      const chip = await view.findByRole("button", {
+        name: /comment\(s\) on this block/,
+      });
+      expect(chip.style.top).toBe("120px");
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
 });
 
 /**

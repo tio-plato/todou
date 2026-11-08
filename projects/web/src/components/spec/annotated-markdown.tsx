@@ -642,9 +642,34 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
           : loc,
       };
     });
+    // A column-anchored annotation paints its own words; the block-wide
+    // wash would only smear over the precision it just gained. One on whole
+    // lines washes every block it covers, in the draft colour while drafts
+    // alone wash that block, and hangs its chip by the first of them rather
+    // than by the block above a blank line it starts on, which it leaves
+    // unwashed.
+    const owners = lineOwners(blocks);
+    const shows = lineVisibility(index);
+    const washedBy = new Map<HTMLElement, Set<DisplayedAnnotation["kind"]>>();
     const grouped = new Map<number, DisplayedAnnotation[]>();
     for (const annotation of annotations) {
-      const at = blockForLine(blocks, annotation.start);
+      let at = blockForLine(blocks, annotation.start);
+      if ((annotation.colStart ?? null) === null) {
+        const range = { start: annotation.start, end: annotation.end };
+        let targets = annotatedBlocks(blocks, range, owners, shows);
+        if (targets.length === 0) {
+          const fallback = blocks[at];
+          targets = fallback === undefined ? [] : [fallback.el];
+        }
+        for (const el of targets) {
+          washedBy.set(
+            el,
+            (washedBy.get(el) ?? new Set()).add(annotation.kind),
+          );
+        }
+        const first = targets[0];
+        if (first !== undefined) at = els.indexOf(first);
+      }
       if (at < 0) continue;
       grouped.set(at, [...(grouped.get(at) ?? []), annotation]);
     }
@@ -708,25 +733,6 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
           // padding and muddies the colour.
           block.el.closest(`.${INS_BLOCK_CLASS}`) === null,
       );
-    }
-    // A column-anchored annotation paints its own words; the block-wide
-    // wash would only smear over the precision it just gained. One on whole
-    // lines washes every block it covers, in the draft colour while drafts
-    // alone wash that block.
-    const owners = lineOwners(blocks);
-    const shows = lineVisibility(index);
-    const washedBy = new Map<HTMLElement, Set<DisplayedAnnotation["kind"]>>();
-    for (const annotation of annotations) {
-      if ((annotation.colStart ?? null) !== null) continue;
-      const range = { start: annotation.start, end: annotation.end };
-      let targets = annotatedBlocks(blocks, range, owners, shows);
-      if (targets.length === 0) {
-        const fallback = blocks[blockForLine(blocks, annotation.start)];
-        targets = fallback === undefined ? [] : [fallback.el];
-      }
-      for (const el of targets) {
-        washedBy.set(el, (washedBy.get(el) ?? new Set()).add(annotation.kind));
-      }
     }
     for (const [el, kinds] of washedBy) {
       el.classList.add(ANNOTATED_CLASS);
