@@ -85,6 +85,32 @@ export function orderedEndpoints(
 }
 
 /**
+ * The first range `getComposedRanges` gives, asked with the dictionary and
+ * then with the shadow roots as arguments; undefined where the API is
+ * missing, gives no range, or throws on both.
+ */
+function composedRange(
+  selection: Selection,
+  container: Element,
+): StaticRange | undefined {
+  if (typeof selection.getComposedRanges !== "function") return undefined;
+  const shadowRoots = openShadowRoots(container);
+  try {
+    return selection.getComposedRanges({ shadowRoots })[0];
+  } catch {
+    // lib.dom declares only the dictionary form.
+    const variadic = selection.getComposedRanges as unknown as (
+      ...roots: ShadowRoot[]
+    ) => StaticRange[];
+    try {
+      return variadic.apply(selection, shadowRoots)[0];
+    } catch {
+      return undefined;
+    }
+  }
+}
+
+/**
  * Both ends of a selection, seen through open shadow roots (T-164). pierre
  * renders code inside one, and the legacy endpoints misreport anything that
  * lands in there: dragging from prose *into* a code line puts the focus on
@@ -93,24 +119,25 @@ export function orderedEndpoints(
  * `toString()` still returns the selected code. The collapse is why a
  * backwards drag out of a fence offered no comment button at all.
  *
- * `getComposedRanges` answers with the real endpoints. Where it does not
- * exist (jsdom, older browsers) the legacy ones stand exactly as before.
+ * `getComposedRanges` answers with the real endpoints. Chromium, Firefox and
+ * Safari 26 on answer the standard dictionary form. Safari 17 and 18 know
+ * only its first signature, the shadow roots as arguments, and throw on the
+ * dictionary, so they are asked that way next — never first, since Chromium
+ * takes shadow roots as arguments without a word and drops them. Where the
+ * API is missing (happy-dom, older browsers) or refuses both forms, the
+ * legacy endpoints stand exactly as before.
  */
 export function selectionEndpoints(
   selection: Selection,
   container: Element,
 ): SelectionEndpoints | null {
-  if (typeof selection.getComposedRanges === "function") {
-    const composed = selection.getComposedRanges({
-      shadowRoots: openShadowRoots(container),
-    })[0];
-    if (composed !== undefined) {
-      return {
-        start: { node: composed.startContainer, offset: composed.startOffset },
-        end: { node: composed.endContainer, offset: composed.endOffset },
-        collapsed: composed.collapsed,
-      };
-    }
+  const composed = composedRange(selection, container);
+  if (composed !== undefined) {
+    return {
+      start: { node: composed.startContainer, offset: composed.startOffset },
+      end: { node: composed.endContainer, offset: composed.endOffset },
+      collapsed: composed.collapsed,
+    };
   }
   if (selection.rangeCount === 0) return null;
   const range = selection.getRangeAt(0);
