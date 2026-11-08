@@ -378,15 +378,20 @@ function NewIssueForm({
       className={cn("grid gap-6", showSidebar && "lg:grid-cols-[1fr_240px]")}
       inert={submitting}
     >
-      <form
-        className="min-w-0 space-y-4"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void submit();
-        }}
-      >
+      <div className="min-w-0 space-y-4">
         <h1 className="text-2xl font-semibold">New issue</h1>
-        <div className="space-y-2">
+        {/* Only the title is in the form: in iOS Chrome a contenteditable
+            inside a <form> lags on every keystroke, so the description editor
+            stays out. Create joins this form through its `form` attribute,
+            which keeps Enter in the title submitting. */}
+        <form
+          id="new-issue-form"
+          className="space-y-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submit();
+          }}
+        >
           <Label htmlFor="new-issue-title">Title</Label>
           <Input
             id="new-issue-title"
@@ -396,7 +401,7 @@ function NewIssueForm({
             required={requireTitle}
             autoFocus
           />
-        </div>
+        </form>
         <div className="space-y-2">
           {/* A contenteditable is not a labelable element, so the caption
               stands on its own and the editor carries its own name. */}
@@ -452,6 +457,7 @@ function NewIssueForm({
           </Button>
           <Button
             type="submit"
+            form="new-issue-form"
             disabled={submitting || !canSubmit || broken.length > 0}
           >
             {newIssueSubmitLabel({
@@ -461,7 +467,7 @@ function NewIssueForm({
             })}
           </Button>
         </div>
-      </form>
+      </div>
 
       {showSidebar && (
         // A grid item floors at min-content, so without `min-w-0` the Labels
