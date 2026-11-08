@@ -501,6 +501,26 @@ describe("EntryActionsMenu on a comment", () => {
     },
   );
 
+  it("keeps the selection a tap drops before its click opens the menu", async () => {
+    const onQuote = vi.fn();
+    const view = renderComment({ onQuote });
+    await selectSecondParagraph(view);
+    const trigger = await waitFor(() =>
+      within(view.container).getByRole("button", { name: "comment actions" }),
+    );
+    // A touch opens on the click (T-596), and iOS may have collapsed the
+    // selection by then.
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: "touch" });
+    window.getSelection()?.removeAllRanges();
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: "touch" });
+    fireEvent.click(trigger);
+    await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
+    fireEvent.click(menuItem("Quote reply"));
+    await waitFor(() =>
+      expect(onQuote).toHaveBeenCalledExactlyOnceWith("Second **paragraph**."),
+    );
+  });
+
   it("hands the focus back to the button on the close after a Quote reply", async () => {
     const view = renderComment({ onQuote: () => {} });
     const trigger = await openMenu(view);
