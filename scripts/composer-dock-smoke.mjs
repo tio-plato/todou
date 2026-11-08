@@ -824,13 +824,17 @@ async function shortCases(context, card) {
       clicked,
     );
 
-    // Down into the sidebar with real input, which also lets go of the
-    // click's own hold, and someone else's comment arrives above.
-    for (let i = 0; i < 6 && (await read()).listEnd >= 0; i++) {
+    // Down to the page's end with real input, which also lets go of the
+    // click's own hold: past the comment box, not only past the list's end,
+    // where a box still on screen is the end a new comment is followed to.
+    for (let i = 0; i < 8; i++) {
+      const at = await read();
+      if (at.scrollY >= at.maxScroll - 1) break;
       await io.swipe(SHORT.width / 2, 300, -200);
       await sleep(300);
     }
     await sleep(400);
+    const before = await read();
     const result = await card.comment("Arrives above a reader in the sidebar");
     const id = (result.comment ?? result).id;
     const deadline = Date.now() + 10_000;
@@ -841,14 +845,15 @@ async function shortCases(context, card) {
     const above = await read();
     check(
       "new-above",
-      above.listEnd < 0 &&
+      before.dockBottom < 0 &&
+        above.listEnd < 0 &&
         above.state === "shown" &&
         above.name === "New messages" &&
         above.arrow === "up" &&
         above.hits &&
         Math.abs(above.floatingTop - 12 - above.bottom) <= 1 &&
         above.top >= 0,
-      above,
+      { before, above },
     );
     await io.tap(
       above.centre ?? 0,
