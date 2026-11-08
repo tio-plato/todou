@@ -256,8 +256,9 @@ function withAtoms(
  * atom: it stands in the segments as one character in place of its span,
  * and a selection reaching into it takes its whole span.
  *
- * Inline HTML is shown as its own source text (`SegmentIndex.literals`), so
- * it lines up like any other exact segment.
+ * Raw HTML is shown as its own source text (`SegmentIndex.literals`), so it
+ * lines up like any other exact segment: inline HTML, a block of HTML, and
+ * the summary of a fold.
  *
  * The injected nodes `INJECTED` names are skipped as they always were: they
  * would shift every offset after them.
@@ -273,8 +274,8 @@ function alignBlock(
       .filter((el) => el.closest(INJECTED)?.contains(block.el) ?? true)
       .flatMap((el) => parseSourceLoc(el.getAttribute(block.stamp)) ?? []),
   );
-  // Inline HTML shows as its own source text, so it is the block's text
-  // here, though never part of the flattened prose.
+  // Raw HTML shows as its own source text, so it is the block's text here,
+  // though never part of the flattened prose.
   const literals = index.literals.filter(
     (literal) =>
       literal.line <= block.loc.end && literal.endLine >= block.loc.start,

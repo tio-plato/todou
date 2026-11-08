@@ -788,6 +788,57 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
     });
   });
 
+  // Block HTML shows as its own source, but a fold's tags as a fold.
+  it.each([
+    [
+      "the summary of a fold",
+      "<details><summary>Fold here</summary>\n\nbody text\n\n</details>\n",
+      "[Fold] here",
+      { lineStart: 1, lineEnd: 1, colStart: 19, colEnd: 22 },
+    ],
+    [
+      // No blank line: the fold is one block of HTML, its body shown as is.
+      "the body of a fold written as one block",
+      "<details>\n<summary>s</summary>\n**body** here\n</details>\n",
+      "**body** [here]",
+      { lineStart: 3, lineEnd: 3, colStart: 10, colEnd: 13 },
+    ],
+    [
+      "a block of HTML",
+      "<div>block words</div>\n\nafter text\n",
+      "block [words]",
+      { lineStart: 1, lineEnd: 1, colStart: 12, colEnd: 16 },
+    ],
+    [
+      "a block of HTML in a quote",
+      "> <div>block words</div>\n",
+      "block [words]",
+      { lineStart: 1, lineEnd: 1, colStart: 14, colEnd: 18 },
+    ],
+    [
+      // One block of HTML: the fold, then on the next line more HTML.
+      "the summary of a fold with HTML on the line after it",
+      "<details><summary>More</summary>hidden</details>\n<p>after</p>\n",
+      "[More]",
+      { lineStart: 1, lineEnd: 1, colStart: 19, colEnd: 22 },
+    ],
+    [
+      "the HTML on the line after a fold",
+      "<details><summary>More</summary>hidden</details>\n<p>after</p>\n",
+      "<p>[after]",
+      { lineStart: 2, lineEnd: 2, colStart: 4, colEnd: 8 },
+    ],
+  ])(
+    "anchors a word in %s to its own columns",
+    async (_name, body, pick, anchor) => {
+      const { onStage, button } = await stageSelection(body, (container) =>
+        bracketedIn(container, pick),
+      );
+      fireEvent.click(button);
+      expect(onStage).toHaveBeenCalledWith(anchor);
+    },
+  );
+
   it("anchors a list item's own text after a code block in it", async () => {
     const { onStage, button } = await stageSelection(
       "- item text\n  ```\n  code\n  ```\n  more\n",

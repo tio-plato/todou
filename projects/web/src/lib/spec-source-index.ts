@@ -2,6 +2,7 @@ import type { Nodes } from "mdast";
 import { decodeString } from "micromark-util-decode-string";
 import { trimLines } from "trim-lines";
 import { parseMarkdown } from "./markdown-processor.ts";
+import { splitRaw } from "./rehype-details.ts";
 import type { LineRange } from "./spec-changes.ts";
 
 /**
@@ -193,11 +194,16 @@ export type SegmentIndex = {
   /** Every code block's body, by the leaf group it owns (T-343). */
   fences: Map<number, SourceFence>;
   /**
-   * Raw HTML inside a leaf block, which the page shows as its own source
-   * text: todou runs no HTML. Kept apart from `segments`, so `text` and the
-   * word diff never weigh markup as prose; only the selection mapping reads
-   * these, to line a block's text up with what it shows. Each is exact and
-   * has no place in `text`, so its `at` is -1.
+   * Raw HTML, which the page shows as its own source text: todou runs no
+   * HTML. Kept apart from `segments`, so `text` and the word diff never
+   * weigh markup as prose; only the selection mapping reads these, to line a
+   * block's text up with what it shows. Each is exact and has no place in
+   * `text`, so its `at` is -1.
+   *
+   * Inline HTML is one literal. A block of HTML is cut where `rehypeDetails`
+   * cuts it, at the tags of a fold it turns into elements, and each run
+   * between them that is not blank is one: the page shows a fold's summary,
+   * not its tags.
    */
   literals: SourceSegment[];
 };
@@ -679,24 +685,50 @@ export function buildSegmentIndex(source: string): SegmentIndex {
   const visit = (node: Nodes): void => {
     if (node.type === "html") {
       markOpaque();
-      // Inline HTML only: a block of its own shows outside every stamped
-      // block. One whose source is not its value — it spans a line a
-      // container prefixes — is left out, and its block keeps the line.
+      // One whose source is not its value — it spans a line a container
+      // prefixes — is left out, and its block keeps the line.
       const start = node.position?.start.offset;
       const end = node.position?.end.offset;
-      if (
-        group >= 0 &&
-        start !== undefined &&
-        end !== undefined &&
-        end - start === node.value.length
-      ) {
+      if (start === undefined || end === undefined) return;
+      if (source.slice(start, end) !== node.value) return;
+      const pieces =
+        group >= 0
+          ? null
+          : splitRaw({
+              type: "raw",
+              value: node.value,
+              position: node.position,
+            });
+      const runs =
+        pieces === null
+          ? [{ value: node.value, from: start, to: end }]
+          : pieces.flatMap((piece) =>
+              "type" in piece &&
+              piece.type === "raw" &&
+              /\S/.test(piece.value) &&
+              piece.position?.start.offset !== undefined &&
+              piece.position.end.offset !== undefined
+                ? [
+                    {
+                      value: piece.value,
+                      from: piece.position.start.offset,
+                      to: piece.position.end.offset,
+                    },
+                  ]
+                : [],
+            );
+      for (const { value, from, to } of runs) {
+        // Its lines are those of the characters that are not blank: what a
+        // fold leaves after its closing tag opens with that line's ending,
+        // which is no text of that line's block.
         literals.push({
-          text: node.value,
+          text: value,
           at: -1,
-          start,
-          end,
-          line: node.position?.start.line ?? 1,
-          endLine: node.position?.end.line ?? 1,
+          start: from,
+          end: to,
+          line: lineColAt({ lineStarts }, from + value.search(/\S/)).line,
+          endLine: lineColAt({ lineStarts }, from + value.trimEnd().length - 1)
+            .line,
           exact: true,
           group,
         });
