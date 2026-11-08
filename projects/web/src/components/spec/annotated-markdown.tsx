@@ -44,17 +44,24 @@ import {
   supportsCodeHighlights,
   useCodeHighlights,
 } from "@/lib/code-highlights.ts";
-import { codeBodyLines, codeRowSource } from "@/lib/code-rows.ts";
+import {
+  type CodeRowSource,
+  codeBodyLines,
+  codeRowSource,
+  oldCodeRowSource,
+} from "@/lib/code-rows.ts";
 import {
   type CompareAnchor,
   compareAnchorForSelection,
 } from "@/lib/compare-anchor.ts";
 import { rangeInRow, rowText } from "@/lib/pierre-rows.ts";
 import {
+  coverageOf,
   INS_BLOCK_CLASS,
   MARK_KEY_ATTR,
   NO_DECORATIONS,
   rehypeDecorations,
+  type SpanDecoration,
 } from "@/lib/rehype-decorations.ts";
 import {
   MARKER as DETAILS_MARKER,
@@ -67,18 +74,23 @@ import {
 } from "@/lib/rehype-fold-unchanged.ts";
 import {
   CODE_CONTENT_START_ATTR,
+  OLD_FLAT_ATTR,
+  OLD_LINE_ATTR,
+  OLD_SOURCE_ATTR,
   parseSourceLoc,
   rehypeSourceLines,
   SOURCE_LINE_ATTR,
 } from "@/lib/rehype-source-lines.ts";
 import { holdRevealed, revealBlock, useOwnHold } from "@/lib/scroll-insets.ts";
-import { anchorForSelection } from "@/lib/selection-anchor.ts";
+import { anchorForSelection, OLD_CODE_BLOCK } from "@/lib/selection-anchor.ts";
 import type { SelectionEndpoints } from "@/lib/selection-endpoints.ts";
 import { buildBaselineTree } from "@/lib/spec-baseline-tree.ts";
 import { type LineRange, rangesIntersect } from "@/lib/spec-changes.ts";
 import {
+  type AnchoredAnnotation,
   annotationDecorations,
   changeDecorations,
+  lineDecorations,
   mergeDecorations,
   pairedFences,
 } from "@/lib/spec-decorations.ts";
@@ -87,6 +99,7 @@ import {
   buildSegmentIndex,
   offsetAt,
   type SegmentIndex,
+  type TextOrigin,
 } from "@/lib/spec-source-index.ts";
 import { cn } from "@/lib/utils";
 
@@ -98,6 +111,8 @@ const REHYPE_PLUGINS: RehypePlugins = [rehypeSourceLines];
 // Stable empty defaults, for the same reason as the array above: a fresh `[]`
 // on every render invalidates the memo the plugin array hangs on.
 const NO_RANGES: LineRange[] = [];
+const NO_ANNOTATIONS: DisplayedAnnotation[] = [];
+const NO_SPANS: SpanDecoration[] = [];
 const NO_FOLDS: ReadonlySet<string> = new Set();
 
 export type DisplayedAnnotation = {
@@ -118,6 +133,92 @@ type Chip = {
   top: number;
   items: DisplayedAnnotation[];
 };
+
+/** An annotation as the decorations see it: its slice of the source. */
+function anchoredOf(item: DisplayedAnnotation): AnchoredAnnotation {
+  return {
+    key: item.key,
+    kind: item.kind,
+    start: item.start,
+    end: item.end,
+    colStart: item.colStart ?? null,
+    colEnd: item.colEnd ?? null,
+  };
+}
+
+/**
+ * What a comparison puts back of its baseline whole, and so what a baseline
+ * annotation on it hangs its chip on: a restored block, or a marker.
+ */
+const OLD_HOLDER = `[${OLD_LINE_ATTR}], .spec-del-block`;
+
+/** The wrappers of the code blocks pierre draws rows in, old ones included. */
+const CODE_WRAPPERS = `[${CODE_CONTENT_START_ATTR}], ${OLD_CODE_BLOCK}`;
+
+/**
+ * How tall a chip is drawn (`AnnotationChip`: a 16px line, 2px padding and
+ * a 1px border, top and bottom): two closer than this overlap.
+ */
+const CHIP_HEIGHT = 22;
+
+/** Runs of removed text, which say where in the baseline they start. */
+const OLD_RUNS = `[${OLD_FLAT_ATTR}], [${OLD_SOURCE_ATTR}]`;
+
+/** A run of removed text, read once per layout: where it starts, how long. */
+type OldRun = { el: Element; origin: TextOrigin; length: number };
+
+function oldRunOf(el: Element): OldRun {
+  const flat = el.getAttribute(OLD_FLAT_ATTR);
+  return {
+    el,
+    origin:
+      flat !== null
+        ? { flat: Number(flat) }
+        : { source: Number(el.getAttribute(OLD_SOURCE_ATTR)) },
+    length: el.textContent?.length ?? 0,
+  };
+}
+
+/**
+ * Where an annotation on the baseline was put back, found by its baseline
+ * position as `blockForLine` finds a current one's block, and never by how
+ * it was painted, which another annotation over the same text, or a block
+ * marked whole, leaves without a key of its own: the first run of removed
+ * text one of its `spans` covers, else the innermost block put back whole
+ * on the first of its lines one reaches, else the first code row of the
+ * baseline on its lines. Null when none of it was put back.
+ */
+function baselinePlace(
+  annotation: DisplayedAnnotation,
+  spans: SpanDecoration[],
+  baseline: SegmentIndex,
+  runs: OldRun[],
+  restored: Array<{ el: Element; start: number; end: number }>,
+  rows: () => CodeRowSource[],
+): Element | null {
+  const run = runs.find(({ origin, length }) =>
+    spans.some((span) => coverageOf(origin, length, span, baseline).length > 0),
+  );
+  if (run !== undefined) return run.el;
+  const reached = restored.filter((b) => rangesIntersect(b, annotation));
+  if (reached.length > 0) {
+    const line = Math.min(
+      ...reached.map((b) => Math.max(annotation.start, b.start)),
+    );
+    // Blocks come in document order, an ancestor before what it holds, so
+    // the last on a line is the innermost there (`blockForLine`).
+    const block = reached.findLast((b) => b.start <= line && b.end >= line);
+    if (block !== undefined) return block.el;
+  }
+  return (
+    rows().find(
+      (row) =>
+        row.line !== null &&
+        row.line >= annotation.start &&
+        row.line <= annotation.end,
+    )?.wrapper ?? null
+  );
+}
 
 /** Where an annotation sits, as displayed on the version being viewed. */
 function labelOf(item: DisplayedAnnotation): string {
@@ -341,6 +442,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
   body,
   baselineBody,
   annotations,
+  baselineAnnotations = NO_ANNOTATIONS,
   changedRanges = NO_RANGES,
   foldUnchanged = false,
   onStage,
@@ -360,6 +462,12 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
   baselineBody?: string;
   /** The viewed spec version's push time (T-80 time cutoff). */
   annotations: DisplayedAnnotation[];
+  /**
+   * Annotations on the compare baseline, at its lines and columns: they hang
+   * on the removed content the comparison puts back of it. Pass a stable
+   * reference, as for `annotations`.
+   */
+  baselineAnnotations?: DisplayedAnnotation[];
   /** Lines changed since the compare baseline — green highlight + ↑↓ nav. */
   changedRanges?: LineRange[];
   /**
@@ -382,6 +490,8 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [chips, setChips] = useState<Chip[]>([]);
+  /** The element each chip of a baseline annotation hangs on, by its key. */
+  const oldChipEls = useRef(new Map<string, HTMLElement>());
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(NO_FOLDS);
   const remarkPlugins = useMarkdownRemarkPlugins(slug);
 
@@ -405,23 +515,25 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         : buildBaselineTree(baselineBody, { remarkPlugins }),
     [baselineBody, hasStructures, remarkPlugins],
   );
+  // In the baseline's offsets: they paint the removed content only.
+  const oldSpans = useMemo(() => {
+    if (baselineIndex === null || baselineAnnotations.length === 0) {
+      return NO_SPANS;
+    }
+    const anchored = baselineAnnotations.map(anchoredOf);
+    return [
+      ...annotationDecorations(baselineIndex, anchored),
+      ...lineDecorations(baselineIndex, anchored),
+    ];
+  }, [baselineIndex, baselineAnnotations]);
   const decorations = useMemo(
     () =>
       mergeDecorations(
         { ...changes, baselineTree },
-        annotationDecorations(
-          index,
-          annotations.map((a) => ({
-            key: a.key,
-            kind: a.kind,
-            start: a.start,
-            end: a.end,
-            colStart: a.colStart ?? null,
-            colEnd: a.colEnd ?? null,
-          })),
-        ),
+        annotationDecorations(index, annotations.map(anchoredOf)),
+        oldSpans,
       ),
-    [index, changes, baselineTree, annotations],
+    [index, changes, baselineTree, annotations, oldSpans],
   );
   const fenceBaselines = useMemo(
     () =>
@@ -490,6 +602,21 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     clear();
   }, [body, baselineBody, foldUnchanged]);
 
+  /** Where each code row the comparison drew of its baseline sits there. */
+  const baselineCodeRows = useCallback(
+    (container: Element): CodeRowSource[] => {
+      if (baselineIndex === null || fenceBaselines === undefined) return [];
+      return [...container.querySelectorAll(CODE_WRAPPERS)].flatMap((wrapper) =>
+        [...wrapper.querySelectorAll("diffs-container")].flatMap((host) =>
+          [...(host.shadowRoot?.querySelectorAll("[data-line]") ?? [])]
+            .map((row) => oldCodeRowSource(baselineIndex, fenceBaselines, row))
+            .filter((source) => source !== null),
+        ),
+      );
+    },
+    [baselineIndex, fenceBaselines],
+  );
+
   const layout = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -515,6 +642,48 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       const at = blockForLine(blocks, annotation.start);
       if (at < 0) continue;
       grouped.set(at, [...(grouped.get(at) ?? []), annotation]);
+    }
+    // An annotation on the baseline hangs where its text was put back: on
+    // the current block a removed word or a deleted code row sits in,
+    // sharing that block's chip, or on a restored block or a marker, with
+    // a chip of its own. One with none of its text put back hangs nowhere.
+    const holders = [...container.querySelectorAll<HTMLElement>(OLD_HOLDER)];
+    const oldGrouped = new Map<number, DisplayedAnnotation[]>();
+    if (baselineIndex !== null && baselineAnnotations.length > 0) {
+      const runs = [...container.querySelectorAll(OLD_RUNS)].map(oldRunOf);
+      const restored = holders.flatMap((el) => {
+        const loc = parseSourceLoc(el.getAttribute(OLD_LINE_ATTR));
+        return loc === null ? [] : [{ el, ...loc }];
+      });
+      const spansByKey = new Map<string, SpanDecoration[]>();
+      for (const span of oldSpans) {
+        if (span.key === undefined) continue;
+        spansByKey.set(span.key, [...(spansByKey.get(span.key) ?? []), span]);
+      }
+      let oldRows: CodeRowSource[] | null = null;
+      const rows = () => {
+        oldRows ??= baselineCodeRows(container);
+        return oldRows;
+      };
+      for (const annotation of baselineAnnotations) {
+        const put = baselinePlace(
+          annotation,
+          spansByKey.get(annotation.key) ?? [],
+          baselineIndex,
+          runs,
+          restored,
+          rows,
+        );
+        const holder = put?.closest(`[${SOURCE_LINE_ATTR}], ${OLD_HOLDER}`);
+        if (holder == null) continue;
+        const own = holders.indexOf(holder as HTMLElement);
+        if (own >= 0) {
+          oldGrouped.set(own, [...(oldGrouped.get(own) ?? []), annotation]);
+          continue;
+        }
+        const at = els.indexOf(holder as HTMLElement);
+        if (at >= 0) grouped.set(at, [...(grouped.get(at) ?? []), annotation]);
+      }
     }
     // Innermost wins: one edited cell lights its own row, not the table it
     // sits in (T-142). Ancestors that only contain a marked descendant stay
@@ -570,6 +739,23 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         items,
       });
     }
+    oldChipEls.current = new Map();
+    for (const [at, items] of oldGrouped) {
+      const el = holders[at];
+      if (el === undefined) continue;
+      const top = chipTop(containerRect, visibleAnchor(el));
+      // A block put back where another chip hangs — first in a current
+      // block, inside another restored one, under the same closed fold —
+      // would draw its chip over that one: it joins it instead.
+      const near = next.find((chip) => Math.abs(chip.top - top) < CHIP_HEIGHT);
+      if (near !== undefined) {
+        near.items = [...near.items, ...items];
+        continue;
+      }
+      const blockKey = `old-${at}`;
+      oldChipEls.current.set(blockKey, el);
+      next.push({ blockKey, top, items });
+    }
     next.sort((a, b) => a.top - b.top);
     // Chip by chip, so that one chip moving re-renders that chip alone.
     setChips((prev) => {
@@ -588,7 +774,15 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         ? prev
         : kept;
     });
-  }, [annotations, changedRanges, index]);
+  }, [
+    annotations,
+    baselineAnnotations,
+    changedRanges,
+    index,
+    baselineIndex,
+    oldSpans,
+    baselineCodeRows,
+  ]);
 
   /**
    * The characters of code that column anchors cover, painted as ranges over
@@ -602,25 +796,72 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
   const paintCode = useCallback(
     (container: HTMLElement): CodeHighlightRanges => {
       const ranges: CodeHighlightRanges = { comment: [], draft: [] };
-      const marks = supportsCodeHighlights()
-        ? annotations.flatMap((a) => {
-            if (a.colStart == null || a.colEnd == null) return [];
-            const start = offsetAt(index, a.start, a.colStart);
-            const last = offsetAt(index, a.end, a.colEnd);
-            if (start === null || last === null) return [];
-            return [
-              { key: a.key, kind: a.kind, start, end: last + 1, lines: a },
-            ];
-          })
-        : [];
+      const marksOf = (on: SegmentIndex, items: DisplayedAnnotation[]) =>
+        supportsCodeHighlights()
+          ? items.flatMap((a) => {
+              if (a.colStart == null || a.colEnd == null) return [];
+              const start = offsetAt(on, a.start, a.colStart);
+              const last = offsetAt(on, a.end, a.colEnd);
+              if (start === null || last === null) return [];
+              return [
+                { key: a.key, kind: a.kind, start, end: last + 1, lines: a },
+              ];
+            })
+          : [];
+      const marks = marksOf(index, annotations);
       // Marked whatever the browser: an attribute needs no highlight API.
       const wholeLines = annotations.filter(
         (a) => (a.colStart ?? null) === null,
       );
-      for (const wrapper of container.querySelectorAll(
-        `[${CODE_CONTENT_START_ATTR}]`,
-      )) {
+      // The baseline's own rows, which annotations on it paint the same way:
+      // every row of a block put back whole, the deleted rows of an edited
+      // one. `oldCodeRowSource` places them in the baseline.
+      const old =
+        baselineIndex === null || fenceBaselines === undefined
+          ? null
+          : { index: baselineIndex, fences: fenceBaselines };
+      const oldMarks =
+        old === null ? [] : marksOf(old.index, baselineAnnotations);
+      const oldWholeLines =
+        old === null
+          ? []
+          : baselineAnnotations.filter((a) => (a.colStart ?? null) === null);
+      /** Paint one row placed at `source` with what covers it. */
+      const paintRow = (
+        row: Element,
+        source: CodeRowSource | null,
+        rowMarks: typeof marks,
+        whole: DisplayedAnnotation[],
+        wanted: Map<Element, LineMark>,
+        painted: Set<string>,
+      ) => {
+        const line = source?.line ?? null;
+        if (line !== null) {
+          for (const a of whole) {
+            if (line < a.start || line > a.end) continue;
+            if (wanted.get(row) !== "comment") wanted.set(row, a.kind);
+            painted.add(a.key);
+          }
+        }
+        if (source === null || source.textStart === null) return;
+        const rowEnd = source.textStart + rowText(row).length;
+        for (const mark of rowMarks) {
+          const from = Math.max(mark.start, source.textStart);
+          const to = Math.min(mark.end, rowEnd);
+          if (to <= from) continue;
+          const range = rangeInRow(
+            row,
+            from - source.textStart,
+            to - source.textStart,
+          );
+          if (range === null) continue;
+          (mark.kind === "comment" ? ranges.comment : ranges.draft).push(range);
+          painted.add(mark.key);
+        }
+      };
+      for (const wrapper of container.querySelectorAll(CODE_WRAPPERS)) {
         const loc = parseSourceLoc(wrapper.getAttribute(SOURCE_LINE_ATTR));
+        const oldLoc = parseSourceLoc(wrapper.getAttribute(OLD_LINE_ATTR));
         const body = codeBodyLines(index, wrapper);
         const here =
           loc === null
@@ -633,6 +874,17 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
           body === null
             ? []
             : wholeLines.filter((a) => rangesIntersect(a, body));
+        const holdsOld =
+          oldLoc !== null ||
+          (loc !== null && fenceBaselines?.has(loc.start) === true);
+        const oldHere = holdsOld ? oldMarks : [];
+        const oldWholeHere = holdsOld ? oldWholeLines : [];
+        const any =
+          here.length +
+            wholeHere.length +
+            oldHere.length +
+            oldWholeHere.length >
+          0;
         // The wash steps aside only once every annotation reaching into the
         // block has something of its own painted here: characters for one on
         // columns, a row for one on whole lines. Rows that could not be
@@ -641,43 +893,37 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         for (const host of wrapper.querySelectorAll("diffs-container")) {
           const shadow = host.shadowRoot;
           if (shadow === null) continue;
+          // One map for both versions' rows: `markRows` takes the mark off
+          // every row it is not handed.
           const wanted = new Map<Element, LineMark>();
-          for (const row of here.length === 0 && wholeHere.length === 0
-            ? []
-            : shadow.querySelectorAll("[data-line]")) {
-            const source = codeRowSource(index, row);
-            const line = source?.line ?? null;
-            if (line !== null) {
-              for (const a of wholeHere) {
-                if (line < a.start || line > a.end) continue;
-                if (wanted.get(row) !== "comment") wanted.set(row, a.kind);
-                painted.add(a.key);
-              }
-            }
-            if (source === null || source.textStart === null) continue;
-            const rowEnd = source.textStart + rowText(row).length;
-            for (const mark of here) {
-              const from = Math.max(mark.start, source.textStart);
-              const to = Math.min(mark.end, rowEnd);
-              if (to <= from) continue;
-              const range = rangeInRow(
+          for (const row of any ? shadow.querySelectorAll("[data-line]") : []) {
+            paintRow(
+              row,
+              codeRowSource(index, row),
+              here,
+              wholeHere,
+              wanted,
+              painted,
+            );
+            if (old !== null && oldHere.length + oldWholeHere.length > 0) {
+              paintRow(
                 row,
-                from - source.textStart,
-                to - source.textStart,
+                oldCodeRowSource(old.index, old.fences, row),
+                oldHere,
+                oldWholeHere,
+                wanted,
+                painted,
               );
-              if (range === null) continue;
-              (mark.kind === "comment" ? ranges.comment : ranges.draft).push(
-                range,
-              );
-              painted.add(mark.key);
             }
           }
           markRows(shadow, wanted);
         }
         const touching =
-          body === null
-            ? []
-            : annotations.filter((a) => rangesIntersect(a, body));
+          oldLoc !== null
+            ? baselineAnnotations.filter((a) => rangesIntersect(a, oldLoc))
+            : body === null
+              ? []
+              : annotations.filter((a) => rangesIntersect(a, body));
         wrapper.classList.toggle(
           CODE_PAINTED_CLASS,
           touching.length > 0 && touching.every((a) => painted.has(a.key)),
@@ -685,7 +931,14 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       }
       return ranges;
     },
-    [annotations, index, decorations],
+    [
+      annotations,
+      baselineAnnotations,
+      index,
+      baselineIndex,
+      fenceBaselines,
+      decorations,
+    ],
   );
   useCodeHighlights(containerRef, paintCode);
 
@@ -745,7 +998,9 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         ) ??
         container.querySelector<HTMLElement>(
           `[${SOURCE_LINE_ATTR}="${blockKey}"]`,
-        );
+        ) ??
+        oldChipEls.current.get(blockKey) ??
+        null;
       if (target === null) return;
       revealBlock(target, { behavior: "smooth" });
       keepHold(holdRevealed(target, document.body, "auto", "smooth"));
