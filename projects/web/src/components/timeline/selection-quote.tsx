@@ -25,7 +25,7 @@ import {
   entryQuote,
   type QuotePart,
 } from "@/lib/quote-questions.ts";
-import { anchorForSelection, sideOf } from "@/lib/selection-anchor.ts";
+import { anchorForSelection } from "@/lib/selection-anchor.ts";
 import {
   composedContains,
   elementNear,
@@ -175,32 +175,9 @@ function endsInShadowOf(ends: SelectionEndpoints, body: Element): boolean {
 }
 
 /**
- * `ends` with an endpoint outside the target `el` put on its own edge.
- * Clamped to its first or last block instead, it would name that block and
- * quote all of it. On the edge it selects nothing, and `anchorForSelection`
- * moves it onto the first or last character selected: a triple-click on a
- * body's last block ends past the body and quotes that block's text, and a
- * selection run on from a body into its question card starts before each
- * text of the card it reaches.
- */
-function onEdges(el: Element, ends: SelectionEndpoints): SelectionEndpoints {
-  const ordered = orderedEndpoints(ends);
-  if (ordered === null) return ends;
-  const { start, end } = ordered.ends;
-  const before = sideOf(el, start.node, start.offset) === "before";
-  const after = sideOf(el, end.node, end.offset) === "after";
-  if (!before && !after) return ends;
-  return {
-    start: before ? { node: el, offset: 0 } : start,
-    end: after ? { node: el, offset: el.childNodes.length } : end,
-    collapsed: ends.collapsed,
-  };
-}
-
-/**
  * `ends`, anchored in what the target `el` renders; null where no anchor
- * fits. An end past the target is put on its edge first, which makes "from
- * here to the end" quotable.
+ * fits. An end outside the target is put on its edge first, which makes
+ * "from here to the end" quotable.
  */
 function anchorIn(
   el: Element,
@@ -208,13 +185,7 @@ function anchorIn(
   ends: SelectionEndpoints,
 ): QuotedPart | null {
   const source = target.body();
-  const index = segmentIndexOf(el, source);
-  // Should the edge leave a target of some unforeseen shape no anchor, the
-  // endpoints as selected still clamp to a block rather than lose the button.
-  const placed = onEdges(el, ends);
-  const anchor =
-    anchorForSelection(el, index, placed) ??
-    (placed === ends ? null : anchorForSelection(el, index, ends));
+  const anchor = anchorForSelection(el, segmentIndexOf(el, source), ends);
   return anchor === null ? null : { el, source, part: target.part(), anchor };
 }
 
