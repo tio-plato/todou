@@ -340,12 +340,14 @@ function itemsOf(
         continue;
       }
       // Same `start-end` shape as a line range, but absolute offsets.
-      const span = takeAtoms
-        ? parseSourceLoc(child.getAttribute(SOURCE_SPAN_ATTR))
-        : null;
+      const span = parseSourceLoc(child.getAttribute(SOURCE_SPAN_ATTR));
+      // An image shows no text and holds none in its span, and yet a
+      // selection can end beside it: it is an atom in either pass.
       if (
         span !== null &&
-        textUnder(child) !== textInSpan(own, span.start, span.end)
+        (child.tagName === "IMG" ||
+          (takeAtoms &&
+            textUnder(child) !== textInSpan(own, span.start, span.end)))
       ) {
         atoms.push({ el: child, ...span });
         items.push(child);
@@ -417,6 +419,12 @@ function sourceOffsetOfEndpoint(
  * Source offset in `index` an endpoint in `block` maps to, or null to give
  * up. One in an atom takes the atom's edge: its start for a start, its end
  * for an end.
+ *
+ * An endpoint on an element maps only beside an atom: a start takes the edge
+ * of the atom right after it, an end of the one right before it. Those are
+ * the element endpoints `endsOnContent` leaves — beside an image or a
+ * shadow host, or inside an atom such as a document card — and any other
+ * keeps the line anchor.
  */
 export function sourceOffsetInBlock(
   index: SegmentIndex,
@@ -425,11 +433,16 @@ export function sourceOffsetInBlock(
   offset: number,
   edge: "start" | "end",
 ): number | null {
-  if (node.nodeType !== Node.TEXT_NODE) return null;
   const aligned = alignBlock(index, block);
   if (aligned === null) return null;
-  const atom = aligned.atoms.find((a) => a.el.contains(node));
+  // What an element endpoint has on its side: a start looks ahead.
+  const next =
+    node.nodeType === Node.TEXT_NODE
+      ? null
+      : (node.childNodes[edge === "start" ? offset : offset - 1] ?? null);
+  const atom = aligned.atoms.find((a) => a.el.contains(node) || a.el === next);
   if (atom !== undefined) return edge === "start" ? atom.start : atom.end;
+  if (node.nodeType !== Node.TEXT_NODE) return null;
   const at = aligned.offsets.get(node);
   if (at === undefined) return null;
   const rendered = aligned.inserted.has(node) ? at : at + offset;
