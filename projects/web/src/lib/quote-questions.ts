@@ -49,8 +49,10 @@ function optionItem({ label, description }: OptionText): string {
 /**
  * What a reader wrote under "other": on the answer line where it is one
  * paragraph, a block of its own after the line where it is anything else.
+ * Nothing written is neither.
  */
 function otherParts(other: string): { inline: string; after: string } {
+  if (other === "") return { inline: "", after: "" };
   const blocks = blocksOf(other);
   return blocks.length === 1 && blocks[0]?.type === "paragraph"
     ? { inline: `other: ${other}`, after: "" }
@@ -88,9 +90,7 @@ function answerBlocks(
     .map((s) => s.index)
     .sort((a, b) => a - b)
     .flatMap((index) => question.options[index]?.label.trim() ?? []);
-  const other = record.other?.trim() ?? "";
-  const { inline, after } =
-    other === "" ? { inline: "", after: "" } : otherParts(other);
+  const { inline, after } = otherParts(record.other?.trim() ?? "");
   const parts = [
     ...picks,
     ...(record.declined ? ["declined to answer"] : []),
@@ -133,4 +133,71 @@ export function entryQuote(entry: QuotedEntry): string {
       }),
     ),
   ]);
+}
+
+/**
+ * Which piece of an entry a quotable element renders: the body, or one text
+ * of a question, named by the question's key and an option's index.
+ */
+export type QuotePart =
+  | { kind: "body" }
+  | { kind: "header" | "prompt" | "other"; question: string }
+  | { kind: "label" | "description"; question: string; option: number };
+
+/** The cuts of one question, gathered from across a selection. */
+type QuestionCuts = {
+  header: string;
+  prompt: string;
+  options: Map<number, OptionText>;
+  other: string;
+};
+
+/**
+ * What a selection across several parts of one entry quotes: each part's
+ * cut, laid out as the whole entry would be, with only the parts the
+ * selection reached. The picked options are a mark on the card rather than
+ * text, so no selection holds them, and there is no answer line; other's
+ * text stands alone. A cut inside a single part is quoted as it is, the way
+ * a cut inside a body is.
+ */
+export function cutsQuote(
+  cuts: ReadonlyArray<{ part: QuotePart; text: string }>,
+): string {
+  const [only, ...rest] = cuts;
+  if (only !== undefined && rest.length === 0) return only.text;
+  const blocks: Array<string | QuestionCuts> = [];
+  const questions = new Map<string, QuestionCuts>();
+  for (const { part, text } of cuts) {
+    if (part.kind === "body") {
+      blocks.push(text);
+      continue;
+    }
+    let question = questions.get(part.question);
+    if (question === undefined) {
+      question = { header: "", prompt: "", options: new Map(), other: "" };
+      questions.set(part.question, question);
+      blocks.push(question);
+    }
+    if (part.kind === "label" || part.kind === "description") {
+      const option = question.options.get(part.option) ?? {
+        label: "",
+        description: "",
+      };
+      question.options.set(part.option, { ...option, [part.kind]: text });
+    } else {
+      question[part.kind] = text;
+    }
+  }
+  return joinBlocks(
+    blocks.flatMap((block) => {
+      if (typeof block === "string") return [block];
+      const { inline, after } = otherParts(block.other);
+      return questionBlocks({
+        header: block.header,
+        prompt: block.prompt,
+        options: [...block.options.values()],
+        answer: [inline, after],
+      });
+    }),
+  );
 }
