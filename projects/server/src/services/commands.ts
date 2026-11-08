@@ -284,6 +284,29 @@ export async function executeCommands(
       events.push(...result.timeline);
     }
 
+    // The labels the commands name, before the card's rows under them:
+    // deleting a label locks it and then the rows its cascade removes, and
+    // adding one takes KEY SHARE on it for its foreign key. Taken here, it
+    // makes the deletion wait for this write or this write wait for it,
+    // never each for the other, and the card's labels are read below only
+    // once a deletion this waited for has removed its row.
+    const named = [
+      ...new Set(
+        input.commands.flatMap((command) =>
+          command.type === "label_add" || command.type === "label_remove"
+            ? [command.label_id]
+            : [],
+        ),
+      ),
+    ];
+    if (named.length > 0) {
+      await tx
+        .select({ id: labels.id })
+        .from(labels)
+        .where(inArray(labels.id, named))
+        .orderBy(asc(labels.id))
+        .for("key share");
+    }
     // Read the sets being mutated inside the transaction and diff against
     // them as commands apply: the point of incremental semantics is that a
     // concurrent edit by someone else survives this submission.
@@ -310,28 +333,6 @@ export async function executeCommands(
           .where(eq(issueLabels.issueId, issue.id))
       ).map((row) => row.labelId),
     );
-    // The labels the commands name, before the card's rows under them:
-    // deleting a label locks it and then the rows its cascade removes, and
-    // adding one takes KEY SHARE on it for its foreign key. Taken here, it
-    // makes the deletion wait for this write or this write wait for it,
-    // never each for the other (see lockIssueRows).
-    const named = [
-      ...new Set(
-        input.commands.flatMap((command) =>
-          command.type === "label_add" || command.type === "label_remove"
-            ? [command.label_id]
-            : [],
-        ),
-      ),
-    ];
-    if (named.length > 0) {
-      await tx
-        .select({ id: labels.id })
-        .from(labels)
-        .where(inArray(labels.id, named))
-        .orderBy(asc(labels.id))
-        .for("key share");
-    }
 
     for (const command of input.commands) {
       switch (command.type) {
