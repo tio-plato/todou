@@ -11,7 +11,9 @@ import {
   useScrollInsets,
 } from "../src/lib/scroll-insets.ts";
 import { currentIndex } from "../src/lib/spec-change-nav.ts";
+import { VIEWPORT_CHROME_EVENT } from "../src/lib/viewport-chrome.ts";
 import { FakeResizeObserver, resizePage } from "./fake-resize-observer.ts";
+import { stubVisualViewport } from "./visual-viewport.ts";
 
 // The overlays measured on a 1280×800 screen: shell header 57, floating title
 // bar 40, comment composer 93 collapsed — 129, 167 and 385 as a draft grows.
@@ -100,6 +102,8 @@ describe("the landing and the counter agree (T-299)", () => {
 
 describe("usableViewport (T-299)", () => {
   afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     document.documentElement.style.removeProperty("scroll-padding-top");
     document.documentElement.style.removeProperty("scroll-padding-bottom");
   });
@@ -119,18 +123,49 @@ describe("usableViewport (T-299)", () => {
       height: window.innerHeight,
     });
   });
+
+  // The keyboard is up and the page panned 100px down the layout viewport:
+  // the strip is the visual viewport's 377 less both overlays, wherever the
+  // engine starts its client coordinates.
+  it.each([
+    ["iOS WebKit, at the visual viewport's top", 2000, 48],
+    ["CSSOM View, at the layout viewport's top", 2100, 148],
+    // The page has just scrolled itself up from 2150: iOS moves `scrollY` and
+    // client rects at once, but `pageTop` only at the visual viewport's next
+    // update, as measured on a real iPhone with the keyboard up.
+    ["iOS WebKit, before pageTop catches up with the page's scroll", 2150, 48],
+  ])(
+    "measures the strip inside the visual viewport, from where the engine puts client coordinates: %s",
+    (_engine, pageTop, top) => {
+      vi.spyOn(window, "innerHeight", "get").mockReturnValue(714);
+      vi.spyOn(window, "scrollY", "get").mockReturnValue(2000);
+      stubVisualViewport({ offsetTop: 100, height: 377, pageTop });
+      document.documentElement.style.scrollPaddingTop = "48px";
+      document.documentElement.style.scrollPaddingBottom = "93px";
+      expect(usableViewport()).toEqual({ top, height: 236 });
+    },
+  );
 });
 
 /**
  * happy-dom answers 0 from every `getBoundingClientRect()`, so heights only
  * reach the hook when the element carries one. `data-h` puts each test's
- * numbers in the markup instead of in a lookup table beside it.
+ * numbers in the markup instead of in a lookup table beside it, and `data-top`
+ * moves an element off the top edge.
  */
 function stubHeights() {
   vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
     function (this: Element) {
-      const height = Number((this as HTMLElement).dataset?.h ?? 0);
-      return { height, width: 0, top: 0, left: 0, bottom: height } as DOMRect;
+      const { h, top: y } = (this as HTMLElement).dataset ?? {};
+      const height = Number(h ?? 0);
+      const top = Number(y ?? 0);
+      return {
+        height,
+        width: 0,
+        top,
+        left: 0,
+        bottom: top + height,
+      } as DOMRect;
     },
   );
 }
@@ -165,6 +200,7 @@ describe("useScrollInsets (T-299)", () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     for (const header of document.querySelectorAll("header")) header.remove();
+    document.documentElement.style.removeProperty("--header-hide");
   });
 
   it("sums the shell header, the page's own overlays and a breathing gap", () => {
@@ -180,20 +216,37 @@ describe("useScrollInsets (T-299)", () => {
     expect(insets()).toEqual({ top: "", bottom: "" });
   });
 
-  it("keeps reveals clear of an on-screen keyboard (T-585)", () => {
+  it("leaves the keyboard and a panned page out of the padding", () => {
+    // The keyboard is up and the page has been panned 100px down the layout
+    // viewport. The engine resolves the padding against the visual viewport,
+    // which already ends at the keyboard; counting the pan as well lands each
+    // caret reveal past the caret, and iOS reveals it on every keystroke.
+    // The header rides the visual viewport's top, which client coordinates
+    // put 100px down where they start at the layout viewport's top.
+    const header = document.createElement("header");
+    header.dataset.h = "57";
+    header.dataset.top = "100";
+    document.body.append(header);
     stubHeights();
     vi.spyOn(window, "innerHeight", "get").mockReturnValue(714);
-    // The keyboard is up and the page has been panned 100px down the layout
-    // viewport: the top 100 and the bottom 237 are both out of sight.
-    const vv = new EventTarget();
-    Object.defineProperties(vv, {
-      offsetTop: { value: 100 },
-      height: { value: 377 },
-      scale: { value: 1 },
-    });
-    vi.stubGlobal("visualViewport", vv);
+    stubVisualViewport({ offsetTop: 100, height: 377 });
     render(createElement(Harness, { composer: "mounted" }));
-    expect(insets()).toEqual({ top: "148px", bottom: "330px" });
+    expect(insets()).toEqual({ top: "105px", bottom: "93px" });
+  });
+
+  it("counts only what still shows of a header slid partly away (T-594)", () => {
+    const header = document.createElement("header");
+    header.dataset.h = "57";
+    document.body.append(header);
+    stubHeights();
+    render(createElement(Harness, { composer: "mounted" }));
+    expect(insets().top).toBe("105px");
+
+    // The header settles 40px out of view and announces it.
+    header.dataset.top = "-40";
+    document.documentElement.style.setProperty("--header-hide", "40px");
+    window.dispatchEvent(new Event(VIEWPORT_CHROME_EVENT));
+    expect(insets().top).toBe("65px");
   });
 
   it("counts a ref pointing at nothing as no overlay", () => {

@@ -1,4 +1,5 @@
 import { type RefObject, useEffect, useRef, useState } from "react";
+import { usableViewport } from "@/lib/scroll-insets.ts";
 
 const INPUTS = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
 
@@ -32,13 +33,11 @@ export function useKeepReading(
     let touched = false;
     let anchor: { el: Element; top: number } | null = null;
     // The first unit still showing below the shell's header and any other
-    // overlay pinned to the top, which `useScrollInsets` publishes here.
+    // overlay pinned to the top: the top of the strip `usableViewport`
+    // reports, in client coordinates.
     const pick = () => {
       if (!touched) return;
-      const inset =
-        Number.parseFloat(
-          getComputedStyle(document.documentElement).scrollPaddingTop,
-        ) || 0;
+      const inset = usableViewport().top;
       const el = [...list.children].find(
         (child) => child.getBoundingClientRect().bottom > inset,
       );
