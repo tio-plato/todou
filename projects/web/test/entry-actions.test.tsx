@@ -317,9 +317,10 @@ describe("EntryActionsMenu on a comment", () => {
     );
   });
 
-  it("opens and quotes the whole body where getComposedRanges rejects the call", async () => {
-    // Browsers that know only the API's older signature throw on this one,
-    // and the press that opens the menu is what reads the selection.
+  it("opens and quotes the selection where getComposedRanges refuses every call", async () => {
+    // The press that opens the menu is what reads the selection: an API
+    // that throws however it is called must neither keep the menu shut nor
+    // cost the quote its selection.
     const onQuote = vi.fn();
     const view = renderComment({ onQuote });
     await selectSecondParagraph(view);
@@ -335,7 +336,9 @@ describe("EntryActionsMenu on a comment", () => {
       await openMenu(view);
       fireEvent.click(menuItem("Quote reply"));
       await waitFor(() =>
-        expect(onQuote).toHaveBeenCalledExactlyOnceWith(BODY),
+        expect(onQuote).toHaveBeenCalledExactlyOnceWith(
+          "Second **paragraph**.",
+        ),
       );
     } finally {
       delete (selection as { getComposedRanges?: unknown }).getComposedRanges;
