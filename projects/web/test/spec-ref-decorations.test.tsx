@@ -476,6 +476,35 @@ describe("annotation highlights on raw HTML", () => {
   );
 });
 
+// A link drawn as a link shows its own children, so a mark goes on the
+// characters anchored inside it, as anywhere else.
+describe("annotation highlights inside a plain link", () => {
+  it.each([
+    // "see [so" is columns 1 to 7; "me te" 8 to 12.
+    [
+      "a link's text",
+      "see [some text](https://example.com) end\n",
+      8,
+      12,
+      "me te",
+    ],
+    // "go https://" is columns 1 to 11; "example" 12 to 18.
+    ["a bare address", "go https://example.com/path now\n", 12, 18, "example"],
+  ])(
+    "marks only the anchored characters of %s",
+    async (_shape, body, colStart, colEnd, marked) => {
+      const { container } = await renderSpec({
+        body,
+        annotations: [anchored("comment", 1, colStart, 1, colEnd)],
+      });
+      expect(texts(container, "mark.spec-mark-comment")).toEqual([marked]);
+      expect(
+        container.querySelector("mark.spec-mark-comment")?.closest("a"),
+      ).not.toBeNull();
+    },
+  );
+});
+
 describe("annotation highlights beside an autolink", () => {
   it("marks only the anchored word of text an autolink is cut from", async () => {
     const client = seeded();
