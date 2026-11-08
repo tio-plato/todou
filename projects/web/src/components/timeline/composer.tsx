@@ -713,13 +713,7 @@ export function Composer({
         issueNumber={issueNumber}
         watchers={watchers}
       />
-      <form
-        className="flex flex-col"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void submit();
-        }}
-      >
+      <div className="flex flex-col">
         <MarkdownEditor
           ref={editor}
           ariaLabel="Write a comment"
@@ -736,76 +730,87 @@ export function Composer({
           staging={staging.editor}
           onSubmit={() => void submit()}
         />
-        {/* A phone's way into a folded box it cannot see (T-532). A layer of
-            its own over the page rather than a state of the box: the box is
-            ordinary content at the end of the timeline, and the button fades
-            out while that box is on screen instead of turning into it — two
-            looks swapped in one spot flickered as the page scrolled past the
-            spot (T-585). Centred, not in a corner: the bottom corners are
-            where a phone's edge swipes start. */}
-        {!expanded && (
-          <div
-            inert={atEnd}
-            data-state={atEnd ? "hidden" : "shown"}
-            className={cn(
-              "pointer-events-none fixed inset-x-0 z-20 flex justify-center transition-opacity duration-150 sm:hidden",
-              atEnd && "opacity-0",
-            )}
-            style={{ bottom: "calc(var(--vv-bottom, 0px) + 1rem)" }}
-          >
-            <Button
-              type="button"
-              data-composer-opener=""
+        {/* The editor stays outside the form: in iOS Chrome a
+            contenteditable inside a <form> lags on every keystroke, while
+            an <input> does not. */}
+        <form
+          className="flex flex-col"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submit();
+          }}
+        >
+          {/* A phone's way into a folded box it cannot see (T-532). A layer of
+              its own over the page rather than a state of the box: the box is
+              ordinary content at the end of the timeline, and the button fades
+              out while that box is on screen instead of turning into it — two
+              looks swapped in one spot flickered as the page scrolled past the
+              spot (T-585). Centred, not in a corner: the bottom corners are
+              where a phone's edge swipes start. */}
+          {!expanded && (
+            <div
+              inert={atEnd}
+              data-state={atEnd ? "hidden" : "shown"}
               className={cn(
-                "rounded-full shadow-lg",
-                !atEnd && "pointer-events-auto",
+                "pointer-events-none fixed inset-x-0 z-20 flex justify-center transition-opacity duration-150 sm:hidden",
+                atEnd && "opacity-0",
               )}
-              onClick={open}
-              aria-label={
-                watchers.length > 0 ? openerLabel(watchers) : undefined
-              }
+              style={{ bottom: "calc(var(--vv-bottom, 0px) + 1rem)" }}
             >
-              <MessageSquarePlusIcon className="size-4" /> Comment
-              {/* Display only: the whole button still opens the editor, and
-                  an interactive element inside a button is invalid. */}
-              {watchers.length > 0 && (
-                <>
-                  <span aria-hidden className="mx-1 h-4 w-px bg-current/30" />
-                  <WatcherStack
-                    watchers={watchers}
-                    aria-hidden
-                    ringClassName="ring-primary"
-                  />
-                </>
-              )}
-            </Button>
-          </div>
-        )}
-        {/* The buttons get a row of their own (attach left, submit right —
-            the same layout as the issue-body, edit-comment and new-issue
-            editors) because `submitLabel` grows with the commands it parsed:
-            "Comment, move to In Progress and label bug" beside the editor
-            takes its width from the editor. Not rendered rather than hidden,
-            so an invisible button cannot sit in the tab order. */}
-        {expanded && (
-          <div className="composer-actions-in mt-2 flex h-7 items-start justify-between gap-2">
-            <div className="flex items-center gap-1">
-              <StagedFileUploadButton
-                onFiles={staging.stage}
-                disabled={uploading}
-              />
-              <EditorShortcutsHelp />
+              <Button
+                type="button"
+                data-composer-opener=""
+                className={cn(
+                  "rounded-full shadow-lg",
+                  !atEnd && "pointer-events-auto",
+                )}
+                onClick={open}
+                aria-label={
+                  watchers.length > 0 ? openerLabel(watchers) : undefined
+                }
+              >
+                <MessageSquarePlusIcon className="size-4" /> Comment
+                {/* Display only: the whole button still opens the editor, and
+                    an interactive element inside a button is invalid. */}
+                {watchers.length > 0 && (
+                  <>
+                    <span aria-hidden className="mx-1 h-4 w-px bg-current/30" />
+                    <WatcherStack
+                      watchers={watchers}
+                      aria-hidden
+                      ringClassName="ring-primary"
+                    />
+                  </>
+                )}
+              </Button>
             </div>
-            <Button
-              type="submit"
-              size="sm"
-              disabled={uploading || running || empty || broken.length > 0}
-            >
-              <SendIcon className="size-4" /> {label}
-            </Button>
-          </div>
-        )}
-      </form>
+          )}
+          {/* The buttons get a row of their own (attach left, submit right —
+              the same layout as the issue-body, edit-comment and new-issue
+              editors) because `submitLabel` grows with the commands it parsed:
+              "Comment, move to In Progress and label bug" beside the editor
+              takes its width from the editor. Not rendered rather than hidden,
+              so an invisible button cannot sit in the tab order. */}
+          {expanded && (
+            <div className="composer-actions-in mt-2 flex h-7 items-start justify-between gap-2">
+              <div className="flex items-center gap-1">
+                <StagedFileUploadButton
+                  onFiles={staging.stage}
+                  disabled={uploading}
+                />
+                <EditorShortcutsHelp />
+              </div>
+              <Button
+                type="submit"
+                size="sm"
+                disabled={uploading || running || empty || broken.length > 0}
+              >
+                <SendIcon className="size-4" /> {label}
+              </Button>
+            </div>
+          )}
+        </form>
+      </div>
     </div>
   );
 }
