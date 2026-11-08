@@ -86,6 +86,25 @@ async function stageSelection(
 }
 
 /**
+ * The bracketed part of `pick` in the one text node of `container` holding
+ * `pick` without its brackets: `"a [b] c"` selects the `b` of `a b c`.
+ */
+function bracketedIn(
+  container: HTMLElement,
+  pick: string,
+): { node: Node; from: number; to: number } {
+  const open = pick.indexOf("[");
+  const close = pick.indexOf("]");
+  const plain = pick.replace("[", "").replace("]", "");
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    const at = (node as Text).data.indexOf(plain);
+    if (at >= 0) return { node, from: at + open, to: at + close - 1 };
+  }
+  throw new Error(`no text node holds ${JSON.stringify(plain)}`);
+}
+
+/**
  * Let the rAF-batched recompute run and React commit it. Assertions that
  * something is *still* on screen are worthless without it: they would pass
  * in the frame before the component has looked at the selection at all.
@@ -503,7 +522,7 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
     });
   });
 
-  it("widens to the quoted prose inside a blockquote", async () => {
+  it("anchors a word on a blockquote's continuation line to its columns", async () => {
     const { onStage, button } = await stageSelection(
       "> first line\n> second line\n",
       (container) => {
@@ -513,14 +532,77 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
       },
     );
     fireEvent.click(button);
-    // The "> " prefixes make the source span longer than the text it
-    // renders, so the segment cannot be entered and the anchor grows to
-    // its edges: in-bounds on both lines, and containing the selection.
+    // "> second line" — the word "second" occupies columns 3 through 8; the
+    // "> " in front of it is the quote's, not the paragraph's.
     expect(onStage).toHaveBeenCalledWith({
-      lineStart: 1,
+      lineStart: 2,
       lineEnd: 2,
       colStart: 3,
-      colEnd: 13,
+      colEnd: 8,
+    });
+  });
+
+  // Each of these makes a text node's source longer than the text it shows,
+  // which used to widen the anchor to the whole paragraph. The brackets mark
+  // the selection in the rendered text.
+  it.each([
+    [
+      "a list item's continuation line",
+      "- item one\n  continues here\n",
+      "[continues] here",
+      { lineStart: 2, lineEnd: 2, colStart: 3, colEnd: 11 },
+    ],
+    [
+      "a word after an escape",
+      "a \\* b c\n",
+      "* [b] c",
+      { lineStart: 1, lineEnd: 1, colStart: 6, colEnd: 6 },
+    ],
+    [
+      "an escaped character and the word after it",
+      "a \\* b c\n",
+      "a [* b] c",
+      { lineStart: 1, lineEnd: 1, colStart: 3, colEnd: 6 },
+    ],
+    [
+      "a word after a character reference",
+      "x &amp; y z\n",
+      "& [y] z",
+      { lineStart: 1, lineEnd: 1, colStart: 9, colEnd: 9 },
+    ],
+    [
+      "a character reference",
+      "x &amp; y z\n",
+      "x [&] y",
+      { lineStart: 1, lineEnd: 1, colStart: 3, colEnd: 7 },
+    ],
+    [
+      "a word after a soft break with a space before it",
+      "foo \nbar baz\n",
+      "bar [baz]",
+      { lineStart: 2, lineEnd: 2, colStart: 5, colEnd: 7 },
+    ],
+  ])("anchors %s to its own columns", async (_name, body, pick, anchor) => {
+    const { onStage, button } = await stageSelection(body, (container) =>
+      bracketedIn(container, pick),
+    );
+    fireEvent.click(button);
+    expect(onStage).toHaveBeenCalledWith(anchor);
+  });
+
+  it("starts past a quote's prefix a selection starting on its line break", async () => {
+    // The soft break shows as a space, and selecting it with "tw" names the
+    // second line's text, not the "> " in front of it.
+    const { onStage, button } = await stageSelection(
+      "> one\n> two three\n",
+      (container) => bracketedIn(container, "one[\ntw]o"),
+    );
+    fireEvent.click(button);
+    expect(onStage).toHaveBeenCalledWith({
+      lineStart: 2,
+      lineEnd: 2,
+      colStart: 3,
+      colEnd: 4,
     });
   });
 

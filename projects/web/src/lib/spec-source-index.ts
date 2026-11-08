@@ -1,4 +1,5 @@
 import type { Nodes } from "mdast";
+import { decodeString } from "micromark-util-decode-string";
 import { parseMarkdown } from "./markdown-processor.ts";
 import type { LineRange } from "./spec-changes.ts";
 
@@ -69,8 +70,10 @@ export type SourceSegment = {
   /**
    * The source span reads character-for-character like `text`, so an
    * offset inside one maps to the other by addition. False for inline
-   * code (its backticks are in the span but not the value), escapes and
-   * entities — those segments are indivisible and get located whole.
+   * code (its backticks are in the span but not the value), for an escape
+   * or a character reference (`textPieces`), and for a whole text node
+   * whose source `textPieces` could not line up with its value — those
+   * segments are indivisible and get located whole.
    */
   exact: boolean;
   /** Which leaf block this flows in; a different one means a break. */
@@ -188,6 +191,127 @@ export type SegmentIndex = {
   fences: Map<number, SourceFence>;
 };
 
+/** One run of a text node, in its value and in the source. */
+export type TextPiece = {
+  /** Its part of the node's value; the pieces' texts join into the value. */
+  text: string;
+  /** Absolute source offsets, half-open. */
+  start: number;
+  end: number;
+  /** As `SourceSegment.exact`: false for an escape or a reference. */
+  exact: boolean;
+};
+
+/**
+ * A character escape or reference starting right at `lastIndex`: the
+ * pattern `micromark-util-decode-string` decodes with, which does not export
+ * it. The backtick in its punctuation class is written `\x60`.
+ */
+const ESCAPE_OR_REFERENCE =
+  /\\([!-/:-@[-\x60{-~])|&(#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});/iy;
+
+/** What a continuation line may open with that is not its text. */
+const CONTINUATION_PREFIX = /[> \t]/;
+
+/**
+ * Line up a text node's value with its source span, `[start, end)`. A node
+ * whose source is longer than its value cannot be entered by addition, and a
+ * selection or a highlight ending in it used to take the whole node — a
+ * whole paragraph, when the node is one. What makes the source longer is
+ * always one of these, and each gets its own treatment:
+ *
+ * - an escape (`\*`) or a character reference (`&amp;`) becomes one
+ *   indivisible piece, the `\` or the `&…;` included, holding what it decodes
+ *   to — so a quote cut from the source keeps the backslash;
+ * - what a continuation line opens with — a quote's `> `, an item's indent,
+ *   a paragraph's leading blanks — is in no piece at all;
+ * - so are the blanks a soft line break drops from the end of a line.
+ *
+ * Every other character is copied from the source to the value, and runs of
+ * them are exact pieces; a newline ends the one it is in. Null when the two
+ * do not line up — the caller then keeps the node whole, as before. The one
+ * known shape that does not is a continuation line indented four or more
+ * spaces whose text opens with `>`, which is taken for a quote marker.
+ */
+export function textPieces(
+  source: string,
+  start: number,
+  end: number,
+  value: string,
+): TextPiece[] | null {
+  const pieces: TextPiece[] = [];
+  let i = start;
+  let j = 0;
+  // The exact piece being grown, by where it starts in the source and value.
+  let runStart = -1;
+  let runAt = 0;
+  const closeRun = () => {
+    if (runStart >= 0) {
+      pieces.push({
+        text: value.slice(runAt, j),
+        start: runStart,
+        end: i,
+        exact: true,
+      });
+    }
+    runStart = -1;
+  };
+  while (j < value.length) {
+    if (i >= end) return null;
+    const char = source[i] ?? "";
+    if (char === "\\" || char === "&") {
+      ESCAPE_OR_REFERENCE.lastIndex = i;
+      const token = ESCAPE_OR_REFERENCE.exec(source)?.[0] ?? "";
+      const decoded = decodeString(token);
+      // `&foo;` names no character and reads as itself, like plain text.
+      if (
+        decoded !== token &&
+        i + token.length <= end &&
+        value.startsWith(decoded, j)
+      ) {
+        closeRun();
+        pieces.push({
+          text: decoded,
+          start: i,
+          end: i + token.length,
+          exact: false,
+        });
+        i += token.length;
+        j += decoded.length;
+        continue;
+      }
+    }
+    if (char === value[j]) {
+      if (runStart < 0) {
+        runStart = i;
+        runAt = j;
+      }
+      i++;
+      j++;
+      if (char === "\n") {
+        closeRun();
+        while (i < end && CONTINUATION_PREFIX.test(source[i] ?? "")) i++;
+      }
+      continue;
+    }
+    let blank = i;
+    while (blank < end && (source[blank] === " " || source[blank] === "\t")) {
+      blank++;
+    }
+    if (
+      blank > i &&
+      (blank === end || source[blank] === "\n" || source[blank] === "\r")
+    ) {
+      closeRun();
+      i = blank;
+      continue;
+    }
+    return null;
+  }
+  closeRun();
+  return /^[ \t\r\n]*$/.test(source.slice(i, end)) ? pieces : null;
+}
+
 /** Absolute offset each 1-based line of `source` starts at. */
 export function lineStartsOf(source: string): number[] {
   const starts = [0];
@@ -220,6 +344,7 @@ export function buildSegmentIndex(source: string): SegmentIndex {
   let lastGroup: number | null = null;
   let parent: number | null = null;
   const childCounts = new Map<number | null, number>();
+  const lineStarts = lineStartsOf(source);
 
   const pushBlock = (node: Nodes, type: SourceBlockType): number | null => {
     const start = node.position?.start.offset;
@@ -313,6 +438,27 @@ export function buildSegmentIndex(source: string): SegmentIndex {
       if (start === undefined || end === undefined) return;
       if (node.value === "") return;
       if (lastGroup !== null && lastGroup !== group) text += "\n";
+      lastGroup = group;
+      // A text node whose source is longer than its value goes in as the
+      // runs `textPieces` finds, so that only an escape or a reference stays
+      // indivisible rather than the whole node. Inline code stays one piece.
+      const pieces =
+        node.type === "text" && end - start !== node.value.length
+          ? textPieces(source, start, end, node.value)
+          : null;
+      if (pieces !== null) {
+        for (const piece of pieces) {
+          segments.push({
+            ...piece,
+            at: text.length,
+            line: lineColAt({ lineStarts }, piece.start).line,
+            endLine: lineColAt({ lineStarts }, piece.end - 1).line,
+            group,
+          });
+          text += piece.text;
+        }
+        return;
+      }
       segments.push({
         text: node.value,
         at: text.length,
@@ -324,7 +470,6 @@ export function buildSegmentIndex(source: string): SegmentIndex {
         group,
       });
       text += node.value;
-      lastGroup = group;
       return;
     }
     if (!("children" in node)) return;
@@ -354,7 +499,7 @@ export function buildSegmentIndex(source: string): SegmentIndex {
     source,
     text,
     segments,
-    lineStarts: lineStartsOf(source),
+    lineStarts,
     blocks,
     groupTypes,
     images,

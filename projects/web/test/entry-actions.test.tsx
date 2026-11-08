@@ -300,8 +300,8 @@ describe("EntryActionsMenu on a comment", () => {
   });
 
   it("cuts an action line's quote from the source the line renders", async () => {
-    // The line renders `- checks …` from an escaped `\- checks …`, and a
-    // cut made in the stored text would land one character off.
+    // The line renders `- checks …` from an escaped `\- checks …`: a cut
+    // made in the stored text would land one character off, on `hecks `.
     const onQuote = vi.fn();
     const view = renderComment({
       onQuote,
@@ -325,7 +325,7 @@ describe("EntryActionsMenu on a comment", () => {
     await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
     fireEvent.click(menuItem("Quote reply"));
     await waitFor(() =>
-      expect(onQuote).toHaveBeenCalledExactlyOnceWith("\\- checks the list"),
+      expect(onQuote).toHaveBeenCalledExactlyOnceWith("checks"),
     );
   });
 
