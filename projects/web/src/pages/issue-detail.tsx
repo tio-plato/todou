@@ -146,7 +146,8 @@ export function IssueDetailPage() {
   });
   const [end, setEnd] = useState<HTMLDivElement | null>(null);
   const atEnd = useInView(end);
-  // For what floats above the composer, the New messages pill among them.
+  // For what floats above the composer, the scroll-to-bottom button among
+  // them.
   useDockCover(composerRef);
   // Which of the three homes the back control takes (T-461). The header's nav
   // keeps it below `sm`; from there it travels with the heading, inside the
