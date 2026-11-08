@@ -10,6 +10,7 @@ import {
   CODE_CONTENT_START_ATTR,
   parseSourceLoc,
   SOURCE_LINE_ATTR,
+  SOURCE_SPAN_ATTR,
 } from "./rehype-source-lines.ts";
 import {
   composedContains,
@@ -71,20 +72,133 @@ function columnBlockOf(
 const INJECTED =
   "[data-annotation-ui], .spec-del, .spec-del-block, .spec-del-structure, .spec-list-number";
 
+/** A link or a document card a selection takes whole (`alignBlock`). */
+type Atom = { el: Element; start: number; end: number };
+
 /** A block's text nodes lined up against the segments it renders. */
 type BlockAlignment = {
-  /** The block's own segments, in source order. */
+  /** The block's own segments, in source order, an atom standing in one. */
   segments: SourceSegment[];
   /** Where each text node starts in those segments' joined text. */
   offsets: Map<Node, number>;
   /** Text nodes the renderer inserted, which take no room there. */
   inserted: Set<Node>;
+  atoms: Atom[];
 };
+
+/** What an atom stands for in the joined text: one character. */
+const ATOM_TEXT = "\uFFFC";
+
+/**
+ * Segments with atoms in, and which of them are the atoms' placeholders: a
+ * placeholder is told by identity, never by its text, which a source can
+ * hold too.
+ */
+type WithAtoms = {
+  segments: SourceSegment[];
+  placeholders: Set<SourceSegment>;
+};
+
+/** The text of `el`'s subtree, injected nodes left out. */
+function textUnder(el: Element): string {
+  let text = "";
+  const walk = (parent: Node) => {
+    for (const child of parent.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) text += child.nodeValue ?? "";
+      else if (child instanceof Element && !child.matches(INJECTED)) {
+        walk(child);
+      }
+    }
+  };
+  walk(el);
+  return text;
+}
+
+/**
+ * The text `segments` hold within the source span `[start, end)`, exact ones
+ * cut at its edges; null when an indivisible one crosses an edge.
+ */
+function textInSpan(
+  segments: SourceSegment[],
+  start: number,
+  end: number,
+): string | null {
+  let text = "";
+  for (const segment of segments) {
+    if (segment.end <= start || segment.start >= end) continue;
+    if (segment.start >= start && segment.end <= end) {
+      text += segment.text;
+      continue;
+    }
+    if (!segment.exact) return null;
+    text += segment.text.slice(
+      Math.max(start, segment.start) - segment.start,
+      Math.min(end, segment.end) - segment.start,
+    );
+  }
+  return text;
+}
+
+/**
+ * `segments` with each atom's span cut out and one `ATOM_TEXT` character in
+ * its place; null when an indivisible segment crosses an atom's edge.
+ */
+function withAtoms(
+  index: SegmentIndex,
+  segments: SourceSegment[],
+  atoms: Atom[],
+): WithAtoms | null {
+  const placeholders = new Set<SourceSegment>();
+  let out = segments;
+  for (const atom of atoms) {
+    const next: SourceSegment[] = [];
+    for (const segment of out) {
+      if (segment.end <= atom.start || segment.start >= atom.end) {
+        next.push(segment);
+        continue;
+      }
+      if (segment.start >= atom.start && segment.end <= atom.end) continue;
+      if (!segment.exact) return null;
+      if (segment.start < atom.start) {
+        const length = atom.start - segment.start;
+        next.push({
+          ...segment,
+          text: segment.text.slice(0, length),
+          end: atom.start,
+        });
+      }
+      if (segment.end > atom.end) {
+        const skip = atom.end - segment.start;
+        next.push({
+          ...segment,
+          text: segment.text.slice(skip),
+          at: segment.at + skip,
+          start: atom.end,
+        });
+      }
+    }
+    // Not in the flattened text, so no `at` and no group of its own.
+    const placeholder: SourceSegment = {
+      text: ATOM_TEXT,
+      at: -1,
+      start: atom.start,
+      end: atom.end,
+      line: lineColAt(index, atom.start).line,
+      endLine: lineColAt(index, atom.end - 1).line,
+      exact: false,
+      group: -1,
+    };
+    placeholders.add(placeholder);
+    next.push(placeholder);
+    out = next;
+  }
+  return { segments: out.sort((a, b) => a.start - b.start), placeholders };
+}
 
 /**
  * Line a block's text nodes up against its own segments, or null when they
- * do not read alike — an attachment card or any other text the source does
- * not hold — since a wrong column is worse than none.
+ * do not read alike — text the source does not hold — since a wrong column
+ * is worse than none.
  *
  * Two things in a block are not its own text. A block nested in it — a
  * sublist in a list item, a code block in a compact one — is stamped and
@@ -99,6 +213,14 @@ type BlockAlignment = {
  * edges, where the segments never start with a blank — mdast keeps none at
  * the start of a paragraph or after a hard break.
  *
+ * A link or a document card carries its source span (`SOURCE_SPAN_ATTR`).
+ * One whose text reads like the source in its span — a plain link, an
+ * attachment link's file name, an autolink cut out of a longer text — is
+ * walked like any other element. One that does not — a chip showing a title
+ * where the source says `#12`, a document card, a footnote reference — is an
+ * atom: it stands in the segments as one character in place of its span,
+ * and a selection reaching into it takes its whole span.
+ *
  * The injected nodes `INJECTED` names are skipped as they always were: they
  * would shift every offset after them.
  */
@@ -111,43 +233,22 @@ function alignBlock(
       .filter((el) => el.closest(INJECTED) === null)
       .flatMap((el) => parseSourceLoc(el.getAttribute(SOURCE_LINE_ATTR)) ?? []),
   );
-  const segments = segmentsInLines(index, block.loc).filter(
+  const own = segmentsInLines(index, block.loc).filter(
     (segment) =>
       !nested.some(
         (loc) => segment.line >= loc.start && segment.endLine <= loc.end,
       ),
   );
-  if (segments.length === 0) return null;
-  const texts: Node[] = [];
-  const walk = (parent: Node) => {
-    for (const child of parent.childNodes) {
-      if (child.nodeType === Node.TEXT_NODE) {
-        texts.push(child);
-        continue;
-      }
-      if (
-        !(child instanceof Element) ||
-        child.matches(INJECTED) ||
-        child.hasAttribute(SOURCE_LINE_ATTR)
-      ) {
-        continue;
-      }
-      walk(child);
-    }
-  };
-  walk(block.el);
-  const joined = segments.map((segment) => segment.text).join("");
-  const offsets = new Map<Node, number>();
-  const inserted = new Set<Node>();
-  let at = 0;
-  for (const text of texts) {
-    const data = text.nodeValue ?? "";
-    offsets.set(text, at);
-    if (joined.startsWith(data, at)) at += data.length;
-    else if (/\S/.test(data)) return null;
-    else inserted.add(text);
-  }
-  return at === joined.length ? { segments, offsets, inserted } : null;
+  // A block whose text nodes all line up with every element walked into is
+  // mapped character by character, which no atom can improve on, so atoms
+  // are only looked for when that fails. Trying them first would also trust
+  // a span that is not its element's own: `remarkIssueRefs` cuts a project
+  // autolink out of a text node, and when that node's source is longer than
+  // its value every piece gets the whole node's position.
+  return (
+    lineUp(index, own, itemsOf(block.el, own, false)) ??
+    lineUp(index, own, itemsOf(block.el, own, true))
+  );
 }
 
 /**
@@ -170,7 +271,93 @@ function mergedLines(
   return merged;
 }
 
-/** Source offset one selection endpoint maps to, or null to give up. */
+/**
+ * A block's text nodes and atoms, in document order. With `takeAtoms` off,
+ * every element is walked into, whatever its text.
+ */
+function itemsOf(
+  el: Element,
+  own: SourceSegment[],
+  takeAtoms: boolean,
+): { items: Node[]; atoms: Atom[] } {
+  const items: Node[] = [];
+  const atoms: Atom[] = [];
+  const walk = (parent: Node) => {
+    for (const child of parent.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        items.push(child);
+        continue;
+      }
+      if (
+        !(child instanceof Element) ||
+        child.matches(INJECTED) ||
+        child.hasAttribute(SOURCE_LINE_ATTR)
+      ) {
+        continue;
+      }
+      // Same `start-end` shape as a line range, but absolute offsets.
+      const span = takeAtoms
+        ? parseSourceLoc(child.getAttribute(SOURCE_SPAN_ATTR))
+        : null;
+      if (
+        span !== null &&
+        textUnder(child) !== textInSpan(own, span.start, span.end)
+      ) {
+        atoms.push({ el: child, ...span });
+        items.push(child);
+        continue;
+      }
+      walk(child);
+    }
+  };
+  walk(el);
+  return { items, atoms };
+}
+
+/** Line `items` up against `own`, each atom standing in for its span. */
+function lineUp(
+  index: SegmentIndex,
+  own: SourceSegment[],
+  { items, atoms }: { items: Node[]; atoms: Atom[] },
+): BlockAlignment | null {
+  const cut =
+    atoms.length === 0
+      ? { segments: own, placeholders: new Set<SourceSegment>() }
+      : withAtoms(index, own, atoms);
+  // A block holding no text but a document card still lines up, as the card.
+  if (cut === null || cut.segments.length === 0) return null;
+  const { segments, placeholders } = cut;
+  let joined = "";
+  const atomAt: number[] = [];
+  for (const segment of segments) {
+    if (placeholders.has(segment)) atomAt.push(joined.length);
+    joined += segment.text;
+  }
+  const offsets = new Map<Node, number>();
+  const inserted = new Set<Node>();
+  let at = 0;
+  for (const item of items) {
+    if (item.nodeType !== Node.TEXT_NODE) {
+      if (!atomAt.includes(at)) return null;
+      at += 1;
+      continue;
+    }
+    const data = item.nodeValue ?? "";
+    offsets.set(item, at);
+    const fits =
+      joined.startsWith(data, at) &&
+      !atomAt.some((p) => p >= at && p < at + data.length);
+    if (fits) at += data.length;
+    else if (/\S/.test(data)) return null;
+    else inserted.add(item);
+  }
+  return at === joined.length ? { segments, offsets, inserted, atoms } : null;
+}
+
+/**
+ * Source offset one selection endpoint maps to, or null to give up. One in
+ * an atom takes the atom's edge: its start for a start, its end for an end.
+ */
 function sourceOffsetOfEndpoint(
   index: SegmentIndex,
   node: Node,
@@ -181,8 +368,11 @@ function sourceOffsetOfEndpoint(
   const block = columnBlockOf(node);
   if (block === null) return null;
   const aligned = alignBlock(index, block);
-  const at = aligned?.offsets.get(node);
-  if (aligned === null || at === undefined) return null;
+  if (aligned === null) return null;
+  const atom = aligned.atoms.find((a) => a.el.contains(node));
+  if (atom !== undefined) return edge === "start" ? atom.start : atom.end;
+  const at = aligned.offsets.get(node);
+  if (at === undefined) return null;
   const rendered = aligned.inserted.has(node) ? at : at + offset;
   const source = sourceOffsetOfRendered(aligned.segments, rendered, edge);
   return edge === "start"
