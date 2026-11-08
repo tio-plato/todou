@@ -382,15 +382,23 @@ describe("landing on the end of the conversation", () => {
    * Chromium and Firefox measure client coordinates from the layout
    * viewport, Safari on iOS from the visual one, whose page offset is then
    * the window's own, as measured on a real iPhone.
+   *
+   * `"lagging"` is that iPhone right after the page scrolled itself with the
+   * keyboard up: `scrollY` and client rects move at once, while `pageTop`
+   * keeps the offset from before the landing until the visual viewport next
+   * updates, a frame or two later.
    */
-  function keyboard(origin: "layout" | "visual") {
+  function keyboard(origin: "layout" | "visual" | "lagging") {
     const vv = new EventTarget();
     Object.defineProperties(vv, {
       offsetTop: { value: 100 },
       height: { value: VIEWPORT - 300 - 100 },
       scale: { value: 1 },
       pageTop: {
-        get: () => window.scrollY + (origin === "layout" ? 100 : 0),
+        get: () =>
+          origin === "lagging"
+            ? 0
+            : window.scrollY + (origin === "layout" ? 100 : 0),
       },
     });
     vi.stubGlobal("visualViewport", vv);
@@ -410,6 +418,16 @@ describe("landing on the end of the conversation", () => {
     landAtBottom();
     // The keyboard's top edge, 400 down the visual viewport.
     expect(targets).toEqual([2000 - 400]);
+  });
+
+  it("stays above the keyboard while iOS has yet to catch up with its own landing", () => {
+    keyboard("lagging");
+    const { targets } = page({ y: 2000 });
+    landAtBottom();
+    // The hold's next placement, before the visual viewport has updated.
+    resizePage();
+    // Both on the keyboard's top edge, 400 down the visual viewport.
+    expect(targets).toEqual([2000 - 400, 2000 - 400]);
   });
 
   it.each([

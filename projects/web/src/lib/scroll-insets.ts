@@ -216,14 +216,22 @@ export function conversationEnd(): number {
 /**
  * The bottom of what the reader sees, in `getBoundingClientRect`'s
  * coordinates: above an on-screen keyboard. Chromium and Firefox measure those
- * from the layout viewport, where the visual one starts `pageTop - scrollY`
- * down; Safari on iOS measures them from the visual viewport itself, its
- * `pageTop` the window's own `scrollY`, and the same sum gives 0 there.
+ * from the layout viewport, where the visual one starts `offsetTop` down and
+ * `pageTop - scrollY` is that same `offsetTop`; Safari on iOS measures them
+ * from the visual viewport itself, its `pageTop` the window's own `scrollY`,
+ * and the difference is 0 there.
+ *
+ * With the keyboard up, iOS moves `scrollY` and client rects as soon as the
+ * page scrolls itself, but `pageTop` only at the visual viewport's next
+ * update, a frame or two later: read in between, the difference is the
+ * distance just scrolled, and a landing placed by it scrolls that far again.
+ * So the difference only tells which of the two origins the engine uses.
  */
 function visibleBottom(): number {
   const vv = window.visualViewport;
   if (vv == null || Math.abs(vv.scale - 1) > 0.01) return window.innerHeight;
-  return vv.pageTop - window.scrollY + vv.height;
+  const fromLayout = Math.abs(vv.pageTop - window.scrollY - vv.offsetTop) < 1;
+  return (fromLayout ? vv.offsetTop : 0) + vv.height;
 }
 
 /**
