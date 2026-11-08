@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { BODY_PART, type QuotePart } from "@/lib/quote-questions.ts";
 
 /** What a rendered body hands the floating Quote reply. */
 export type QuoteTarget = {
@@ -20,6 +21,8 @@ export type QuoteTarget = {
   body: () => string;
   /** The box whose right edge the button lines up with. */
   frame: () => Element;
+  /** Which part of its entry this is: its body, or a text of its questions. */
+  part: () => QuotePart;
 };
 
 /**
@@ -99,15 +102,20 @@ export function useQuoteSink(sink: (markdown: string) => void): void {
  *
  * `frameRef` is for a body that is not a block of its own — an action's runs
  * inline in its sentence — and lines the button up with the row instead.
+ * `part` is for a text of a question card, which a comment renders outside
+ * its body.
  */
 export function useQuoteTarget(
   body: string,
   bodyRef: RefObject<HTMLElement | null>,
   frameRef?: RefObject<HTMLElement | null>,
+  part: QuotePart = BODY_PART,
 ): (el: HTMLElement | null) => void {
   const { targets } = useQuoteReply();
   const latest = useRef(body);
   latest.current = body;
+  const latestPart = useRef(part);
+  latestPart.current = part;
   const registered = useRef<HTMLElement | null>(null);
   return useCallback(
     (el: HTMLElement | null) => {
@@ -118,6 +126,7 @@ export function useQuoteTarget(
       targets.set(el, {
         body: () => latest.current,
         frame: () => frameRef?.current ?? el,
+        part: () => latestPart.current,
       });
     },
     [targets, bodyRef, frameRef],

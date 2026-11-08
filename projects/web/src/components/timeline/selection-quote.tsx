@@ -20,7 +20,11 @@ import {
 } from "@/components/timeline/quote-reply.tsx";
 import { Button } from "@/components/ui/button";
 import { quoteOfSelection } from "@/lib/quote-markdown.ts";
-import { entryQuote } from "@/lib/quote-questions.ts";
+import {
+  cutsQuote,
+  entryQuote,
+  type QuotePart,
+} from "@/lib/quote-questions.ts";
 import { anchorForSelection, sideOf } from "@/lib/selection-anchor.ts";
 import {
   composedContains,
@@ -110,11 +114,20 @@ export function wholeQuoteOf(entry: Element | null, body: string): string {
   });
 }
 
-/** A selection inside one quotable body, anchored in what it renders. */
-export type QuotableSelection = {
-  body: Element;
+/** One quote target a selection selects text in, anchored in its source. */
+type QuotedPart = {
+  el: Element;
   source: string;
+  part: QuotePart;
   anchor: AnchorRange;
+};
+
+/** A selection inside one entry, anchored in each target it reaches. */
+export type QuotableSelection = {
+  /** The comment, action line or issue body the targets belong to. */
+  entry: Element;
+  /** The targets the selection selects text in, in document order. */
+  parts: [QuotedPart, ...QuotedPart[]];
 };
 
 /** Whether `range` covers any text of `body` but whitespace. */
@@ -162,35 +175,65 @@ function endsInShadowOf(ends: SelectionEndpoints, body: Element): boolean {
 }
 
 /**
- * `ends` with an end past `body` put on the body's own edge. Clamped to the
- * body's last block instead, it would name that block and quote all of it.
- * On the edge it selects nothing, and `anchorForSelection` moves it onto
- * the last character selected: a triple-click on a body's last block ends
- * past the body, and quotes that block's text.
+ * `ends` with an endpoint outside the target `el` put on its own edge.
+ * Clamped to its first or last block instead, it would name that block and
+ * quote all of it. On the edge it selects nothing, and `anchorForSelection`
+ * moves it onto the first or last character selected: a triple-click on a
+ * body's last block ends past the body and quotes that block's text, and a
+ * selection run on from a body into its question card starts before each
+ * text of the card it reaches.
  */
-function onBodyEdge(
-  body: Element,
-  ends: SelectionEndpoints,
-): SelectionEndpoints {
+function onEdges(el: Element, ends: SelectionEndpoints): SelectionEndpoints {
   const ordered = orderedEndpoints(ends);
   if (ordered === null) return ends;
   const { start, end } = ordered.ends;
-  if (sideOf(body, end.node, end.offset) !== "after") return ends;
+  const before = sideOf(el, start.node, start.offset) === "before";
+  const after = sideOf(el, end.node, end.offset) === "after";
+  if (!before && !after) return ends;
   return {
-    start,
-    end: { node: body, offset: body.childNodes.length },
+    start: before ? { node: el, offset: 0 } : start,
+    end: after ? { node: el, offset: el.childNodes.length } : end,
     collapsed: ends.collapsed,
   };
 }
 
 /**
- * The quote target the selection selects text in, and where in the markdown
- * it renders; null unless that is exactly one body. A selection reaching
- * into a second body is about two of them, so it quotes neither — but one
+ * `ends`, anchored in what the target `el` renders; null where no anchor
+ * fits. An end past the target is put on its edge first, which makes "from
+ * here to the end" quotable.
+ */
+function anchorIn(
+  el: Element,
+  target: QuoteTarget,
+  ends: SelectionEndpoints,
+): QuotedPart | null {
+  const source = target.body();
+  const index = segmentIndexOf(el, source);
+  // Should the edge leave a target of some unforeseen shape no anchor, the
+  // endpoints as selected still clamp to a block rather than lose the button.
+  const placed = onEdges(el, ends);
+  const anchor =
+    anchorForSelection(el, index, placed) ??
+    (placed === ends ? null : anchorForSelection(el, index, ends));
+  return anchor === null ? null : { el, source, part: target.part(), anchor };
+}
+
+/** For sorting elements into document order. */
+function inDocumentOrder(a: Element, b: Element): number {
+  return a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING
+    ? -1
+    : 1;
+}
+
+/**
+ * The quote targets the selection selects text in, and where in what each
+ * renders; null unless they all belong to one entry. A selection reaching
+ * into a second entry is about two of them, so it quotes neither — but one
  * that merely ends at the very start of the next, as a triple-click does,
- * selects no text there and still counts. An end past the body is put on
- * its edge, which makes "from here to the end" quotable; a start before it,
- * in the entry's header say, quotes nothing.
+ * selects no text there and still counts. Within one entry it may run from
+ * the body through the question card, each target taking its own cut. A
+ * selection that starts before the first of them, in the entry's header
+ * say, quotes nothing.
  */
 export function quotableSelection(
   selection: Selection | null,
@@ -203,28 +246,43 @@ export function quotableSelection(
   if (ordered === null) return null;
   const { range } = ordered;
   const selected = selection.toString() !== "";
-  const bodies = [...targets.keys()].filter(
-    (body) =>
-      // Code rows sit in pierre's shadow root, where a light range sees
-      // only an empty host: that the selection ends in one says it more
-      // reliably than any text the range could find.
-      (selected && endsInShadowOf(all, body)) || coversText(range, body),
+  // Only the targets this lets through are anchored: a long timeline holds
+  // many, and this runs on every settled selection change.
+  const touched = [...targets.keys()]
+    .filter(
+      (el) =>
+        // A question form popped out into a window of its own renders its
+        // texts there, out of reach of this window's selection.
+        el.ownerDocument === document &&
+        // Code rows sit in pierre's shadow root, where a light range sees
+        // only an empty host: that the selection ends in one says it more
+        // reliably than any text the range could find.
+        ((selected && endsInShadowOf(all, el)) || coversText(range, el)),
+    )
+    .sort(inDocumentOrder);
+  const first = touched[0];
+  if (first === undefined || startsBefore(range, first)) return null;
+  const entry = entryOf(first);
+  if (touched.some((el) => entryOf(el) !== entry)) return null;
+  const [head, ...rest] = touched.flatMap((el) => {
+    const target = targets.get(el);
+    const ends = endpointsOf(selection, el);
+    if (target === undefined || ends === null || ends.collapsed) return [];
+    return anchorIn(el, target, ends) ?? [];
+  });
+  return head === undefined ? null : { entry, parts: [head, ...rest] };
+}
+
+/** The markdown a selection quotes: each target's cut, laid out together. */
+export function quoteOfQuotable(picked: QuotableSelection): string {
+  return cutsQuote(
+    picked.parts
+      .map(({ source, part, anchor }) => ({
+        part,
+        text: quoteOfSelection(source, anchor),
+      }))
+      .filter((cut) => cut.text.trim() !== ""),
   );
-  const body = bodies.length === 1 ? bodies[0] : undefined;
-  const target = body && targets.get(body);
-  if (body === undefined || target === undefined) return null;
-  if (startsBefore(range, body)) return null;
-  const ends = endpointsOf(selection, body);
-  if (ends === null || ends.collapsed) return null;
-  const source = target.body();
-  const index = segmentIndexOf(body, source);
-  // Should the edge leave a body of some unforeseen shape no anchor, the
-  // endpoints as selected still clamp to a block rather than lose the button.
-  const placed = onBodyEdge(body, ends);
-  const anchor =
-    anchorForSelection(body, index, placed) ??
-    (placed === ends ? null : anchorForSelection(body, index, ends));
-  return anchor === null ? null : { body, source, anchor };
 }
 
 /** Marks the floating entry, so a press on it is not a new selection. */
@@ -286,15 +344,18 @@ export function SelectionQuote() {
       // Just what is selected, cut from the body's markdown, as the `…`
       // menu's Quote reply quotes it.
       const picked = quotableSelection(selection, targets);
-      const markdown =
-        picked === null ? "" : quoteOfSelection(picked.source, picked.anchor);
+      const markdown = picked === null ? "" : quoteOfQuotable(picked);
       if (picked === null || markdown === "") {
         setPending(null);
         return;
       }
-      const rect = selectionRect(selection, picked.body);
+      // The target the selection ends in; a question's text lines the
+      // button up with its whole entry, as the body does.
+      const last = picked.parts[picked.parts.length - 1] ?? picked.parts[0];
+      const rect = selectionRect(selection, last.el);
       const frame = (
-        targets.get(picked.body)?.frame() ?? picked.body
+        (last.part.kind === "body" ? targets.get(last.el)?.frame() : null) ??
+        picked.entry
       ).getBoundingClientRect();
       setPending({
         markdown,
