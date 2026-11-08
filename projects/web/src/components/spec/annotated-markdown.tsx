@@ -70,7 +70,7 @@ import {
   segmentsInLines,
   sourceOffsetOfRendered,
 } from "@/lib/spec-source-index.ts";
-import { POINTER_FINE, useMediaQuery } from "@/lib/use-media-query.ts";
+import { POINTER_FINE, SM_UP, useMediaQuery } from "@/lib/use-media-query.ts";
 import { cn } from "@/lib/utils";
 
 type RehypePlugins = ComponentProps<typeof Markdown>["rehypePlugins"];
@@ -646,6 +646,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
   const pressTimerRef = useRef<number | null>(null);
   const pendingRef = useRef<PendingSelection | null>(null);
   const pointerFine = useMediaQuery(POINTER_FINE);
+  const wide = useMediaQuery(SM_UP);
   const remarkPlugins = useMarkdownRemarkPlugins(slug);
 
   const index = useMemo(() => buildSegmentIndex(body), [body]);
@@ -1019,7 +1020,10 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     // biome-ignore lint/a11y/useKeyWithClickEvents: what the click delegates to is a real <button>, which answers Enter and Space by firing this same click
     <div
       ref={containerRef}
-      className="relative pr-10"
+      // The gutter holds the chips and the mouse's "Comment Lx" button, and
+      // only from `sm` up: below it the text takes the width and the chips
+      // ride on the border of the card around it.
+      className="relative sm:pr-10"
       onClick={onClick}
       data-testid="annotated-markdown"
     >
@@ -1044,6 +1048,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
           onRemoveDraft={onRemoveDraft}
           onResolve={onResolve}
           resolving={resolving}
+          wide={wide}
         />
       ))}
 
@@ -1132,6 +1137,7 @@ const AnnotationChip = memo(function AnnotationChip({
   onRemoveDraft,
   onResolve,
   resolving,
+  wide,
 }: {
   /**
    * Which issue a published annotation's comment belongs to. Passed down
@@ -1147,6 +1153,8 @@ const AnnotationChip = memo(function AnnotationChip({
   onRemoveDraft: (id: string) => void;
   onResolve: (commentId: number) => void;
   resolving: boolean;
+  /** At least `sm`: the chip sits in the gutter and opens to its left. */
+  wide: boolean;
 }) {
   const draftCount = chip.items.filter((i) => i.kind === "draft").length;
   const locate = (item: DisplayedAnnotation) => (
@@ -1161,23 +1169,29 @@ const AnnotationChip = memo(function AnnotationChip({
   );
   return (
     <Popover>
+      {/* Below `sm` the chip is a count badge centred on the card's right
+          border, `--spec-card-inset` past the text's edge (0 where nothing
+          sets it), and opaque, so the border does not run through it: the
+          same tint, laid over the page's background. */}
       <PopoverTrigger
         data-annotation-ui=""
-        className={`absolute right-0 inline-flex cursor-pointer items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs shadow-sm ${
+        className={cn(
+          "absolute right-0 inline-flex cursor-pointer items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs shadow-sm",
+          "max-sm:right-[calc(var(--spec-card-inset,0px)*-1)] max-sm:h-6 max-sm:min-w-6 max-sm:translate-x-1/2 max-sm:justify-center max-sm:py-0",
           draftCount > 0
-            ? "border-indigo-500/60 bg-indigo-500/10 text-indigo-700 dark:text-indigo-400"
-            : "border-amber-500/60 bg-amber-500/10 text-amber-700 dark:text-amber-400"
-        }`}
+            ? "border-indigo-500/60 bg-indigo-500/10 text-indigo-700 max-sm:bg-[color-mix(in_srgb,var(--color-indigo-500)_10%,var(--background))] dark:text-indigo-400"
+            : "border-amber-500/60 bg-amber-500/10 text-amber-700 max-sm:bg-[color-mix(in_srgb,var(--color-amber-500)_10%,var(--background))] dark:text-amber-400",
+        )}
         style={{ top: chip.top }}
         aria-label={`${chip.items.length} comment(s) on this block`}
       >
-        <MessageSquareTextIcon className="size-3.5" />
+        <MessageSquareTextIcon className="size-3.5 max-sm:hidden" />
         {chip.items.length}
       </PopoverTrigger>
       <PopoverContent
-        side="left"
-        align="start"
-        className="max-h-96 w-96 space-y-3 overflow-y-auto"
+        side={wide ? "left" : "bottom"}
+        align={wide ? "start" : "end"}
+        className="max-h-96 w-96 max-w-[calc(100vw-2rem)] space-y-3 overflow-y-auto"
       >
         {chip.items.map((item) =>
           item.kind === "draft" ? (
