@@ -256,12 +256,3 @@ export function remainingCount(
 ): number {
   return Math.max(0, totalCount - above.length - below.length);
 }
-
-/** Follow the bottom only when the user is within one viewport of it. */
-export function shouldFollowBottom(
-  scrollTop: number,
-  scrollHeight: number,
-  clientHeight: number,
-): boolean {
-  return scrollHeight - scrollTop - clientHeight < clientHeight;
-}

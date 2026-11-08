@@ -17,7 +17,6 @@ import {
   mergeFolded,
   needsHead,
   remainingCount,
-  shouldFollowBottom,
   useTimelineHead,
   useTimelineTail,
 } from "@/api/timeline.ts";
@@ -49,6 +48,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { aboveDock } from "@/lib/dock-cover.ts";
 import { isQuestionLandingHash } from "@/lib/question-landing.ts";
 import {
+  atConversationEnd,
+  endHeldAt,
   isHoldingTarget,
   landAtBottom,
   useOwnHold,
@@ -62,6 +63,11 @@ const FIRST_PASS_UNITS = 6;
 const IDLE_BUDGET_MS = 50;
 /** The New messages pill's clearance above the floating composer. */
 const PILL_GAP = 12;
+
+/** Whether the reader is at the end of the conversation, and where they are. */
+function whereReaderIs(): { atEnd: boolean; y: number } {
+  return { atEnd: atConversationEnd(), y: window.scrollY };
+}
 
 /** The key a unit renders under, and its identity across fills. */
 function unitKey(unit: RenderUnit): string {
@@ -112,7 +118,10 @@ export function Timeline({
     }
   };
   const anchorHash = useRouterState({ select: (s) => s.location.hash });
-  const atBottomRef = useRef(true);
+  // Whether the reader is at the end of the conversation, and where the page
+  // was when that was last read: before what has just arrived, by the time
+  // the follow below reads it.
+  const atEndRef = useRef({ atEnd: true, y: 0 });
   const [newBelow, setNewBelow] = useState(false);
   const didInitialScroll = useRef(false);
   const blockRef = useRef<HTMLDivElement>(null);
@@ -195,10 +204,11 @@ export function Timeline({
       ]),
     [headEnabled, head.data, tail.data],
   );
-  // Bottom of the document, not of the list: the composer is sticky, and
-  // the document end sits below its in-flow position — so this lands with
-  // the last item fully visible above the composer. Held, because the images
-  // above it are still arriving and push the end away (T-527).
+  // The end of the conversation the page declared, not of the list: the
+  // composer is sticky, and its in-flow position lies below the list — so
+  // this lands with the last item fully visible above the composer. Held,
+  // because the images above it are still arriving and push the end away
+  // (T-527).
   const keepHold = useOwnHold();
   const scrollToBottom = useCallback(() => {
     keepHold(landAtBottom());
@@ -236,6 +246,13 @@ export function Timeline({
   const fill = useRef({ keys: unitKeys, index: fillIndex });
   fill.current = { keys: unitKeys, index: fillIndex };
   const listRef = useRef<HTMLDivElement>(null);
+  // The list itself, for what observes it: it mounts with the content, and
+  // again after a refused read has stood in for it.
+  const [list, setList] = useState<HTMLDivElement | null>(null);
+  const attachList = useCallback((el: HTMLDivElement | null) => {
+    listRef.current = el;
+    setList(el);
+  }, []);
   // Milliseconds per unit, as the last fill measured them.
   const fillRate = useRef<number | null>(null);
   useEffect(() => {
@@ -276,11 +293,7 @@ export function Timeline({
   const finishQuestionLanding = (error?: "unavailable" | "stalled") => {
     // revealBlock has already moved the viewport. Do not wait for a native
     // scroll event before restoring the ordinary follow-bottom policy.
-    atBottomRef.current = shouldFollowBottom(
-      window.scrollY,
-      document.documentElement.scrollHeight,
-      window.innerHeight,
-    );
+    atEndRef.current = whereReaderIs();
     questionLanding.finish(error);
   };
 
@@ -394,9 +407,13 @@ export function Timeline({
     lastScrollHeight.current = doc.scrollHeight;
   });
 
-  // New items at the END while following the bottom → keep following.
+  // New items at the END while the reader is at the end → keep following.
   // Keyed off the last item's identity, not the count: expanding the fold
-  // also grows the count, and that must not announce "new below".
+  // also grows the count, and that must not announce "new below". A layout
+  // effect: it runs in the commit that renders the arrival, ahead of the
+  // layout that grows the list and of the observer below reading that, so
+  // `atEndRef` still says where the reader was before it came. The reader's
+  // own comment follows the same rule as anyone else's.
   const lastPending = pendingComments[pendingComments.length - 1];
   const lastItem = items[items.length - 1];
   const lastKey = lastPending
@@ -405,13 +422,13 @@ export function Timeline({
       ? `${lastItem.type}-${lastItem.id}`
       : null;
   const prevLastKey = useRef(lastKey);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (
       !questionLanding.ownsScroll &&
       lastKey !== prevLastKey.current &&
       prevLastKey.current !== null
     ) {
-      if (atBottomRef.current) {
+      if (atEndRef.current.atEnd || endHeldAt() !== null) {
         // An anchor or a question still held is where the untouched reader
         // was sent, and following would yank them off it (T-520).
         if (!isHoldingTarget()) scrollToBottom();
@@ -425,18 +442,44 @@ export function Timeline({
   // The page itself scrolls, so follow-bottom hangs off the window scroll
   // position. (Scroll-to-top no longer loads anything: the head is present
   // from the start, and the fold block is the only gap-filling affordance.)
+  // Read again as the list grows, which moves the end away from a reader who
+  // has not scrolled: an image loading, a fold opened, an item arriving. Not
+  // as anything else grows: a reader at the end whose draft or keyboard
+  // pushes the end down is still where they were, and is followed. Nor as
+  // the list takes a new width with the window, in a resize or a rotation,
+  // which leaves them reading what they were as well; a scrollbar coming
+  // with what grew narrows the list alone.
   useEffect(() => {
+    const record = () => {
+      atEndRef.current = whereReaderIs();
+    };
     const onScroll = () => {
-      atBottomRef.current = shouldFollowBottom(
-        window.scrollY,
-        document.documentElement.scrollHeight,
-        window.innerHeight,
-      );
-      if (atBottomRef.current) setNewBelow(false);
+      record();
+      if (atEndRef.current.atEnd) setNewBelow(false);
     };
     window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
+    let width: { list?: number; window: number } | undefined;
+    const observer =
+      list === null || typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(([entry]) => {
+            const now = {
+              list: entry?.contentRect.width,
+              window: window.innerWidth,
+            };
+            const resized =
+              width !== undefined &&
+              now.list !== width.list &&
+              now.window !== width.window;
+            width = now;
+            if (!resized) record();
+          });
+    if (list !== null) observer?.observe(list);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      observer?.disconnect();
+    };
+  }, [list]);
 
   const onLoadMore = useCallback(() => {
     const blockTop =
@@ -553,7 +596,7 @@ export function Timeline({
     // above, adjusting the viewport a second time for the same insertion.
     <TimelineSettlementsProvider settlements={settlements}>
       <div
-        ref={listRef}
+        ref={attachList}
         className="[overflow-anchor:none]"
         data-testid="timeline-scroll"
       >

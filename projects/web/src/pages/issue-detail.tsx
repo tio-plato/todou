@@ -134,10 +134,16 @@ export function IssueDetailPage() {
   // timeline anchor, including before the mirror becomes visible (T-299).
   const rowRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
-  useScrollInsets({ top: [rowRef], bottom: [composerRef] });
   // What a selection is quoted from, and what the floating Quote reply is
   // placed in.
   const contentRef = useRef<HTMLDivElement>(null);
+  // Its bottom edge, the composer's or a trashed card's timeline's, is where
+  // the conversation ends: on a phone the sidebar follows it.
+  useScrollInsets({
+    top: [rowRef],
+    bottom: [composerRef],
+    end: contentRef,
+  });
   const [end, setEnd] = useState<HTMLDivElement | null>(null);
   const atEnd = useInView(end);
   // For what floats above the composer, the New messages pill among them.

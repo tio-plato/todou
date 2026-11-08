@@ -22,7 +22,6 @@ import {
   mergeFolded,
   needsHead,
   remainingCount,
-  shouldFollowBottom,
 } from "../src/api/timeline.ts";
 import { CommentItem } from "../src/components/timeline/comment-item.tsx";
 import {
@@ -414,15 +413,6 @@ describe("event entity resolution", () => {
     expect(
       resolveUser({ id: bot.id, login: bot.login }, new Map([[bot.id, bot]])),
     ).toEqual({ user: bot, text: "Worker Bot" });
-  });
-});
-
-describe("shouldFollowBottom", () => {
-  it("follows within one viewport of the bottom", () => {
-    expect(shouldFollowBottom(1800, 3000, 800)).toBe(true);
-  });
-  it("does not follow when scrolled far up", () => {
-    expect(shouldFollowBottom(100, 3000, 800)).toBe(false);
   });
 });
 
