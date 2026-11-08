@@ -12,19 +12,7 @@ import {
   formatRef,
   minRoleOf,
 } from "@todou/shared";
-import {
-  and,
-  asc,
-  eq,
-  inArray,
-  isNotNull,
-  isNull,
-  like,
-  notInArray,
-  or,
-  type SQL,
-  sql,
-} from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, like, sql } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import { uniqueViolation } from "../auth/provision.ts";
 import type { AppContext } from "../bootstrap.ts";
@@ -995,14 +983,6 @@ export async function findLinkedDrafts(
  * issue row this writes is already locked, and the order it writes them in
  * makes no transaction wait.
  *
- * A draft on a card being moved to another database is skipped, not waited
- * for, once something holds its row. Only a delete takes that row without
- * locking the card first, the move emptying the frozen card or the draft
- * reaper, and the move's last step writes the card row after its delete:
- * waiting for it while holding the card would close a cycle. On any other
- * card the wait is safe, since nothing holding a draft's row there waits
- * for the card.
- *
  * Returns the change events to publish after commit.
  */
 export async function commitDraftAttachments(
@@ -1013,42 +993,17 @@ export async function commitDraftAttachments(
   agentContext: AgentContext | null,
 ): Promise<ChangeEvent[]> {
   if (linked.ids.length === 0) return [];
-  const linkedDrafts = and(
-    eq(attachments.projectId, project.id),
-    eq(attachments.uploaderId, actorId),
-    eq(attachments.draft, true),
-    inArray(attachments.id, linked.ids),
-  );
-  // The cards are locked, so none of them can be frozen or thawed now.
-  const frozen = (
-    await tx
-      .select({ id: issues.id })
-      .from(issues)
-      .where(
-        and(inArray(issues.id, linked.cards), isNotNull(issues.movingSince)),
-      )
-  ).map((row) => row.id);
-  let onFrozen: SQL | undefined;
-  if (frozen.length > 0) {
-    const free = await tx
-      .select({ id: attachments.id })
-      .from(attachments)
-      .where(and(linkedDrafts, inArray(attachments.issueId, frozen)))
-      .for("no key update", { skipLocked: true });
-    onFrozen = or(
-      notInArray(attachments.issueId, frozen),
-      free.length === 0
-        ? undefined
-        : inArray(
-            attachments.id,
-            free.map((row) => row.id),
-          ),
-    );
-  }
   const committed = await tx
     .update(attachments)
     .set({ draft: false })
-    .where(and(linkedDrafts, onFrozen))
+    .where(
+      and(
+        eq(attachments.projectId, project.id),
+        eq(attachments.uploaderId, actorId),
+        eq(attachments.draft, true),
+        inArray(attachments.id, linked.ids),
+      ),
+    )
     .returning();
   const events: ChangeEvent[] = [];
   for (const row of committed) {
