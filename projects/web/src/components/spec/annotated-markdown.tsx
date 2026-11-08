@@ -157,10 +157,13 @@ const OLD_HOLDER = `[${OLD_LINE_ATTR}], .spec-del-block`;
 const CODE_WRAPPERS = `[${CODE_CONTENT_START_ATTR}], ${OLD_CODE_BLOCK}`;
 
 /**
- * How tall a chip is drawn (`AnnotationChip`: a 16px line, 2px padding and
- * a 1px border, top and bottom): two closer than this overlap.
+ * How tall `AnnotationChip` draws a chip, so how close two can sit before
+ * they overlap: from `sm` up a 16px line, 2px padding and a 1px border, top
+ * and bottom; below it a 24px count badge (`max-sm:h-6`).
  */
-const CHIP_HEIGHT = 22;
+function chipHeight(wide: boolean): number {
+  return wide ? 22 : 24;
+}
 
 /** Runs of removed text, which say where in the baseline they start. */
 const OLD_RUNS = `[${OLD_FLAT_ATTR}], [${OLD_SOURCE_ATTR}]`;
@@ -749,7 +752,9 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       // A block put back where another chip hangs — first in a current
       // block, inside another restored one, under the same closed fold —
       // would draw its chip over that one: it joins it instead.
-      const near = next.find((chip) => Math.abs(chip.top - top) < CHIP_HEIGHT);
+      const near = next.find(
+        (chip) => Math.abs(chip.top - top) < chipHeight(wide),
+      );
       if (near !== undefined) {
         near.items = [...near.items, ...items];
         continue;
@@ -784,6 +789,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     baselineIndex,
     oldSpans,
     baselineCodeRows,
+    wide,
   ]);
 
   /**
@@ -1112,7 +1118,8 @@ const AnnotationChip = memo(function AnnotationChip({
       {/* Below `sm` the chip is a count badge centred on the card's right
           border, `--spec-card-inset` past the text's edge (0 where nothing
           sets it), and opaque, so the border does not run through it: the
-          same tint, laid over the page's background. */}
+          same tint, laid over the page's background. Its 24px height is
+          also `chipHeight`'s: change one, change the other. */}
       <PopoverTrigger
         data-annotation-ui=""
         className={cn(
