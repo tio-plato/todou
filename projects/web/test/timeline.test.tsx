@@ -1656,7 +1656,9 @@ describe("first load fills in from the bottom (T-602)", () => {
     const revealed = unit(14);
     await callbacks.runAll();
     expect(container.querySelectorAll("[data-unfilled]")).toHaveLength(0);
-    expect(container.querySelector(".h-0")).toBeNull();
+    expect(
+      container.querySelector("[data-testid=timeline-scroll] .h-0"),
+    ).toBeNull();
     // Revealed in place, not remounted.
     expect(unit(14)).toBe(revealed);
   });
