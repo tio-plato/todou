@@ -18,16 +18,28 @@ export class FakeResizeObserver {
   disconnect() {
     this.disconnected = true;
   }
-  fire() {
+  fire(entries: ResizeObserverEntry[] = []) {
     // The real one never fires past disconnect().
     if (this.disconnected) return;
-    this.callback([], this as unknown as ResizeObserver);
+    this.callback(entries, this as unknown as ResizeObserver);
+  }
+}
+
+/**
+ * Every resize of `el` that an observer watching it would hear, with the
+ * width it now has when the test says.
+ */
+export function resizeElement(el: Element, width?: number): void {
+  const entries =
+    width === undefined
+      ? []
+      : [{ target: el, contentRect: { width } } as ResizeObserverEntry];
+  for (const observer of FakeResizeObserver.instances) {
+    if (observer.observed.includes(el)) observer.fire(entries);
   }
 }
 
 /** Every resize of the page that a live hold would hear. */
 export function resizePage(): void {
-  for (const observer of FakeResizeObserver.instances) {
-    if (observer.observed.includes(document.body)) observer.fire();
-  }
+  resizeElement(document.body);
 }

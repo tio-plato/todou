@@ -21,6 +21,7 @@ import {
   ProjectRouteError,
 } from "../src/pages/project-layout.tsx";
 import { cmCount } from "./cm.ts";
+import { stubConversationEnd } from "./conversation-end.ts";
 import { testQueryClient } from "./render.tsx";
 
 /**
@@ -310,7 +311,9 @@ describe("the issue page's timeline, keyed by card", () => {
 
     // Put the reader away from the bottom and let the component's own scroll
     // listener record it: at the bottom the same effect calls `scrollToBottom`
-    // instead, and the pill could not appear even on the broken path.
+    // instead, and the pill could not appear even on the broken path. Their
+    // own input first, the way a browser delivers a scroll: until then the
+    // landing holds the end, and an untouched reader is followed, not told.
     vi.spyOn(window, "scrollY", "get").mockReturnValue(0);
     vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
       10_000,
@@ -318,6 +321,7 @@ describe("the issue page's timeline, keyed by card", () => {
     vi.spyOn(window, "innerHeight", "get").mockReturnValue(800);
     vi.spyOn(window, "scrollTo").mockImplementation(() => {});
     vi.spyOn(window, "scrollBy").mockImplementation(() => {});
+    fireEvent.wheel(window);
     fireEvent.scroll(window);
     // Everything above is setup, and it left no pill for the case to inherit:
     // the moves so far landed on cards whose timeline was already in the cache.
@@ -348,6 +352,8 @@ describe("the issue page's timeline, keyed by card", () => {
     );
     vi.spyOn(window, "innerHeight", "get").mockReturnValue(800);
     vi.spyOn(window, "scrollY", "get").mockReturnValue(0);
+    // The page's column, where its conversation ends, ends with the document.
+    stubConversationEnd(() => DOC_HEIGHT);
     const view = renderAt("/projects/p/issues/7");
     await waitFor(() =>
       expect(view.container.querySelectorAll("[data-comment-id]").length).toBe(
@@ -361,11 +367,12 @@ describe("the issue page's timeline, keyed by card", () => {
 
     // `didInitialScroll` is a ref, so a remount is the only thing that resets
     // it. That scroll is this one, by its exact arguments — `scrollToBottom()`
-    // asks for the document's end. The router also scrolls to the top on
-    // arrival, so counting calls would mix the two; assert the landing instead.
-    // Unkeyed the ref is already true and this call never happens.
+    // puts the conversation's end on the viewport's bottom. The router also
+    // scrolls to the top on arrival, so counting calls would mix the two;
+    // assert the landing instead. Unkeyed the ref is already true and this
+    // call never happens.
     await waitFor(() => expect(scrollTo).toHaveBeenCalled());
-    expect(scrollTo.mock.calls).toContainEqual([0, DOC_HEIGHT]);
+    expect(scrollTo.mock.calls).toContainEqual([0, DOC_HEIGHT - 800]);
   });
 });
 
