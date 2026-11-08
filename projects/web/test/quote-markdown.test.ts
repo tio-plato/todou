@@ -1,5 +1,7 @@
+import type { Nodes } from "mdast";
 import { describe, expect, it } from "vitest";
 import type { AnchorRange } from "../src/components/spec/selection-entry.tsx";
+import { parseMarkdown } from "../src/lib/markdown-processor.ts";
 import {
   blockquote,
   quotedReference,
@@ -113,6 +115,14 @@ function span(source: string, first: string, last = first): AnchorRange {
   };
 }
 
+/** The text a node holds, its children's joined. */
+function textOf(node: Nodes): string {
+  if ("value" in node) return node.value;
+  return "children" in node
+    ? (node.children as Nodes[]).map(textOf).join("")
+    : "";
+}
+
 describe("quoteOfSelection", () => {
   describe("inside one paragraph, heading or cell", () => {
     it.each([
@@ -155,6 +165,8 @@ describe("quoteOfSelection", () => {
       ],
       ["## Install the CLI", "the", "CLI", "the CLI"],
       ["| a b | c |\n| --- | --- |", "b |", "b", "b"],
+      ["---\nname: Some value here\n---\n\nbody", "value", "value", "value"],
+      ["---\nname: Some value here\n---\n\nbody", "name", "name", "name"],
     ])(
       "quotes %j, selected from %j to %j, as %j",
       (source, first, last, quote) => {
@@ -231,7 +243,7 @@ describe("quoteOfSelection", () => {
   });
 
   describe("inside a code block", () => {
-    const quoted = "```ts\nconst b = 2;\nconst c = 3;\n```";
+    const quoted = "```ts\nb = 2;\nconst c\n```";
 
     it.each([
       ["a fence", "```ts\nconst a = 1;\nconst b = 2;\nconst c = 3;\n```"],
@@ -245,7 +257,7 @@ describe("quoteOfSelection", () => {
       ],
       ["a fence left open", "```ts\nconst a = 1;\nconst b = 2;\nconst c = 3;"],
     ])(
-      "quotes the selected lines of %s as a fence of their own",
+      "quotes the selected part of %s as a fence of its own",
       (_shape, source) => {
         expect(quoteOfSelection(source, span(source, "b = 2", "const c"))).toBe(
           quoted,
@@ -257,22 +269,74 @@ describe("quoteOfSelection", () => {
       const source =
         "Intro.\n\n    const a = 1;\n    const b = 2;\n    const c = 3;";
       expect(quoteOfSelection(source, span(source, "b = 2", "const c"))).toBe(
-        "```\nconst b = 2;\nconst c = 3;\n```",
+        "```\nb = 2;\nconst c\n```",
       );
     });
 
     it("fences an indented block holding a fence with a longer one", () => {
       const source = "Intro.\n\n    ```\n    const b = 2;\n";
       expect(quoteOfSelection(source, span(source, "```", "const b"))).toBe(
-        "````\n```\nconst b = 2;\n````",
+        "````\n```\nconst b\n````",
       );
     });
 
     it("fences an indented block holding an indented fence with a longer one", () => {
       const source = "Intro.\n\n      ```\n    x";
       expect(quoteOfSelection(source, span(source, "```", "x"))).toBe(
-        "````\n  ```\nx\n````",
+        "````\n```\nx\n````",
       );
+    });
+
+    it.each([
+      ["```ts\nconst alpha = 1;\n```", "alpha", "alpha", "`alpha`"],
+      ["> ```ts\n> const alpha = 1;\n> ```", "alpha", "alpha", "`alpha`"],
+      ["```sh\necho `date` now\n```", "`date`", "`date`", "`` `date` ``"],
+      ["```ts\r\nconst alpha = 1;\r\n```\r\n", "alpha", "alpha", "`alpha`"],
+    ])(
+      "quotes a few characters of one code line in %j as inline code",
+      (source, first, last, quote) => {
+        expect(quoteOfSelection(source, span(source, first, last))).toBe(quote);
+      },
+    );
+
+    it("leaves out a first line the selection starts at the end of", () => {
+      const source = "```ts\nconst a = 1;\nconst b = 2;\n```";
+      // Column 13 of line 2 is its line ending.
+      expect(
+        quoteOfSelection(source, {
+          lineStart: 2,
+          colStart: 13,
+          lineEnd: 3,
+          colEnd: 7,
+        }),
+      ).toBe("`const b`");
+    });
+
+    it("fences the whole lines of an indented block holding an indented fence", () => {
+      // An anchor with no columns takes whole lines: one of them opens with
+      // a fence indented two spaces, which still closes a fence.
+      const source = "Intro.\n\n      ```\n    x";
+      expect(
+        quoteOfSelection(source, {
+          lineStart: 3,
+          colStart: null,
+          lineEnd: 4,
+          colEnd: null,
+        }),
+      ).toBe("````\n  ```\nx\n````");
+    });
+
+    it("grows the fence a line cut down to a marker's run would close", () => {
+      const source = "```\nUse ```\nx\n```";
+      // From the backticks that end line 2.
+      expect(
+        quoteOfSelection(source, {
+          lineStart: 2,
+          colStart: 5,
+          lineEnd: 3,
+          colEnd: 1,
+        }),
+      ).toBe("````\n```\nx\n````");
     });
 
     it("quotes an empty fence as an empty fence", () => {
@@ -294,10 +358,84 @@ describe("quoteOfSelection", () => {
   });
 
   describe("across blocks", () => {
-    it("takes both paragraphs whole when columns span the two", () => {
+    it("cuts two paragraphs at the selection's ends", () => {
       const source = "First para here.\n\nSecond one here.\n\nThird.";
       expect(quoteOfSelection(source, span(source, "para", "Second"))).toBe(
-        "First para here.\n\nSecond one here.",
+        "para here.\n\nSecond",
+      );
+    });
+
+    // A tab counts the columns its tab stop gives it where it stands in the
+    // source, wherever the quote puts what follows a prefix taken off.
+    it.each([
+      [
+        "code a quote's marker cuts a tab of",
+        "> one two\n>\n>\t\tcode here\n>\n> five",
+        "five",
+        [
+          ["paragraph", "two"],
+          ["code", "  code here"],
+          ["paragraph", "five"],
+        ],
+      ],
+      [
+        "a paragraph a tab indents past an item's blanks",
+        "- one two\n\n  \tthree four",
+        "three",
+        [
+          ["paragraph", "two"],
+          ["paragraph", "three"],
+        ],
+      ],
+    ])("keeps the blocks of %s", (_shape, source, last, blocks) => {
+      const quote = quoteOfSelection(source, span(source, "two", last));
+      const tree = parseMarkdown(quote) as { children: Nodes[] };
+      expect(
+        tree.children.map((node) => [
+          node.type,
+          node.type === "code" ? node.value : textOf(node),
+        ]),
+      ).toEqual(blocks);
+    });
+
+    // [source, anchor, quote]: an end that takes nothing of a code block
+    // belongs to what lies beside it.
+    it.each([
+      [
+        "a start at a fence's last line end",
+        "```ts\nconst a = 1;\n```\n\nAfter words.",
+        { lineStart: 2, colStart: 13, lineEnd: 5, colEnd: 5 },
+        "After",
+      ],
+      [
+        "an end on a fence's opening line",
+        "Intro words.\n\n```ts\nconst a = 1;\n```",
+        { lineStart: 1, colStart: 7, lineEnd: 3, colEnd: 3 },
+        "words.",
+      ],
+    ])("leaves out a code block %s", (_where, source, anchor, quote) => {
+      expect(quoteOfSelection(source, anchor)).toBe(quote);
+    });
+
+    it("grows the fence a code block's last line cut down to a marker's run would close", () => {
+      // From "Intro" to the backticks that open line 4.
+      const source = "Intro\n\n```\n```x\n```";
+      expect(
+        quoteOfSelection(source, {
+          lineStart: 1,
+          colStart: 1,
+          lineEnd: 4,
+          colEnd: 3,
+        }),
+      ).toBe("Intro\n\n````\n```\n````");
+    });
+
+    it("takes a fold's summary and the text after it whole", () => {
+      // The fold's tags become elements: cut through, they would show.
+      const source =
+        "<details><summary>Fold here</summary>\n\nbody text\n\n</details>";
+      expect(quoteOfSelection(source, span(source, "here", "body"))).toBe(
+        "<details><summary>Fold here</summary>\n\nbody text",
       );
     });
 
@@ -317,8 +455,97 @@ describe("quoteOfSelection", () => {
       const source =
         "Intro words.\n\n```ts\nconst a = 1;\nconst b = 2;\n```\n\nAfter.";
       expect(quoteOfSelection(source, span(source, "words", "const b"))).toBe(
-        "Intro words.\n\n```ts\nconst a = 1;\nconst b = 2;\n```",
+        "words.\n\n```ts\nconst a = 1;\nconst b\n```",
       );
     });
+
+    const TABLE = "| h1 | h2 |\n| - | - |\n| a b | c d |\n| e f | g h |";
+    it.each([
+      ["- alpha beta\n- gamma delta", "beta", "gamma", "- beta\n- gamma"],
+      ["10. a\n\n    second para\n\nAfter", "para", "After", "para\n\nAfter"],
+      ["## Head words\n\nbody text", "words", "body", "## words\n\nbody"],
+      ["> one two\n>\n> three four", "two", "three", "two\n\nthree"],
+      ["> one two\n\nthree four", "two", "three", "> two\n\nthree"],
+      ["- a b\n\n  c d", "b", "c", "b\n\nc"],
+      ["- parent text\n  - child item", "text", "child", "text\n- child"],
+      ["- a b\n  - nested\n- c d", "b", "c", "- b\n  - nested\n- c"],
+      ["> - a b\n>\n>   c d", "b", "c", "b\n\nc"],
+      [
+        "foo **bar baz**\n\nqux *quux corge*",
+        "baz",
+        "quux",
+        "**baz**\n\nqux *quux*",
+      ],
+      [`${TABLE}\n| i j | k l |`, "b", "f", TABLE],
+      [TABLE, "b", "c", "| h1 | h2 |\n| - | - |\n| a b | c d |"],
+      [
+        `Intro words.\n\n${TABLE}`,
+        "words",
+        "b",
+        "words.\n\n| h1 | h2 |\n| - | - |\n| a b | c d |",
+      ],
+      [
+        "```ts\nconst a = 1;\nconst b = 2;\n```\n\nAfter words.",
+        "a = 1",
+        "After",
+        "```ts\na = 1;\nconst b = 2;\n```\n\nAfter",
+      ],
+      ["-\talpha beta\n\n\tgamma delta", "beta", "gamma", "beta\n\ngamma"],
+      [
+        "10. a\n\n    second para\n\n\tthird para",
+        "para\n\n\t",
+        "third",
+        "para\n\nthird",
+      ],
+      ["---\nname: Some value here\n---\n\nbody", "name", "Some", "name: Some"],
+      [
+        "---\na: one two\nb: three four\n---\n\nbody",
+        "two",
+        "three",
+        "two\nb: three",
+      ],
+      [
+        "1. Run:\n\n   ```bash\n   pnpm install\n   pnpm build\n   ```\n\n2. Then test.",
+        "install",
+        "Then",
+        "```bash\ninstall\npnpm build\n```\n\n2. Then",
+      ],
+      [
+        "  ```ts\n  const a = 1;\n  ```\n\nAfter words.",
+        "a = 1",
+        "After",
+        "```ts\na = 1;\n```\n\nAfter",
+      ],
+      [
+        "- ```ts\n  const a = 1;\n  const b = 2;\n  ```\n- After words.",
+        "a = 1",
+        "After",
+        "- ```ts\n  a = 1;\n  const b = 2;\n  ```\n- After",
+      ],
+      ["- [ ] x y\n  > a b\n  >\n  > c d", "b", "c", "b\n\nc"],
+      [
+        "Intro words.\n\nHead words\n==========",
+        "words.",
+        "Head",
+        "words.\n\nHead\n==========",
+      ],
+      [
+        "Head words\n==========\n\nbody text",
+        "words",
+        "body",
+        "words\n==========\n\nbody",
+      ],
+      [
+        "```\nUse ```\nx\n```\n\nafter",
+        "```\nx",
+        "after",
+        "````\n```\nx\n````\n\nafter",
+      ],
+    ])(
+      "cuts %j, selected from %j to %j, as %j",
+      (source, first, last, quote) => {
+        expect(quoteOfSelection(source, span(source, first, last))).toBe(quote);
+      },
+    );
   });
 });

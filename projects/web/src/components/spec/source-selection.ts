@@ -10,14 +10,18 @@ import {
   offsetInRow,
   rangeInRow,
   rowAt,
-  rowText,
+  rowLineText,
 } from "@/lib/pierre-rows.ts";
 import {
   composedContains,
   elementNear,
   type SelectionEndpoints,
 } from "@/lib/selection-endpoints.ts";
-import { columnsOfOffsets, lineStartsOf } from "@/lib/spec-source-index.ts";
+import {
+  columnsOfOffsets,
+  lineStartsOf,
+  lineTextOf,
+} from "@/lib/spec-source-index.ts";
 
 /** One version of a file as the source view draws it. */
 export type SourceSide = { path: string; version: number; body: string };
@@ -42,7 +46,7 @@ type End = {
   offset: number | null;
 };
 
-/** The line text `body` has on 1-based `line`, without its newline. */
+/** The line text `body` has on 1-based `line`, without its line ending. */
 function lineOf(
   body: string,
   starts: number[],
@@ -50,11 +54,7 @@ function lineOf(
 ): { start: number; text: string } | null {
   const start = starts[line - 1];
   if (start === undefined) return null;
-  const next = starts[line];
-  return {
-    start,
-    text: body.slice(start, next === undefined ? body.length : next - 1),
-  };
+  return { start, text: lineTextOf(body, starts, line) };
 }
 
 /** A row's start or end, as a boundary point on the row itself. */
@@ -155,7 +155,7 @@ function resolveEnd(
   // The row is that line exactly or it says nothing about columns: a row
   // that reads otherwise keeps its line and gives up its offset.
   const inRow =
-    source !== null && rowText(row) === source.text
+    source !== null && rowLineText(row) === source.text
       ? offsetInRow(row, node, offset)
       : null;
   return {
@@ -369,7 +369,7 @@ export function sourceHighlightRanges(
           starts.set(side.body, lineStarts);
         }
         const source = lineOf(side.body, lineStarts, line);
-        if (source === null || rowText(row) !== source.text) continue;
+        if (source === null || rowLineText(row) !== source.text) continue;
         for (const mark of here) {
           if (mark.colStart === null || mark.colEnd === null) continue;
           const range = rangeInRow(

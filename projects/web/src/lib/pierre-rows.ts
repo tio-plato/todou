@@ -31,6 +31,16 @@ export function rowText(row: Element): string {
 }
 
 /**
+ * A row's text as the line it shows, to compare with a source line read by
+ * `lineTextOf`: a CRLF file's line may reach pierre with its `\r`, and the
+ * line it is compared with has none.
+ */
+export function rowLineText(row: Element): string {
+  const text = rowText(row);
+  return text.endsWith("\r") ? text.slice(0, -1) : text;
+}
+
+/**
  * Where a boundary point falls in its row's text, or null when it is not in
  * the row. The text from the row's start to the point is what precedes it,
  * whether the point names a text node and a character in it or an element

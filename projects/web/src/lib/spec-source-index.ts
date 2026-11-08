@@ -200,10 +200,11 @@ export type SegmentIndex = {
    * block's text up with what it shows. Each is exact and has no place in
    * `text`, so its `at` is -1.
    *
-   * Inline HTML is one literal. A block of HTML is cut where `rehypeDetails`
-   * cuts it, at the tags of a fold it turns into elements, and each run
-   * between them that is not blank is one: the page shows a fold's summary,
-   * not its tags.
+   * Inline HTML is one literal, or one a run (`textPieces`) when a line a
+   * container prefixes cuts it. A block of HTML is cut where
+   * `rehypeDetails` cuts it, at the tags of a fold it turns into elements,
+   * and each run between them that is not blank is one: the page shows a
+   * fold's summary, not its tags.
    */
   literals: SourceSegment[];
 };
@@ -264,12 +265,16 @@ function isLineEnding(char: string | undefined): boolean {
  * lining up within the line, so that check is what keeps a quote's marker out
  * of the text. The runs tried end at the line's start, past each `>` of the
  * run the line opens with, and at the end of that run (`prefixEnds`).
+ *
+ * Raw HTML is read with `decode` off: its value keeps escapes and references
+ * as written, and so does the page, so they are characters like any other.
  */
 export function textPieces(
   source: string,
   start: number,
   end: number,
   value: string,
+  decode = true,
 ): TextPiece[] | null {
   const pieces: TextPiece[] = [];
   let i = start;
@@ -277,7 +282,7 @@ export function textPieces(
   for (let first = true; ; first = false) {
     let line: TextLine | null = null;
     for (const p of first ? [i] : prefixEnds(source, i, end)) {
-      const read = textLinePieces(source, p, end, value, j);
+      const read = textLinePieces(source, p, end, value, j, decode);
       if (read === null) continue;
       if (read.newline || /^[ \t\r\n]*$/.test(source.slice(read.i, end))) {
         line = read;
@@ -334,6 +339,7 @@ function textLinePieces(
   end: number,
   value: string,
   at: number,
+  decode: boolean,
 ): TextLine | null {
   const pieces: TextPiece[] = [];
   let i = from;
@@ -358,7 +364,7 @@ function textLinePieces(
     // The escape or reference starting here, and what it decodes to.
     let token = "";
     let decoded = "";
-    if (char === "\\" || char === "&") {
+    if (decode && (char === "\\" || char === "&")) {
       ESCAPE_OR_REFERENCE.lastIndex = i;
       token = ESCAPE_OR_REFERENCE.exec(source)?.[0] ?? "";
       decoded = decodeString(token);
@@ -600,6 +606,23 @@ export function lineStartsOf(source: string): number[] {
 }
 
 /**
+ * The text of 1-based line `line` of `source`, `lineStarts` its
+ * `lineStartsOf`: without its line ending, the `\r` of a `\r\n` included, so
+ * that a CRLF file's line reads as what a code row shows of it.
+ */
+export function lineTextOf(
+  source: string,
+  lineStarts: number[],
+  line: number,
+): string {
+  const start = lineStarts[line - 1];
+  if (start === undefined) return "";
+  const next = lineStarts[line];
+  const text = source.slice(start, next === undefined ? undefined : next - 1);
+  return text.endsWith("\r") ? text.slice(0, -1) : text;
+}
+
+/**
  * Index a markdown source for the decoration engine (T-142): what prose it
  * contains, and where each run of it lives in the source. Both directions
  * are needed — source offsets in, to place a word-diff range on the page;
@@ -668,12 +691,19 @@ export function buildSegmentIndex(source: string): SegmentIndex {
   const visit = (node: Nodes): void => {
     if (node.type === "html") {
       markOpaque();
-      // One whose source is not its value — it spans a line a container
-      // prefixes — is left out, and its block keeps the line.
       const start = node.position?.start.offset;
       const end = node.position?.end.offset;
       if (start === undefined || end === undefined) return;
-      if (source.slice(start, end) !== node.value) return;
+      // One whose source is not its value spans a line a container
+      // prefixes. In a leaf it is lined up with its source, the prefix left
+      // out, and each run is a literal; a block of it is left out, and its
+      // block keeps the line.
+      const reads = source.slice(start, end) === node.value;
+      const wrapped =
+        reads || group < 0
+          ? null
+          : textPieces(source, start, end, node.value, false);
+      if (!reads && wrapped === null) return;
       const pieces =
         group >= 0
           ? null
@@ -683,7 +713,12 @@ export function buildSegmentIndex(source: string): SegmentIndex {
               position: node.position,
             });
       const runs =
-        pieces === null
+        wrapped?.map((piece) => ({
+          value: piece.text,
+          from: piece.start,
+          to: piece.end,
+        })) ??
+        (pieces === null
           ? [{ value: node.value, from: start, to: end }]
           : pieces.flatMap((piece) =>
               "type" in piece &&
@@ -699,7 +734,7 @@ export function buildSegmentIndex(source: string): SegmentIndex {
                     },
                   ]
                 : [],
-            );
+            ));
       for (const { value, from, to } of runs) {
         // Its lines are those of the characters that are not blank: what a
         // fold leaves after its closing tag opens with that line's ending,
@@ -1366,6 +1401,7 @@ export type SourceColumns = {
  * server measures lines without their newline. Both ends therefore step off
  * a newline they landed on, which makes a selection starting at a line end
  * mean column 1 of the next line rather than one past the end of this one.
+ * The `\r` of a CRLF line ending is part of it: the page shows none.
  *
  * `hidden` names any other offsets the reader could not have selected: the
  * part of a code line in front of what its row shows. Both ends step off
@@ -1380,7 +1416,9 @@ export function columnsOfOffsets(
 ): SourceColumns | null {
   if (end <= start) return null;
   const skip = (offset: number) =>
-    text.source[offset] === "\n" || hidden(offset);
+    text.source[offset] === "\n" ||
+    (text.source[offset] === "\r" && text.source[offset + 1] === "\n") ||
+    hidden(offset);
   let first = start;
   let last = end - 1;
   while (first < last && skip(first)) first++;

@@ -1,3 +1,4 @@
+import { parseInternalHref } from "@todou/shared";
 import type { Element, ElementContent, Root, RootContent, Text } from "hast";
 import type { Raw } from "./rehype-details.ts";
 import {
@@ -1349,10 +1350,13 @@ function paintRuns(
  * source text: react-markdown turns every `raw` node into text after the
  * last rehype pass. Cut at the marks' edges, each run is still a `raw` node,
  * so it still reaches the page as text and never as markup, and the marks
- * around it are built like any other. Only a node whose position reads as
- * its value is cut: `rehypeDetails` places the pieces it cuts out of a raw
- * node inside a container short by the container's prefix, and those keep
- * no mark. A removed run is never put back inside one; the text beside it
+ * around it are built like any other. A node whose position reads as its
+ * value is cut by addition; one a line's container prefix cuts into, inline
+ * HTML in a list item say, through the runs `textPieces` lines it up in,
+ * as `buildSegmentIndex` records them. A node that lines up neither way is
+ * left alone: `rehypeDetails` places the pieces it cuts out of a raw node
+ * inside a container short by the container's prefix, and those keep no
+ * mark. A removed run is never put back inside one; the text beside it
  * takes it, as it always did.
  */
 function decorateRaw(
@@ -1362,20 +1366,19 @@ function decorateRaw(
 ): ElementContent[] | null {
   const from = node.position?.start.offset;
   const to = node.position?.end.offset;
-  if (from === undefined || to === undefined) return null;
-  if (source?.slice(from, to) !== node.value) return null;
+  if (from === undefined || to === undefined || source === null) return null;
   const hits = hitsOf(spans, from, to);
   if (hits.length === 0) return null;
+  let toValue = (offset: number, _edge: "start" | "end") =>
+    Math.max(0, Math.min(to - from, offset - from));
+  if (source.slice(from, to) !== node.value) {
+    const pieces = textPieces(source, from, to, node.value, false);
+    if (pieces === null) return null;
+    toValue = (offset, edge) => valueOffsetIn(pieces, offset, edge);
+  }
   return paintRuns(
     node.value,
-    {
-      from,
-      to,
-      hits,
-      cuts: [],
-      placed: new Set(),
-      toValue: (offset) => Math.max(0, Math.min(to - from, offset - from)),
-    },
+    { from, to, hits, cuts: [], placed: new Set(), toValue },
     (value): Raw => ({ type: "raw", value }),
   );
 }
@@ -1385,14 +1388,10 @@ function decorateRaw(
  * none of it is. Returns null when nothing applies, so untouched elements
  * keep their identity the way untouched text nodes do.
  *
- * Links take this route because their rendered contents are not their
- * source contents: `IssueLink` drops the children and renders the title it
- * fetched, so a mark painted inside is thrown away with them, and
- * `MarkdownLink` reads `node.children[0]` as a single text node to decide
- * whether a bare URL becomes a chip — a mark spliced in there quietly
- * downgrades the link (T-164). Marking part of a link would say little
- * anyway: it is one thing to click, and the anchor keeps the exact columns
- * regardless.
+ * The links `paintedWhole` picks take this route, because their rendered
+ * contents are not their source contents: `IssueLink` drops the children
+ * and renders the title it fetched, so a mark painted inside is thrown away
+ * with them (T-164).
  */
 function decorateAtomic(
   element: Element,
@@ -1422,6 +1421,65 @@ function decorateAtomic(
     out.push(inlineDeletion(cut));
   }
   return out;
+}
+
+/**
+ * Whether a link is painted whole (`decorateAtomic`) rather than entered
+ * like any other element. Whole: one `MarkdownLink` draws as something
+ * other than its children — a card, a user or an attachment of this
+ * deployment, or any `#…` address, the shape `remarkIssueRefs` writes its
+ * chips and mentions in — and one holding text with no source position,
+ * which a mark has no place in: a link a project's autolink rule made out
+ * of `JIRA-42`, a footnote reference's number. Every other link shows its
+ * children as they are, and a mark goes on the characters inside it.
+ */
+function paintedWhole(link: Element): boolean {
+  const href = link.properties.href;
+  if (typeof href !== "string" || href.startsWith("#")) return true;
+  if (parseInternalHref(href, globalThis.location?.origin) !== null) {
+    return true;
+  }
+  const unplaced = (node: ElementContent): boolean =>
+    node.type === "text"
+      ? node.position === undefined
+      : node.type === "element" && node.children.some(unplaced);
+  return link.children.some(unplaced);
+}
+
+/**
+ * The removed runs a link the walk enters puts back beside itself: those at
+ * the first character of its text or in front of it, and at the last or
+ * past it. Prose removed beside a link lands on the edge of its text, as a
+ * run removed from the text's own ends would, and the offset cannot tell
+ * the two apart; both went beside the link while links were painted whole,
+ * and still do. Each is marked placed. A run strictly inside the text is
+ * left to the text node that holds it. A link with no text, an image's,
+ * has its own start for both edges.
+ */
+function besideLink(
+  link: Element,
+  inline: DeletionDecoration[],
+  placed: Set<DeletionDecoration>,
+): BesideCode {
+  const beside: BesideCode = { before: [], after: [] };
+  const from = link.position?.start.offset;
+  const to = link.position?.end.offset;
+  if (from === undefined || to === undefined) return beside;
+  const texts: Text[] = [];
+  const collect = (node: ElementContent) => {
+    if (node.type === "text") texts.push(node);
+    else if (node.type === "element") node.children.forEach(collect);
+  };
+  link.children.forEach(collect);
+  const first = texts[0]?.position?.start.offset ?? from;
+  const last = texts.at(-1)?.position?.end.offset ?? from;
+  for (const cut of inline) {
+    if (placed.has(cut) || cut.at < from || cut.at > to) continue;
+    if (cut.at > first && cut.at < last) continue;
+    placed.add(cut);
+    (cut.at <= first ? beside.before : beside.after).push(cut);
+  }
+  return beside;
 }
 
 /**
@@ -1573,7 +1631,7 @@ function decorateTree(
         addClass(child, INS_BLOCK_CLASS);
         added = true;
       }
-      if (child.tagName === "a") {
+      if (child.tagName === "a" && paintedWhole(child)) {
         const pieces = decorateAtomic(
           child,
           paint.spans,
@@ -1585,6 +1643,15 @@ function decorateTree(
           next.push(...pieces);
           changed = true;
         }
+        continue;
+      }
+      if (child.tagName === "a") {
+        const edges = besideLink(child, inline, paint.placed);
+        for (const cut of edges.before) next.push(inlineDeletion(cut));
+        decorateTree(child, paint, added);
+        next.push(child);
+        for (const cut of edges.after) next.push(inlineDeletion(cut));
+        if (edges.before.length + edges.after.length > 0) changed = true;
         continue;
       }
       if (child.tagName === "pre") {

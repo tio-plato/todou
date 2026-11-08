@@ -439,6 +439,15 @@ describe("annotation highlights on raw HTML", () => {
     expect(texts(container, "mark.spec-mark-comment")).toEqual([]);
   });
 
+  it("marks the anchored characters of inline HTML a list item wraps", async () => {
+    // "x" is column 3 of line 2, past the item's indent.
+    const { container } = await renderSpec({
+      body: "- a <kbd\n  x>b</kbd> c\n",
+      annotations: [anchored("comment", 2, 3, 2, 3)],
+    });
+    expect(texts(container, "mark.spec-mark-comment")).toEqual(["x"]);
+  });
+
   // [shape, body, the anchor's line, column, line, column, what is marked].
   it.each([
     [
@@ -463,6 +472,35 @@ describe("annotation highlights on raw HTML", () => {
         annotations: [anchored("comment", start, colStart, end, colEnd)],
       });
       expect(texts(container, "mark.spec-mark-comment")).toEqual(marked);
+    },
+  );
+});
+
+// A link drawn as a link shows its own children, so a mark goes on the
+// characters anchored inside it, as anywhere else.
+describe("annotation highlights inside a plain link", () => {
+  it.each([
+    // "see [so" is columns 1 to 7; "me te" 8 to 12.
+    [
+      "a link's text",
+      "see [some text](https://example.com) end\n",
+      8,
+      12,
+      "me te",
+    ],
+    // "go https://" is columns 1 to 11; "example" 12 to 18.
+    ["a bare address", "go https://example.com/path now\n", 12, 18, "example"],
+  ])(
+    "marks only the anchored characters of %s",
+    async (_shape, body, colStart, colEnd, marked) => {
+      const { container } = await renderSpec({
+        body,
+        annotations: [anchored("comment", 1, colStart, 1, colEnd)],
+      });
+      expect(texts(container, "mark.spec-mark-comment")).toEqual([marked]);
+      expect(
+        container.querySelector("mark.spec-mark-comment")?.closest("a"),
+      ).not.toBeNull();
     },
   );
 });

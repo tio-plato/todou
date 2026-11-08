@@ -17,7 +17,7 @@ import {
   entryQuote,
   type QuotePart,
 } from "@/lib/quote-questions.ts";
-import { anchorForSelection, sideOf } from "@/lib/selection-anchor.ts";
+import { anchorForSelection } from "@/lib/selection-anchor.ts";
 import {
   composedContains,
   orderedEndpoints,
@@ -175,30 +175,6 @@ function endsInShadowOf(ends: SelectionEndpoints, body: Element): boolean {
 }
 
 /**
- * `ends` with an endpoint outside `body` put on the body's own edge. Clamped
- * to the body's first or last block instead, it would name that block and
- * quote all of it. On the edge it selects nothing, and `anchorForSelection`
- * moves it onto the first or last character selected: a triple-click on a
- * body's last block ends outside the body, and quotes that block's text.
- */
-function onBodyEdges(
-  body: Element,
-  ends: SelectionEndpoints,
-): SelectionEndpoints {
-  const ordered = orderedEndpoints(ends);
-  if (ordered === null) return ends;
-  const { start, end } = ordered.ends;
-  const before = sideOf(body, start.node, start.offset) === "before";
-  const after = sideOf(body, end.node, end.offset) === "after";
-  if (!before && !after) return ends;
-  return {
-    start: before ? { node: body, offset: 0 } : start,
-    end: after ? { node: body, offset: body.childNodes.length } : end,
-    collapsed: ends.collapsed,
-  };
-}
-
-/**
  * `ends`, anchored in the part `el` renders; null where no anchor fits. An
  * end outside the part is put on its edge first, which makes "from here to
  * the end" quotable.
@@ -207,12 +183,7 @@ function anchorIn(el: Element, ends: SelectionEndpoints): QuotedPart | null {
   const shown = BODIES.get(el);
   if (shown === undefined) return null;
   shown.index ??= buildSegmentIndex(shown.source);
-  // Should the edges leave a part of some unforeseen shape no anchor, the
-  // endpoints as selected still clamp to a block rather than lose the button.
-  const placed = onBodyEdges(el, ends);
-  const anchor =
-    anchorForSelection(el, shown.index, placed) ??
-    (placed === ends ? null : anchorForSelection(el, shown.index, ends));
+  const anchor = anchorForSelection(el, shown.index, ends);
   return anchor === null
     ? null
     : { el, source: shown.source, part: shown.part, anchor };

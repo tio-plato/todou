@@ -705,6 +705,12 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
       "[cc]",
       { lineStart: 1, lineEnd: 1, colStart: 12, colEnd: 13 },
     ],
+    [
+      "a word after inline HTML a list item wraps",
+      "- a <kbd\n  x>b</kbd> c\n",
+      " [c]",
+      { lineStart: 2, lineEnd: 2, colStart: 13, colEnd: 13 },
+    ],
   ])("anchors %s to its own columns", async (_name, body, pick, anchor) => {
     const { onStage, button } = await stageSelection(body, (container) =>
       bracketedIn(container, pick),
@@ -1685,7 +1691,7 @@ describe("AnnotatedMarkdown selection triggers (T-384)", () => {
     expect(view.queryByText(/Comment L/)).not.toBeNull();
   });
 
-  it("clamps an endpoint past the end of the file to the last block", async () => {
+  it("anchors a drag past the end of the file up to its last character", async () => {
     const { view, container } = await mount();
     // What a drag off the end of the prose lands in: the next section of
     // the page, which carries no source lines of its own.
@@ -1694,20 +1700,20 @@ describe("AnnotatedMarkdown selection triggers (T-384)", () => {
     document.body.append(below);
     try {
       select(textOf(container, 0), 0, below.firstChild as Node, 8);
-      expect(await view.findByText(/Comment L1–5/)).not.toBeNull();
+      expect(await view.findByText(/Comment L1:1–L5:11/)).not.toBeNull();
     } finally {
       below.remove();
     }
   });
 
-  it("clamps an endpoint above the file to the first block", async () => {
+  it("anchors a drag in from above the file from its first character", async () => {
     const above = document.createElement("p");
     above.textContent = "page header";
     document.body.prepend(above);
     try {
       const { view, container } = await mount();
       select(above.firstChild as Node, 0, textOf(container, 1), 4);
-      expect(await view.findByText(/Comment L1–3/)).not.toBeNull();
+      expect(await view.findByText(/Comment L1:1–L3:4/)).not.toBeNull();
     } finally {
       above.remove();
     }
@@ -2203,6 +2209,33 @@ describe("column anchors inside a code block", () => {
     expect(anchor.lineStart).toBe(anchor.lineEnd);
     expect(cut(lines, anchor)).toBe("bravo");
   });
+
+  // pierre is handed a CRLF fence's lines joined by `\r\n`: whether a row
+  // keeps its `\r` or not, the row reads as its source line.
+  it.each([
+    ["without", TOKEN_ROWS],
+    [
+      "with",
+      TOKEN_ROWS.replace(/<\/span><\/div>(?=\s+<div)/g, "\r</span></div>"),
+    ],
+  ])(
+    "anchors a word to its columns in a fence with CRLF line ends, rows drawn %s their \\r",
+    (_drawn, rows) => {
+      const { container, shadow, index, lines } = fenceWithRows(
+        `Intro.\r\n\r\n\`\`\`ts\r\n${CODE_ROWS.join("\r\n")}\r\n\`\`\`\r\n`,
+        rows,
+      );
+      const word = shadow.querySelector("[data-line='2'] span:nth-child(2)");
+      const anchor = anchorForSelection(
+        container,
+        index,
+        ends(word?.firstChild, 0, word?.firstChild, 5),
+      );
+      if (anchor === null) throw new Error("no anchor");
+      expect(anchor.lineStart).toBe(anchor.lineEnd);
+      expect(cut(lines, anchor)).toBe("bravo");
+    },
+  );
 
   it.each(FENCE_SHAPES)("anchors a word to its columns in %s", (_name, of) => {
     const source = of(CODE_ROWS);
@@ -2737,6 +2770,52 @@ describe("anchoring a compared document", () => {
     );
     const run = textAt(container, "del", "old bold");
     expect(quoted(before, anchor(across(run, 0, run, 6)))).toBe("old bo");
+  });
+
+  it("anchors a drag past the end of a comparison up to its last character", async () => {
+    const before = "Intro.\n\nThe quick brown fox jumps.\n";
+    const after = "Intro.\n\nThe quick red fox jumps.\n";
+    const { container, anchor } = await compared(before, after);
+    // The next section of the page, which carries no source lines.
+    const below = document.createElement("p");
+    below.textContent = "below the file";
+    document.body.append(below);
+    try {
+      const from = textAt(container, "p[data-loc]", "The quick");
+      expect(
+        anchor(ends(from.node, from.at, below.firstChild as Node, 5)),
+      ).toEqual({ lineStart: 3, colStart: 1, lineEnd: 3, colEnd: 24 });
+    } finally {
+      below.remove();
+    }
+  });
+
+  it("anchors a drag from removed text past the end of a comparison to the baseline", async () => {
+    const before = "# Title\n\nFirst para.\n\nRemoved paragraph with words.\n";
+    const after = "# Title\n\nFirst para.\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "p.spec-del-structure",
+    );
+    const below = document.createElement("p");
+    below.textContent = "below the file";
+    document.body.append(below);
+    try {
+      const from = textAt(container, "p.spec-del-structure", "paragraph");
+      // "Removed " is columns 1 to 8 of line 5; "words." ends at 29.
+      expect(
+        anchor(ends(from.node, from.at, below.firstChild as Node, 5)),
+      ).toEqual({
+        lineStart: 5,
+        colStart: 9,
+        lineEnd: 5,
+        colEnd: 29,
+        baseline: true,
+      });
+    } finally {
+      below.remove();
+    }
   });
 
   it("anchors a word of a restored paragraph to its baseline columns", async () => {

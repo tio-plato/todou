@@ -1,5 +1,9 @@
 import { patchLineOfRow } from "./patch-lines.ts";
-import { DELETION_LINE_TYPE, LINE_TYPE_ATTR, rowText } from "./pierre-rows.ts";
+import {
+  DELETION_LINE_TYPE,
+  LINE_TYPE_ATTR,
+  rowLineText,
+} from "./pierre-rows.ts";
 import {
   CODE_CONTENT_START_ATTR,
   codeContentStart,
@@ -8,7 +12,11 @@ import {
   parseSourceLoc,
   SOURCE_LINE_ATTR,
 } from "./rehype-source-lines.ts";
-import type { SegmentIndex, SourceFence } from "./spec-source-index.ts";
+import {
+  lineTextOf,
+  type SegmentIndex,
+  type SourceFence,
+} from "./spec-source-index.ts";
 
 /** Where one of pierre's rows in the rendered view sits in the markdown. */
 export type CodeRowSource = {
@@ -243,12 +251,8 @@ function placeRow(
   if (line === null || index === null) return { line, textStart: null };
   const start = index.lineStarts[line - 1];
   if (start === undefined) return { line, textStart: null };
-  const next = index.lineStarts[line];
-  const sourceLine = index.source.slice(
-    start,
-    next === undefined ? index.source.length : next - 1,
-  );
-  const text = rowText(row);
+  const sourceLine = lineTextOf(index.source, index.lineStarts, line);
+  const text = rowLineText(row);
   return {
     line,
     textStart: sourceLine.endsWith(text)

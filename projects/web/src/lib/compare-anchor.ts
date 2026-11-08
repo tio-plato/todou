@@ -17,6 +17,7 @@ import {
   beside,
   DELETED_CONTENT,
   endsOnContent,
+  onContainerEdges,
   sourceOffsetInBlock,
 } from "./selection-anchor.ts";
 import {
@@ -249,8 +250,11 @@ function baselineAnchor(
  * it points at nothing. `index` is the version shown, `baseline` the one it
  * is compared with, and `fences` `pairedFences`' answer for the two.
  *
- * Ends that select nothing are first moved onto what the selection selects,
- * removed text included (`endsOnContent`). Then:
+ * Ends outside the container are put on its edges first, as
+ * `anchorForSelection` puts them, and then, like ends that select nothing,
+ * moved onto what the selection selects, removed text included
+ * (`endsOnContent`); should that leave no anchor, the ends as selected are
+ * tried. Then:
  *
  * - both ends in removed content: the baseline, between the two;
  * - one end in removed content: that end moves out of it to the nearest
@@ -260,6 +264,23 @@ function baselineAnchor(
  *   selection.
  */
 export function compareAnchorForSelection(
+  container: Element,
+  index: SegmentIndex,
+  baseline: SegmentIndex,
+  fences: ReadonlyMap<number, SourceFence>,
+  selected: SelectionEndpoints,
+): CompareAnchor | null {
+  const placed = onContainerEdges(container, selected);
+  return (
+    compareAnchorOf(container, index, baseline, fences, placed) ??
+    (placed === selected
+      ? null
+      : compareAnchorOf(container, index, baseline, fences, selected))
+  );
+}
+
+/** `compareAnchorForSelection` for endpoints as they are, edges or not. */
+function compareAnchorOf(
   container: Element,
   index: SegmentIndex,
   baseline: SegmentIndex,
