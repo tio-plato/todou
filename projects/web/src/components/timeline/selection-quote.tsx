@@ -7,7 +7,7 @@ import {
 } from "@/components/spec/selection-entry.tsx";
 import { useQuoteReply } from "@/components/timeline/quote-reply.tsx";
 import { quoteOfSelection } from "@/lib/quote-markdown.ts";
-import { anchorForSelection, sideOf } from "@/lib/selection-anchor.ts";
+import { anchorForSelection } from "@/lib/selection-anchor.ts";
 import {
   composedContains,
   orderedEndpoints,
@@ -91,30 +91,6 @@ function endsInShadowOf(ends: SelectionEndpoints, body: Element): boolean {
 }
 
 /**
- * `ends` with an endpoint outside `body` put on the body's own edge. Clamped
- * to the body's first or last block instead, it would name that block and
- * quote all of it. On the edge it selects nothing, and `anchorForSelection`
- * moves it onto the first or last character selected: a triple-click on a
- * body's last block ends outside the body, and quotes that block's text.
- */
-function onBodyEdges(
-  body: Element,
-  ends: SelectionEndpoints,
-): SelectionEndpoints {
-  const ordered = orderedEndpoints(ends);
-  if (ordered === null) return ends;
-  const { start, end } = ordered.ends;
-  const before = sideOf(body, start.node, start.offset) === "before";
-  const after = sideOf(body, end.node, end.offset) === "after";
-  if (!before && !after) return ends;
-  return {
-    start: before ? { node: body, offset: 0 } : start,
-    end: after ? { node: body, offset: body.childNodes.length } : end,
-    collapsed: ends.collapsed,
-  };
-}
-
-/**
  * The quotable body under `root` the selection selects text in, and where in
  * its source; null unless that is exactly one body. A selection reaching into
  * a second body is about two of them, so it quotes neither — but one that
@@ -147,12 +123,7 @@ export function quotableSelection(
   const ends = endpointsOf(selection, body);
   if (ends === null || ends.collapsed) return null;
   entry.index ??= buildSegmentIndex(entry.source);
-  // Should the edges leave a body of some unforeseen shape no anchor, the
-  // endpoints as selected still clamp to a block rather than lose the button.
-  const placed = onBodyEdges(body, ends);
-  const anchor =
-    anchorForSelection(body, entry.index, placed) ??
-    (placed === ends ? null : anchorForSelection(body, entry.index, ends));
+  const anchor = anchorForSelection(body, entry.index, ends);
   return anchor === null ? null : { body, source: entry.source, anchor };
 }
 
