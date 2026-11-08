@@ -6,7 +6,9 @@ import {
 } from "./pierre-rows.ts";
 import {
   CODE_CONTENT_START_ATTR,
+  codeContentStart,
   FENCE_PATCH_ATTR,
+  OLD_LINE_ATTR,
   parseSourceLoc,
   SOURCE_LINE_ATTR,
 } from "./rehype-source-lines.ts";
@@ -33,12 +35,16 @@ export type CodeRowSource = {
 };
 
 /**
- * The first stamped element above `el`, hopping out of shadow roots host by
- * host: pierre draws a code block inside one, under the stamped wrapper.
+ * The first element above `el` that `selector` matches, hopping out of shadow
+ * roots host by host: pierre draws a code block inside one, under the
+ * stamped wrapper.
  */
-function stampedAbove(el: Element): Element | null {
+function stampedAbove(
+  el: Element,
+  selector = `[${SOURCE_LINE_ATTR}]`,
+): Element | null {
   for (let at: Element | null = el; at !== null; ) {
-    const stamped = at.closest(`[${SOURCE_LINE_ATTR}]`);
+    const stamped = at.closest(selector);
     if (stamped !== null) return stamped;
     const root = at.getRootNode();
     at = root instanceof ShadowRoot ? root.host : null;
@@ -46,8 +52,11 @@ function stampedAbove(el: Element): Element | null {
   return null;
 }
 
-/** A code block's body, and how many lines of it a row can show. */
-type Fence = SourceFence & { lines: number };
+/**
+ * A code block's body, how many lines of it a row can show, and the line the
+ * block closes on.
+ */
+type Fence = SourceFence & { lines: number; endLine: number };
 
 /** Each index's code blocks by the line they open on; every row asks. */
 const FENCES = new WeakMap<SegmentIndex, Map<number, Fence>>();
@@ -57,12 +66,16 @@ function fenceAt(index: SegmentIndex, line: number): Fence | null {
   let byLine = FENCES.get(index);
   if (byLine === undefined) {
     byLine = new Map();
-    for (const fence of index.fences.values()) {
+    for (const block of index.blocks) {
+      const fence =
+        block.type === "code" ? index.fences.get(block.firstGroup) : undefined;
+      if (fence === undefined) continue;
       byLine.set(fence.line, {
         ...fence,
         // An empty body is "" and so is one blank line; `codeRowSource` tells
         // them apart by the lines the block spans.
         lines: fence.value === "" ? 0 : fence.value.split("\n").length,
+        endLine: block.endLine,
       });
     }
     FENCES.set(index, byLine);
@@ -126,24 +139,21 @@ export function codeBodyLines(
   return end < start ? null : { start, end };
 }
 
-/** The 0-based line of the code block's body a row shows, or null. */
+/**
+ * The 0-based line of a code block's body a row shows, or null. `body` is
+ * the body the row is numbered against, and `patch` says whether the patch
+ * viewer drew it.
+ */
 function bodyLineOf(
-  index: SegmentIndex | null,
-  wrapper: Element,
-  loc: { start: number },
+  body: string | null,
+  patch: boolean,
   row: Element,
 ): number | null {
-  if (wrapper.hasAttribute(FENCE_PATCH_ATTR)) {
+  if (patch) {
     // The patch viewer numbers rows by the patched files, so only the fence
     // body itself can say which of its lines a row is.
-    const fence = index === null ? null : fenceAt(index, loc.start);
-    return fence === null ? null : patchLineOfRow(fence.value, row);
+    return body === null ? null : patchLineOfRow(body, row);
   }
-  // A deletion row numbers itself on the old side, so the current source
-  // has no line for it and the formula below would name an unrelated one —
-  // silently, and plausibly (T-343). The other three line types pierre emits,
-  // `context-expanded` included, all number the new side.
-  if (row.getAttribute(LINE_TYPE_ATTR) === DELETION_LINE_TYPE) return null;
   const number = Number(row.getAttribute("data-line"));
   return Number.isInteger(number) && number >= 1 ? number - 1 : null;
 }
@@ -178,9 +188,42 @@ export function codeRowSource(
   const loc = parseSourceLoc(wrapper.getAttribute(SOURCE_LINE_ATTR));
   if (loc === null) return null;
   const contentStart = Number(wrapper.getAttribute(CODE_CONTENT_START_ATTR));
-  const bodyLine = Number.isInteger(contentStart)
-    ? bodyLineOf(index, wrapper, loc, row)
-    : null;
+  const patch = wrapper.hasAttribute(FENCE_PATCH_ATTR);
+  // A deletion row numbers itself on the old side, so the current source
+  // has no line for it and the body line would name an unrelated one —
+  // silently, and plausibly (T-343). The other three line types pierre emits,
+  // `context-expanded` included, all number the new side.
+  const bodyLine =
+    !Number.isInteger(contentStart) || (!patch && isDeletion(row))
+      ? null
+      : bodyLineOf(
+          index === null ? null : (fenceAt(index, loc.start)?.value ?? null),
+          patch,
+          row,
+        );
+  return {
+    wrapper,
+    loc,
+    ...placeRow(index, loc, contentStart, bodyLine, row),
+  };
+}
+
+function isDeletion(row: Element): boolean {
+  return row.getAttribute(LINE_TYPE_ATTR) === DELETION_LINE_TYPE;
+}
+
+/**
+ * Where body line `bodyLine` of the code block on lines `loc` of `index`
+ * lands, its content starting on `contentStart`: its source line, and where
+ * that line's text starts if it ends with the row's text.
+ */
+function placeRow(
+  index: SegmentIndex | null,
+  loc: { start: number; end: number },
+  contentStart: number,
+  bodyLine: number | null,
+  row: Element,
+): { line: number | null; textStart: number | null } {
   // The body bounds the row too, where the source is at hand: an empty
   // fence's one empty row would otherwise land on its closing marker. A body
   // of one blank line reads "" as well, and is told apart by the lines the
@@ -205,19 +248,61 @@ export function codeRowSource(
     candidate !== null && candidate >= loc.start && candidate <= loc.end
       ? candidate
       : null;
-  if (line === null || index === null) {
-    return { wrapper, loc, line, textStart: null };
-  }
+  if (line === null || index === null) return { line, textStart: null };
   const start = index.lineStarts[line - 1];
-  if (start === undefined) return { wrapper, loc, line, textStart: null };
+  if (start === undefined) return { line, textStart: null };
   const sourceLine = lineTextOf(index.source, index.lineStarts, line);
   const text = rowLineText(row);
   return {
-    wrapper,
-    loc,
     line,
     textStart: sourceLine.endsWith(text)
       ? start + sourceLine.length - text.length
       : null,
+  };
+}
+
+/**
+ * Where one of pierre's rows of removed code sits in the compare baseline,
+ * or null when the row is not one. Two kinds of row are: every row of a code
+ * block put back whole, whose wrapper carries its baseline lines
+ * (`OLD_LINE_ATTR`), and a deletion row of a block edited in place, which
+ * numbers itself on the old side of the diff. `fences` is `pairedFences`'
+ * answer, which names the baseline block an edited one replaced.
+ *
+ * The row is placed in the baseline the way `codeRowSource` places one in
+ * the current source, with the baseline block's content start worked out
+ * by `codeContentStart`, as `MarkdownPre` works out a current block's; `loc`
+ * is the baseline block's lines.
+ */
+export function oldCodeRowSource(
+  baseline: SegmentIndex,
+  fences: ReadonlyMap<number, SourceFence>,
+  row: Element,
+): CodeRowSource | null {
+  const wrapper = stampedAbove(
+    row,
+    `[${SOURCE_LINE_ATTR}], [${OLD_LINE_ATTR}]`,
+  );
+  if (wrapper === null) return null;
+  let line: number | null = null;
+  if (wrapper.hasAttribute(OLD_LINE_ATTR)) {
+    line = parseSourceLoc(wrapper.getAttribute(OLD_LINE_ATTR))?.start ?? null;
+  } else if (wrapper.hasAttribute(CODE_CONTENT_START_ATTR) && isDeletion(row)) {
+    const loc = parseSourceLoc(wrapper.getAttribute(SOURCE_LINE_ATTR));
+    line = loc === null ? null : (fences.get(loc.start)?.line ?? null);
+  }
+  const fence = line === null ? null : fenceAt(baseline, line);
+  if (fence === null) return null;
+  const loc = { start: fence.line, end: fence.endLine };
+  const contentStart = codeContentStart(loc, fence.lines);
+  const bodyLine = bodyLineOf(
+    fence.value,
+    wrapper.hasAttribute(FENCE_PATCH_ATTR),
+    row,
+  );
+  return {
+    wrapper,
+    loc,
+    ...placeRow(baseline, loc, contentStart, bodyLine, row),
   };
 }
