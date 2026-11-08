@@ -25,6 +25,11 @@ function decorate(before: string, after: string) {
   return changeDecorations(buildSegmentIndex(before), buildSegmentIndex(after));
 }
 
+/** Where `text` sits in the flattened text of `source`: a stand-in's origin. */
+const flatAt = (source: string, text: string) => ({
+  flat: buildSegmentIndex(source).text.indexOf(text),
+});
+
 /** What the view highlights as added, as the text it covers. */
 const inserted = (before: string, after: string): string[] =>
   decorate(before, after)
@@ -76,14 +81,18 @@ describe("frontmatter field-level diff", () => {
   });
 
   it("puts a strike-through back into a value that was emptied", () => {
-    const decorations = decorate(
-      fm("title: Design", "status: draft"),
-      fm("title: Design", "status:"),
-    );
+    const before = fm("title: Design", "status: draft");
+    const decorations = decorate(before, fm("title: Design", "status:"));
     // The cell has no text node left to strike through, so the overlay puts
     // the old content back into it.
     expect(decorations.tables[0]?.lost).toEqual([
-      { row: 1, col: 1, parts: [{ kind: "text", text: "draft" }] },
+      {
+        row: 1,
+        col: 1,
+        parts: [
+          { kind: "text", text: "draft", origin: flatAt(before, "draft") },
+        ],
+      },
     ]);
   });
 
@@ -95,16 +104,20 @@ describe("frontmatter field-level diff", () => {
   });
 
   it("puts a removed field back as a stand-in row", () => {
-    const decorations = decorate(
-      fm("title: Design", "owner: bot-one"),
-      fm("title: Design"),
-    );
+    const before = fm("title: Design", "owner: bot-one");
+    const decorations = decorate(before, fm("title: Design"));
     expect(decorations.tables[0]?.rows).toEqual([
       {
         at: 1,
         cells: [
-          [{ kind: "text", text: "owner" }],
-          [{ kind: "text", text: "bot-one" }],
+          [{ kind: "text", text: "owner", origin: flatAt(before, "owner") }],
+          [
+            {
+              kind: "text",
+              text: "bot-one",
+              origin: flatAt(before, "bot-one"),
+            },
+          ],
         ],
       },
     ]);
@@ -134,7 +147,7 @@ describe("frontmatter field-level diff", () => {
     const decorations = decorate(before, after);
     expect(wholly(before, after)).toEqual(["approved_by: bot-one"]);
     expect(decorations.tables[0]?.rows.map((row) => row.cells[0])).toEqual([
-      [{ kind: "text", text: "reviewer" }],
+      [{ kind: "text", text: "reviewer", origin: flatAt(before, "reviewer") }],
     ]);
   });
 });

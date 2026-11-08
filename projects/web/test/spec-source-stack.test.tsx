@@ -649,6 +649,111 @@ function stageDraft(
   window.dispatchEvent(new StorageEvent("storage", { key: DRAFTS_KEY }));
 }
 
+/** Select `text` whole in the first `selector` holding it. */
+function selectText(container: Element, selector: string, text: string) {
+  for (const el of container.querySelectorAll(selector)) {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
+      const at = (n as Text).data.indexOf(text);
+      if (at < 0) continue;
+      const range = document.createRange();
+      range.setStart(n, at);
+      range.setEnd(n, at + text.length);
+      const selection = window.getSelection();
+      if (!selection) throw new Error("no selection support");
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return;
+    }
+  }
+  throw new Error(`no ${selector} holds ${JSON.stringify(text)}`);
+}
+
+describe("selecting deleted text in the rendered comparison", () => {
+  it("stages a removed word on the baseline, with its old text", async () => {
+    mockSpec([], {
+      1: { "words.md": "The quick brown fox.\n" },
+      2: { "words.md": "The quick red fox.\n" },
+    });
+    const view = renderSpecView("?v=2&file=words.md&compare=1&view=rendered");
+    await view.findByRole("button", { name: /finish review/i });
+    await waitFor(() =>
+      expect(view.container.querySelector("del.spec-del")).not.toBeNull(),
+    );
+    selectText(view.container, "del.spec-del", "brown");
+    // v1's line 1 is "The quick brown fox."; "brown" is columns 11 to 15.
+    fireEvent.click(await view.findByText(/Comment L1:11–15/));
+    const label = await view.findByText("L1:11–15 · v1");
+    expect(label.parentElement?.textContent).toContain("words.md");
+    expect(view.getByText("brown", { selector: "div" })).toBeTruthy();
+  });
+
+  it("stages a renamed file's removed word under the path it had", async () => {
+    mockSpec();
+    const view = renderSpecView("?v=2&file=drifted.md&compare=1&view=rendered");
+    await view.findByRole("button", { name: /finish review/i });
+    await waitFor(() =>
+      expect(view.container.querySelector("del.spec-del")).not.toBeNull(),
+    );
+    selectText(view.container, "del.spec-del", "delta");
+    // drift.md in v1 ends "delta", the whole of line 4.
+    fireEvent.click(await view.findByText(/Comment L4:1–5/));
+    const label = await view.findByText("L4:1–5 · v1");
+    expect(label.parentElement?.textContent).toContain("drift.md");
+    expect(label.parentElement?.textContent).not.toContain("drifted.md");
+  });
+});
+
+describe("baseline comments in the rendered comparison", () => {
+  /** A comment on v1's `path`, line `line`, columns `from`–`to`. */
+  const onV1 = (path: string, line: number, from: number, to: number) => {
+    const base = comment(path, 1, line, "on the old word");
+    return {
+      ...base,
+      anchor: { ...base.anchor, col_start: from, col_end: to },
+      outdated: true,
+      current_line_start: null,
+      current_line_end: null,
+    };
+  };
+
+  it("paints a comment on a removed word and hangs it a chip", async () => {
+    // v1's line 1 is "The quick brown fox."; "brown" is columns 11 to 15.
+    mockSpec([onV1("words.md", 1, 11, 15)], {
+      1: { "words.md": "The quick brown fox.\n" },
+      2: { "words.md": "The quick red fox.\n" },
+    });
+    const view = renderSpecView("?v=2&file=words.md&compare=1&view=rendered");
+    await waitFor(() =>
+      expect(
+        [
+          ...view.container.querySelectorAll(
+            "del.spec-del mark.spec-mark-comment",
+          ),
+        ].map((mark) => mark.textContent),
+      ).toEqual(["brown"]),
+    );
+    expect(
+      await view.findByRole("button", { name: "1 comment(s) on this block" }),
+    ).toBeTruthy();
+  });
+
+  it("paints a renamed file's comment from under its old path", async () => {
+    // drift.md in v1 ends "delta", columns 1 to 5 of line 4.
+    mockSpec([onV1("drift.md", 4, 1, 5)]);
+    const view = renderSpecView("?v=2&file=drifted.md&compare=1&view=rendered");
+    await waitFor(() =>
+      expect(
+        [
+          ...view.container.querySelectorAll(
+            "del.spec-del mark.spec-mark-comment",
+          ),
+        ].map((mark) => mark.textContent),
+      ).toEqual(["delta"]),
+    );
+  });
+});
+
 describe("staged drafts in the source view", () => {
   it("hangs a draft under its line, and Discard takes it away", async () => {
     stageDraft("d1", "drift.md", 1, 2, "say it plainer");

@@ -1,13 +1,21 @@
 import type { Element, ElementContent, Root, RootContent, Text } from "hast";
 import {
+  OLD_FLAT_ATTR,
+  OLD_LINE_ATTR,
+  OLD_SOURCE_ATTR,
+  stampSourceLines,
+} from "./rehype-source-lines.ts";
+import {
   type BaselineTree,
   baselineAncestor,
   extractBaselineNode,
 } from "./spec-baseline-tree.ts";
 import {
   type CellPart,
+  flatCoverage,
   type SegmentIndex,
   type SourceRange,
+  type TextOrigin,
   type TextPiece,
   textPieces,
 } from "./spec-source-index.ts";
@@ -43,11 +51,13 @@ export type DeletionDecoration = {
   at: number;
   text: string;
   block: boolean;
+  /** Where in the baseline `text` came from, for an inline deletion. */
+  origin?: TextOrigin;
   /**
-   * The same content cut around the images inside it (T-223). Present only on
-   * a block marker that actually holds one, so `text` stays what it was and
-   * every path that reads it — the inline marker, the `title` attribute — is
-   * untouched.
+   * A block marker's content as runs of text that know where in the baseline
+   * they came from, and the images between them (T-223). `text` stays what
+   * it was, so every path that reads it — the inline marker, the `title`
+   * attribute — is untouched.
    */
   parts?: DeletionPart[];
 };
@@ -102,6 +112,11 @@ export type Decorations = {
   images: ImageSwap[];
   /** Whole removed blocks rendered from the baseline tree when possible. */
   structures: StructuralDeletion[];
+  /**
+   * Annotations on the compare baseline, as offsets into its source
+   * (`baselineIndex`): painted on what the comparison puts back of it.
+   */
+  oldSpans?: SpanDecoration[];
   baselineTree?: BaselineTree;
   /** The old and new indices retain independent ordered-list ordinals. */
   baselineIndex?: SegmentIndex;
@@ -206,11 +221,38 @@ function fullyInside(element: Element, ranges: SourceRange[]): boolean {
   return ranges.some((range) => range.start <= start && range.end >= end);
 }
 
+/** `origin` as the attribute a run of removed text carries it in. */
+function originProps(origin: TextOrigin | undefined): Record<string, string> {
+  if (origin === undefined) return {};
+  return "flat" in origin
+    ? { [OLD_FLAT_ATTR]: String(origin.flat) }
+    : { [OLD_SOURCE_ATTR]: String(origin.source) };
+}
+
+/** A removed run's origin, read back off the attribute `originProps` wrote. */
+function originOf(element: Element): TextOrigin | null {
+  const flat = element.properties[OLD_FLAT_ATTR];
+  if (flat !== undefined) return { flat: Number(flat) };
+  const source = element.properties[OLD_SOURCE_ATTR];
+  return source === undefined ? null : { source: Number(source) };
+}
+
+/** `origin` moved on by `n` characters of the text it starts. */
+function originAfter(origin: TextOrigin, n: number): TextOrigin {
+  return "flat" in origin
+    ? { flat: origin.flat + n }
+    : { source: origin.source + n };
+}
+
 function inlineDeletion(deletion: DeletionDecoration): Element {
   return {
     type: "element",
     tagName: "del",
-    properties: { className: ["spec-del"], title: deletion.text },
+    properties: {
+      className: ["spec-del"],
+      title: deletion.text,
+      ...originProps(deletion.origin),
+    },
     // Plain text on purpose: the removed source may be half a markdown
     // construct, and re-rendering it would inject stray emphasis or worse.
     children: [{ type: "text", value: deletion.text }],
@@ -241,14 +283,15 @@ function blockDeletion(deletion: DeletionDecoration): Element {
 }
 
 /**
- * A marker cut around its images (T-223). Images are the one construct that
+ * A marker cut into its parts (T-223). Images are the one construct that
  * gets rendered rather than quoted, because quoting one shows the reader a url
  * where the marker's whole job is to show them what went. Everything else
- * stays source text, on the reasoning above.
+ * stays source text, on the reasoning above, and a run that knows where in
+ * the baseline it came from says so on a `<span>` of its own.
  *
  * The head and the tail are trimmed, which is what `text.trim()` does to the
  * undivided marker; whitespace between two parts is the document's own and is
- * left alone.
+ * left alone. A run trimmed at its head starts that much further on.
  */
 function deletionParts(parts: DeletionPart[]): ElementContent[] {
   const out: ElementContent[] = [];
@@ -263,9 +306,25 @@ function deletionParts(parts: DeletionPart[]): ElementContent[] {
       return;
     }
     let value = part.text;
-    if (i === 0) value = value.trimStart();
+    let origin = part.origin;
+    if (i === 0) {
+      value = value.trimStart();
+      if (origin !== undefined) {
+        origin = originAfter(origin, part.text.length - value.length);
+      }
+    }
     if (i === parts.length - 1) value = value.trimEnd();
-    if (value !== "") out.push({ type: "text", value });
+    if (value === "") return;
+    out.push(
+      origin === undefined
+        ? { type: "text", value }
+        : {
+            type: "element",
+            tagName: "span",
+            properties: originProps(origin),
+            children: [{ type: "text", value }],
+          },
+    );
   });
   return out;
 }
@@ -362,7 +421,12 @@ function partNodes(parts: CellPart[]): ElementContent[] {
           },
           children: [],
         }
-      : inlineDeletion({ at: 0, text: part.text, block: false }),
+      : inlineDeletion({
+          at: 0,
+          text: part.text,
+          block: false,
+          origin: part.origin,
+        }),
   );
 }
 
@@ -884,7 +948,19 @@ function fallbackStructure(
   record: StructuralDeletion,
   previous: Map<number, Element>,
 ): void {
-  const marker = blockDeletion({ ...record.fallback, block: true });
+  const marker = blockDeletion({
+    ...record.fallback,
+    block: true,
+    // The marker quotes the removed block's source, which starts where the
+    // block does.
+    parts: record.fallback.parts ?? [
+      {
+        kind: "text",
+        text: record.fallback.text,
+        origin: { source: record.old.start },
+      },
+    ],
+  });
   const at = record.fallback.at;
   const last = previous.get(at);
   const lastIndex = last === undefined ? -1 : tree.children.indexOf(last);
@@ -930,7 +1006,10 @@ function applyStructures(tree: Root, options: Decorations): void {
         (oldBlock.start === record.old.start &&
           oldBlock.end === record.old.end &&
           oldBlock.type === record.old.type))
-        ? extractBaselineNode(baselineTree, record.old)
+        ? extractBaselineNode(baselineTree, record.old, (clone) => {
+            stampSourceLines(clone, OLD_LINE_ATTR);
+            paintRestored(clone, options.oldSpans ?? [], baselineIndex);
+          })
         : null;
     if (oldNode === null) {
       fallbackStructure(tree, record, fallbackAtSeam);
@@ -990,6 +1069,114 @@ function applyStructures(tree: Root, options: Decorations): void {
     numberClonedLists(oldNode);
     slot.parent.children.splice(at, 0, oldNode);
     lastAtSeam.set(seam, oldNode);
+  }
+}
+
+/**
+ * Annotations on the baseline painted onto a block put back from it, while
+ * the clone still has the baseline positions they are offsets into. A root
+ * around it lets the clone itself be what is marked whole, as a code block
+ * or an image is.
+ */
+function paintRestored(
+  clone: Element,
+  spans: SpanDecoration[],
+  baseline: SegmentIndex | undefined,
+): void {
+  if (spans.length === 0) return;
+  decorateTree(
+    { type: "root", children: [clone] },
+    {
+      spans,
+      inline: [],
+      placed: new Set(),
+      blocks: [],
+      images: [],
+      source: baseline?.source ?? null,
+    },
+    false,
+  );
+}
+
+/**
+ * Where `span` covers a run of removed text, relative to the run: a run of
+ * the baseline's flattened text through `flatCoverage`, a run of its source
+ * by plain overlap.
+ */
+export function coverageOf(
+  origin: TextOrigin,
+  length: number,
+  span: SpanDecoration,
+  baseline: SegmentIndex | undefined,
+): SourceRange[] {
+  if ("flat" in origin) {
+    return baseline === undefined
+      ? []
+      : flatCoverage(baseline, origin.flat, length, span);
+  }
+  const start = Math.max(span.start, origin.source) - origin.source;
+  const end = Math.min(span.end, origin.source + length) - origin.source;
+  return end > start ? [{ start, end }] : [];
+}
+
+/** `value` cut at the edges of `cuts`, each part in the marks covering it. */
+function marked(
+  value: string,
+  cuts: Array<SourceRange & { span: SpanDecoration }>,
+): ElementContent[] {
+  const points = [
+    ...new Set([0, value.length, ...cuts.flatMap((c) => [c.start, c.end])]),
+  ].sort((a, b) => a - b);
+  const out: ElementContent[] = [];
+  for (let i = 0; i + 1 < points.length; i++) {
+    const at = points[i];
+    const next = points[i + 1];
+    if (at === undefined || next === undefined || next <= at) continue;
+    const covering = cuts
+      .filter((cut) => cut.start <= at && cut.end >= next)
+      .map((cut) => cut.span);
+    const piece: Text = { type: "text", value: value.slice(at, next) };
+    const kinds = kindsOf(covering);
+    if (kinds.length === 0) out.push(piece);
+    else {
+      out.push(
+        ...wrap([piece], kinds, covering.find((h) => h.key !== undefined)?.key),
+      );
+    }
+  }
+  return out;
+}
+
+/**
+ * Annotations on the baseline painted onto the runs of removed text that
+ * say where in the baseline they start: an inline deletion, a table's
+ * stand-in text, a run of a marker. Each holds its text alone, so the marks
+ * are cut out of that one text node.
+ */
+function paintRemoved(
+  parent: Root | Element,
+  spans: SpanDecoration[],
+  baseline: SegmentIndex | undefined,
+): void {
+  for (const child of parent.children) {
+    if (child.type !== "element") continue;
+    const origin = originOf(child);
+    const text = child.children[0];
+    if (
+      origin === null ||
+      child.children.length !== 1 ||
+      text?.type !== "text"
+    ) {
+      paintRemoved(child, spans, baseline);
+      continue;
+    }
+    const cuts = spans.flatMap((span) =>
+      coverageOf(origin, text.value.length, span, baseline).map((range) => ({
+        ...range,
+        span,
+      })),
+    );
+    if (cuts.length > 0) child.children = marked(text.value, cuts);
   }
 }
 
@@ -1179,6 +1366,122 @@ function markBlockClass(
   return kinds.includes("draft") ? DRAFT_BLOCK_CLASS : null;
 }
 
+/** What `decorateTree` paints, and the source the tree's positions are in. */
+type TreePaint = {
+  spans: SpanDecoration[];
+  /** Inline deletions, and those of them already put back. */
+  inline: DeletionDecoration[];
+  placed: Set<DeletionDecoration>;
+  blocks: SourceRange[];
+  images: ImageSwap[];
+  source: string | null;
+};
+
+/**
+ * Paint spans, inline deletions, wholly-new blocks and image swaps onto the
+ * children of `parent`, a tree whose positions are offsets into
+ * `paint.source`: the document being rendered, or a block put back from
+ * its baseline (`paintRestored`).
+ */
+function decorateTree(
+  parent: Root | Element,
+  paint: TreePaint,
+  insideAdded: boolean,
+): void {
+  const next: ElementContent[] = [];
+  let changed = false;
+  for (const child of parent.children as ElementContent[]) {
+    if (child.type === "element") {
+      // The class goes on the outermost element of a wholly-new range
+      // and nowhere below it, but the walk carries on regardless: an
+      // annotation anchored inside still has its mark to paint.
+      let added = insideAdded;
+      if (!added && fullyInside(child, paint.blocks)) {
+        addClass(child, INS_BLOCK_CLASS);
+        added = true;
+      }
+      if (child.tagName === "a") {
+        const pieces = decorateAtomic(
+          child,
+          paint.spans,
+          paint.inline,
+          paint.placed,
+        );
+        if (pieces === null) next.push(child);
+        else {
+          next.push(...pieces);
+          changed = true;
+        }
+        continue;
+      }
+      if (child.tagName === "pre") {
+        const wash = markBlockClass(child, paint.spans);
+        if (wash !== null) addClass(child, wash);
+        next.push(child);
+        continue;
+      }
+      // A swapped image is marked on the `<img>` itself, never through
+      // `blocks` and `fullyInside` (T-223): those put the class on the
+      // outermost element of the range, which is the `<p>` when the image
+      // has a paragraph to itself and the `<img>` when it does not — and
+      // the `<p>` would then wrap the old image's `<del>` in the green
+      // that means "new". No wrapper element either: `markdown-view.tsx`
+      // decides whether a paragraph carries an embed card by asking
+      // whether an `<img>` is a direct child of the `<p>`, and a flex
+      // container in between would both break that test and produce a
+      // `<div>` inside a `<p>`. Side by side is two `inline-block`s.
+      if (child.tagName === "img") {
+        // An image shows no text to put a mark in, and a mark reaching
+        // into one — a selection made inside a document card anchors
+        // to the whole `![…](…)` — would show nowhere but the rail. It
+        // wears the block class a `<pre>` does, which reaches a
+        // document card or a picture through its `className`.
+        const wash = markBlockClass(child, paint.spans);
+        if (wash !== null) addClass(child, wash);
+        const swap = paint.images.find(
+          (image) => image.at.start === child.position?.start.offset,
+        );
+        if (swap === undefined) {
+          next.push(child);
+          continue;
+        }
+        if (!added) addClass(child, INS_BLOCK_CLASS);
+        if (swap.old !== null) {
+          addClass(child, IMG_NEW_CLASS);
+          next.push(swappedOutImage(swap.old));
+          // Only now: `addClass` edits in place and leaves the node's
+          // identity alone, but splicing a sibling in means `next` has to
+          // replace `parent.children` or the new element is lost (T-60 is
+          // why that distinction is worth keeping).
+          changed = true;
+        }
+        next.push(child);
+        continue;
+      }
+      decorateTree(child, paint, added);
+      next.push(child);
+      continue;
+    }
+    if (child.type !== "text") {
+      next.push(child);
+      continue;
+    }
+    const pieces = decorateText(
+      child,
+      paint.spans,
+      paint.inline,
+      paint.placed,
+      paint.source,
+    );
+    if (pieces === null) next.push(child);
+    else {
+      next.push(...pieces);
+      changed = true;
+    }
+  }
+  if (changed) parent.children = next as typeof parent.children;
+}
+
 /**
  * Rehype plugin painting source-offset decorations onto the rendered tree
  * (T-142). Text spans without a host are left alone, but structural removals
@@ -1217,93 +1520,18 @@ export function rehypeDecorations(options: Decorations = NO_DECORATIONS) {
     ) {
       return;
     }
-    const inline = deletions.filter((d) => !d.block);
-    const placed = new Set<DeletionDecoration>();
-
-    const visit = (parent: Root | Element, insideAdded: boolean): void => {
-      const next: ElementContent[] = [];
-      let changed = false;
-      for (const child of parent.children as ElementContent[]) {
-        if (child.type === "element") {
-          // The class goes on the outermost element of a wholly-new range
-          // and nowhere below it, but the walk carries on regardless: an
-          // annotation anchored inside still has its mark to paint.
-          let added = insideAdded;
-          if (!added && fullyInside(child, blocks)) {
-            addClass(child, INS_BLOCK_CLASS);
-            added = true;
-          }
-          if (child.tagName === "a") {
-            const pieces = decorateAtomic(child, spans, inline, placed);
-            if (pieces === null) next.push(child);
-            else {
-              next.push(...pieces);
-              changed = true;
-            }
-            continue;
-          }
-          if (child.tagName === "pre") {
-            const wash = markBlockClass(child, spans);
-            if (wash !== null) addClass(child, wash);
-            next.push(child);
-            continue;
-          }
-          // A swapped image is marked on the `<img>` itself, never through
-          // `blocks` and `fullyInside` (T-223): those put the class on the
-          // outermost element of the range, which is the `<p>` when the image
-          // has a paragraph to itself and the `<img>` when it does not — and
-          // the `<p>` would then wrap the old image's `<del>` in the green
-          // that means "new". No wrapper element either: `markdown-view.tsx`
-          // decides whether a paragraph carries an embed card by asking
-          // whether an `<img>` is a direct child of the `<p>`, and a flex
-          // container in between would both break that test and produce a
-          // `<div>` inside a `<p>`. Side by side is two `inline-block`s.
-          if (child.tagName === "img") {
-            // An image shows no text to put a mark in, and a mark reaching
-            // into one — a selection made inside a document card anchors
-            // to the whole `![…](…)` — would show nowhere but the rail. It
-            // wears the block class a `<pre>` does, which reaches a
-            // document card or a picture through its `className`.
-            const wash = markBlockClass(child, spans);
-            if (wash !== null) addClass(child, wash);
-            const swap = images.find(
-              (image) => image.at.start === child.position?.start.offset,
-            );
-            if (swap === undefined) {
-              next.push(child);
-              continue;
-            }
-            if (!added) addClass(child, INS_BLOCK_CLASS);
-            if (swap.old !== null) {
-              addClass(child, IMG_NEW_CLASS);
-              next.push(swappedOutImage(swap.old));
-              // Only now: `addClass` edits in place and leaves the node's
-              // identity alone, but splicing a sibling in means `next` has to
-              // replace `parent.children` or the new element is lost (T-60 is
-              // why that distinction is worth keeping).
-              changed = true;
-            }
-            next.push(child);
-            continue;
-          }
-          visit(child, added);
-          next.push(child);
-          continue;
-        }
-        if (child.type !== "text") {
-          next.push(child);
-          continue;
-        }
-        const pieces = decorateText(child, spans, inline, placed, source);
-        if (pieces === null) next.push(child);
-        else {
-          next.push(...pieces);
-          changed = true;
-        }
-      }
-      if (changed) parent.children = next as typeof parent.children;
-    };
-    visit(tree, false);
+    decorateTree(
+      tree,
+      {
+        spans,
+        inline: deletions.filter((d) => !d.block),
+        placed: new Set(),
+        blocks,
+        images,
+        source,
+      },
+      false,
+    );
 
     // Structural deletions have no host inside the text; they go between
     // the blocks, at the seam the removed content left behind. Placed back
@@ -1322,5 +1550,8 @@ export function rehypeDecorations(options: Decorations = NO_DECORATIONS) {
 
     for (const overlay of tables) applyOverlay(tree, overlay);
     applyStructures(tree, options);
+    if (options.oldSpans !== undefined && options.oldSpans.length > 0) {
+      paintRemoved(tree, options.oldSpans, options.baselineIndex);
+    }
   };
 }

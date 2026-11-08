@@ -8,6 +8,7 @@ import {
 } from "./pierre-rows.ts";
 import {
   CODE_CONTENT_START_ATTR,
+  OLD_LINE_ATTR,
   parseSourceLoc,
   SOURCE_LINE_ATTR,
   SOURCE_SPAN_ATTR,
@@ -47,6 +48,18 @@ function isOldEndpoint(node: Node): boolean {
 }
 
 /**
+ * A block a selection endpoint can map to columns in, with the attribute its
+ * source lines are stamped in: `SOURCE_LINE_ATTR` for a block of the
+ * document being shown, `OLD_LINE_ATTR` for one a comparison put back from
+ * its baseline, whose lines are the baseline's.
+ */
+export type ColumnBlock = {
+  el: Element;
+  loc: { start: number; end: number };
+  stamp: string;
+};
+
+/**
  * The prose block a selection endpoint sits in, when the segment mapping can
  * carry it to columns. Code blocks are not among them: their text reaches the
  * DOM through pierre's own renderer (T-31/T-52), one row per line in a shadow
@@ -54,23 +67,32 @@ function isOldEndpoint(node: Node): boolean {
  * block outside its rows — the plain text shown before highlighting, a
  * mermaid picture — maps to nothing and keeps the line anchor.
  */
-function columnBlockOf(
-  node: Node,
-): { el: Element; loc: { start: number; end: number } } | null {
+function columnBlockOf(node: Node): ColumnBlock | null {
   const stamped = elementNear(node)?.closest(`[${SOURCE_LINE_ATTR}]`) ?? null;
   if (stamped === null) return null;
   if (stamped.hasAttribute(CODE_CONTENT_START_ATTR)) return null;
   const loc = parseSourceLoc(stamped.getAttribute(SOURCE_LINE_ATTR));
-  return loc === null ? null : { el: stamped, loc };
+  return loc === null ? null : { el: stamped, loc, stamp: SOURCE_LINE_ATTR };
 }
+
+/** Old text and old structure a compared version puts back. */
+const OLD_TEXT = ".spec-del, .spec-del-block, .spec-del-structure";
+
+/** The rows, cells and images a compared table puts back (T-221, T-229). */
+const OLD_TABLE_PARTS = ".spec-del-row, .spec-del-cell, .spec-del-img";
+
+/**
+ * Everything a compared version puts back of its baseline: what a selection
+ * in a comparison can anchor to the baseline from.
+ */
+export const DELETED_CONTENT = `${OLD_TEXT}, ${OLD_TABLE_PARTS}`;
 
 /**
  * What the spec view injects into the rendered document: the annotation UI,
  * and the old text, structure and list numbers of a compared version. None
  * of it is part of the source.
  */
-const INJECTED =
-  "[data-annotation-ui], .spec-del, .spec-del-block, .spec-del-structure, .spec-list-number";
+const INJECTED = `[data-annotation-ui], ${OLD_TEXT}, .spec-list-number`;
 
 /** A link or a document card a selection takes whole (`alignBlock`). */
 type Atom = { el: Element; start: number; end: number };
@@ -203,9 +225,11 @@ function withAtoms(
  * Two things in a block are not its own text. A block nested in it — a
  * sublist in a list item, a code block in a compact one — is stamped and
  * mapped by itself: its subtree is skipped, and so are the segments lying
- * wholly on its lines. Two sibling blocks never share a source line, and a
- * container whose first line opens its first child (`- ## Title`) has no
- * text of its own there, so taking out whole lines is exact. And
+ * wholly on its lines. Nested blocks are told by the block's own stamp, so
+ * that a block restored from the baseline finds its nested ones as well.
+ * Two sibling blocks never share a source line, and a container whose first
+ * line opens its first child (`- ## Title`) has no text of its own there, so
+ * taking out whole lines is exact. And
  * `mdast-util-to-hast` puts whitespace-only text nodes the source does not
  * have between the blocks of a list item and after a `<br>`: one is matched
  * as text first, since a blank between two emphases is the source's, and
@@ -229,12 +253,14 @@ function withAtoms(
  */
 function alignBlock(
   index: SegmentIndex,
-  block: { el: Element; loc: { start: number; end: number } },
+  block: ColumnBlock,
 ): BlockAlignment | null {
   const nested = mergedLines(
-    [...block.el.querySelectorAll(`[${SOURCE_LINE_ATTR}]`)]
-      .filter((el) => el.closest(INJECTED) === null)
-      .flatMap((el) => parseSourceLoc(el.getAttribute(SOURCE_LINE_ATTR)) ?? []),
+    [...block.el.querySelectorAll(`[${block.stamp}]`)]
+      // Injected content inside the block is not its own; a restored block
+      // is itself inside the old structure it was put back as.
+      .filter((el) => el.closest(INJECTED)?.contains(block.el) ?? true)
+      .flatMap((el) => parseSourceLoc(el.getAttribute(block.stamp)) ?? []),
   );
   // Inline HTML shows as its own source text, so it is the block's text
   // here, though never part of the flattened prose.
@@ -257,8 +283,8 @@ function alignBlock(
   // autolink out of a text node, and when that node's source is longer than
   // its value every piece gets the whole node's position.
   return (
-    lineUp(index, own, itemsOf(block.el, own, false)) ??
-    lineUp(index, own, itemsOf(block.el, own, true))
+    lineUp(index, own, itemsOf(block, own, false)) ??
+    lineUp(index, own, itemsOf(block, own, true))
   );
 }
 
@@ -287,7 +313,7 @@ function mergedLines(
  * every element is walked into, whatever its text.
  */
 function itemsOf(
-  el: Element,
+  { el, stamp }: ColumnBlock,
   own: SourceSegment[],
   takeAtoms: boolean,
 ): { items: Node[]; atoms: Atom[] } {
@@ -302,7 +328,7 @@ function itemsOf(
       if (
         !(child instanceof Element) ||
         child.matches(INJECTED) ||
-        child.hasAttribute(SOURCE_LINE_ATTR)
+        child.hasAttribute(stamp)
       ) {
         continue;
       }
@@ -366,8 +392,7 @@ function lineUp(
 }
 
 /**
- * Source offset one selection endpoint maps to, or null to give up. One in
- * an atom takes the atom's edge: its start for a start, its end for an end.
+ * Source offset one selection endpoint maps to, or null to give up.
  */
 function sourceOffsetOfEndpoint(
   index: SegmentIndex,
@@ -375,9 +400,25 @@ function sourceOffsetOfEndpoint(
   offset: number,
   edge: "start" | "end",
 ): number | null {
-  if (isOldEndpoint(node) || node.nodeType !== Node.TEXT_NODE) return null;
+  if (isOldEndpoint(node)) return null;
   const block = columnBlockOf(node);
   if (block === null) return null;
+  return sourceOffsetInBlock(index, block, node, offset, edge);
+}
+
+/**
+ * Source offset in `index` an endpoint in `block` maps to, or null to give
+ * up. One in an atom takes the atom's edge: its start for a start, its end
+ * for an end.
+ */
+export function sourceOffsetInBlock(
+  index: SegmentIndex,
+  block: ColumnBlock,
+  node: Node,
+  offset: number,
+  edge: "start" | "end",
+): number | null {
+  if (node.nodeType !== Node.TEXT_NODE) return null;
   const aligned = alignBlock(index, block);
   if (aligned === null) return null;
   const atom = aligned.atoms.find((a) => a.el.contains(node));
@@ -609,18 +650,53 @@ const CODE_BLOCK = `[${CODE_CONTENT_START_ATTR}]`;
  * prose already sits in `.spec-del` runs; an old image put back into a
  * current cell sits in nothing else.
  */
-const OLD_OR_INJECTED = `${INJECTED}, .spec-del-row, .spec-del-cell, .spec-del-img`;
+const OLD_OR_INJECTED = `${INJECTED}, ${OLD_TABLE_PARTS}`;
+
+/** The wrapper of a code block a comparison put back from its baseline. */
+export const OLD_CODE_BLOCK = `.markdown-fence[${OLD_LINE_ATTR}]`;
+
+/**
+ * What `endsOnContent` takes for content. `skip` is never content and never
+ * walked into, `block` is what content sits in, and `code` is a code block's
+ * wrapper. `uiSelectsNothing` moves an endpoint in the annotation UI even
+ * when it selects some of its text.
+ */
+type Walk = {
+  skip: string;
+  block: string;
+  code: string;
+  uiSelectsNothing: boolean;
+};
+
+/** The document being shown: old content is skipped like the UI. */
+const CURRENT_WALK: Walk = {
+  skip: OLD_OR_INJECTED,
+  block: `[${SOURCE_LINE_ATTR}]`,
+  code: CODE_BLOCK,
+  uiSelectsNothing: false,
+};
+
+/**
+ * A compared document, its old content included: removed text and structure
+ * are content like any other, in a block restored from the baseline or in a
+ * marker, and only the annotation UI — the chips, a list's numbers — is
+ * skipped. A number is no text of its item, so an endpoint in one moves.
+ */
+const OLD_WALK: Walk = {
+  skip: "[data-annotation-ui]",
+  block: `[${SOURCE_LINE_ATTR}], [${OLD_LINE_ATTR}], .spec-del-block`,
+  code: `${CODE_BLOCK}, ${OLD_CODE_BLOCK}`,
+  uiSelectsNothing: true,
+};
 
 /**
  * What a selection takes whole rather than character by character: a code
  * block's wrapper, with whatever pierre or mermaid drew in it, an image, and
  * any other element with a shadow root of its own.
  */
-function isBox(el: Element): boolean {
+function isBox(el: Element, walk: Walk): boolean {
   return (
-    el.hasAttribute(CODE_CONTENT_START_ATTR) ||
-    el.tagName === "IMG" ||
-    el.shadowRoot !== null
+    el.matches(walk.code) || el.tagName === "IMG" || el.shadowRoot !== null
   );
 }
 
@@ -636,8 +712,8 @@ function partIn(text: Text, range: Range): { from: number; text: string } {
  * an image or a shadow host lies wholly in the range, and a code block
  * shares text or a pierre host with it.
  */
-function coversBox(range: Range, box: Element): boolean {
-  if (!box.hasAttribute(CODE_CONTENT_START_ATTR)) {
+function coversBox(range: Range, box: Element, walk: Walk): boolean {
+  if (!box.matches(walk.code)) {
     const parent = box.parentNode;
     if (parent === null) return false;
     const at = Array.prototype.indexOf.call(parent.childNodes, box);
@@ -675,19 +751,20 @@ function contentAt(
   container: Element,
   range: Range,
   node: Node,
+  walk: Walk,
 ): Content | null {
   const el = elementNear(node);
-  if (el === null || el.closest(OLD_OR_INJECTED) !== null) return null;
+  if (el === null || el.closest(walk.skip) !== null) return null;
   const inside = node === el ? el.parentElement : el;
-  const box = inside?.closest(CODE_BLOCK) ?? null;
+  const box = inside?.closest(walk.code) ?? null;
   if (box !== null && container.contains(box)) return null;
-  const block = el.closest(`[${SOURCE_LINE_ATTR}]`);
+  const block = el.closest(walk.block);
   if (block === null || !container.contains(block)) return null;
   if (node instanceof Text) {
     const part = partIn(node, range);
     return /\S/.test(part.text) ? { kind: "text", node, ...part } : null;
   }
-  return node === el && isBox(el) && coversBox(range, el)
+  return node === el && isBox(el, walk) && coversBox(range, el, walk)
     ? { kind: "box", el }
     : null;
 }
@@ -698,40 +775,60 @@ function contentAt(
  * element or on text whose part in the selection is blank. pierre's rows
  * map their own edges, and so does the text of a code block.
  */
-function selectsNothing(container: Element, range: Range, at: Point): boolean {
+function selectsNothing(
+  container: Element,
+  range: Range,
+  at: Point,
+  walk: Walk,
+): boolean {
   if (!container.contains(at.node)) return false;
-  const box = elementNear(at.node)?.closest(CODE_BLOCK) ?? null;
-  if (box !== null && container.contains(box) && coversBox(range, box)) {
+  if (
+    walk.uiSelectsNothing &&
+    elementNear(at.node)?.closest("[data-annotation-ui]") != null
+  ) {
+    return true;
+  }
+  const box = elementNear(at.node)?.closest(walk.code) ?? null;
+  if (box !== null && container.contains(box) && coversBox(range, box, walk)) {
     return false;
   }
   return !(at.node instanceof Text) || !/\S/.test(partIn(at.node, range).text);
 }
 
 /** Whether a walk looks at what `node` holds. */
-function walksInto(node: Node): boolean {
+function walksInto(node: Node, walk: Walk): boolean {
   return (
     !(node instanceof Element) ||
-    !(node.matches(OLD_OR_INJECTED) || isBox(node))
+    !(node.matches(walk.skip) || isBox(node, walk))
   );
 }
 
-function lastWithin(node: Node): Node {
+function lastWithin(node: Node, walk: Walk): Node {
   let last = node;
-  while (walksInto(last) && last.lastChild !== null) last = last.lastChild;
+  while (walksInto(last, walk) && last.lastChild !== null) {
+    last = last.lastChild;
+  }
   return last;
 }
 
 /** The node before `node` in document order, within the container. */
-function nodeBefore(container: Element, node: Node): Node | null {
+function nodeBefore(container: Element, node: Node, walk: Walk): Node | null {
   if (node === container) return null;
-  if (node.previousSibling !== null) return lastWithin(node.previousSibling);
+  if (node.previousSibling !== null) {
+    return lastWithin(node.previousSibling, walk);
+  }
   const parent = node.parentNode;
   return parent === container ? null : parent;
 }
 
 /** The node after `node` in document order, within the container. */
-function nodeAfter(container: Element, node: Node, into: boolean): Node | null {
-  if (into && walksInto(node) && node.firstChild !== null) {
+function nodeAfter(
+  container: Element,
+  node: Node,
+  into: boolean,
+  walk: Walk,
+): Node | null {
+  if (into && walksInto(node, walk) && node.firstChild !== null) {
     return node.firstChild;
   }
   for (let n: Node | null = node; n !== null && n !== container; ) {
@@ -746,17 +843,18 @@ function contentBefore(
   container: Element,
   range: Range,
   at: Point,
+  walk: Walk,
 ): Content | null {
   let node: Node | null;
-  if (at.node instanceof Text) node = nodeBefore(container, at.node);
+  if (at.node instanceof Text) node = nodeBefore(container, at.node, walk);
   else {
     const child = at.node.childNodes[at.offset - 1];
-    node = child === undefined ? at.node : lastWithin(child);
+    node = child === undefined ? at.node : lastWithin(child, walk);
   }
-  for (; node !== null; node = nodeBefore(container, node)) {
+  for (; node !== null; node = nodeBefore(container, node, walk)) {
     // Past the start: nothing before it is selected.
     if (!range.intersectsNode(node)) return null;
-    const content = contentAt(container, range, node);
+    const content = contentAt(container, range, node, walk);
     if (content !== null) return content;
   }
   return null;
@@ -767,20 +865,21 @@ function contentAfter(
   container: Element,
   range: Range,
   at: Point,
+  walk: Walk,
 ): Content | null {
   let node: Node | null =
     (at.node instanceof Text ? undefined : at.node.childNodes[at.offset]) ??
-    nodeAfter(container, at.node, false);
-  for (; node !== null; node = nodeAfter(container, node, true)) {
+    nodeAfter(container, at.node, false, walk);
+  for (; node !== null; node = nodeAfter(container, node, true, walk)) {
     if (!range.intersectsNode(node)) return null;
-    const content = contentAt(container, range, node);
+    const content = contentAt(container, range, node, walk);
     if (content !== null) return content;
   }
   return null;
 }
 
 /** The point on one side of an element, in its parent. */
-function beside(el: Element, side: "before" | "after"): Point {
+export function beside(el: Element, side: "before" | "after"): Point {
   const parent = el.parentNode as Node;
   const at = Array.prototype.indexOf.call(parent.childNodes, el);
   return { node: parent, offset: side === "before" ? at : at + 1 };
@@ -800,50 +899,57 @@ function beside(el: Element, side: "before" | "after"): Point {
  * text endpoint where it is, at the edge of the prose next to the block,
  * which already maps to columns; an element endpoint goes just inside the
  * block's wrapper, whose own stamp then bounds the anchor.
+ *
+ * With `old`, a compared document's removed text and structure count as
+ * content too (`OLD_WALK`), so that an end can move onto removed text the
+ * selection selects; without it they are passed over like the rest of what
+ * the spec view injects.
  */
-function endsOnContent(
+export function endsOnContent(
   container: Element,
   ends: SelectionEndpoints,
+  { old = false }: { old?: boolean } = {},
 ): SelectionEndpoints {
+  const walk = old ? OLD_WALK : CURRENT_WALK;
   const ordered = orderedEndpoints(ends);
   if (ordered === null) return ends;
   const { range } = ordered;
   const { start, end } = ordered.ends;
-  const moveStart = selectsNothing(container, range, start);
-  const moveEnd = selectsNothing(container, range, end);
+  const moveStart = selectsNothing(container, range, start, walk);
+  const moveEnd = selectsNothing(container, range, end, walk);
   if (!moveStart && !moveEnd) return ends;
-  const first = moveStart ? contentAfter(container, range, start) : null;
-  const last = moveEnd ? contentBefore(container, range, end) : null;
+  const first = moveStart ? contentAfter(container, range, start, walk) : null;
+  const last = moveEnd ? contentBefore(container, range, end, walk) : null;
   // Nothing but whitespace between the two ends.
   if ((moveStart && first === null) || (moveEnd && last === null)) return ends;
   return {
-    start: first === null ? start : startOn(first, start),
-    end: last === null ? end : endOn(last, end),
+    start: first === null ? start : startOn(first, start, walk),
+    end: last === null ? end : endOn(last, end, walk),
     collapsed: ends.collapsed,
   };
 }
 
-function startOn(content: Content, start: Point): Point {
+function startOn(content: Content, start: Point, walk: Walk): Point {
   if (content.kind === "text") {
     return {
       node: content.node,
       offset: content.from + content.text.search(/\S/),
     };
   }
-  if (!content.el.hasAttribute(CODE_CONTENT_START_ATTR)) {
+  if (!content.el.matches(walk.code)) {
     return beside(content.el, "before");
   }
   return start.node instanceof Text ? start : { node: content.el, offset: 0 };
 }
 
-function endOn(content: Content, end: Point): Point {
+function endOn(content: Content, end: Point, walk: Walk): Point {
   if (content.kind === "text") {
     return {
       node: content.node,
       offset: content.from + content.text.trimEnd().length,
     };
   }
-  if (!content.el.hasAttribute(CODE_CONTENT_START_ATTR)) {
+  if (!content.el.matches(walk.code)) {
     return beside(content.el, "after");
   }
   return end.node instanceof Text

@@ -82,7 +82,6 @@ import {
 } from "@/components/shared/return-link.tsx";
 import { UserChip } from "@/components/shared/user-chip.tsx";
 import {
-  type AnchorRange,
   AnnotatedMarkdown,
   type DisplayedAnnotation,
 } from "@/components/spec/annotated-markdown.tsx";
@@ -129,6 +128,7 @@ import {
   CODE_HIGHLIGHT_CSS,
   useCodeHighlights,
 } from "@/lib/code-highlights.ts";
+import type { CompareAnchor } from "@/lib/compare-anchor.ts";
 import {
   COLLAPSED_CONTEXT_THRESHOLD,
   hangLine,
@@ -1169,17 +1169,29 @@ function SpecViewBody({
   // Stable, because the document and every chip on it are memoised against
   // them: a fresh closure per render re-renders the lot (T-601).
   const stageRange = useCallback(
-    (range: AnchorRange) => {
+    (range: CompareAnchor) => {
       if (selected === undefined) return;
+      // A selection in what the comparison put back of the baseline anchors
+      // to the baseline, under the path the file had there.
+      const on = !range.baseline
+        ? { path: selected.path, version, body: selected.body }
+        : baseline === null || baselineBody === undefined
+          ? null
+          : {
+              path: renamedFrom.get(selected.path) ?? selected.path,
+              version: baseline,
+              body: baselineBody,
+            };
+      if (on === null) return;
       session.retarget({
-        path: selected.path,
-        version,
+        path: on.path,
+        version: on.version,
         lineStart: range.lineStart,
         lineEnd: range.lineEnd,
         colStart: range.colStart,
         colEnd: range.colEnd,
         quote: quoteOf(
-          selected.body,
+          on.body,
           range.lineStart,
           range.lineEnd,
           range.colStart,
@@ -1187,7 +1199,7 @@ function SpecViewBody({
         ),
       });
     },
-    [session, selected, version],
+    [session, selected, version, baseline, baselineBody, renamedFrom],
   );
   const { mutate: resolveMutate } = resolve;
   const resolveComment = useCallback(
@@ -1197,13 +1209,54 @@ function SpecViewBody({
 
   // Comments that can hang inline on the viewed version of the selected
   // file; everything else (outdated, anchored to another version while an
-  // old one is viewed) lands in the flat list below the document.
-  const { displayed, unplaced, fileLevel } = useMemo(() => {
+  // old one is viewed) lands in the flat list below the document. A rendered
+  // comparison puts back what its baseline had and the viewed version does
+  // not, so what is anchored on the baseline, under the path the file had
+  // there, hangs on that as well (`baselineDisplayed`), at the baseline's
+  // lines. A comment among them on this file's own path stays in the list,
+  // since the viewed version has no place for it; one under a renamed
+  // file's old path never was in it, and still is not.
+  const renderedBaseline = baselineBody !== undefined;
+  const { displayed, unplaced, fileLevel, baselineDisplayed } = useMemo(() => {
     const displayed: DisplayedAnnotation[] = [];
     const unplaced: SpecCommentItem[] = [];
     const fileLevel: SpecCommentItem[] = [];
+    const baselineDisplayed: DisplayedAnnotation[] = [];
+    const baselinePath =
+      renderedBaseline &&
+      baseline !== null &&
+      baseline !== version &&
+      selectedPath !== undefined
+        ? (renamedFrom.get(selectedPath) ?? selectedPath)
+        : null;
+    const onBaseline = (
+      anchor: Pick<
+        SpecCommentItem["anchor"],
+        "path" | "version" | "line_start" | "line_end"
+      >,
+    ) =>
+      baselinePath !== null &&
+      anchor.path === baselinePath &&
+      anchor.version === baseline &&
+      anchor.line_start !== null &&
+      anchor.line_end !== null;
+    const onBaselineComment = (item: SpecCommentItem): DisplayedAnnotation => ({
+      key: `c${item.comment_id}`,
+      kind: "comment",
+      item,
+      start: item.anchor.line_start ?? 0,
+      end: item.anchor.line_end ?? 0,
+      colStart: item.anchor.col_start,
+      colEnd: item.anchor.col_end,
+    });
     for (const item of comments.data.items) {
-      if (item.anchor.path !== selectedPath) continue;
+      if (item.anchor.path !== selectedPath) {
+        // A renamed file's comments on the baseline are under its old path.
+        if (onBaseline(item.anchor)) {
+          baselineDisplayed.push(onBaselineComment(item));
+        }
+        continue;
+      }
       if (item.anchor.line_start === null || item.anchor.line_end === null) {
         // File-level comments (T-61) sit above the document, not on a block.
         fileLevel.push(item);
@@ -1237,9 +1290,24 @@ function SpecViewBody({
         });
       } else {
         unplaced.push(item);
+        if (onBaseline(item.anchor)) {
+          baselineDisplayed.push(onBaselineComment(item));
+        }
       }
     }
     for (const draft of drafts.drafts) {
+      if (onBaseline(draft.anchor)) {
+        baselineDisplayed.push({
+          key: draft.id,
+          kind: "draft",
+          draft,
+          start: draft.anchor.line_start ?? 0,
+          end: draft.anchor.line_end ?? 0,
+          colStart: draft.anchor.col_start,
+          colEnd: draft.anchor.col_end,
+        });
+        continue;
+      }
       if (draft.anchor.path !== selectedPath) continue;
       if (draft.anchor.version !== version) continue;
       if (draft.anchor.line_start === null || draft.anchor.line_end === null) {
@@ -1255,8 +1323,16 @@ function SpecViewBody({
         colEnd: draft.anchor.col_end,
       });
     }
-    return { displayed, unplaced, fileLevel };
-  }, [comments.data, drafts.drafts, selectedPath, version]);
+    return { displayed, unplaced, fileLevel, baselineDisplayed };
+  }, [
+    comments.data,
+    drafts.drafts,
+    selectedPath,
+    version,
+    renderedBaseline,
+    baseline,
+    renamedFrom,
+  ]);
 
   const fileLevelDrafts = drafts.drafts.filter(
     (d) =>
@@ -1897,6 +1973,7 @@ function SpecViewBody({
                       body={selected.body}
                       baselineBody={baselineBody}
                       annotations={displayed}
+                      baselineAnnotations={baselineDisplayed}
                       changedRanges={changedRanges}
                       foldUnchanged={foldUnchanged}
                       onStage={stageRange}
