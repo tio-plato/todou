@@ -149,6 +149,10 @@ describe("buildSegmentIndex", () => {
     );
   });
 
+  it("flattens text with the blanks at a line break dropped, as shown", () => {
+    expect(buildSegmentIndex("x &#10; y z\n").text).toBe("x\ny z");
+  });
+
   it("leaves fenced code out entirely", () => {
     expect(index.text).not.toContain("code()");
   });
@@ -280,6 +284,19 @@ describe("textPieces", () => {
       [
         { text: "a\n", start: 2, end: 4, exact: true },
         { text: ">", start: 10, end: 11, exact: true },
+      ],
+    ],
+    [
+      // The renderer drops the blanks on either side of a line break, here
+      // the one a reference stands for.
+      "a reference for a line break, blanks around it",
+      "x &#10; y z",
+      [0, 11],
+      "x\ny z",
+      [
+        { text: "x", start: 0, end: 1, exact: true },
+        { text: "\n", start: 2, end: 7, exact: false },
+        { text: "y z", start: 8, end: 11, exact: true },
       ],
     ],
   ] as const)("lines up %s", (_shape, source, [start, end], value, pieces) => {
