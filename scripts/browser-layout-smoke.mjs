@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
  * Manual real-Chromium layout smoke for board overlay scrollbars, collapsed
- * assignee badge clipping, and the spec comment composer staying above the
- * compare view's stacked file headers. It is intentionally independent of
- * `pnpm test`/CI.
+ * assignee badge clipping, the spec comment composer staying above the
+ * compare view's stacked file headers, and the rendered spec's annotation
+ * gutter. It is intentionally independent of `pnpm test`/CI.
  *
  * Usage: node scripts/browser-layout-smoke.mjs [--self-test|--self-test-cdp|--self-test-frames] [--keep] [--help]
  * Preconditions: the devshell's Node 24+, installed workspace dependencies,
@@ -24,6 +24,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runBadgeClip } from "./browser/badge-clip.mjs";
 import { runBoardScrollbars } from "./browser/board-scrollbars.mjs";
+import { runSpecChipGutter } from "./browser/spec-chip-gutter.mjs";
 import { runSpecComposerCover } from "./browser/spec-composer-cover.mjs";
 import {
   selfCheckCdpPipe,
@@ -39,6 +40,8 @@ Cases:
   board-scrollbars     Board column overlay scrollbars reveal, hide, and reappear.
   badge-clip           A collapsed assignee summary does not clip machine badges.
   spec-composer-cover  No stacked file header paints over the spec composer.
+  spec-chip-gutter     Below 640px spec text reaches the card and chips stay off
+                       it; from 640px up the 40px chip gutter stays.
 
 Usage:
   node scripts/browser-layout-smoke.mjs
@@ -128,6 +131,10 @@ const COVERAGE_FAILURES = new Set([
   "clipping-ancestor-missing",
   "641-horizontal-overflow-missing",
   "641-truncation-contract",
+  "markdown-missing",
+  "card-missing",
+  "chip-missing",
+  "popover-missing",
 ]);
 
 function isCoverageFailure(entry) {
@@ -219,6 +226,7 @@ async function main() {
       ["board-scrollbars", runBoardScrollbars],
       ["badge-clip", runBadgeClip],
       ["spec-composer-cover", runSpecComposerCover],
+      ["spec-chip-gutter", runSpecChipGutter],
     ]) {
       const stage = Date.now();
       try {
