@@ -187,6 +187,14 @@ export function EntryActionsMenu({
               document,
             );
           }}
+          // An open menu holds the focus, so a capture still here when this
+          // button hears a key belongs to a press that is over, most often
+          // one that opened nothing: a right-click, a Ctrl-click, a touch
+          // that became a scroll (T-596). Dropped, so a keyboard open reads
+          // the selection as it is now.
+          onKeyDown={() => {
+            selected.current = null;
+          }}
         >
           <EllipsisIcon className="size-3.5" />
         </Button>

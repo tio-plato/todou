@@ -436,6 +436,38 @@ describe("EntryActionsMenu on a comment", () => {
     expect(onQuote).toHaveBeenLastCalledWith(BODY);
   });
 
+  it.each([
+    ["a right-click", { button: 2, pointerType: "mouse" }, "Enter"],
+    ["a Ctrl-click", { button: 0, ctrlKey: true, pointerType: "mouse" }, " "],
+    [
+      "a touch that scrolled away",
+      { button: 0, pointerType: "touch" },
+      "ArrowDown",
+    ],
+  ])(
+    "reads the live selection on a keyboard open after %s, which opened nothing",
+    async (_press, press, key) => {
+      const onQuote = vi.fn();
+      const view = renderComment({ onQuote });
+      await selectSecondParagraph(view);
+      const trigger = await waitFor(() =>
+        within(view.container).getByRole("button", { name: "comment actions" }),
+      );
+      // Radix opens on a plain primary press only, and the touch never gets
+      // the click its open waits for.
+      fireEvent.pointerDown(trigger, press);
+      expect(screen.queryByRole("menu")).toBeNull();
+
+      window.getSelection()?.removeAllRanges();
+      trigger.focus();
+      fireEvent.keyDown(trigger, { key });
+      await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
+      fireEvent.click(menuItem("Quote reply"));
+      await waitFor(() => expect(onQuote).toHaveBeenCalled());
+      expect(onQuote).toHaveBeenCalledExactlyOnceWith(BODY);
+    },
+  );
+
   it("hands the focus back to the button on the close after a Quote reply", async () => {
     const view = renderComment({ onQuote: () => {} });
     const trigger = await openMenu(view);
