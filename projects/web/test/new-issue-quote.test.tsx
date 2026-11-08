@@ -6,9 +6,9 @@ import {
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
-import { render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import type { Issue, Label, Me, Member, Project, Status } from "@todou/shared";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { issueQuery } from "../src/api/issues.ts";
 import {
   labelsQuery,
@@ -17,6 +17,7 @@ import {
   projectQuery,
   statusesQuery,
 } from "../src/api/queries.ts";
+import { questionsQuery } from "../src/api/questions.ts";
 import {
   searchCommentRefQuery as commentRefQuery,
   type ResolvedCommentRef,
@@ -97,6 +98,74 @@ const COMMENT: ResolvedCommentRef = {
   at: { slug: SLUG, number: 370, commentId: 4242 },
 };
 
+/** A comment asking one question, as its card shows it. */
+const ASKING: ResolvedCommentRef = {
+  ...COMMENT,
+  body: "One question.",
+  component: {
+    type: "questions",
+    questions: [
+      {
+        key: "storage",
+        header: "Storage",
+        question: "Where should X live?",
+        multiple: false,
+        options: [
+          { label: "Reuse the jobs table", description: "Fewer tables." },
+          { label: "A new table" },
+        ],
+      },
+    ],
+  },
+};
+
+/** `/questions` for a card holding `comment`, which was answered. */
+function answeredQuestions(comment: ResolvedCommentRef) {
+  if (comment.component?.type !== "questions") throw new Error("no questions");
+  return {
+    items: [
+      {
+        comment_id: comment.at.commentId,
+        author,
+        created_at: comment.created_at,
+        questions: comment.component.questions,
+        answer: {
+          event_id: 9,
+          actor: author,
+          created_at: "2026-09-08T11:00:00Z",
+          answers: [
+            {
+              key: "storage",
+              selected: [{ index: 1, label: "A new table" }],
+              other: null,
+              declined: false,
+            },
+          ],
+        },
+      },
+    ],
+    open: 0,
+  };
+}
+
+/** The prefill quoting ASKING, from `permalink`. */
+function askingPrefill(permalink: string): string {
+  return [
+    "> One question.",
+    ">",
+    "> **Storage**",
+    ">",
+    "> Where should X live?",
+    ">",
+    "> - Reuse the jobs table — Fewer tables.",
+    "> - A new table",
+    ">",
+    "> **Answer:** A new table",
+    "",
+    `_Originally posted by @alice in ${permalink}_`,
+  ].join("\n");
+}
+
 /** `seed` decides what the quoted content resolves to; leave it out to miss. */
 function renderAt(
   search: string,
@@ -168,6 +237,160 @@ describe("a new issue opened to quote something", () => {
       ),
     );
   });
+
+  it("quotes a question comment with its questions and answer", async () => {
+    const view = renderAt(
+      `?quote_project=${SLUG}&quote_issue=370&quote_comment=4242`,
+      (client) => {
+        client.setQueryData(commentRefQuery(SLUG, 370, 4242).queryKey, ASKING);
+        // In the cache before the page asks: its refetch on mount fails here,
+        // which keeps the data and settles nothing else.
+        client.setQueryData(
+          questionsQuery(SLUG, 370).queryKey,
+          answeredQuestions(ASKING),
+        );
+      },
+    );
+    await waitFor(() =>
+      expect(cmGetValue(view.container)).toBe(
+        askingPrefill(`${origin()}/projects/${SLUG}/issues/370#comment-4242`),
+      ),
+    );
+  });
+
+  it("reads the answer where a question comment has moved to", async () => {
+    // The link still names the comment's old address; the comment, and so
+    // its card's answers, live at the new one.
+    const moved: ResolvedCommentRef = {
+      ...ASKING,
+      at: { slug: "elsewhere", number: 12, commentId: 99 },
+    };
+    const view = renderAt(
+      `?quote_project=${SLUG}&quote_issue=370&quote_comment=4242`,
+      (client) => {
+        client.setQueryData(commentRefQuery(SLUG, 370, 4242).queryKey, moved);
+        client.setQueryData(
+          questionsQuery("elsewhere", 12).queryKey,
+          answeredQuestions(moved),
+        );
+      },
+    );
+    await waitFor(() =>
+      expect(cmGetValue(view.container)).toBe(
+        askingPrefill(`${origin()}/projects/${SLUG}/issues/370#comment-4242`),
+      ),
+    );
+  });
+
+  it("waits for the answers rather than quote ones the cache held from before", async () => {
+    // The cache still says unanswered; the card was answered since.
+    const unanswered = answeredQuestions(ASKING);
+    const before = {
+      ...unanswered,
+      items: unanswered.items.map((item) => ({ ...item, answer: null })),
+      open: 1,
+    };
+    vi.stubGlobal("fetch", async (input: unknown) => {
+      const url = String(input);
+      if (url.includes(`/projects/${SLUG}/issues/370/questions`)) {
+        return Response.json(answeredQuestions(ASKING));
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    try {
+      const view = renderAt(
+        `?quote_project=${SLUG}&quote_issue=370&quote_comment=4242`,
+        (client) => {
+          client.setQueryData(
+            commentRefQuery(SLUG, 370, 4242).queryKey,
+            ASKING,
+          );
+          client.setQueryData(questionsQuery(SLUG, 370).queryKey, before);
+        },
+      );
+      await waitFor(() => expect(view.getByLabelText("Title")).toBeTruthy());
+      expect(cmGetValue(view.container)).toBe(
+        askingPrefill(`${origin()}/projects/${SLUG}/issues/370#comment-4242`),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
+    [
+      "the answers refetch",
+      (client: ReturnType<typeof testQueryClient>) => {
+        // What a live event about the card's answers does.
+        void client.refetchQueries({ queryKey: ["questions", SLUG, 370] });
+      },
+    ],
+    [
+      "the quoted comment turns out to have moved",
+      (client: ReturnType<typeof testQueryClient>) => {
+        const moved: ResolvedCommentRef = {
+          ...ASKING,
+          at: { slug: "elsewhere", number: 12, commentId: 4242 },
+        };
+        client.setQueryData(commentRefQuery(SLUG, 370, 4242).queryKey, moved);
+      },
+    ],
+  ])(
+    "keeps the form, and what was typed in it, while %s",
+    async (_name, disturb) => {
+      let client: ReturnType<typeof testQueryClient> | undefined;
+      let held = false;
+      let release: (() => void) | undefined;
+      vi.stubGlobal("fetch", async (input: unknown) => {
+        const url = String(input);
+        if (url.includes("/questions")) {
+          if (held) await new Promise<void>((resolve) => (release = resolve));
+          return Response.json(answeredQuestions(ASKING));
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      });
+      try {
+        const view = renderAt(
+          `?quote_project=${SLUG}&quote_issue=370&quote_comment=4242`,
+          (seeded) => {
+            client = seeded;
+            // The app's own client keeps a query fresh for 5s, so a card page
+            // that just loaded the answers leaves them fresh for this page.
+            seeded.setQueryDefaults(["questions"], { staleTime: 5_000 });
+            seeded.setQueryData(
+              commentRefQuery(SLUG, 370, 4242).queryKey,
+              ASKING,
+            );
+            seeded.setQueryData(
+              questionsQuery(SLUG, 370).queryKey,
+              answeredQuestions(ASKING),
+            );
+          },
+        );
+        const title = await waitFor(() => view.getByLabelText("Title"));
+        fireEvent.change(title, { target: { value: "Draft title" } });
+
+        held = true;
+        act(() => {
+          if (client) disturb(client);
+        });
+        await waitFor(() => expect(release).toBeDefined());
+        expect(view.getByLabelText("Title")).toHaveProperty(
+          "value",
+          "Draft title",
+        );
+        release?.();
+        await waitFor(() => expect(client?.isFetching()).toBe(0));
+        expect(view.getByLabelText("Title")).toHaveProperty(
+          "value",
+          "Draft title",
+        );
+      } finally {
+        release?.();
+        vi.unstubAllGlobals();
+      }
+    },
+  );
 
   it("quotes the issue body when no comment is named", async () => {
     const view = renderAt(`?quote_project=${SLUG}&quote_issue=370`, (client) =>
