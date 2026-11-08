@@ -1,5 +1,5 @@
 import type { AnchorRange } from "@/components/spec/selection-entry.tsx";
-import { codeRowSource } from "./code-rows.ts";
+import { codeRowSource, stampedAbove } from "./code-rows.ts";
 import {
   DELETION_LINE_TYPE,
   LINE_TYPE_ATTR,
@@ -66,9 +66,13 @@ export type ColumnBlock = {
  * root, and `codeRowSource` maps those rows instead. What is left of a code
  * block outside its rows — the plain text shown before highlighting, a
  * mermaid picture — maps to nothing and keeps the line anchor.
+ *
+ * The walk hops shadow roots, for the rows pierre draws in a document card:
+ * the card is an atom of the paragraph it sits in.
  */
 function columnBlockOf(node: Node): ColumnBlock | null {
-  const stamped = elementNear(node)?.closest(`[${SOURCE_LINE_ATTR}]`) ?? null;
+  const near = elementNear(node);
+  const stamped = near === null ? null : stampedAbove(near);
   if (stamped === null) return null;
   if (stamped.hasAttribute(CODE_CONTENT_START_ATTR)) return null;
   const loc = parseSourceLoc(stamped.getAttribute(SOURCE_LINE_ATTR));
@@ -440,7 +444,10 @@ export function sourceOffsetInBlock(
     node.nodeType === Node.TEXT_NODE
       ? null
       : (node.childNodes[edge === "start" ? offset : offset - 1] ?? null);
-  const atom = aligned.atoms.find((a) => a.el.contains(node) || a.el === next);
+  // A card's rows sit in a shadow root under it.
+  const atom = aligned.atoms.find(
+    (a) => composedContains(a.el, node) || a.el === next,
+  );
   if (atom !== undefined) return edge === "start" ? atom.start : atom.end;
   if (node.nodeType !== Node.TEXT_NODE) return null;
   const at = aligned.offsets.get(node);
@@ -470,8 +477,9 @@ function pastPrefix(
 /**
  * Source offset one endpoint maps to, wherever it is: a code row's text maps
  * by where `codeRowSource` puts the row, prose through the segment index.
- * `edge` only matters to prose, for which segment a boundary between two
- * belongs to.
+ * A row no code block's wrapper holds is one a document card draws, and maps
+ * as the rest of the card does. `edge` only matters to prose, for which
+ * segment a boundary between two belongs to.
  */
 function endpointOffset(
   index: SegmentIndex,
@@ -480,9 +488,12 @@ function endpointOffset(
   edge: "start" | "end",
 ): number | null {
   const row = rowAt(node);
-  if (row === null) return sourceOffsetOfEndpoint(index, node, offset, edge);
-  const source = codeRowSource(index, row);
-  if (source === null || source.textStart === null) return null;
+  const source = row === null ? null : codeRowSource(index, row);
+  // A row in no code block's wrapper is one a document card shows.
+  if (row === null || source === null) {
+    return sourceOffsetOfEndpoint(index, node, offset, edge);
+  }
+  if (source.textStart === null) return null;
   const at = offsetInRow(row, node, offset);
   return at === null ? null : source.textStart + at;
 }
