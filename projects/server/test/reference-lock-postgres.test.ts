@@ -381,6 +381,35 @@ describe.skipIf(!PG_URL)("reference lock order", () => {
     }
   });
 
+  // X is referenced and updated, and goes to the trash while the request
+  // waits for it: the request still locks it to attach the draft, but owes
+  // it no reference any more.
+  it("a write that references the card its draft is on records nothing on it once it is trashed", async () => {
+    const x = await createCard(slug, "X");
+    const a = await createCard(slug, "A");
+    const draft = await uploadDraft(x, "trashed.txt");
+    // The holder trashes X: it locks the card, then marks it.
+    const response = await contend(
+      () => lockCard(x.id, "NO KEY UPDATE"),
+      () =>
+        send("POST", `/projects/${slug}/issues/${a.number}/comments`, {
+          body: `see #${x.number} ![](${draft.url})`,
+        }),
+      () =>
+        holder.query("UPDATE issues SET deleted_at = now() WHERE id = $1", [
+          x.id,
+        ]),
+    );
+    expect(response.status).toBe(201);
+    await expectAttached(draft.id, x.id);
+    const referenced = await observer.query<{ count: string }>(
+      `SELECT count(*) FROM issue_events
+       WHERE issue_id = $1 AND type = 'referenced'`,
+      [x.id],
+    );
+    expect(Number(referenced.rows[0]?.count)).toBe(0);
+  });
+
   it("a write attaching drafts on several cards locks them in id order", async () => {
     const c1 = await createCard(slug, "C1");
     const c2 = await createCard(slug, "C2");
