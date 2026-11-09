@@ -283,10 +283,10 @@ host; rerun it on yours):
 - Each worker adds a thread and V8 isolate on top of the WASM heap the
   PGlite instance needs in either mode — budget roughly one thread per
   open handle. `max_open` bounds the idle cache, not the peak: a handle
-  that a cross-project request is reading is never closed, because
-  closing it would cut off a transaction, so a burst of concurrent
-  requests holds a few extra handles open until the next open reclaims
-  them.
+  that a request is using is never closed, because closing it would cut
+  off its work, so a burst of concurrent requests holds extra handles open
+  (see PostgreSQL pool sizing below for how many) until the next open
+  reclaims them.
 - If a worker crashes, in-flight queries on that database fail (they are
   never retried automatically) and a fresh worker reopens the data
   directory, recovering committed data; other projects never notice.
@@ -313,14 +313,20 @@ statement fails instead (`timeout exceeded when trying to connect`, or
 request ends in a 500.
 
 Under `dedicated` placement each open project database is a separate pool.
-`database.projects.max_open` bounds the idle handle cache, and every
-cross-project request in flight can hold up to `max_open` handles that the
-cache will not close while they are being read, so the theoretical
-connection ceiling is `database.projects.max_open × (1 + C) × pool.max`
-(plus one pool for the system database), where C is the number of
-cross-project requests allowed to run at once. Work backwards from the
-PostgreSQL server's `max_connections`: either lower `max_open` or
-`pool.max`, or cap C at the reverse proxy.
+`database.projects.max_open` bounds the idle handle cache, and the cache
+closes no handle a request in flight is using. A cross-project request can
+hold up to `max_open` handles while it reads them. Any other request holds
+the project databases it works in until it responds, one or two (a move or
+a block between two projects), plus one at a time for each database it only
+passes through, such as the projects a card's text refers to. So the
+theoretical connection ceiling is `(database.projects.max_open × (1 + C) +
+3 × R) × pool.max` (plus one pool for the system database), where C is the
+number of cross-project requests allowed to run at once and R the number of
+other requests, each item of an `/api/batch` (up to 50) counting as one.
+Work backwards from the PostgreSQL server's `max_connections`: either lower
+`max_open` or `pool.max`, or cap C and R at the reverse proxy, which sees a
+batch as a single request. A request that holds more than `max_open`
+databases at once logs a `db router:` warning naming it.
 
 ## The unit
 
