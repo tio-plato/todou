@@ -35,6 +35,55 @@ describe("visual viewport insets (T-585)", () => {
     expect(visualViewportInsets()).toEqual({ top: 300, bottom: 37 });
   });
 
+  /**
+   * The rest of a frame recorded on an iPhone, beside the visual viewport
+   * (whose `pageTop` the stub takes): the page's scroll and its measurements.
+   */
+  function stubPage(page: {
+    scrollY: number;
+    scrollHeight: number;
+    clientHeight: number;
+  }) {
+    vi.spyOn(window, "scrollY", "get").mockReturnValue(page.scrollY);
+    vi.spyOn(root, "scrollHeight", "get").mockReturnValue(page.scrollHeight);
+    vi.spyOn(root, "clientHeight", "get").mockReturnValue(page.clientHeight);
+    // The body holds the whole page.
+    vi.spyOn(document.body, "clientHeight", "get").mockReturnValue(
+      page.scrollHeight,
+    );
+  }
+
+  it("keeps the header still while the page bounces past its end", () => {
+    stubVisualViewport({ offsetTop: 176, height: 714, pageTop: 6865 });
+    stubPage({
+      scrollY: 6865,
+      scrollHeight: 7403,
+      clientHeight: 714,
+    });
+    expect(visualViewportInsets()).toEqual({ top: 0, bottom: 0 });
+  });
+
+  it("keeps the bottom controls still while the page bounces past its top", () => {
+    stubVisualViewport({ offsetTop: -134, height: 714, pageTop: -134 });
+    stubPage({
+      scrollY: -134,
+      scrollHeight: 7403,
+      clientHeight: 714,
+    });
+    expect(visualViewportInsets()).toEqual({ top: 0, bottom: 0 });
+  });
+
+  it("keeps the header on a keyboard page panned to its end, where iOS shrinks innerHeight", () => {
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(589);
+    stubVisualViewport({ offsetTop: 212.7, height: 383, pageTop: 6901.7 });
+    stubPage({
+      scrollY: 6902,
+      scrollHeight: 7491,
+      clientHeight: 714,
+    });
+    expect(visualViewportInsets()).toEqual({ top: 212.7, bottom: 0 });
+  });
+
   it("leaves the edges where they are under a pinch zoom", () => {
     stubVisualViewport({ offsetTop: 120, height: 357, scale: 2 });
     expect(visualViewportInsets()).toEqual({ top: 0, bottom: 0 });
