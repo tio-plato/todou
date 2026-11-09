@@ -8,6 +8,7 @@ import type {
   CommentHideResult,
   CommentLocation,
   CommentUpdateInput,
+  MemberRole,
   SettledByHide,
   TimelineComment,
 } from "@todou/shared";
@@ -52,6 +53,7 @@ import {
   assertIssueReadable,
   assertIssueWritable,
   gateColumns,
+  lockWritableIssue,
   mayFollowAlias,
 } from "./trash.ts";
 import { getUserRefs } from "./users.ts";
@@ -111,7 +113,8 @@ async function loadIssue(db: Db, projectId: number, number: number) {
  * project transaction must not hold a second connection for.
  *
  * The referenced cards and this one are locked in id order before anything
- * is written (see `lockIssueRows`).
+ * is written, and this one is checked against the write gate under its lock
+ * (see `lockIssueRows`).
  */
 export async function insertCommentInTx(
   tx: Db,
@@ -126,6 +129,8 @@ export async function insertCommentInTx(
     component?: CommentComponent | null;
     kind?: CommentRow["kind"];
     agentContext: AgentContext | null;
+    /** Who is writing, for the gate asked under the card's lock. */
+    gate: { actor: UserRow; role: MemberRole };
   },
 ): Promise<{
   comment: CommentRow;
@@ -137,7 +142,12 @@ export async function insertCommentInTx(
   const component = args.component ?? null;
   const issueNumber = issue.number;
 
-  const targets = await lockIssueRows(tx, project, issue.id, localRefs);
+  const targets = await lockIssueRows(
+    tx,
+    project,
+    { id: issue.id, ...args.gate },
+    localRefs,
+  );
   const inserted = await tx
     .insert(comments)
     .values({
@@ -256,6 +266,7 @@ export async function createComment(
       component,
       kind: input.kind,
       agentContext,
+      gate: { actor, role },
     });
     events.push(...result.timeline);
     // updated_at moved (and maybe the counter) → issue list ordering and
@@ -395,7 +406,12 @@ async function loadCommentForWrite(
   slug: string,
   issueNumber: number,
   commentId: number,
-): Promise<{ project: ProjectRow; db: Db; row: CommentRow }> {
+): Promise<{
+  project: ProjectRow;
+  db: Db;
+  row: CommentRow;
+  role: MemberRole;
+}> {
   const { project, role } = await requireCapability(
     ctx,
     actor,
@@ -415,7 +431,7 @@ async function loadCommentForWrite(
   if (row.authorId !== actor.id && role !== "admin") {
     throw new ForbiddenError("only the author or a project admin may modify");
   }
-  return { project, db, row };
+  return { project, db, row, role };
 }
 
 export async function updateComment(
@@ -429,7 +445,7 @@ export async function updateComment(
   // events born from this edit carry the editing request's context.
   agentContext: AgentContext | null = null,
 ): Promise<TimelineComment> {
-  const { project, db, row } = await loadCommentForWrite(
+  const { project, db, row, role } = await loadCommentForWrite(
     ctx,
     actor,
     slug,
@@ -465,13 +481,12 @@ export async function updateComment(
     return toTimelineComment(ctx, row, { elideHidden: false });
 
   const { after, refs, drafts } = await db.transaction(async (tx) => {
-    // The cards before the comment (see lockIssueRows). The comment's card
-    // is `write` because `commitDraftAttachments` below updates it when the
-    // edit links a draft uploaded on it.
+    // The cards before the comment (see lockIssueRows). A comment gone by
+    // now went with a move or a delete; the gate answers for a move first.
     const targets = await lockIssueRows(
       tx,
       project,
-      row.issueId,
+      { id: row.issueId, actor, role },
       resolved.local,
     );
     const updated = await tx
@@ -480,7 +495,7 @@ export async function updateComment(
       .where(eq(comments.id, row.id))
       .returning();
     const after = updated[0];
-    if (!after) throw new Error("comment update returned no row");
+    if (!after) throw new NotFoundError("comment not found");
 
     await recordRevision(tx, {
       projectId,
@@ -549,7 +564,7 @@ export async function deleteComment(
   issueNumber: number,
   commentId: number,
 ): Promise<void> {
-  const { project, db, row } = await loadCommentForWrite(
+  const { project, db, row, role } = await loadCommentForWrite(
     ctx,
     actor,
     slug,
@@ -559,12 +574,9 @@ export async function deleteComment(
   const projectId = project.id;
   let counterChanged = false;
   await db.transaction(async (tx) => {
-    // The card before the comment, as answering takes them.
-    await tx
-      .select({ id: issues.id })
-      .from(issues)
-      .where(eq(issues.id, row.issueId))
-      .for("no key update");
+    // The card first (see lockIssueRows): a move that took the comment away
+    // answers here, before the missing comment does.
+    await lockWritableIssue(tx, { id: row.issueId, actor, role });
     // Lock the row before reading what it already gave back: an answer or a
     // resolve that committed while this request waited is then visible here,
     // and a delete that won the race leaves nothing to lock. Read outside
@@ -1000,16 +1012,19 @@ export async function setCommentsHidden(
   assertIssueWritable(issue, actor, role);
   await requireSettleCapabilities(ctx, actor, slug, db, issue.id, input);
 
-  const result = await db.transaction((tx) =>
-    hideCommentsInTx(tx, {
+  const result = await db.transaction(async (tx) => {
+    // The gate again, under the card's lock (see lockIssueRows), which
+    // `hideCommentsInTx` then already holds.
+    await lockWritableIssue(tx, { id: issue.id, actor, role });
+    return hideCommentsInTx(tx, {
       projectId: project.id,
       issueId: issue.id,
       issueNumber,
       actorId: actor.id,
       input,
       agentContext,
-    }),
-  );
+    });
+  });
 
   for (const event of result.events) ctx.bus.publish(project.id, event);
   return {
