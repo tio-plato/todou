@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   type SourceFiles,
   sourceAnchorForSelection,
+  sourceHighlightRanges,
 } from "../src/components/spec/source-selection.ts";
 
 type Row = { line: number; text: string; type?: string };
@@ -178,6 +179,31 @@ describe("sourceAnchorForSelection", () => {
       );
       expect(anchor).toMatchObject({ lineStart: 3, lineEnd: 3 });
       expect(cut(CRLF, anchor)).toBe("quick");
+    },
+  );
+
+  it.each([
+    ["without", ""],
+    ["with", "\r"],
+  ])(
+    "highlights a comment's columns in a CRLF file's line, rows drawn %s their \\r",
+    (_drawn, cr) => {
+      const root = container();
+      drawFile(root, "plan.md", crlfRows(cr));
+      const ranges = sourceHighlightRanges(root, filesBy(crlf), [
+        {
+          kind: "comment",
+          path: "plan.md",
+          version: 3,
+          lineStart: 3,
+          colStart: 5,
+          lineEnd: 3,
+          colEnd: 9,
+        },
+      ]);
+      expect(ranges.comment.map((range) => range.toString())).toEqual([
+        "quick",
+      ]);
     },
   );
 
