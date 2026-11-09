@@ -1,5 +1,5 @@
 import type { IssueMove } from "@todou/shared";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
 import type { Context } from "hono";
 import type { AppEnv } from "../auth/middleware.ts";
 import type { AppContext } from "../bootstrap.ts";
@@ -262,30 +262,42 @@ export async function registerMove(
  *
  * Here rather than in blocks.ts so the dependency runs one way: relocation
  * owns "an address moved", and blocks.ts asks it where a card is now.
+ *
+ * The edges on both sides are locked in id order before either side is
+ * written, as every write of several edges does (see lockIssueRows). The
+ * transaction opens on the handle passed in: a savepoint inside the move's
+ * own transaction where there is one, since a second handle there would
+ * wait on the rows that transaction holds.
  */
 export async function rewriteBlockAddresses(
   system: Db,
   from: Address,
   to: Address,
 ): Promise<void> {
-  await system
-    .update(issueBlocks)
-    .set({ blockerProjectId: to.projectId, blockerNumber: to.number })
-    .where(
-      and(
-        eq(issueBlocks.blockerProjectId, from.projectId),
-        eq(issueBlocks.blockerNumber, from.number),
-      ),
-    );
-  await system
-    .update(issueBlocks)
-    .set({ blockedProjectId: to.projectId, blockedNumber: to.number })
-    .where(
-      and(
-        eq(issueBlocks.blockedProjectId, from.projectId),
-        eq(issueBlocks.blockedNumber, from.number),
-      ),
-    );
+  const blocker = and(
+    eq(issueBlocks.blockerProjectId, from.projectId),
+    eq(issueBlocks.blockerNumber, from.number),
+  );
+  const blocked = and(
+    eq(issueBlocks.blockedProjectId, from.projectId),
+    eq(issueBlocks.blockedNumber, from.number),
+  );
+  await system.transaction(async (tx) => {
+    await tx
+      .select({ id: issueBlocks.id })
+      .from(issueBlocks)
+      .where(or(blocker, blocked))
+      .orderBy(asc(issueBlocks.id))
+      .for("update");
+    await tx
+      .update(issueBlocks)
+      .set({ blockerProjectId: to.projectId, blockerNumber: to.number })
+      .where(blocker);
+    await tx
+      .update(issueBlocks)
+      .set({ blockedProjectId: to.projectId, blockedNumber: to.number })
+      .where(blocked);
+  });
 }
 
 /**
