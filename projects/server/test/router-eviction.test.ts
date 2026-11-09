@@ -210,3 +210,85 @@ describe("handle eviction", () => {
     expect(spy).toHaveBeenCalledTimes(3);
   });
 });
+
+describe("units of work", () => {
+  it("takes no pin for a unit that has already ended", async () => {
+    const dir = testTmpDir("todou-router-unit-");
+    const { router } = await open("dedicated", {
+      maxOpen: 1,
+      urlTemplate: perProject(dir),
+    });
+    const late = gate();
+    let tail: Promise<unknown> | undefined;
+    await router.withPinnedHandles(async () => {
+      // Left running past the unit's end, the way an SSE stream's loop
+      // outlives its handler. Nothing would ever release a pin taken here.
+      tail = late.wait.then(() => router.forProject(project(1)));
+    });
+    late.open();
+    await tail;
+    await router.forProject(project(2));
+    expect(driver.closes).toEqual([urlOf(router, 1)]);
+  });
+
+  it("releases a perDatabase group's pin when the group ends, not with the unit", async () => {
+    const dir = testTmpDir("todou-router-unit-");
+    const { router } = await open("dedicated", {
+      maxOpen: 1,
+      urlTemplate: perProject(dir),
+    });
+    const closedBeforeGroup: string[][] = [];
+    await router.withPinnedHandles(async () => {
+      // A request reading hundreds of project databases this way must not
+      // keep every one of them open until it responds, nor until the whole
+      // perDatabase call returns.
+      await router.perDatabase(
+        [project(1), project(2), project(3)],
+        routeOf,
+        async () => {
+          closedBeforeGroup.push([...driver.closes]);
+          return 1;
+        },
+      );
+      await router.forProject(project(4));
+      expect(driver.closes).toEqual([1, 2, 3].map((id) => urlOf(router, id)));
+      expect(router.openHandleCount()).toBe(1);
+    });
+    // max_open = 1 runs the groups one after another, and each open evicts
+    // the group before it.
+    expect(closedBeforeGroup).toEqual([
+      [],
+      [urlOf(router, 1)],
+      [urlOf(router, 1), urlOf(router, 2)],
+    ]);
+  });
+});
+
+describe("a unit holding more than max_open databases", () => {
+  it("warns once, naming the unit, and not for databases it goes through one at a time", async () => {
+    const dir = testTmpDir("todou-router-unit-");
+    const { router } = await open("dedicated", {
+      maxOpen: 2,
+      urlTemplate: perProject(dir),
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await router.withPinnedHandles(async () => {
+        await router.perDatabase(
+          [project(1), project(2), project(3), project(4)],
+          routeOf,
+          async () => 1,
+        );
+        await router.withProject(project(5), async () => 1);
+        expect(warn).not.toHaveBeenCalled();
+        for (const id of [1, 2, 3, 4]) await router.forProject(project(id));
+      }, "GET /api/example");
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.[1]).toMatchObject({
+        unit: "GET /api/example",
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});

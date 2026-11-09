@@ -554,20 +554,23 @@ async function registeredKeys(
   for (const infos of byUrl.values()) {
     const [first] = infos;
     if (!first) continue;
-    const db = await router.forProject(first);
     const ids = infos.map((info) => info.id);
-    for (let i = 0; i < keys.length; i += KEY_BATCH) {
-      const hits = await db
-        .select({ key: attachments.storageKey })
-        .from(attachments)
-        .where(
-          and(
-            inArray(attachments.storageKey, keys.slice(i, i + KEY_BATCH)),
-            inArray(attachments.projectId, ids),
-          ),
-        );
-      for (const hit of hits) found.add(hit.key);
-    }
+    // Held only while it is searched: this goes through every database, and
+    // deleting a project runs it inside a request.
+    await router.withProject(first, async (db) => {
+      for (let i = 0; i < keys.length; i += KEY_BATCH) {
+        const hits = await db
+          .select({ key: attachments.storageKey })
+          .from(attachments)
+          .where(
+            and(
+              inArray(attachments.storageKey, keys.slice(i, i + KEY_BATCH)),
+              inArray(attachments.projectId, ids),
+            ),
+          );
+        for (const hit of hits) found.add(hit.key);
+      }
+    });
   }
   return found;
 }
