@@ -88,6 +88,44 @@ function closesFence(index: SegmentIndex, line: number): boolean {
   return CLOSING_FENCE.test(text);
 }
 
+/**
+ * The source lines of a code block's body, which its wrapper's `data-loc`
+ * runs past by the fence markers; null when the body has no lines, or the
+ * wrapper is not a code block's. Bounded as `codeRowSource` bounds a row: by
+ * the body the index holds for the block, and for an empty body by whether
+ * a line stands between the content start and the closing marker.
+ */
+export function codeBodyLines(
+  index: SegmentIndex,
+  wrapper: Element,
+): { start: number; end: number } | null {
+  const loc = parseSourceLoc(wrapper.getAttribute(SOURCE_LINE_ATTR));
+  const contentStart = Number(wrapper.getAttribute(CODE_CONTENT_START_ATTR));
+  if (
+    loc === null ||
+    !wrapper.hasAttribute(CODE_CONTENT_START_ATTR) ||
+    !Number.isInteger(contentStart)
+  ) {
+    return null;
+  }
+  const fence = fenceAt(index, loc.start);
+  const lines =
+    fence === null
+      ? Number.POSITIVE_INFINITY
+      : fence.value === ""
+        ? Math.max(
+            0,
+            Math.min(
+              1,
+              loc.end - contentStart + (closesFence(index, loc.end) ? 0 : 1),
+            ),
+          )
+        : fence.lines;
+  const start = Math.max(loc.start, contentStart);
+  const end = Math.min(loc.end, contentStart + lines - 1);
+  return end < start ? null : { start, end };
+}
+
 /** The 0-based line of the code block's body a row shows, or null. */
 function bodyLineOf(
   index: SegmentIndex | null,
