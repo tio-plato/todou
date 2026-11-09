@@ -841,18 +841,22 @@ class Resolver {
  * 2. Every card a write touches, in one statement, in ascending id, FOR NO
  *    KEY UPDATE: the card it writes, the cards the drafts it attaches were
  *    uploaded on, and the cards it references. FOR UPDATE is for a
- *    transaction that moves a card away, as its first lock: a move on the
- *    card it moves (the same-database move, the copy of a move to another
- *    database when both share the project database, and the move's last
- *    step). With one mode for every other write, no lock is ever upgraded.
+ *    transaction that deletes or moves cards away, as its first lock: a move
+ *    on the card it moves (the same-database move, the copy of a move to
+ *    another database when both share the project database, and the move's
+ *    last step), and deleting a project on all its cards, in one statement,
+ *    in ascending id. With one mode for every other write, no lock is ever
+ *    upgraded.
  * 3. Cards before `project_meta`: creating a card locks the cards it
  *    touches, then takes a number; a same-database move locks its card, then
- *    the target's `project_meta`.
+ *    the target's `project_meta`; cleaning up a deleted project locks its
+ *    cards, then its `project_meta`, so a card still being created there
+ *    either finishes first or waits for the cleanup.
  * 4. Rows outside one card that a statement or a transaction locks several
- *    of (block edges, read positions) are locked first, `ORDER BY id FOR
- *    UPDATE`, and only then written. A background sweep that deletes rows
- *    writers lock (the draft reaper) skips the locked ones instead of
- *    waiting.
+ *    of (block edges, read positions, a deleted project's labels) are locked
+ *    first, `ORDER BY id FOR UPDATE`, and only then written. A background
+ *    sweep that deletes rows writers lock (the draft reaper) skips the locked
+ *    ones instead of waiting.
  * 5. A row a transaction will update is locked in that update's mode before
  *    any statement of the transaction takes a weaker lock on it, such as the
  *    KEY SHARE a foreign-key check takes on the parent of a row it inserts:
