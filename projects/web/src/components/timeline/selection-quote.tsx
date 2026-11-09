@@ -14,10 +14,11 @@ import {
 } from "@/components/timeline/quote-reply.tsx";
 import { Button } from "@/components/ui/button";
 import { quoteOfSelection } from "@/lib/quote-markdown.ts";
-import { anchorForSelection } from "@/lib/selection-anchor.ts";
+import { anchorForSelection, sideOf } from "@/lib/selection-anchor.ts";
 import {
   composedContains,
   elementNear,
+  orderedEndpoints,
   type SelectionEndpoints,
   selectionEndpoints,
 } from "@/lib/selection-endpoints.ts";
@@ -47,47 +48,6 @@ export type QuotableSelection = {
   source: string;
   anchor: AnchorRange;
 };
-
-/**
- * A point in the light DOM standing for `node`: an endpoint inside a shadow
- * root becomes its outermost host, from before it or after it, since a range
- * cannot hold a point in another tree.
- */
-function lightPoint(
-  node: Node,
-  offset: number,
-  side: "before" | "after",
-): { node: Node; offset: number } {
-  let host: Element | null = null;
-  for (
-    let root = node.getRootNode();
-    root instanceof ShadowRoot;
-    root = root.host.getRootNode()
-  ) {
-    host = root.host;
-  }
-  const parent = host?.parentNode;
-  if (host === null || parent == null) return { node, offset };
-  const at = Array.prototype.indexOf.call(parent.childNodes, host);
-  return { node: parent, offset: side === "before" ? at : at + 1 };
-}
-
-/** The selection's endpoints as a light-DOM range, in document order. */
-function lightRange(ends: SelectionEndpoints): Range {
-  const range = document.createRange();
-  let start = lightPoint(ends.start.node, ends.start.offset, "before");
-  let end = lightPoint(ends.end.node, ends.end.offset, "after");
-  range.setStart(start.node, start.offset);
-  // The legacy endpoints are anchor and focus, which a backwards drag
-  // hands over backwards.
-  if (range.comparePoint(end.node, end.offset) < 0) {
-    start = lightPoint(ends.end.node, ends.end.offset, "before");
-    end = lightPoint(ends.start.node, ends.start.offset, "after");
-    range.setStart(start.node, start.offset);
-  }
-  range.setEnd(end.node, end.offset);
-  return range;
-}
 
 /** Whether `range` covers any text of `body` but whitespace. */
 function coversText(range: Range, body: Element): boolean {
@@ -134,13 +94,35 @@ function endsInShadowOf(ends: SelectionEndpoints, body: Element): boolean {
 }
 
 /**
+ * `ends` with an end past `body` put on the body's own edge. Clamped to the
+ * body's last block instead, it would name that block and quote all of it.
+ * On the edge it selects nothing, and `anchorForSelection` moves it onto
+ * the last character selected: a triple-click on a body's last block ends
+ * past the body, and quotes that block's text.
+ */
+function onBodyEdge(
+  body: Element,
+  ends: SelectionEndpoints,
+): SelectionEndpoints {
+  const ordered = orderedEndpoints(ends);
+  if (ordered === null) return ends;
+  const { start, end } = ordered.ends;
+  if (sideOf(body, end.node, end.offset) !== "after") return ends;
+  return {
+    start,
+    end: { node: body, offset: body.childNodes.length },
+    collapsed: ends.collapsed,
+  };
+}
+
+/**
  * The quote target the selection selects text in, and where in the markdown
  * it renders; null unless that is exactly one body. A selection reaching
  * into a second body is about two of them, so it quotes neither — but one
  * that merely ends at the very start of the next, as a triple-click does,
- * selects no text there and still counts. An end past the body is clamped
- * to its last block, which makes "from here to the end" quotable; a start
- * before it, in the entry's header say, quotes nothing.
+ * selects no text there and still counts. An end past the body is put on
+ * its edge, which makes "from here to the end" quotable; a start before it,
+ * in the entry's header say, quotes nothing.
  */
 export function quotableSelection(
   selection: Selection | null,
@@ -149,7 +131,9 @@ export function quotableSelection(
   if (selection === null) return null;
   const all = endpointsOf(selection, document.documentElement);
   if (all === null || all.collapsed) return null;
-  const range = lightRange(all);
+  const ordered = orderedEndpoints(all);
+  if (ordered === null) return null;
+  const { range } = ordered;
   const selected = selection.toString() !== "";
   const bodies = [...targets.keys()].filter(
     (body) =>
@@ -165,7 +149,13 @@ export function quotableSelection(
   const ends = endpointsOf(selection, body);
   if (ends === null || ends.collapsed) return null;
   const source = target.body();
-  const anchor = anchorForSelection(body, segmentIndexOf(body, source), ends);
+  const index = segmentIndexOf(body, source);
+  // Should the edge leave a body of some unforeseen shape no anchor, the
+  // endpoints as selected still clamp to a block rather than lose the button.
+  const placed = onBodyEdge(body, ends);
+  const anchor =
+    anchorForSelection(body, index, placed) ??
+    (placed === ends ? null : anchorForSelection(body, index, ends));
   return anchor === null ? null : { body, source, anchor };
 }
 
