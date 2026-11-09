@@ -26,6 +26,7 @@ import { MARKDOWN_SYNTAX_PLUGINS } from "@/lib/markdown-processor.ts";
 import { rehypeDetails } from "@/lib/rehype-details.ts";
 import {
   CODE_CONTENT_START_ATTR,
+  FENCE_PATCH_ATTR,
   parseSourceLoc,
   SOURCE_LINE_ATTR,
 } from "@/lib/rehype-source-lines.ts";
@@ -125,12 +126,13 @@ function MarkdownPre({
   // language compiles that grammar, 520 ms for TypeScript at 4× CPU
   // throttling, in the middle of the page's first load.
   const tag = fence.tag?.toLowerCase();
+  const patch = baseline === undefined && (tag === "diff" || tag === "patch");
   const block =
     baseline !== undefined ? (
       <CodeDiffBlock filename={filename} before={baseline} after={fence.text} />
     ) : tag === "mermaid" ? (
       <MermaidBlock filename={filename} source={fence.text} />
-    ) : tag === "diff" || tag === "patch" ? (
+    ) : patch ? (
       <PatchView filename={filename} text={fence.text} />
     ) : (
       <CodeBlock filename={filename} contents={fence.text} offThread />
@@ -154,6 +156,7 @@ function MarkdownPre({
               fence.text === "" ? 0 : fence.text.split("\n").length;
             return loc.start + (span - contentLines >= 1 ? 1 : 0);
           })(),
+          ...(patch ? { [FENCE_PATCH_ATTR]: "" } : {}),
           // Decoration classes ride on the <pre> too (T-158: a fence inside
           // a wholly-new range) and would otherwise vanish in the swap.
           className: [
