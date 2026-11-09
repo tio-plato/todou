@@ -416,7 +416,7 @@ describe("loadConfig", () => {
     expect(config.database.pool).toEqual({
       max: 10,
       idle_timeout_ms: 10_000,
-      connection_timeout_ms: 0,
+      connection_timeout_ms: 30_000,
     });
     const tuned = loadConfig({
       tomlSource: "",
