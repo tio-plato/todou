@@ -78,6 +78,8 @@ const DECLARED: Readonly<Record<string, string>> = {
     "Membership predicate: upload filename suffix is compared with === true; unknown or inherited keys do not match and the ordinary extension path is used.",
   "projects/server/src/services/attachment-relabel.ts :: switch subject.kind #1":
     "Same-version local Subject producer: collect/build constructs issue_body, comment, or spec_file literals before write switches on subject.kind.",
+  "projects/server/src/services/attachment-relabel.ts :: switch subject.kind #2":
+    "Same-version local Subject producer: relabelProject constructs issue_body, comment, or spec_file literals; write hands that subject unchanged to store, which switches on subject.kind.",
   "projects/server/src/services/cli-auth.ts :: switch target.kind #1":
     "Parsed request: routes/cli-auth.ts c.req.valid(json).target is validated by CliAuthApproveInput/CliAuthTarget discriminatedUnion via OpenAPIHono defaultHook.",
   "projects/server/src/services/commands.ts :: switch command.type #1":
