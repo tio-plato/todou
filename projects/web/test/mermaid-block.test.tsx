@@ -8,6 +8,7 @@ import {
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MarkdownView } from "../src/components/shared/markdown-view.tsx";
+import { CODE_RENDERED_EVENT } from "../src/lib/code-highlights.ts";
 import { errorSummary, viewBoxSize } from "../src/lib/mermaid.ts";
 import { rehypeSourceLines } from "../src/lib/rehype-source-lines.ts";
 import { renderWithProviders } from "./render.tsx";
@@ -105,6 +106,24 @@ describe("mermaid fences (T-523)", () => {
     expect(container.querySelector(".mermaid-diagram svg")).not.toBeNull();
   });
 
+  it("tells the page around it that its code rows are gone", async () => {
+    render.next = { ok: true, svg: SVG, width: 1360, height: 164 };
+    let heard = 0;
+    const hear = () => {
+      heard++;
+    };
+    document.addEventListener(CODE_RENDERED_EVENT, hear);
+    try {
+      const container = await mount(FENCE);
+      await waitFor(() => {
+        expect(container.querySelector(".mermaid-diagram svg")).not.toBeNull();
+      });
+      expect(heard).toBeGreaterThan(0);
+    } finally {
+      document.removeEventListener(CODE_RENDERED_EVENT, hear);
+    }
+  });
+
   it("keeps a diagram that does not parse as source, with the error under it", async () => {
     render.next = {
       ok: false,
@@ -197,6 +216,21 @@ describe("changed diagrams in a compare view (T-724)", () => {
       height: 328,
     });
     render.next = { ok: true, svg: SVG, width: 1360, height: 164 };
+  });
+
+  it("tells the page around it when the diagrams take the source diff's place", async () => {
+    let heard = 0;
+    const hear = () => {
+      heard++;
+    };
+    document.addEventListener(CODE_RENDERED_EVENT, hear);
+    try {
+      const container = await compare();
+      await waitFor(() => expect(drawn(container)).toHaveLength(2));
+      expect(heard).toBeGreaterThan(0);
+    } finally {
+      document.removeEventListener(CODE_RENDERED_EVENT, hear);
+    }
   });
 
   it("draws both versions side by side, and copies the new source", async () => {
