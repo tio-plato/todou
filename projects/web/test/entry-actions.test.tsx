@@ -469,6 +469,58 @@ describe("EntryActionsMenu on a comment", () => {
     expect(onQuote).toHaveBeenLastCalledWith(BODY);
   });
 
+  it.each([
+    ["a right-click", { button: 2, pointerType: "mouse" }, "Enter"],
+    ["a Ctrl-click", { button: 0, ctrlKey: true, pointerType: "mouse" }, " "],
+    [
+      "a touch that scrolled away",
+      { button: 0, pointerType: "touch" },
+      "ArrowDown",
+    ],
+  ])(
+    "reads the live selection on a keyboard open after %s, which opened nothing",
+    async (_press, press, key) => {
+      const onQuote = vi.fn();
+      const view = renderComment({ onQuote });
+      await selectSecondParagraph(view);
+      const trigger = await waitFor(() =>
+        within(view.container).getByRole("button", { name: "comment actions" }),
+      );
+      // Radix opens on a plain primary press only, and the touch never gets
+      // the click its open waits for.
+      fireEvent.pointerDown(trigger, press);
+      expect(screen.queryByRole("menu")).toBeNull();
+
+      window.getSelection()?.removeAllRanges();
+      trigger.focus();
+      fireEvent.keyDown(trigger, { key });
+      await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
+      fireEvent.click(menuItem("Quote reply"));
+      await waitFor(() => expect(onQuote).toHaveBeenCalled());
+      expect(onQuote).toHaveBeenCalledExactlyOnceWith(BODY);
+    },
+  );
+
+  it("keeps the selection a tap drops before its click opens the menu", async () => {
+    const onQuote = vi.fn();
+    const view = renderComment({ onQuote });
+    await selectSecondParagraph(view);
+    const trigger = await waitFor(() =>
+      within(view.container).getByRole("button", { name: "comment actions" }),
+    );
+    // A touch opens on the click (T-596), and iOS may have collapsed the
+    // selection by then.
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: "touch" });
+    window.getSelection()?.removeAllRanges();
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: "touch" });
+    fireEvent.click(trigger);
+    await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
+    fireEvent.click(menuItem("Quote reply"));
+    await waitFor(() =>
+      expect(onQuote).toHaveBeenCalledExactlyOnceWith("Second **paragraph**."),
+    );
+  });
+
   it("hands the focus back to the button on the close after a Quote reply", async () => {
     const view = renderComment({ onQuote: () => {} });
     const trigger = await openMenu(view);
