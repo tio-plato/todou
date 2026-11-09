@@ -125,7 +125,7 @@ function kindOf(groups: Record<string, string | undefined>): MarkerKind {
  * `<details><summary>t</summary><script>alert(1)</script></details>` has to
  * come apart into two elements and one string of escaped source.
  */
-function splitRaw(node: Raw): Piece[] | null {
+export function splitRaw(node: Raw): Piece[] | null {
   MARKER.lastIndex = 0;
   let match = MARKER.exec(node.value);
   if (match === null) return null;
