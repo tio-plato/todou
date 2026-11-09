@@ -595,14 +595,14 @@ export async function updateProject(
     Object.keys(registryPatch).length === 0
       ? [project]
       : await system.transaction(async (tx) => {
-          if (rename !== null) {
-            await tx
-              .insert(slugHistory)
-              .values({ projectId: project.id, slug: rename });
-          }
+          // The project row first: changing the slug takes it FOR UPDATE, and
+          // the history row's foreign-key check then takes KEY SHARE on a row
+          // this transaction already holds. Inserting first, two renames
+          // would each hold KEY SHARE and wait for the other's to update the
+          // row (see lockIssueRows).
           // The availability check ran outside this transaction, so a
           // concurrent create or rename can still win the unique index.
-          return tx
+          const updated = await tx
             .update(projects)
             .set(registryPatch)
             .where(eq(projects.id, project.id))
@@ -613,6 +613,12 @@ export async function updateProject(
               }
               throw slugTakenError(rename);
             });
+          if (rename !== null) {
+            await tx
+              .insert(slugHistory)
+              .values({ projectId: project.id, slug: rename });
+          }
+          return updated;
         });
   const row = updated[0];
   if (!row) throw new Error("project update returned no row");
