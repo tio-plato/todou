@@ -42,7 +42,11 @@ import {
   recordCrossReferences,
   resolveContent,
 } from "./resolve-pass.ts";
-import { assertIssueWritable, gateColumns } from "./trash.ts";
+import {
+  assertIssueWritable,
+  gateColumns,
+  lockWritableIssue,
+} from "./trash.ts";
 import { getUserRefs } from "./users.ts";
 
 /**
@@ -230,6 +234,11 @@ export async function executeCommands(
   let listRow: IssueListRow | undefined;
 
   const applied = await db.transaction(async (tx) => {
+    // The card before anything under it (see lockIssueRows): here when no
+    // comment is posted, in `insertCommentInTx` when one is.
+    if (resolved === null) {
+      await lockWritableIssue(tx, { id: issue.id, actor, role });
+    }
     let hide: HideInTxResult | null = null;
     const addEvent = async (
       type: (typeof issueEvents.$inferInsert)["type"],
@@ -268,6 +277,7 @@ export async function executeCommands(
         mentions: resolved.mentions,
         kind: input.kind,
         agentContext,
+        gate: { actor, role },
       });
       comment = result.comment;
       crossTargets = resolved.cross;

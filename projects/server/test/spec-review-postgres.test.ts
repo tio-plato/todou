@@ -149,7 +149,7 @@ describe.skipIf(!PG_URL)("personal spec approvals on real PostgreSQL", () => {
                AND datname = current_database()
                AND wait_event_type = 'Lock'
                AND lower(query) LIKE 'select%'
-               AND lower(query) LIKE '%"issues"%for update%'`,
+               AND lower(query) ~ '"issues".*for (no key )?update'`,
             [holderPid],
           );
           return Number(result.rows[0]?.count);
