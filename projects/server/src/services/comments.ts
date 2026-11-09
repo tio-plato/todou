@@ -40,6 +40,7 @@ import {
 import { currentRefPrefix } from "./references.ts";
 import { throwIfCommentAliased } from "./relocation.ts";
 import {
+  lockIssueRows,
   recordCrossReferences,
   recordIssueMentions,
   recordLocalReferences,
@@ -107,6 +108,9 @@ async function loadIssue(db: Db, projectId: number, number: number) {
  * `body` arrives already resolved and `localRefs` comes from the same pass,
  * because resolving reads the system database and other projects' — which a
  * project transaction must not hold a second connection for.
+ *
+ * The referenced cards and this one are locked in id order before anything
+ * is written (see `lockIssueRows`).
  */
 export async function insertCommentInTx(
   tx: Db,
@@ -132,6 +136,7 @@ export async function insertCommentInTx(
   const component = args.component ?? null;
   const issueNumber = issue.number;
 
+  const targets = await lockIssueRows(tx, project, issue.id, localRefs);
   const inserted = await tx
     .insert(comments)
     .values({
@@ -174,7 +179,7 @@ export async function insertCommentInTx(
     project,
     actorId,
     { issueNumber, commentId: comment.id },
-    localRefs,
+    targets,
     agentContext,
   );
   for (const ref of refs) {
@@ -459,6 +464,15 @@ export async function updateComment(
     return toTimelineComment(ctx, row, { elideHidden: false });
 
   const { after, refs, drafts } = await db.transaction(async (tx) => {
+    // The cards before the comment (see lockIssueRows). The comment's card
+    // is `write` because `commitDraftAttachments` below updates it when the
+    // edit links a draft uploaded on it.
+    const targets = await lockIssueRows(
+      tx,
+      project,
+      row.issueId,
+      resolved.local,
+    );
     const updated = await tx
       .update(comments)
       .set({ body: resolved.storedText, editedAt: new Date() })
@@ -481,7 +495,7 @@ export async function updateComment(
       project,
       actor.id,
       { issueNumber, commentId: row.id },
-      resolved.local,
+      targets,
       agentContext,
     );
     await recordIssueMentions(
