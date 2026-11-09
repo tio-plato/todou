@@ -23,6 +23,12 @@ export type DbHandle = {
   url: string;
   migrate: (tier: DbTier) => Promise<void>;
   close: () => Promise<void>;
+  /**
+   * A statement or transaction issued through this handle has not finished,
+   * or a caller is queued for a connection: closing it now would cut that
+   * work off or leave it waiting forever.
+   */
+  busy: () => boolean;
 };
 
 // Each tier keeps its own journal table: in shared placement both tiers
@@ -97,13 +103,15 @@ export async function openDb(
       : isMemory
         ? await memoryClient(opts?.tiers ?? [])
         : new PGlite(target, { extensions: PGLITE_EXTENSIONS });
-    const db = drizzlePglite(client, { logger: opts?.logger });
+    const counted = countCalls(client);
+    const db = drizzlePglite(counted.client, { logger: opts?.logger });
     return {
       db: db as unknown as Db,
       kind,
       url,
       migrate: (tier) => migratePglite(db, MIGRATIONS[tier]),
-      close: () => client.close(),
+      close: counted.close,
+      busy: counted.busy,
     };
   }
   const pool = new pg.Pool({
@@ -119,6 +127,54 @@ export async function openDb(
     url,
     migrate: (tier) => migrateNodePg(db, MIGRATIONS[tier]),
     close: () => pool.end(),
+    busy: () => pool.waitingCount > 0 || pool.totalCount > pool.idleCount,
+  };
+}
+
+/**
+ * The PGlite client as drizzle gets it, counting the calls still running so
+ * the handle can say whether it is busy.
+ *
+ * drizzle reaches the client through `query` and `transaction` alone
+ * (drizzle-orm/pglite/session.js), so a transaction counts from the call
+ * until its callback and COMMIT are done. PGlite's own `isInTransaction()`
+ * would not do: close() does not wait for a lone autocommit statement
+ * either. The inline client and the worker one go through this same count.
+ *
+ * Closed is recorded here, synchronously, before the client's close() runs:
+ * PGlite 0.5.4's close() first awaits `_checkReady()` and only then marks
+ * itself closing, and a transaction begun in that gap wedges the event loop.
+ * From then on both calls reject without reaching the client.
+ */
+function countCalls(client: PGlite): {
+  client: PGlite;
+  busy: () => boolean;
+  close: () => Promise<void>;
+} {
+  let running = 0;
+  let closed = false;
+  // Async so a synchronous throw still settles the count; the body up to
+  // the call runs in the caller's tick, which is what the closed check needs.
+  const counted = async <T>(call: () => Promise<T>): Promise<T> => {
+    if (closed) throw new Error("PGlite handle is closed");
+    running += 1;
+    try {
+      return await call();
+    } finally {
+      running -= 1;
+    }
+  };
+  const wrapped: Pick<PGlite, "query" | "transaction"> = {
+    query: (...args) => counted(() => client.query(...args)),
+    transaction: (callback) => counted(() => client.transaction(callback)),
+  };
+  return {
+    client: wrapped as PGlite,
+    busy: () => running > 0,
+    close: () => {
+      closed = true;
+      return client.close();
+    },
   };
 }
 

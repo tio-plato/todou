@@ -258,9 +258,10 @@ export class DbRouter {
 
   /**
    * max_open bounds the idle cache, not the peak. A handle a task body holds
-   * (#withPinnedHandle), an in-memory instance, and the most recently touched
-   * max_open handles all stay, so one pass may legitimately end over budget;
-   * the excess is collected by the next open's pass.
+   * (#withPinnedHandle), one with a statement or transaction still running
+   * (`busy()`), an in-memory instance, and the most recently touched max_open
+   * handles all stay, so one pass may legitimately end over budget; the
+   * excess is collected by the next open's pass.
    *
    * The candidate window is the OLDEST `size - max` entries rather than
    * "scan until size <= max": once pins keep the table over budget, an
@@ -281,6 +282,10 @@ export class DbRouter {
       // "PGlite is closed", pg-pool "Called end on pool more than once").
       if (this.#projectHandles.get(url) !== handle) continue;
       if ((this.#pins.get(url) ?? 0) > 0) continue;
+      // Closing it would cut the running work off, or on pg wait it out:
+      // end() waits for every borrowed connection. Nothing awaits between
+      // this check and the close, so no statement can slip in.
+      if (handle.busy()) continue;
       // In-memory instances lose their data on close; never evict them
       // (only reachable in tests, which bound their own handle counts).
       if (url.startsWith("pglite://memory")) continue;
@@ -294,8 +299,8 @@ export class DbRouter {
 
   /**
    * The cache's current size, which can briefly exceed `max_open`: pinned
-   * handles, in-memory ones, and the most recently touched `max_open` are all
-   * kept by an eviction pass.
+   * handles, busy ones, in-memory ones, and the most recently touched
+   * `max_open` are all kept by an eviction pass.
    */
   openHandleCount(): number {
     return this.#projectHandles.size;
@@ -331,8 +336,9 @@ export class DbRouter {
  *
  * The bound is `database.projects.max_open` because that is the router's
  * handle budget, not because safety rests on it: a handle a task body holds
- * is pinned (`#withPinnedHandle`) and is never an eviction candidate, so a
- * burst past the budget costs open connections rather than cut-off queries.
+ * is pinned (`#withPinnedHandle`), one with work running is busy, and neither
+ * is an eviction candidate, so a burst past the budget costs open
+ * connections rather than cut-off queries.
  *
  * One task runs exactly as sequentially as a bare `await` would, which is the
  * whole of `placement=shared` — hence no separate serial path to keep in step
