@@ -69,15 +69,17 @@ export type SourceSegment = {
   endLine: number;
   /**
    * The source span reads character-for-character like `text`, so an
-   * offset inside one maps to the other by addition. False for inline
-   * code (its backticks are in the span but not the value), for an escape
-   * or a character reference (`textPieces`), and for a whole text node
-   * whose source `textPieces` could not line up with its value — those
-   * segments are indivisible and get located whole.
+   * offset inside one maps to the other by addition. False for an escape
+   * or a character reference (`textPieces`), for a line ending or a table
+   * cell's `\|` inside inline code (`codeSpanPieces`), and for a whole text
+   * node or code span whose source could not be lined up with what it
+   * shows — those segments are indivisible and get located whole.
    */
   exact: boolean;
   /** Which leaf block this flows in; a different one means a break. */
   group: number;
+  /** A run of inline code rather than of prose. */
+  code?: boolean;
 };
 
 export type SourceBlockType =
@@ -320,6 +322,173 @@ export function textPieces(
   return /^[ \t\r\n]*$/.test(source.slice(i, end)) ? pieces : null;
 }
 
+/**
+ * The code an inline code span shows: every line ending in `value` turned
+ * into one space, as `mdast-util-to-hast` writes it. Text that already went
+ * through it comes out the same, so an mdast value and a hast value give
+ * one answer.
+ */
+export function shownCode(value: string): string {
+  return value.replace(/\r\n|\n|\r/g, " ");
+}
+
+/**
+ * One line of a code span, `source[from, to)`, lined up with `shown` from
+ * `j`: each character copied, except a table cell's `\|`, which shows as `|`
+ * and is one indivisible piece. Null when the line reads differently or runs
+ * past the end of `shown`.
+ */
+function codeLinePieces(
+  source: string,
+  from: number,
+  to: number,
+  shown: string,
+  j: number,
+): { pieces: TextPiece[]; j: number } | null {
+  const pieces: TextPiece[] = [];
+  let at = j;
+  let runStart = -1;
+  let runAt = 0;
+  const closeRun = (i: number) => {
+    if (runStart >= 0) {
+      pieces.push({
+        text: shown.slice(runAt, at),
+        start: runStart,
+        end: i,
+        exact: true,
+      });
+    }
+    runStart = -1;
+  };
+  for (let i = from; i < to; ) {
+    if (at >= shown.length) return null;
+    if (source[i] === shown[at]) {
+      if (runStart < 0) {
+        runStart = i;
+        runAt = at;
+      }
+      i++;
+      at++;
+      continue;
+    }
+    if (source[i] === "\\" && source[i + 1] === "|" && shown[at] === "|") {
+      closeRun(i);
+      pieces.push({ text: "|", start: i, end: i + 2, exact: false });
+      i += 2;
+      at++;
+      continue;
+    }
+    return null;
+  }
+  closeRun(to);
+  return { pieces, j: at };
+}
+
+/**
+ * The content of a code span, `source[from, to)`, lined up with `shown` as a
+ * whole, line by line. A line ending shows as one space and is a piece of its
+ * own, `\r\n` included, so the offsets after it stay right.
+ *
+ * What a continuation line opens with — a quote's `>`, an item's indent — is
+ * in no piece, but it is not skipped greedily the way `textPieces` skips it:
+ * blanks past the container's own indent are code, and a code span keeps
+ * them. The prefix is the shortest run of `>`, blanks and tabs after which
+ * the rest of the line reads as `shown` does there and stops right on the
+ * space of the next line ending, or on the end of `shown` on the last line.
+ */
+function codeContentPieces(
+  source: string,
+  from: number,
+  to: number,
+  shown: string,
+): TextPiece[] | null {
+  const pieces: TextPiece[] = [];
+  let i = from;
+  let j = 0;
+  for (let first = true; ; first = false) {
+    let lineEnd = i;
+    while (
+      lineEnd < to &&
+      source[lineEnd] !== "\n" &&
+      !(source[lineEnd] === "\r" && source[lineEnd + 1] === "\n")
+    ) {
+      lineEnd++;
+    }
+    const last = lineEnd >= to;
+    let line: { pieces: TextPiece[]; j: number } | null = null;
+    for (let p = i; p <= lineEnd && line === null; p++) {
+      if (p > i && (first || !CONTINUATION_PREFIX.test(source[p - 1] ?? ""))) {
+        break;
+      }
+      const read = codeLinePieces(source, p, lineEnd, shown, j);
+      if (read === null) continue;
+      if (last ? read.j === shown.length : shown[read.j] === " ") line = read;
+    }
+    if (line === null) return null;
+    pieces.push(...line.pieces);
+    j = line.j;
+    if (last) return pieces;
+    const ending = source[lineEnd] === "\r" ? 2 : 1;
+    pieces.push({
+      text: " ",
+      start: lineEnd,
+      end: lineEnd + ending,
+      exact: false,
+    });
+    j++;
+    i = lineEnd + ending;
+  }
+}
+
+/**
+ * Line up an inline code span, `source[start, end)` with its backticks, with
+ * the code it shows. Its source is longer than its code by the backticks at
+ * least, so taken as one piece a selection, a highlight or a word diff
+ * touching it could only take the whole span; and a span folded onto a
+ * second line shows a space where its value holds the line ending, so the
+ * paragraph around it did not line up with the page at all.
+ *
+ * `value` is the mdast value or the hast text's: both go through `shownCode`
+ * first, so every caller gets the same pieces. CommonMark drops one space
+ * from each end of code that starts and ends with one (or with a line
+ * ending) and is not all spaces; the content is read that way first, and as
+ * the code itself when that does not line up. Null when neither does, and
+ * the caller keeps the span whole, as before. Two known shapes do not: a
+ * lone `\r` for a line ending, and a continuation line whose container
+ * prefix ends in a tab, which the value holds as the blanks it expands to.
+ */
+export function codeSpanPieces(
+  source: string,
+  start: number,
+  end: number,
+  value: string,
+): TextPiece[] | null {
+  let fence = 0;
+  while (start + fence < end && source[start + fence] === "\x60") fence++;
+  const from = start + fence;
+  const to = end - fence;
+  if (fence === 0 || to <= from) return null;
+  if (source.slice(to, end) !== "\x60".repeat(fence)) return null;
+  const shown = shownCode(value);
+  const padded = codeContentPieces(source, from, to, ` ${shown} `);
+  if (padded === null) return codeContentPieces(source, from, to, shown);
+  // The padding is the first and the last character: a space in an exact
+  // piece, or a line ending's piece of its own.
+  const head = padded[0];
+  if (head?.exact === true && head.text.length > 1) {
+    padded[0] = { ...head, text: head.text.slice(1), start: head.start + 1 };
+  } else padded.shift();
+  const tail = padded.at(-1);
+  if (tail?.exact === true && tail.text.length > 1) {
+    padded[padded.length - 1] = {
+      ...tail,
+      text: tail.text.slice(0, -1),
+      end: tail.end - 1,
+    };
+  } else padded.pop();
+  return padded;
+}
+
 /** Absolute offset each 1-based line of `source` starts at. */
 export function lineStartsOf(source: string): number[] {
   const starts = [0];
@@ -489,11 +658,18 @@ export function buildSegmentIndex(source: string): SegmentIndex {
       lastGroup = group;
       // A text node whose source is longer than its value goes in as the
       // runs `textPieces` finds, so that only an escape or a reference stays
-      // indivisible rather than the whole node. Inline code stays one piece.
+      // indivisible rather than the whole node; inline code as the runs
+      // `codeSpanPieces` finds. Code goes in as the page shows it either
+      // way, so that a span it could not line up still leaves the rest of
+      // its paragraph aligned.
+      const value =
+        node.type === "inlineCode" ? shownCode(node.value) : node.value;
       const pieces =
-        node.type === "text" && end - start !== node.value.length
-          ? textPieces(source, start, end, node.value)
-          : null;
+        node.type === "inlineCode"
+          ? codeSpanPieces(source, start, end, node.value)
+          : end - start !== node.value.length
+            ? textPieces(source, start, end, node.value)
+            : null;
       if (pieces !== null) {
         for (const piece of pieces) {
           segments.push({
@@ -502,22 +678,24 @@ export function buildSegmentIndex(source: string): SegmentIndex {
             line: lineColAt({ lineStarts }, piece.start).line,
             endLine: lineColAt({ lineStarts }, piece.end - 1).line,
             group,
+            ...(node.type === "inlineCode" ? { code: true } : {}),
           });
           text += piece.text;
         }
         return;
       }
       segments.push({
-        text: node.value,
+        text: value,
         at: text.length,
         start,
         end,
         line: node.position?.start.line ?? 1,
         endLine: node.position?.end.line ?? 1,
-        exact: end - start === node.value.length,
+        exact: end - start === value.length,
         group,
+        ...(node.type === "inlineCode" ? { code: true } : {}),
       });
-      text += node.value;
+      text += value;
       return;
     }
     if (!("children" in node)) return;

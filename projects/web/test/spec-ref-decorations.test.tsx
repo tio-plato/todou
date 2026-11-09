@@ -366,6 +366,19 @@ describe("annotation highlights over an escape", () => {
   });
 });
 
+describe("annotation highlights inside inline code", () => {
+  it("marks only the characters of code the anchor names", async () => {
+    // In "a `code` b", columns 5 and 6 are "od".
+    const { container } = await renderSpec({
+      body: "a `code` b\n",
+      annotations: [anchored("comment", 1, 5, 1, 6)],
+    });
+    expect(texts(container, "mark.spec-mark-comment")).toEqual(["od"]);
+    const mark = container.querySelector("mark.spec-mark-comment");
+    expect(mark?.parentElement?.tagName).toBe("CODE");
+  });
+});
+
 // An image shows no text a mark could sit in, so an annotation anchored on
 // one — a selection inside a document card anchors to its `![…](…)` — showed
 // nowhere on the page but the rail.

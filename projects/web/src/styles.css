@@ -1586,6 +1586,12 @@ html[data-header-settling] [data-header-follow] {
     background-color: var(--muted);
     font-size: 0.85em;
   }
+  /* Inline code shows every blank it holds, as the selection mapping counts
+     them: collapsed, a run of them is one blank on the page, and WebKit
+     starts a drag from the word after the run at the run's start. */
+  .markdown-body :not(pre) > code {
+    white-space: break-spaces;
+  }
   .markdown-body pre {
     padding: 0.75rem;
     border-radius: var(--radius-md);
