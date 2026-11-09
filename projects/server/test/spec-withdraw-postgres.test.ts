@@ -122,7 +122,7 @@ describe.skipIf(!PG_URL)("spec withdrawal issue-lock races", () => {
           AND wait_event_type = 'Lock'
           AND cardinality(pg_blocking_pids(pid)) > 0
           AND lower(query) LIKE 'select%'
-          AND lower(query) LIKE '%"issues"%for update%'
+          AND lower(query) ~ '"issues".*for (no key )?update'
       `);
           return Number(result.rows[0]?.count);
         },
