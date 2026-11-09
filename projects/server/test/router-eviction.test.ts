@@ -27,6 +27,7 @@ vi.mock("../src/db/driver.ts", async (importOriginal) => {
         kind: "pglite" as const,
         url,
         migrate: async () => {},
+        busy: () => false,
         close: async () => {
           driver.closes.push(url);
           await driver.closeGates.get(url);
