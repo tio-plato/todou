@@ -28,7 +28,7 @@ const S = "[ \\t\\n\\f\\r]";
  * `open` is decided by *which literal matched* and never by reading the
  * match: see `foldElement`.
  */
-const MARKER = new RegExp(
+export const MARKER = new RegExp(
   [
     `(?<detailsOpen><details${S}*>)`,
     `(?<detailsOpenExpanded><details${S}+open${S}*>)`,
