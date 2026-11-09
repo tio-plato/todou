@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-router";
 import {
   act,
+  cleanup,
   fireEvent,
   render,
   screen,
@@ -15,7 +16,7 @@ import {
 } from "@testing-library/react";
 import type { SpecComments, SpecFiles, SpecInfo } from "@todou/shared";
 import type { ReactNode } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../src/api/queries.ts";
 import { parseSpecSearch } from "../src/lib/spec-search.ts";
 import { SpecViewPage } from "../src/pages/spec-view.tsx";
@@ -24,7 +25,7 @@ import { testQueryClient } from "./render.tsx";
 /** Every options object the mocked `File` was handed, in render order. */
 const fileOptions = vi.hoisted(() => [] as unknown[]);
 
-type MockRow = { line: number; text: string; type: string };
+type MockRow = { line: number; alt?: number; text: string; type: string };
 
 // The real diff renders in a shadow root happy-dom cannot lay out. These draw
 // what the page reads back: a `[data-line]` row per line, typed as pierre
@@ -39,6 +40,7 @@ vi.mock("@pierre/diffs/react", async () => {
         <div
           key={`${row.type}-${row.line}`}
           data-line={row.line}
+          data-alt-line={row.alt}
           data-line-type={row.type}
         >
           <span>{row.text}</span>
@@ -72,8 +74,7 @@ vi.mock("@pierre/diffs/react", async () => {
           } else if (part.added) {
             rows.push({ line: neu++, text, type: "change-addition" });
           } else {
-            rows.push({ line: neu++, text, type: "context" });
-            old++;
+            rows.push({ line: neu++, alt: old++, text, type: "context" });
           }
         }
       }
@@ -185,6 +186,7 @@ const comment = (
   version: number,
   line: number,
   body: string,
+  end = line,
 ) => ({
   comment_id: version * 100 + line,
   author: AUTHOR,
@@ -194,7 +196,7 @@ const comment = (
     path,
     version,
     line_start: line,
-    line_end: line,
+    line_end: end,
     col_start: null,
     col_end: null,
     quote: "",
@@ -202,7 +204,7 @@ const comment = (
   resolved: null,
   outdated: false,
   current_line_start: line,
-  current_line_end: line,
+  current_line_end: end,
 });
 
 function mockSpec(items: SpecComments["items"] = []) {
@@ -620,6 +622,7 @@ function stageDraft(
   version: number,
   line: number,
   body: string,
+  end = line,
 ) {
   const stored = JSON.parse(localStorage.getItem(DRAFTS_KEY) ?? "[]");
   stored.push({
@@ -628,7 +631,7 @@ function stageDraft(
       path,
       version,
       line_start: line,
-      line_end: line,
+      line_end: end,
       col_start: null,
       col_end: null,
     },
@@ -683,5 +686,154 @@ describe("staged drafts in the source view", () => {
         ?.getAttribute("data-side");
     expect(sideOf("why drop delta?")).toBe("deletions");
     expect(sideOf("omega reads well")).toBe("additions");
+  });
+});
+
+/** A stand-in for the browser's `Highlight`: the ranges it was built from. */
+class FakeHighlight {
+  ranges: Range[];
+  priority = 0;
+  constructor(...ranges: Range[]) {
+    this.ranges = ranges;
+  }
+  add(range: Range): this {
+    this.ranges.push(range);
+    return this;
+  }
+}
+
+describe("code highlights in the source view", () => {
+  let registry = new Map<string, FakeHighlight>();
+  beforeEach(() => {
+    registry = new Map();
+    vi.stubGlobal("Highlight", FakeHighlight);
+    vi.stubGlobal(
+      "CSS",
+      Object.assign(Object.create(globalThis.CSS), { highlights: registry }),
+    );
+  });
+  afterEach(() => {
+    // Unmounted first, while the API is still there to take the ranges back.
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  const withColumns = (
+    item: ReturnType<typeof comment>,
+    colStart: number,
+    colEnd: number,
+  ) => ({
+    ...item,
+    anchor: { ...item.anchor, col_start: colStart, col_end: colEnd },
+  });
+
+  it("paints a column comment on the version it is anchored to", async () => {
+    // drift.md v1 line 2 is "beta"; columns 2–4 are "eta".
+    mockSpec([withColumns(comment("drift.md", 1, 2, "why beta?"), 2, 4)]);
+    await singleSource("drift.md");
+    await waitFor(() =>
+      expect((registry.get("spec-comment")?.ranges ?? []).map(String)).toEqual([
+        "eta",
+      ]),
+    );
+  });
+
+  it("paints a baseline comment on the unchanged row it hangs under", async () => {
+    // drift.md v1 line 2 is "beta", unchanged in drifted.md v2; columns 2–4
+    // are "eta". pierre numbers the row 2 on both sides here.
+    mockSpec([withColumns(comment("drift.md", 1, 2, "why beta?"), 2, 4)]);
+    await stack("?v=2&compare=1");
+    const ranges = await waitFor(() => {
+      const found = registry.get("spec-comment")?.ranges ?? [];
+      expect(found).toHaveLength(1);
+      return found;
+    });
+    expect(ranges[0]?.toString()).toBe("eta");
+    expect(
+      ranges[0]?.startContainer.parentElement
+        ?.closest("[data-line]")
+        ?.getAttribute("data-line-type"),
+    ).toBe("context");
+  });
+
+  it("paints a baseline comment on the deletion side only", async () => {
+    // drift.md v1 line 4 is "delta"; columns 2–4 are "elt". v2's line 4,
+    // "omega", is the addition beside it.
+    mockSpec([withColumns(comment("drift.md", 1, 4, "why drop it?"), 2, 4)]);
+    await stack("?v=2&compare=1");
+    const ranges = await waitFor(() => {
+      const found = registry.get("spec-comment")?.ranges ?? [];
+      expect(found).toHaveLength(1);
+      return found;
+    });
+    expect(ranges[0]?.toString()).toBe("elt");
+    expect(
+      ranges[0]?.startContainer.parentElement
+        ?.closest("[data-line]")
+        ?.getAttribute("data-line-type"),
+    ).toBe("change-deletion");
+  });
+  const lineMarks = (view: { container: HTMLElement }, selector: string) =>
+    [...view.container.querySelectorAll(selector)].map((row) =>
+      row.getAttribute("data-spec-line"),
+    );
+
+  it("marks the rows a draft without columns covers, until it is discarded", async () => {
+    stageDraft("d1", "drift.md", 1, 1, "first two lines", 2);
+    mockSpec();
+    const view = await singleSource("drift.md");
+    const rows = '[data-testid="file-view"] [data-line]';
+    await waitFor(() =>
+      expect(lineMarks(view, rows)).toEqual(["draft", "draft", null, null]),
+    );
+    const note = view.container.querySelector(
+      '[data-testid="file-annotation"]',
+    ) as HTMLElement;
+    fireEvent.click(
+      [...note.querySelectorAll("button")].find(
+        (button) => button.textContent === "Discard",
+      ) as HTMLElement,
+    );
+    await waitFor(() =>
+      expect(lineMarks(view, rows)).toEqual([null, null, null, null]),
+    );
+  });
+
+  it("marks a baseline line on the row that shows that version", async () => {
+    // drift.md v1 line 4, "delta", is the deletion beside v2's "omega"; line
+    // 2, "beta", is the unchanged row pierre numbers 2 on both sides.
+    mockSpec([
+      comment("drift.md", 1, 4, "why drop it?"),
+      comment("drift.md", 1, 2, "why beta?"),
+    ]);
+    const view = await stack("?v=2&compare=1");
+    const entry = '[data-file-diff="drifted.md"]';
+    await waitFor(() =>
+      expect(
+        lineMarks(view, `${entry} [data-line-type="change-deletion"]`),
+      ).toEqual(["comment"]),
+    );
+    expect(
+      lineMarks(view, `${entry} [data-line-type="change-addition"]`),
+    ).toEqual([null]);
+    expect(lineMarks(view, `${entry} [data-alt-line]`)).toEqual([
+      null,
+      "comment",
+      null,
+    ]);
+  });
+
+  it("marks a line a comment and a draft share as the comment's", async () => {
+    stageDraft("d1", "drift.md", 1, 2, "staged over two", 3);
+    mockSpec([comment("drift.md", 1, 2, "submitted on one")]);
+    const view = await singleSource("drift.md");
+    await waitFor(() =>
+      expect(lineMarks(view, '[data-testid="file-view"] [data-line]')).toEqual([
+        null,
+        "comment",
+        "draft",
+        null,
+      ]),
+    );
   });
 });
