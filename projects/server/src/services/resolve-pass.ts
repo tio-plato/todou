@@ -848,6 +848,11 @@ class Resolver {
  * 3. Cards before `project_meta`: creating a card locks the cards it
  *    touches, then takes a number; a same-database move locks its card, then
  *    the target's `project_meta`.
+ * 4. A row a transaction will update is locked in that update's mode before
+ *    any statement of the transaction takes a weaker lock on it, such as the
+ *    KEY SHARE a foreign-key check takes on the parent of a row it inserts:
+ *    renaming a project updates the project row before recording the slug in
+ *    its history.
  *
  * Two places keep another order, and neither can form a cycle. A move back
  * into a tombstone updates the tombstone after the card it moves, out of id
