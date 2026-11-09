@@ -296,14 +296,21 @@ host; rerun it on yours):
 ### PostgreSQL pool sizing
 
 Every `postgres://` target gets its own `pg.Pool`, tunable in one place
-(defaults shown — they are pg's own):
+(defaults shown — all but `connection_timeout_ms` are pg's own):
 
 ```toml
 [database.pool]
-max = 10                    # connections per pool
+max = 10                        # connections per pool
 idle_timeout_ms = 10000
-connection_timeout_ms = 0   # 0 = wait forever
+connection_timeout_ms = 30000   # 0 = wait forever
 ```
+
+`connection_timeout_ms` bounds the wait for a free connection in the pool
+and the wait for a new one to PostgreSQL. pg's own default, 0, leaves a
+request hanging for as long as its pool stays full; with a bound, the
+statement fails instead (`timeout exceeded when trying to connect`, or
+`Connection terminated due to connection timeout` while connecting) and the
+request ends in a 500.
 
 Under `dedicated` placement each open project database is a separate pool.
 `database.projects.max_open` bounds the idle handle cache, and every
