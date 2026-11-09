@@ -2,10 +2,11 @@
 /**
  * Real-browser regression for the folded comment composer at the page end
  * (T-532, T-538), for opening a card on the comment box rather than on the
- * page end, for the scroll-to-bottom button showing on a scroll down and only
- * then, and for the New messages pill staying above whatever floats at the
- * bottom, clickable, however tall the composer grows, and landing on the first
- * comment that arrived.
+ * page end, the second time from the list too, with its timeline cached, for
+ * the scroll-to-bottom button showing on a scroll down and only then, and for
+ * the New messages pill staying above whatever floats at the bottom,
+ * clickable, however tall the composer grows, and landing on the first comment
+ * that arrived.
  * Usage: node scripts/composer-dock-smoke.mjs [--keep] [--help]
  * Requires the same installed dependencies, Node 24+, flock and CHROMIUM
  * (default /usr/bin/chromium) as the other browser smokes.
@@ -30,7 +31,8 @@ floating Comment button anywhere above; the swap must not move the page or
 flip back and forth, must not break the bottom landing on open (T-527), and
 anchors must still land clear of the dock (T-519). Opening the card must put
 the comment box on the viewport's bottom edge, with the phone's sidebar below
-the viewport rather than the box a sidebar's height above it. On a second,
+the viewport rather than the box a sidebar's height above it, and so must
+opening it from the list again, with its timeline already cached. On a second,
 long card the scroll-to-bottom button must stay hidden through the landing,
 scrolling up and an anchor jump, show centred above the floating layer on a
 scroll down, hide on a scroll up, land on the box when clicked, take no room
@@ -119,6 +121,7 @@ async function seed(stack) {
     throw new Error("seed did not receive an auth cookie");
   return {
     cookie,
+    listUrl: `${stack.webUrl}/projects/${slug}`,
     issueUrl: `${stack.webUrl}/projects/${slug}/issues/${issue.number}`,
     ids,
     long: {
@@ -251,7 +254,8 @@ function armSwapCounter() {
   });
 }
 
-async function openCard(context, fixture, viewport, hash = "", scripts = []) {
+/** A signed-in page, touch-enabled on a phone, still blank. */
+async function newPage(context, fixture, viewport, scripts = []) {
   const equals = fixture.cookie.indexOf("=");
   const page = await context.newPage({
     viewport,
@@ -267,7 +271,11 @@ async function openCard(context, fixture, viewport, hash = "", scripts = []) {
       enabled: true,
       maxTouchPoints: 5,
     });
-  await page.navigate(`${fixture.issueUrl}${hash}`);
+  return page;
+}
+
+/** Whether the card rendered its last comment and had time to land. */
+async function landed(page, fixture) {
   const deadline = Date.now() + 30_000;
   const last = `comment-${fixture.ids.at(-1)}`;
   while (Date.now() < deadline) {
@@ -279,10 +287,17 @@ async function openCard(context, fixture, viewport, hash = "", scripts = []) {
     // Long enough for the landing and its hold to finish placing the page.
     if (ready) {
       await sleep(1500);
-      return page;
+      return true;
     }
     await sleep(200);
   }
+  return false;
+}
+
+async function openCard(context, fixture, viewport, hash = "", scripts = []) {
+  const page = await newPage(context, fixture, viewport, scripts);
+  await page.navigate(`${fixture.issueUrl}${hash}`);
+  if (await landed(page, fixture)) return page;
   await page.close();
   throw new Error("card never rendered its last comment");
 }
@@ -502,7 +517,7 @@ async function anchorCase(context, fixture, index) {
  * below it are the shell's footer and, on a phone, the sidebar, which a
  * landing at the document's end put between the box and the viewport's edge.
  */
-async function landingCases(context, fixture) {
+async function landingCases(context, fixture, dir) {
   const out = [];
   for (const [viewport, label] of [
     [PHONE, "phone"],
@@ -523,7 +538,61 @@ async function landingCases(context, fixture) {
       await page.close();
     }
   }
+  out.push(await cachedLandingCase(context, fixture, dir));
   return out;
+}
+
+/**
+ * Opened from the list a second time, the card's timeline is cached and lands
+ * in the same render as the route's arrival, before the router scrolls the
+ * page to the top for it. It has to end up where a first opening does.
+ */
+async function cachedLandingCase(context, fixture, dir) {
+  const page = await newPage(context, fixture, PHONE);
+  const io = input(page);
+  const href = new URL(fixture.issueUrl).pathname;
+  const openFromList = async () => {
+    const deadline = Date.now() + 30_000;
+    const centre = (path) => {
+      // Not the card's own links to itself while it is still leaving.
+      if (location.pathname === path) return null;
+      const link = [...document.querySelectorAll("a[href]")].find(
+        (a) => a.getAttribute("href") === path,
+      );
+      const r = link?.getBoundingClientRect();
+      return r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
+    };
+    while (!(await evaluate(page, centre, href))) {
+      if (Date.now() > deadline) throw new Error("list never showed the card");
+      await sleep(200);
+    }
+    // The list settles before the row is where the tap goes.
+    await sleep(800);
+    const { x, y } = await evaluate(page, centre, href);
+    await io.tap(x, y);
+    if (!(await landed(page, fixture)))
+      throw new Error("card never rendered its last comment");
+  };
+  try {
+    await page.navigate(fixture.listUrl);
+    await openFromList();
+    // In-app, so the timeline stays in the query cache.
+    await evaluate(page, () => history.back());
+    await openFromList();
+    const s = await evaluate(page, readState);
+    const shot = await page.send("Page.captureScreenshot", { format: "png" });
+    writeFileSync(
+      resolve(dir, "landing-phone-cached.png"),
+      Buffer.from(shot.data, "base64"),
+    );
+    return {
+      name: "landing-phone-cached",
+      ok: boxAtBottom(s) && s.boxShown && s.asideTop >= s.innerHeight,
+      detail: s,
+    };
+  } finally {
+    await page.close();
+  }
 }
 
 async function desktopCases(page) {
@@ -1140,7 +1209,7 @@ async function main() {
       } finally {
         await page.close();
       }
-      record("landing", await landingCases(context, fixture));
+      record("landing", await landingCases(context, fixture, stack.dir));
       const long = { ...fixture, ...fixture.long };
       const jumps = [];
       for (const [viewport, label] of [
