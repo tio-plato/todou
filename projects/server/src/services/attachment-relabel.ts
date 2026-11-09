@@ -33,6 +33,7 @@ import { encodeNameSegment } from "./attachment-names.ts";
 import { formerSlugsOf } from "./projects.ts";
 import { recordRevision } from "./revisions.ts";
 import { utf8Size } from "./spec.ts";
+import { gateColumns } from "./trash.ts";
 
 export type RelabelReport = {
   projects: number;
@@ -254,10 +255,11 @@ type Subject =
   | {
       kind: "comment";
       commentId: number;
+      issueId: number;
       actorId: number;
       number: number;
     }
-  | { kind: "spec_file"; fileId: number; number: number };
+  | { kind: "spec_file"; fileId: number; issueId: number; number: number };
 
 async function relabelProject(
   db: Db,
@@ -313,6 +315,7 @@ async function relabelProject(
       subject: {
         kind: "comment",
         commentId: row.id,
+        issueId: row.issueId,
         actorId: row.authorId,
         number: numberOf.get(row.issueId) ?? 0,
       },
@@ -339,36 +342,113 @@ async function relabelProject(
         ),
       );
     const cardOf = new Map(
-      versionRows.map((row) => [row.id, numberOf.get(row.issueId) ?? 0]),
+      versionRows.map((row) => [
+        row.id,
+        { issueId: row.issueId, number: numberOf.get(row.issueId) ?? 0 },
+      ]),
     );
     for (const row of fileRows) {
+      const card = cardOf.get(row.versionId);
+      if (card === undefined) continue;
       segments.push({
-        subject: {
-          kind: "spec_file",
-          fileId: row.id,
-          number: cardOf.get(row.versionId) ?? 0,
-        },
+        subject: { kind: "spec_file", fileId: row.id, ...card },
         text: row.body,
       });
     }
   }
 
   for (const segment of segments) {
-    const result = relabelSegment(segment.text, ctx);
-    tally.skipped += result.skipped;
-    if (result.changes.length === 0) continue;
+    const scanned = relabelSegment(segment.text, ctx);
+    tally.skipped += scanned.skipped;
+    // The scan only picks the texts worth a lock; a real run writes what it
+    // finds under the card's lock, which is also what it reports.
+    if (scanned.changes.length === 0) continue;
+    const { number, kind } = segment.subject;
+    const result = opts.dryRun
+      ? scanned
+      : await write(db, project.id, segment.subject, ctx);
+    if (result === "moving") {
+      opts.log(
+        `${project.slug}/${number} ${kind}: left as it is, the card is ` +
+          "being moved to another project; run this again once the move is done",
+      );
+      continue;
+    }
+    if (result === null) continue;
     tally.segments += 1;
     tally.links += result.changes.length;
     for (const change of result.changes) {
       opts.log(
-        `${project.slug}/${segment.subject.number} ${segment.subject.kind} ` +
+        `${project.slug}/${number} ${kind} ` +
           `#${change.id}: "${change.before}" → "${change.after}"`,
       );
     }
-    if (opts.dryRun) continue;
-    await write(db, project.id, segment.subject, segment.text, result.text);
   }
   return tally;
+}
+
+/**
+ * Rewrite one text as it stands under its card's lock, so an edit committed
+ * since the scan is rewritten rather than overwritten. Returns what was
+ * written; `"moving"` when the card is being moved to another project and
+ * was left alone; null when there was nothing left to write: the text is
+ * gone, or someone already changed its links.
+ *
+ * The card's row is locked before the text, the order every write to a card
+ * takes (rule 1 on `lockIssueRows`), and FOR NO KEY UPDATE like theirs, so
+ * this queues behind them instead of deadlocking with them. A comment or a
+ * spec file is read again FOR NO KEY UPDATE as well, the mode of the update
+ * that follows: the text read is then the latest committed one even if a
+ * writer reached it without locking the card. A card being moved is frozen
+ * while its rows are copied, and a rewrite now would be lost with the
+ * source; one already moved holds no text left to rewrite. The trash is no
+ * reason to skip: a card restored from it reads the new name.
+ */
+async function write(
+  db: Db,
+  projectId: number,
+  subject: Subject,
+  ctx: SegmentContext,
+): Promise<SegmentResult | "moving" | null> {
+  return db.transaction(async (tx) => {
+    const [card] = await tx
+      .select({ ...gateColumns, body: issues.body })
+      .from(issues)
+      .where(eq(issues.id, subject.issueId))
+      .for("no key update");
+    if (card === undefined) return null;
+    if (card.movingSince !== null) return "moving";
+
+    let before: string | undefined;
+    switch (subject.kind) {
+      case "issue_body":
+        before = card.body;
+        break;
+      case "comment": {
+        const [row] = await tx
+          .select({ body: comments.body })
+          .from(comments)
+          .where(eq(comments.id, subject.commentId))
+          .for("no key update");
+        before = row?.body;
+        break;
+      }
+      case "spec_file": {
+        const [row] = await tx
+          .select({ body: specVersionFiles.body })
+          .from(specVersionFiles)
+          .where(eq(specVersionFiles.id, subject.fileId))
+          .for("no key update");
+        before = row?.body;
+        break;
+      }
+    }
+    if (before === undefined) return null;
+    const result = relabelSegment(before, ctx);
+    if (result.changes.length === 0) return null;
+    await store(tx, projectId, subject, before, result.text);
+    return result;
+  });
 }
 
 /**
@@ -377,7 +457,7 @@ async function relabelProject(
  * a filename normalisation must not claim to have done. Spec files record
  * nothing — a spec version IS its own history.
  */
-async function write(
+async function store(
   db: Db,
   projectId: number,
   subject: Subject,
