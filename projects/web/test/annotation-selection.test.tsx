@@ -16,10 +16,27 @@ import {
   anchorForSelection,
   anchorRangeForNode,
 } from "../src/components/spec/annotated-markdown.tsx";
+import { rehypeSourceLines } from "../src/lib/rehype-source-lines.ts";
 import { selectionEndpoints } from "../src/lib/selection-endpoints.ts";
-import { buildSegmentIndex } from "../src/lib/spec-source-index.ts";
+import {
+  buildSegmentIndex,
+  type SegmentIndex,
+} from "../src/lib/spec-source-index.ts";
 import { POINTER_FINE } from "../src/lib/use-media-query.ts";
+import { FENCE_SHAPES } from "./fence-shapes.ts";
 import { renderWithProviders, testQueryClient } from "./render.tsx";
+
+// Code blocks render through pierre's CodeView, drawn in a shadow root
+// happy-dom cannot lay out. The tests that need its rows build them by hand
+// inside the real stamped wrapper, so a plain pre>code stands in for it.
+vi.mock("@pierre/diffs/react", () => ({
+  CodeView: ({ items }: { items: Array<{ file: { contents: string } }> }) => (
+    <pre>
+      <code>{items.map((item) => item.file.contents).join("\n")}</code>
+    </pre>
+  ),
+  MultiFileDiff: () => null,
+}));
 
 /** Render, select `pick`'s range, and return the floating comment button. */
 async function stageSelection(
@@ -1044,9 +1061,9 @@ describe("AnnotatedMarkdown entry placement and shadow fallback (T-384)", () => 
       const index = buildSegmentIndex("alpha beta\nx = 1\n");
       const anchor = anchorForSelection(container, index, {
         start: { node: prose.firstChild as Node, offset: 2 },
-        // pierre renders code into an open shadow root, so this endpoint
-        // lives in a different tree: no range spans the two, and the
-        // columns that would need one are not provable.
+        // An endpoint in a shadow root that is on none of pierre's rows
+        // in a code block's wrapper: nothing maps it to a column, so the
+        // anchor widens to the lines of both blocks.
         end: { node: row.firstChild as Node, offset: 3 },
         collapsed: false,
       });
@@ -1248,5 +1265,424 @@ describe("existing deletion selection behavior", () => {
       start: 2,
       end: 4,
     });
+  });
+});
+
+/**
+ * `source` rendered with its stamps, and its first code block given pierre's
+ * shape: `rows` inside an open shadow root under the stamped wrapper.
+ */
+function fenceWithRows(
+  source: string,
+  rows: string,
+): {
+  container: HTMLElement;
+  shadow: ShadowRoot;
+  index: SegmentIndex;
+  lines: string[];
+} {
+  const view = render(
+    <QueryClientProvider client={testQueryClient()}>
+      <MarkdownView rehypePlugins={[rehypeSourceLines]}>{source}</MarkdownView>
+    </QueryClientProvider>,
+  );
+  const wrapper = view.container.querySelector("[data-loc-content-start]");
+  if (wrapper === null) throw new Error("the fence rendered no wrapper");
+  const host = document.createElement("diffs-container");
+  wrapper.append(host);
+  const shadow = host.attachShadow({ mode: "open" });
+  shadow.innerHTML = rows;
+  return {
+    container: view.container,
+    shadow,
+    index: buildSegmentIndex(source),
+    lines: source.split("\n"),
+  };
+}
+
+/** The source an anchor's columns cut, the way the server cuts a quote. */
+function cut(
+  lines: string[],
+  anchor: {
+    lineStart: number;
+    lineEnd: number;
+    colStart: number | null;
+    colEnd: number | null;
+  },
+): string {
+  const picked = lines.slice(anchor.lineStart - 1, anchor.lineEnd);
+  const last = picked.length - 1;
+  if (anchor.colStart === null || anchor.colEnd === null) {
+    throw new Error("the anchor has no columns");
+  }
+  if (last === 0) {
+    return (picked[0] ?? "").slice(anchor.colStart - 1, anchor.colEnd);
+  }
+  picked[0] = (picked[0] ?? "").slice(anchor.colStart - 1);
+  picked[last] = (picked[last] ?? "").slice(0, anchor.colEnd);
+  return picked.join("\n");
+}
+
+/** Endpoints for the text of `start` and `end` at those offsets. */
+function ends(
+  start: Node | null | undefined,
+  from: number,
+  end: Node | null | undefined,
+  to: number,
+) {
+  if (!start || !end) throw new Error("no node to select");
+  return {
+    start: { node: start, offset: from },
+    end: { node: end, offset: to },
+    collapsed: false,
+  };
+}
+
+const CODE_ROWS = [
+  "const alpha = 1;",
+  "const bravo = 2;",
+  "const charlie = 3;",
+];
+
+/** Rows for CODE_ROWS, the second split into token spans as pierre does. */
+const TOKEN_ROWS = `
+  <div data-line="1"><span>const alpha = 1;</span></div>
+  <div data-line="2"><span>const </span><span>bravo</span><span> = 2;</span></div>
+  <div data-line="3"><span>const charlie = 3;</span></div>`;
+
+describe("column anchors inside a code block", () => {
+  it("anchors a word selected in one line of a fence", () => {
+    const { container, shadow, index, lines } = fenceWithRows(
+      `Intro.\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n`,
+      TOKEN_ROWS,
+    );
+    const word = shadow.querySelector("[data-line='2'] span:nth-child(2)");
+    const anchor = anchorForSelection(
+      container,
+      index,
+      ends(word?.firstChild, 0, word?.firstChild, 5),
+    );
+    if (anchor === null) throw new Error("no anchor");
+    expect(anchor.lineStart).toBe(anchor.lineEnd);
+    expect(cut(lines, anchor)).toBe("bravo");
+  });
+
+  // pierre is handed a CRLF fence's lines joined by `\r\n`: whether a row
+  // keeps its `\r` or not, the row reads as its source line.
+  it.each([
+    ["without", TOKEN_ROWS],
+    [
+      "with",
+      TOKEN_ROWS.replace(/<\/span><\/div>(?=\s+<div)/g, "\r</span></div>"),
+    ],
+  ])(
+    "anchors a word to its columns in a fence with CRLF line ends, rows drawn %s their \\r",
+    (_drawn, rows) => {
+      const { container, shadow, index, lines } = fenceWithRows(
+        `Intro.\r\n\r\n\`\`\`ts\r\n${CODE_ROWS.join("\r\n")}\r\n\`\`\`\r\n`,
+        rows,
+      );
+      const word = shadow.querySelector("[data-line='2'] span:nth-child(2)");
+      const anchor = anchorForSelection(
+        container,
+        index,
+        ends(word?.firstChild, 0, word?.firstChild, 5),
+      );
+      if (anchor === null) throw new Error("no anchor");
+      expect(anchor.lineStart).toBe(anchor.lineEnd);
+      expect(cut(lines, anchor)).toBe("bravo");
+    },
+  );
+
+  it.each(FENCE_SHAPES)("anchors a word to its columns in %s", (_name, of) => {
+    const source = of(CODE_ROWS);
+    const { container, shadow, index, lines } = fenceWithRows(
+      source,
+      TOKEN_ROWS,
+    );
+    const text = shadow.querySelector("[data-line='3'] span")?.firstChild;
+    const anchor = anchorForSelection(
+      container,
+      index,
+      ends(text, 6, text, 13),
+    );
+    if (anchor === null) throw new Error("no anchor");
+    expect(lines[anchor.lineStart - 1]).toContain("const charlie = 3;");
+    expect(cut(lines, anchor)).toBe("charlie");
+  });
+
+  it("keeps the whole line when the row does not read as its source", () => {
+    const source = `\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n`;
+    const { container, shadow, index } = fenceWithRows(
+      source,
+      `<div data-line="2"><span>const BRAVO = 2;</span></div>`,
+    );
+    const text = shadow.querySelector("span")?.firstChild;
+    expect(
+      anchorForSelection(container, index, ends(text, 6, text, 11)),
+    ).toEqual({ lineStart: 3, lineEnd: 3, colStart: null, colEnd: null });
+  });
+
+  it("anchors a drag from prose into a code line the same either way", () => {
+    const source = `Intro words here.\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n`;
+    const { container, shadow, index, lines } = fenceWithRows(
+      source,
+      TOKEN_ROWS,
+    );
+    const prose = container.querySelector("p[data-loc]")?.firstChild;
+    const word = shadow.querySelector("[data-line='2'] span:nth-child(2)");
+    const forward = anchorForSelection(
+      container,
+      index,
+      ends(prose, 6, word?.firstChild, 5),
+    );
+    if (forward === null) throw new Error("no anchor");
+    expect(cut(lines, forward)).toBe(
+      "words here.\n\n```ts\nconst alpha = 1;\nconst bravo",
+    );
+    const backward = anchorForSelection(
+      container,
+      index,
+      ends(word?.firstChild, 5, prose, 6),
+    );
+    expect(backward).toEqual(forward);
+  });
+
+  const PATCH = [
+    "diff --git a/a.txt b/a.txt",
+    "--- a/a.txt",
+    "+++ b/a.txt",
+    "@@ -1,2 +1,2 @@",
+    " same",
+    "-old words",
+    "+new words",
+    "diff --git a/b.txt b/b.txt",
+    "--- a/b.txt",
+    "+++ b/b.txt",
+    "@@ -1,2 +1,2 @@",
+    " same",
+    "-b",
+    "+B",
+  ];
+
+  it("anchors a patch row to the fence line that carries it", () => {
+    const source = `Some prose.\n\n\`\`\`patch\n${PATCH.join("\n")}\n\`\`\`\n`;
+    const { container, shadow, index, lines } = fenceWithRows(
+      source,
+      `<pre data-diff=""><div data-line="2" data-line-type="change-addition"><span>new words</span></div></pre>`,
+    );
+    const text = shadow.querySelector("span")?.firstChild;
+    const anchor = anchorForSelection(container, index, ends(text, 4, text, 9));
+    if (anchor === null) throw new Error("no anchor");
+    expect(lines[anchor.lineStart - 1]).toBe("+new words");
+    expect(cut(lines, anchor)).toBe("words");
+  });
+
+  it("keeps the whole fence for a patch row two files share", () => {
+    const source = `Some prose.\n\n\`\`\`patch\n${PATCH.join("\n")}\n\`\`\`\n`;
+    const { container, shadow, index, lines } = fenceWithRows(
+      source,
+      `<pre data-diff=""><div data-line="1" data-line-type="context"><span>same</span></div></pre>`,
+    );
+    const text = shadow.querySelector("span")?.firstChild;
+    expect(
+      anchorForSelection(container, index, ends(text, 0, text, 4)),
+    ).toEqual({
+      lineStart: lines.indexOf("```patch") + 1,
+      lineEnd: lines.lastIndexOf("```") + 1,
+      colStart: null,
+      colEnd: null,
+    });
+  });
+});
+
+describe("column anchors at the edges of code rows", () => {
+  it.each([
+    ["list item's indent", "  "],
+    ["quote's marker", "> "],
+  ])(
+    "leaves the next line's %s out of a selection that stops at a row's start",
+    (_name, prefix) => {
+      const lines = ["const alpha = 1;", "const bravo = 2;"];
+      const source =
+        prefix === "  "
+          ? `- item\n\n  \`\`\`ts\n${lines.map((l) => `  ${l}`).join("\n")}\n  \`\`\`\n`
+          : `> \`\`\`ts\n${lines.map((l) => `> ${l}`).join("\n")}\n> \`\`\`\n`;
+      const {
+        container,
+        shadow,
+        index,
+        lines: all,
+      } = fenceWithRows(
+        source,
+        `<div data-line="1"><span>${lines[0]}</span></div>
+         <div data-line="2"><span>${lines[1]}</span></div>`,
+      );
+      const first = shadow.querySelector("[data-line='1'] span")?.firstChild;
+      const second = shadow.querySelector("[data-line='2'] span")?.firstChild;
+      // The whole first row, as a triple-click or Shift+Down leaves it: the
+      // end sits at the very start of the next row.
+      const whole = anchorForSelection(
+        container,
+        index,
+        ends(first, 0, second, 0),
+      );
+      if (whole === null) throw new Error("no anchor");
+      expect(cut(all, whole)).toBe("const alpha = 1;");
+      // Starting at the first row's end, the next row's prefix is skipped.
+      const opening = anchorForSelection(
+        container,
+        index,
+        ends(first, lines[0]?.length ?? 0, second, 5),
+      );
+      if (opening === null) throw new Error("no anchor");
+      expect(cut(all, opening)).toBe("const");
+    },
+  );
+
+  it("leaves a fence's markers out of a selection crossing its edge", () => {
+    const source = `Intro words.\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n\nOutro words.\n`;
+    const { container, shadow, index, lines } = fenceWithRows(
+      source,
+      TOKEN_ROWS,
+    );
+    const [intro, outro] = [...container.querySelectorAll("p[data-loc]")].map(
+      (p) => p.firstChild,
+    );
+    const last = shadow.querySelector("[data-line='3'] span")?.firstChild;
+    const first = shadow.querySelector("[data-line='1'] span")?.firstChild;
+    // From a code row down to the very start of the next paragraph.
+    const down = anchorForSelection(container, index, ends(last, 6, outro, 0));
+    if (down === null) throw new Error("no anchor");
+    expect(cut(lines, down)).toBe("charlie = 3;");
+    // From the very end of the paragraph above into the first row.
+    const into = anchorForSelection(
+      container,
+      index,
+      ends(intro, "Intro words.".length, first, 5),
+    );
+    if (into === null) throw new Error("no anchor");
+    expect(cut(lines, into)).toBe("const");
+  });
+
+  it("reaches a patch row that names no single line", () => {
+    const source = `Some prose.\n\n\`\`\`patch\n${[
+      "diff --git a/a.txt b/a.txt",
+      "--- a/a.txt",
+      "+++ b/a.txt",
+      "@@ -1,2 +1,2 @@",
+      " same",
+      "-old words",
+      "+new words",
+      "diff --git a/b.txt b/b.txt",
+      "--- a/b.txt",
+      "+++ b/b.txt",
+      "@@ -1,2 +1,2 @@",
+      " same",
+      "-b",
+      "+B",
+    ].join("\n")}\n\`\`\`\n`;
+    const { container, shadow, index, lines } = fenceWithRows(
+      source,
+      `<pre data-diff="">
+         <div data-line="1" data-line-type="context"><span>same</span></div>
+         <div data-line="2" data-line-type="change-deletion"><span>old words</span></div>
+         <div data-line="2" data-line-type="change-addition"><span>new words</span></div>
+         <div data-line="1" data-line-type="context"><span>same</span></div>
+         <div data-line="2" data-line-type="change-deletion"><span>b</span></div>
+       </pre>`,
+    );
+    const rows = shadow.querySelectorAll("[data-line] span");
+    // From "words" on file a's last row to the start of file b's deletion:
+    // file b's "same" row, which both files share, is in between and
+    // selected, so the anchor reaches its line.
+    const anchor = anchorForSelection(
+      container,
+      index,
+      ends(rows[2]?.firstChild, 4, rows[4]?.firstChild, 0),
+    );
+    if (anchor === null) throw new Error("no anchor");
+    expect(anchor.lineEnd).toBe(lines.lastIndexOf(" same") + 1);
+  });
+
+  // Left open, the fence ends with its quote, on its blank body line rather
+  // than on a closing marker.
+  it("gives an unclosed fence's one blank body line its own line", () => {
+    const source = "> ```\n>\n\nAfter.\n";
+    const { shadow, index } = fenceWithRows(
+      source,
+      `<div data-line="1"><span>\n</span></div>`,
+    );
+    const row = shadow.querySelector("span")?.firstChild;
+    if (!row) throw new Error("no row");
+    expect(anchorRangeForNode(row, index)).toEqual({ start: 2, end: 2 });
+  });
+
+  it("gives a fence's one blank body line its own line", () => {
+    const source = "Intro.\n\n```\n\n```\n";
+    const { shadow, index } = fenceWithRows(
+      source,
+      `<div data-line="1"><span>\n</span></div>`,
+    );
+    const row = shadow.querySelector("span")?.firstChild;
+    if (!row) throw new Error("no row");
+    expect(anchorRangeForNode(row, index)).toEqual({ start: 4, end: 4 });
+  });
+
+  it("anchors in a fence indented by its own two spaces", () => {
+    const source = `Intro.\n\n  \`\`\`ts\n  ${CODE_ROWS.join("\n  ")}\n  \`\`\`\n`;
+    const { container, shadow, index, lines } = fenceWithRows(
+      source,
+      TOKEN_ROWS,
+    );
+    const word = shadow.querySelector("[data-line='2'] span:nth-child(2)");
+    const anchor = anchorForSelection(
+      container,
+      index,
+      ends(word?.firstChild, 0, word?.firstChild, 5),
+    );
+    if (anchor === null) throw new Error("no anchor");
+    expect(lines[anchor.lineStart - 1]).toBe("  const bravo = 2;");
+    expect(cut(lines, anchor)).toBe("bravo");
+  });
+
+  it("gives an empty fence's row no line, so no columns reach its marker", () => {
+    const source = "Intro.\n\n```ts\n```\n";
+    const { container, shadow, index } = fenceWithRows(
+      source,
+      `<div data-line="1"><span>\n</span></div>`,
+    );
+    const prose = container.querySelector("p[data-loc]")?.firstChild;
+    const row = shadow.querySelector("span")?.firstChild;
+    expect(
+      anchorForSelection(container, index, ends(prose, 0, row, 1)),
+    ).toEqual({ lineStart: 1, lineEnd: 4, colStart: null, colEnd: null });
+  });
+
+  // Where a backwards selection's ends sit on a boundary between two runs of
+  // prose, which run each belongs to depends on which end it is: mapped
+  // under the wrong edge, "a **b** c" would anchor "**b**" instead of "b".
+  it("reads each end of a backwards selection under its own edge", () => {
+    const container = document.createElement("div");
+    const paragraph = document.createElement("p");
+    paragraph.setAttribute("data-loc", "1-1");
+    const before = document.createTextNode("a ");
+    const strong = document.createElement("strong");
+    strong.textContent = "b";
+    paragraph.append(before, strong, document.createTextNode(" c"));
+    container.append(paragraph);
+    document.body.append(container);
+    try {
+      expect(
+        anchorForSelection(container, buildSegmentIndex("a **b** c\n"), {
+          // Dragged from after "b" back to before it.
+          start: { node: strong.firstChild as Node, offset: 1 },
+          end: { node: before, offset: 2 },
+          collapsed: false,
+        }),
+      ).toEqual({ lineStart: 1, lineEnd: 1, colStart: 5, colEnd: 5 });
+    } finally {
+      container.remove();
+    }
   });
 });
