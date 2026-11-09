@@ -32,7 +32,7 @@ import {
   scanReferenceTokens,
   spliceResolved,
 } from "@todou/shared";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import type { AppContext, DbContext } from "../bootstrap.ts";
 import type { Db } from "../db/driver.ts";
@@ -809,33 +809,80 @@ class Resolver {
 }
 
 /**
- * Land `referenced` events on the cards this content names, in the same
- * project and in the same transaction.
+ * Lock the issue rows a write in this project touches, before it writes any
+ * of them: `write`, the card it updates (null when it updates none), and the
+ * cards `numbers` references. Returns the referenced cards that are still
+ * referenceable, which are the ones owed a `referenced` event.
  *
- * The share lock is what makes a single-transaction move wait: it takes FOR
- * UPDATE on the same row, and without it an event could land on the card
- * between the copy and the source-side cleanup that deletes it again.
+ * Row locks on PostgreSQL follow one order across the server, so that the
+ * waits between transactions never form a cycle:
+ *
+ * 1. Every card a write touches, in one statement, in ascending id, FOR NO
+ *    KEY UPDATE: the card it writes and the cards it references. FOR UPDATE
+ *    is for a transaction that moves a card away, as its first lock. With
+ *    one mode for every other write, no lock is ever upgraded.
+ * 2. Cards before `project_meta`: creating a card locks the cards it
+ *    touches, then takes a number; a same-database move locks its card, then
+ *    the target's `project_meta`.
+ *
+ * The one statement sorts the rows before it locks them: `ORDER BY` and the
+ * locking clause belong to the same query, never a subquery. A card it
+ * waits for may stop being referenceable meanwhile; PostgreSQL then checks
+ * the row again as it is now, so a card only referenced drops out of the
+ * rows returned, though it stays locked until the transaction ends.
+ * Referencing a card therefore waits for the writes to it, and several
+ * writes referencing one card queue on it. With no reference nothing is
+ * locked: a write that touches one card has no order to keep, and its
+ * `UPDATE` takes the lock itself.
+ *
+ * The lock on a referenced card is also what makes a single-transaction
+ * move wait: it takes FOR UPDATE on the same row, and without it an event
+ * could land on the card between the copy and the source-side cleanup that
+ * deletes it again.
+ *
+ * A locked row's `deleted_at`, `moved_at` and `moving_since` cannot change
+ * until this transaction ends, so the cards returned are the set to record.
+ */
+export async function lockIssueRows(
+  tx: Db,
+  project: ProjectRow,
+  write: number | null,
+  numbers: number[],
+): Promise<Array<{ id: number; number: number }>> {
+  if (numbers.length === 0) return [];
+  const rows = await tx
+    .select({ id: issues.id, number: issues.number })
+    .from(issues)
+    .where(
+      or(
+        write === null ? undefined : eq(issues.id, write),
+        and(
+          eq(issues.projectId, project.id),
+          inArray(issues.number, numbers),
+          referenceable,
+        ),
+      ),
+    )
+    .orderBy(asc(issues.id))
+    .for("no key update");
+  const named = new Set(numbers);
+  return rows.filter((row) => named.has(row.number));
+}
+
+/**
+ * Land `referenced` events on `targets`, in the same project and in the same
+ * transaction. `targets` comes from `lockIssueRows` earlier in that
+ * transaction.
  */
 export async function recordLocalReferences(
   tx: Db,
   project: ProjectRow,
   actorId: number,
   source: ResolveSource,
-  numbers: number[],
+  targets: Array<{ id: number; number: number }>,
   agentContext: AgentContext | null,
 ): Promise<Array<{ eventId: number; issueNumber: number }>> {
-  if (numbers.length === 0) return [];
-  const targets = await tx
-    .select({ id: issues.id, number: issues.number })
-    .from(issues)
-    .where(
-      and(
-        eq(issues.projectId, project.id),
-        inArray(issues.number, numbers),
-        referenceable,
-      ),
-    )
-    .for("share");
+  if (targets.length === 0) return [];
   return insertReferenceEvents(
     tx,
     project,
