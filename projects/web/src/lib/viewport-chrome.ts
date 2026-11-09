@@ -13,13 +13,28 @@ import { useEffect } from "react";
  *
  * A pinch zoom moves the visual viewport too, and there the sticky edges have
  * to stay where the page put them: both values are zero unless the scale is 1.
+ *
+ * A rubber band past either end of the page lands in `offsetTop` as well,
+ * negative at the top and positive at the end, while the sticky edges already
+ * stay on screen: following it would push the header down or lift the bottom
+ * controls by the bounce. So a negative `offsetTop` counts as none, and a
+ * positive one no further than a keyboard can pan the visual viewport. With
+ * the keyboard up at the very end of the page iOS shrinks `innerHeight` until
+ * it ends above the visual viewport's bottom edge, so that limit takes the
+ * larger of it and the root's `clientHeight`; the bottom keeps `innerHeight`,
+ * and reads there as before.
  */
 export function visualViewportInsets(): { top: number; bottom: number } {
   const vv = unzoomedVisualViewport();
   if (vv === null) return { top: 0, bottom: 0 };
+  const offset = Math.max(0, vv.offsetTop);
+  const layout = Math.max(
+    window.innerHeight,
+    document.documentElement.clientHeight,
+  );
   return {
-    top: Math.max(0, vv.offsetTop),
-    bottom: Math.max(0, window.innerHeight - vv.height - vv.offsetTop),
+    top: Math.min(offset, Math.max(0, layout - vv.height)),
+    bottom: Math.max(0, window.innerHeight - vv.height - offset),
   };
 }
 
