@@ -44,6 +44,13 @@ export const SOURCE_LINE_ATTR = "data-loc";
  */
 export const CODE_CONTENT_START_ATTR = "data-loc-content-start";
 
+/**
+ * Marks a code block drawn by the patch viewer. Its rows are numbered by the
+ * patched files rather than by the block, so anchoring maps them back through
+ * the block's own text instead of through `data-line`.
+ */
+export const FENCE_PATCH_ATTR = "data-fence-patch";
+
 /** `data-loc="start-end"` → 1-based inclusive source line range. */
 export function parseSourceLoc(
   value: string | null | undefined,
