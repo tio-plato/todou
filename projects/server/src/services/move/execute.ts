@@ -711,6 +711,10 @@ async function raiseTombstone(tx: Db, plan: MovePlan): Promise<void> {
     .set({
       movedAt: plan.movedAt,
       movingSince: null,
+      // A tombstone is never in the trash: restoring refuses one, so a mark
+      // left from before the move could never be taken off again.
+      deletedAt: null,
+      deletedBy: null,
       body: "",
       openQuestions: 0,
       specVersion: null,
