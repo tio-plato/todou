@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "../src/db/driver.ts";
 import {
@@ -371,5 +371,103 @@ describe("link text that is itself an attachment URL", () => {
     expect(relabelSegment(wrap(label), ctx).text).toBe(
       `[${label}](/api/projects/7/attachments/1/download/foo-1.png)`,
     );
+  });
+});
+
+/**
+ * A card being moved to another project is frozen while its rows are copied
+ * there: a rewrite landing on it would be lost with the source, or would
+ * reach the copy only by luck. Relabel leaves it, and says so.
+ */
+describe("attachments relabel on a card being moved", () => {
+  let t: TestApp;
+  let cookie: string;
+  let db: Db;
+  let commentId = 0;
+  const slug = "relabel-moving";
+  const headers = () => ({ "content-type": "application/json", cookie });
+  const lines: string[] = [];
+
+  beforeAll(async () => {
+    t = await makeTestApp("shared");
+    cookie = await t.login();
+    const project = await json(
+      await t.app.request("/api/projects", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ slug, name: "Relabel moving" }),
+      }),
+    );
+    const issue = await json(
+      await t.app.request(`/api/projects/${slug}/issues`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ title: "moving away" }),
+      }),
+    );
+    const form = new FormData();
+    form.set("file", new File(["bytes"], "foo.png", { type: "text/plain" }));
+    form.set("issue_number", "1");
+    const uploaded = await t.app.request(`/api/projects/${slug}/attachments`, {
+      method: "POST",
+      headers: { cookie },
+      body: form,
+    });
+    expect(uploaded.status).toBe(201);
+    const id = (await json(uploaded)).id as number;
+    commentId = (
+      await json(
+        await t.app.request(`/api/projects/${slug}/issues/1/comments`, {
+          method: "POST",
+          headers: headers(),
+          body: JSON.stringify({
+            body: `[foo.png](/api/projects/${project.id}/attachments/${id}/download/foo.png)`,
+          }),
+        }),
+      )
+    ).id;
+
+    db = await t.ctx.router.forProject(
+      routeInfoOf({
+        id: project.id,
+        slug,
+        databaseUrl: null,
+      } as Parameters<typeof routeInfoOf>[0]),
+    );
+    await db
+      .update(attachments)
+      .set({ filename: `foo-${id}.png` })
+      .where(eq(attachments.id, id));
+    // What a move to another database writes when it freezes the card.
+    await db
+      .update(issues)
+      .set({ movingSince: sql`now()` })
+      .where(eq(issues.id, issue.id));
+  });
+
+  afterAll(async () => {
+    await t.cleanup();
+  });
+
+  const commentBody = async () => {
+    const [row] = await db
+      .select({ body: comments.body })
+      .from(comments)
+      .where(eq(comments.id, commentId));
+    return row?.body;
+  };
+
+  it("leaves the card's text alone and names the card", async () => {
+    const before = await commentBody();
+    const report = await relabelAttachments(
+      { router: t.ctx.router },
+      { dryRun: false, slug, log: (line) => lines.push(line) },
+    );
+    expect(report).toMatchObject({ segments: 0, links: 0 });
+    expect(await commentBody()).toBe(before);
+    // One line, and not one that claims a rewrite.
+    const named = lines.filter((line) => line.startsWith(`${slug}/1 `));
+    expect(named).toHaveLength(1);
+    expect(named[0]).not.toContain("→");
   });
 });
