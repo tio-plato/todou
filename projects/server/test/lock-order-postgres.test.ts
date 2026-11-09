@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { sql } from "drizzle-orm";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { addUserWithToken, makeTestApp, type TestApp } from "./helpers.ts";
@@ -21,6 +22,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
   let admin: pg.Client | undefined;
   let owned: string | undefined;
   let t: TestApp;
+  let seq: TestApp;
   let holder: pg.Client;
   let observer: pg.Client;
   let holderPid: number;
@@ -28,9 +30,14 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
   const stamp = Date.now().toString(36);
   let projects = 0;
 
-  const send = (method: string, path: string, body?: unknown) =>
+  const send = (
+    method: string,
+    path: string,
+    body?: unknown,
+    via: TestApp = t,
+  ) =>
     Promise.resolve(
-      t.app.request(`/api${path}`, {
+      via.app.request(`/api${path}`, {
         method,
         headers: { ...author.headers, "content-type": "application/json" },
         body: body === undefined ? undefined : JSON.stringify(body),
@@ -51,6 +58,17 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
     url.searchParams.delete("database");
     url.searchParams.delete("dbname");
     t = await makeTestApp("shared", { systemUrl: url.toString() });
+    const scanning = new URL(url);
+    scanning.searchParams.set(
+      "options",
+      "-c enable_indexscan=off -c enable_bitmapscan=off",
+    );
+    seq = await makeTestApp("shared", { systemUrl: scanning.toString() });
+    // The setting reaches the app's own connections: SHOW answers "off".
+    const shown = (await seq.ctx.router
+      .system()
+      .execute(sql`SHOW enable_indexscan`)) as { rows: unknown[] };
+    expect(shown.rows).toEqual([{ enable_indexscan: "off" }]);
     holder = new pg.Client({ connectionString: url.toString() });
     observer = new pg.Client({ connectionString: url.toString() });
     await holder.connect();
@@ -70,6 +88,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       holder?.end(),
       observer?.end(),
       t?.cleanup(),
+      seq?.cleanup(),
     ]);
     try {
       if (owned) await admin?.query(`DROP DATABASE "${owned}"`);
@@ -89,6 +108,35 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
     expect(created.status).toBe(201);
     return { slug, id: (await json(created)).id as number };
   };
+
+  const card = async (slug: string, title: string) => {
+    const created = await send("POST", `/projects/${slug}/issues`, { title });
+    expect(created.status).toBe(201);
+    return (await json(created)) as { id: number; number: number };
+  };
+
+  /** `blocked` waits for `blocker`, both in the project `slug`. */
+  const block = async (
+    slug: string,
+    blocked: { number: number },
+    blocker: { number: number },
+  ) => {
+    const res = await send(
+      "POST",
+      `/projects/${slug}/issues/${blocked.number}/blocked-by`,
+      { ref: `#${blocker.number}` },
+    );
+    expect(res.status).toBe(200);
+  };
+
+  /** The rows' ids in the order a sequential scan meets them. */
+  const physicalOrder = async (table: string, ids: number[]) =>
+    (
+      await observer.query<{ id: string }>(
+        `SELECT id FROM ${table} WHERE id = ANY($1) ORDER BY ctid`,
+        [ids],
+      )
+    ).rows.map((row) => Number(row.id));
 
   /** Requests queued behind the holder, directly or behind one another. */
   const waitForLockWaiters = (count: number) =>
@@ -152,6 +200,139 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       await Promise.allSettled(pending);
     }
   });
+
+  it("marking a trashed blocker locks its edges in id order", async () => {
+    const p = await project();
+    const x = await card(p.slug, "X");
+    const b1 = await card(p.slug, "B1");
+    const b2 = await card(p.slug, "B2");
+    await block(p.slug, b1, x);
+    await block(p.slug, b2, x);
+    const edges = await observer.query<{ id: string }>(
+      `SELECT id FROM issue_blocks
+       WHERE blocker_project_id = $1 AND blocker_number = $2 ORDER BY id`,
+      [p.id, x.number],
+    );
+    const [e1, e2] = edges.rows.map((row) => Number(row.id));
+    if (e1 === undefined || e2 === undefined) throw new Error("no edges");
+    // A new version of e1 lands behind e2, so a sequential scan meets e2
+    // first.
+    await observer.query(
+      "UPDATE issue_blocks SET cleared_at = cleared_at WHERE id = $1",
+      [e1],
+    );
+    expect(await physicalOrder("issue_blocks", [e1, e2])).toEqual([e2, e1]);
+
+    // The holder locks edges in id order, as every write of several does.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issue_blocks WHERE id = $1 FOR UPDATE",
+        [e1],
+      );
+      // Trashing commits the card, then marks its edges.
+      pending = send(
+        "DELETE",
+        `/projects/${p.slug}/issues/${x.number}`,
+        undefined,
+        seq,
+      );
+      await waitForLockWaiters(1);
+      await holder.query(
+        "SELECT id FROM issue_blocks WHERE id = $1 FOR UPDATE",
+        [e2],
+      );
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(204);
+      const marked = await observer.query<{ deleted: boolean }>(
+        `SELECT blocker_deleted_at IS NOT NULL AS deleted FROM issue_blocks
+         WHERE id = ANY($1)`,
+        [[e1, e2]],
+      );
+      expect(marked.rows).toEqual([{ deleted: true }, { deleted: true }]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("a move rewrites the edges at its address in id order", async () => {
+    const p = await project();
+    const q = await project();
+    const z = await card(p.slug, "Z");
+    const x = await card(p.slug, "X");
+    const w = await card(p.slug, "W");
+    await block(p.slug, x, z);
+    await block(p.slug, w, x);
+    const edgeAt = async (side: "blocker" | "blocked") => {
+      const rows = await observer.query<{ id: string }>(
+        `SELECT id FROM issue_blocks
+         WHERE ${side}_project_id = $1 AND ${side}_number = $2`,
+        [p.id, x.number],
+      );
+      return Number(rows.rows[0]?.id);
+    };
+    // X is on the blocked side of e1 and the blocker side of e2.
+    const e1 = await edgeAt("blocked");
+    const e2 = await edgeAt("blocker");
+    expect(e1).toBeLessThan(e2);
+    // A new version of e1 lands behind e2, so a sequential scan meets e2
+    // first.
+    await observer.query(
+      "UPDATE issue_blocks SET cleared_at = cleared_at WHERE id = $1",
+      [e1],
+    );
+    expect(await physicalOrder("issue_blocks", [e1, e2])).toEqual([e2, e1]);
+
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issue_blocks WHERE id = $1 FOR UPDATE",
+        [e1],
+      );
+      pending = send(
+        "POST",
+        `/projects/${p.slug}/issues/${x.number}/move`,
+        { to_project: q.slug },
+        seq,
+      );
+      await waitForLockWaiters(1);
+      await holder.query(
+        "SELECT id FROM issue_blocks WHERE id = $1 FOR UPDATE",
+        [e2],
+      );
+      await holder.query("COMMIT");
+      const moved = await pending;
+      expect(moved.status).toBe(200);
+      const at = (await json(moved)).moved_to.number as number;
+      const rows = await observer.query<{
+        id: string;
+        blocker_project_id: string;
+        blocker_number: string;
+        blocked_project_id: string;
+        blocked_number: string;
+      }>(
+        `SELECT id, blocker_project_id, blocker_number, blocked_project_id,
+                blocked_number
+         FROM issue_blocks WHERE id = ANY($1) ORDER BY id`,
+        [[e1, e2]],
+      );
+      const [first, second] = rows.rows;
+      expect([first?.blocked_project_id, first?.blocked_number]).toEqual([
+        String(q.id),
+        String(at),
+      ]);
+      expect([second?.blocker_project_id, second?.blocker_number]).toEqual([
+        String(q.id),
+        String(at),
+      ]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
 });
 
 // The same holder, against the steps of a move to another database: the
@@ -169,6 +350,7 @@ describe.skipIf(!PG_URL)("lock order of moves across databases", () => {
     | { step: number; reached: () => void; release: Promise<void> }
     | undefined;
   const projects: Array<{ slug: string; id: number; url: string }> = [];
+  let systemUrl: string;
 
   const send = (method: string, path: string, body?: unknown) =>
     Promise.resolve(
@@ -198,6 +380,7 @@ describe.skipIf(!PG_URL)("lock order of moves across databases", () => {
       await admin.query(`CREATE DATABASE "${name}"`);
       owned.push(name);
     }
+    systemUrl = databaseUrl(base);
     const scanning = "-c enable_indexscan=off -c enable_bitmapscan=off";
     const template = databaseUrl(`${base}_b`, scanning).replace(
       /_b(\?|$)/,
@@ -425,5 +608,122 @@ describe.skipIf(!PG_URL)("lock order of moves across databases", () => {
       number: landed.moved_to.number,
     });
     expect(back.reinhabited).toBe(true);
+  });
+
+  // Publishing the move rewrites the edges at the card's address on the
+  // system pool, in a transaction of its own. A second holder queues behind
+  // the move for e1 and takes it the moment the move lets go of it, then
+  // goes for e2.
+  it("publishing a move holds its edges until both sides are rewritten", async () => {
+    const [from, to] = projects;
+    if (!from || !to) throw new Error("no projects");
+    const x = await card(from.slug, "X");
+    const w1 = await card(from.slug, "W1");
+    const w2 = await card(from.slug, "W2");
+    for (const blocked of [w1, w2]) {
+      const res = await send(
+        "POST",
+        `/projects/${from.slug}/issues/${blocked.number}/blocked-by`,
+        { ref: `#${x.number}` },
+      );
+      expect(res.status).toBe(200);
+    }
+    const first = await connect(systemUrl);
+    const second = await connect(systemUrl);
+    const observer = await connect(systemUrl);
+    const edges = await observer.query<{ id: string }>(
+      `SELECT id FROM issue_blocks
+       WHERE blocker_project_id = $1 AND blocker_number = $2 ORDER BY id`,
+      [from.id, x.number],
+    );
+    const [e1, e2] = edges.rows.map((row) => Number(row.id));
+    // A new version of e1 lands behind e2, so a sequential scan meets e2
+    // first.
+    await observer.query(
+      "UPDATE issue_blocks SET cleared_at = cleared_at WHERE id = $1",
+      [e1],
+    );
+    const order = await observer.query<{ id: string }>(
+      "SELECT id FROM issue_blocks WHERE id = ANY($1) ORDER BY ctid",
+      [[e1, e2]],
+    );
+    expect(order.rows.map((row) => Number(row.id))).toEqual([e2, e1]);
+
+    const paused = pauseAfter(3);
+    let settled = false;
+    const moving = send(
+      "POST",
+      `/projects/${from.slug}/issues/${x.number}/move`,
+      {
+        to_project: to.slug,
+      },
+    ).finally(() => {
+      settled = true;
+    });
+    const [firstPid, secondPid] = [await pidOf(first), await pidOf(second)];
+    let queued: Promise<unknown> | undefined;
+    try {
+      await reach(paused.atStep, moving);
+      await first.query("BEGIN");
+      await first.query(
+        "SELECT id FROM issue_blocks WHERE id = $1 FOR UPDATE",
+        [e1],
+      );
+      paused.release();
+      await expect
+        .poll(() => waitersOn(observer, firstPid), {
+          timeout: 5000,
+          interval: 10,
+        })
+        .toBe(1);
+      await second.query("BEGIN");
+      queued = second.query(
+        "SELECT id FROM issue_blocks WHERE id = $1 FOR UPDATE",
+        [e1],
+      );
+      await expect
+        .poll(() => waitersOn(observer, firstPid), {
+          timeout: 5000,
+          interval: 10,
+        })
+        .toBe(2);
+      await first.query("COMMIT");
+      await queued;
+      // Either the move is done with the edges, or it waits on the second.
+      await expect
+        .poll(
+          async () => settled || (await waitersOn(observer, secondPid)) > 0,
+          {
+            timeout: 5000,
+            interval: 10,
+          },
+        )
+        .toBe(true);
+      await second.query(
+        "SELECT id FROM issue_blocks WHERE id = $1 FOR UPDATE",
+        [e2],
+      );
+      await second.query("COMMIT");
+      const moved = await moving;
+      expect(moved.status).toBe(200);
+      const at = (await json(moved)).moved_to.number as number;
+      const rewritten = await observer.query<{
+        blocker_project_id: string;
+        blocker_number: string;
+      }>(
+        `SELECT blocker_project_id, blocker_number FROM issue_blocks
+         WHERE id = ANY($1)`,
+        [[e1, e2]],
+      );
+      expect(rewritten.rows).toEqual([
+        { blocker_project_id: String(to.id), blocker_number: String(at) },
+        { blocker_project_id: String(to.id), blocker_number: String(at) },
+      ]);
+    } finally {
+      paused.release();
+      await Promise.allSettled([first.query("ROLLBACK"), queued]);
+      await second.query("ROLLBACK");
+      await Promise.allSettled([moving]);
+    }
   });
 });
