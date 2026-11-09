@@ -45,6 +45,7 @@ import {
 } from "@/lib/rehype-image-pairs.ts";
 import {
   CODE_CONTENT_START_ATTR,
+  FENCE_PATCH_ATTR,
   parseSourceLoc,
   SOURCE_LINE_ATTR,
 } from "@/lib/rehype-source-lines.ts";
@@ -138,6 +139,7 @@ function MarkdownPre({
   const title = fenceTitle(fence.meta);
   const collapsible =
     collapseLongFences && fence.text.split("\n").length > FENCE_COLLAPSE_LINES;
+  const patch = baseline === undefined && (tag === "diff" || tag === "patch");
   // A diagram and a patch draw their own frames: each has controls of its
   // own to put in it.
   const block =
@@ -169,7 +171,7 @@ function MarkdownPre({
         title={title}
         collapsible={collapsible}
       />
-    ) : tag === "diff" || tag === "patch" ? (
+    ) : patch ? (
       <PatchView
         filename={filename}
         text={fence.text}
@@ -210,6 +212,7 @@ function MarkdownPre({
               fence.text === "" ? 0 : fence.text.split("\n").length;
             return loc.start + (span - contentLines >= 1 ? 1 : 0);
           })(),
+          ...(patch ? { [FENCE_PATCH_ATTR]: "" } : {}),
           // Decoration classes ride on the <pre> too (T-158: a fence inside
           // a wholly-new range) and would otherwise vanish in the swap.
           className: [

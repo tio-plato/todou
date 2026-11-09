@@ -11,10 +11,10 @@ import type { SpecReviewSubmitInput } from "@todou/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MarkdownView } from "../src/components/shared/markdown-view.tsx";
 import {
+  anchorForSelection,
   anchorRangeForNode,
   blockForLine,
   chipTop,
-  columnsOfSelection,
 } from "../src/components/spec/annotated-markdown.tsx";
 import { ReviewSubmitDialog } from "../src/components/spec/review-submit.tsx";
 import { SpecCommentAnchorCard } from "../src/components/timeline/spec-comment-card.tsx";
@@ -215,7 +215,9 @@ describe("anchorRangeForNode", () => {
     });
   });
 
-  it("clamps rows past the stamped end (unclosed fence)", () => {
+  // Clamped onto the block's last line, the row would name a line that
+  // holds something else; the whole block is the honest answer.
+  it("gives a row past the stamped end the whole block (unclosed fence)", () => {
     const wrapper = document.createElement("div");
     wrapper.setAttribute("data-loc", "3-4");
     wrapper.setAttribute("data-loc-content-start", "4");
@@ -224,12 +226,12 @@ describe("anchorRangeForNode", () => {
     const shadow = pierreHost.attachShadow({ mode: "open" });
     shadow.innerHTML = `<div data-line="9"><span>tail</span></div>`;
     const node = shadow.querySelector("span")?.firstChild;
-    expect(node && anchorRangeForNode(node)).toEqual({ start: 4, end: 4 });
+    expect(node && anchorRangeForNode(node)).toEqual({ start: 3, end: 4 });
   });
 });
 
-describe("columnsOfSelection", () => {
-  it("produces no columns inside a code block", () => {
+describe("anchorForSelection in a code block", () => {
+  it("produces no columns in the plain text shown before pierre's rows", () => {
     const md = "intro\n\n```ts\nconst a = 1;\n```\n";
     const host = document.createElement("div");
     // What MarkdownView renders once the fence swaps to CodeBlock (T-52).
@@ -238,10 +240,13 @@ describe("columnsOfSelection", () => {
       "<pre><code>const a = 1;</code></pre></div>";
     const text = host.querySelector("code")?.firstChild;
     if (!text) throw new Error("no code text");
-    const range = document.createRange();
-    range.setStart(text, 0);
-    range.setEnd(text, 5);
-    expect(columnsOfSelection(buildSegmentIndex(md), range)).toBeNull();
+    expect(
+      anchorForSelection(host, buildSegmentIndex(md), {
+        start: { node: text, offset: 0 },
+        end: { node: text, offset: 5 },
+        collapsed: false,
+      }),
+    ).toEqual({ lineStart: 3, lineEnd: 5, colStart: null, colEnd: null });
   });
 });
 
