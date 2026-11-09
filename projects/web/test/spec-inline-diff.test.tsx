@@ -2873,6 +2873,14 @@ async function settleChips(): Promise<void> {
   });
 }
 
+/** happy-dom's viewport, which is what its `matchMedia` answers from. */
+const happyDom = globalThis as unknown as {
+  happyDOM: { setViewport: (viewport: { width?: number }) => void };
+};
+
+const setViewportWidth = (width: number) =>
+  happyDom.happyDOM.setViewport({ width });
+
 describe("baseline annotations on deleted text", () => {
   const WORD_BEFORE = "The quick brown fox jumps.\n";
   const WORD_AFTER = "The quick red fox jumps.\n";
@@ -2882,6 +2890,7 @@ describe("baseline annotations on deleted text", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    setViewportWidth(1024);
   });
 
   it("paints a baseline draft on the removed word it covers", async () => {
@@ -3099,6 +3108,83 @@ describe("baseline annotations on deleted text", () => {
     });
     expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
       "2 comment(s) on this block",
+    ]);
+  });
+
+  it("joins a restored block's badge only where the chips drawn at that width overlap", async () => {
+    // One line apart (14px at a 1.6 line height), as an open <details>'s
+    // summary and the first paragraph inside it are: clear of a 22px desktop
+    // chip, inside a 24px phone badge.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (!this.classList.contains("spec-del-structure")) {
+          return DOMRect.fromRect({ y: 0 });
+        }
+        return DOMRect.fromRect({
+          y: (this.textContent ?? "").startsWith("Old A") ? 300 : 322.4,
+        });
+      },
+    );
+    // Mounted narrow and widened, not the other way round: happy-dom seeds a
+    // `change` listener as unmatched, so one registered while the query
+    // already matches never hears it stop matching.
+    setViewportWidth(390);
+    const before = "Para one.\n\nOld A here.\n\nOld B here.\n\nPara two.\n";
+    const { view } = await renderDiff(
+      before,
+      "Para one.\n\nPara two.\n",
+      [],
+      [
+        onBaseline("comment", before, 3, "A"),
+        onBaseline("comment", before, 5, "B"),
+      ],
+    );
+    const chips = await view.findAllByRole("button", {
+      name: /comment\(s\) on this block/,
+    });
+    expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
+      "2 comment(s) on this block",
+    ]);
+
+    act(() => setViewportWidth(1024));
+    await waitFor(() =>
+      expect(
+        view
+          .getAllByRole("button", { name: /comment\(s\) on this block/ })
+          .map((chip) => chip.getAttribute("aria-label")),
+      ).toEqual(["1 comment(s) on this block", "1 comment(s) on this block"]),
+    );
+  });
+
+  it("keeps apart phone badges that only touch", async () => {
+    // A 24px badge's height apart: the two touch without overlapping.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (!this.classList.contains("spec-del-structure")) {
+          return DOMRect.fromRect({ y: 0 });
+        }
+        return DOMRect.fromRect({
+          y: (this.textContent ?? "").startsWith("Old A") ? 300 : 324,
+        });
+      },
+    );
+    setViewportWidth(390);
+    const before = "Para one.\n\nOld A here.\n\nOld B here.\n\nPara two.\n";
+    const { view } = await renderDiff(
+      before,
+      "Para one.\n\nPara two.\n",
+      [],
+      [
+        onBaseline("comment", before, 3, "A"),
+        onBaseline("comment", before, 5, "B"),
+      ],
+    );
+    const chips = await view.findAllByRole("button", {
+      name: /comment\(s\) on this block/,
+    });
+    expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
+      "1 comment(s) on this block",
+      "1 comment(s) on this block",
     ]);
   });
 
