@@ -366,6 +366,30 @@ describe("annotation highlights over an escape", () => {
   });
 });
 
+// Text whose source is longer than what it shows for more than an escape:
+// each used to be highlighted whole.
+describe("annotation highlights in text lined up piece by piece", () => {
+  // [shape, body, the anchor's line, column, line, column, what is marked].
+  it.each([
+    [
+      "a continuation line opening with >",
+      "a\n    >b c\n",
+      [2, 8, 2, 8],
+      ["c"],
+    ],
+    ["a reference for a line break", "x &#10; y z\n", [1, 11, 1, 11], ["z"]],
+  ] as const)(
+    "marks only the anchored characters of %s",
+    async (_shape, body, [start, colStart, end, colEnd], marked) => {
+      const { container } = await renderSpec({
+        body,
+        annotations: [anchored("comment", start, colStart, end, colEnd)],
+      });
+      expect(texts(container, "mark.spec-mark-comment")).toEqual(marked);
+    },
+  );
+});
+
 describe("annotation highlights inside inline code", () => {
   it("marks only the characters of code the anchor names", async () => {
     // In "a `code` b", columns 5 and 6 are "od".

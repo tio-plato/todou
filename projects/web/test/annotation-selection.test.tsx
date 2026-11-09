@@ -618,6 +618,32 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
       "b [c]",
       { lineStart: 1, lineEnd: 1, colStart: 13, colEnd: 13 },
     ],
+    [
+      // Indented four spaces, the `>` is the line's text, not a quote marker.
+      "a word on a continuation line opening with >",
+      "a\n    >b c\n",
+      ">b [c]",
+      { lineStart: 2, lineEnd: 2, colStart: 8, colEnd: 8 },
+    ],
+    [
+      "the > a continuation line opens with",
+      "a\n    >b c\n",
+      "[>b] c",
+      { lineStart: 2, lineEnd: 2, colStart: 5, colEnd: 6 },
+    ],
+    [
+      // The page drops the blanks around the line break `&#10;` stands for.
+      "a word after a reference for a line break",
+      "x &#10; y z\n",
+      "y [z]",
+      { lineStart: 1, lineEnd: 1, colStart: 11, colEnd: 11 },
+    ],
+    [
+      "a word after a blank reference ending a line",
+      "a&#32;\nb c\n",
+      "b [c]",
+      { lineStart: 2, lineEnd: 2, colStart: 3, colEnd: 3 },
+    ],
   ])("anchors %s to its own columns", async (_name, body, pick, anchor) => {
     const { onStage, button } = await stageSelection(body, (container) =>
       bracketedIn(container, pick),
