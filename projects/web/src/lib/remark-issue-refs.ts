@@ -150,7 +150,7 @@ function advance(from: Point, text: string): Point {
  * value agree character for character. Entities, escapes and a list item's
  * continuation indent all stretch the span, and then every segment claims
  * the whole node instead — which the engine reads as "indivisible" and
- * highlights in one go, the same fallback inline code has always taken.
+ * highlights in one go.
  */
 function split(node: MdNode, segments: RefSegment[]): MdNode[] {
   const span = node.position;

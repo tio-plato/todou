@@ -188,14 +188,11 @@ describe("buildSegmentIndex", () => {
   });
 
   it("locates a whole inexact segment rather than guessing inside it", () => {
-    // The quote marker of the second line sits inside the span's source and
-    // outside its value, so the content no longer reads like the source.
-    const wrapped = "> 写入 `co\n> de` 头。\n";
-    const own = buildSegmentIndex(wrapped);
-    const at = own.text.indexOf("co\nde");
-    const ranges = sourceRangesOfText(own, at + 1, at + 2);
-    expect(wrapped.slice(ranges[0]?.start ?? 0, ranges[0]?.end ?? 0)).toBe(
-      "`co\n> de`",
+    // An escape's backslash sits inside its source and outside its text.
+    const at = index.text.indexOf("*");
+    const ranges = sourceRangesOfText(index, at, at + 1);
+    expect(source.slice(ranges[0]?.start ?? 0, ranges[0]?.end ?? 0)).toBe(
+      "\\*",
     );
   });
 
@@ -228,6 +225,38 @@ describe("buildSegmentIndex", () => {
     const at = index.text.indexOf("的段落");
     expect(sourceOffsetOfText(index, at)).toBe(source.indexOf("的段落"));
   });
+
+  // [shape, source, what the page shows selected, the source it maps to,
+  // where that starts].
+  it.each([
+    ["a line ending in code", "a `co\nde` b\n", "o d", "o\nd", [1, 5]],
+    ["a CRLF in code", "a `co\r\nde` b\n", "o d", "o\r\nd", [1, 5]],
+    ["code folded in a quote", "> a `co\n>    de` b\n", "de", "de", [2, 6]],
+    [
+      "code indented past its item",
+      "- a `co\n      de` b\n",
+      "de",
+      "de",
+      [2, 7],
+    ],
+    ["an escaped pipe in a cell", "| `a\\|b` |\n| - |\n", "|b", "\\|b", [1, 5]],
+  ] as const)(
+    "maps %s to its own characters",
+    (_shape, source, selected, expected, [line, col]) => {
+      const index = buildSegmentIndex(source);
+      const from = index.text.indexOf(selected);
+      if (from < 0) {
+        throw new Error(
+          `${JSON.stringify(selected)} not in ${JSON.stringify(index.text)}`,
+        );
+      }
+      const ranges = sourceRangesOfText(index, from, from + selected.length);
+      expect(ranges.map((r) => source.slice(r.start, r.end)).join("")).toBe(
+        expected,
+      );
+      expect(lineColAt(index, ranges[0]?.start ?? 0)).toEqual({ line, col });
+    },
+  );
 });
 
 describe("list structure metadata", () => {
