@@ -188,12 +188,59 @@ describe("word-level diff in the rendered view (T-142)", () => {
       "w",
       "z",
     ],
+    ["an inline code span", "a `foo bar` b\n", "a `foo baz` b\n", "baz", "bar"],
   ])(
     "marks the one replaced word in %s",
     async (_name, before, after, ins, del) => {
       const { container } = await renderDiff(before, after);
       expect(texts(container, "ins.spec-ins")).toEqual([ins]);
       expect(texts(container, "del.spec-del")).toEqual([del]);
+    },
+  );
+
+  // Removed prose at either edge of a code span sat beside the code, and its
+  // strike-through belongs there, not inside the code; so does a whole code
+  // span removed, and a run that reaches out of the code into the prose.
+  it.each([
+    [
+      "prose removed after the code",
+      "call `foo()` now.\n",
+      "call `foo()`.\n",
+      "now",
+    ],
+    [
+      "prose removed before the code",
+      "first `foo` bar\n",
+      "`foo` bar\n",
+      "first",
+    ],
+    [
+      "a whole code span removed beside it",
+      "x `old` `foo` y\n",
+      "x `foo` y\n",
+      "old",
+    ],
+    [
+      "a run of code and prose removed",
+      "run `foo bar` baz\n",
+      "run `foo`\n",
+      "bar baz",
+    ],
+  ])("keeps %s outside the code", async (_name, before, after, del) => {
+    const { container } = await renderDiff(before, after);
+    expect(texts(container, "del.spec-del")).toEqual([del]);
+    expect(container.querySelector("code .spec-del")).toBeNull();
+  });
+
+  // …while code removed from either end of a span was code, and stays in it.
+  it.each([
+    ["its end", "run `pnpm test --watch`\n", "run `pnpm test`\n", "--watch"],
+    ["its start", "a `old foo` b\n", "a `foo` b\n", "old"],
+  ])(
+    "keeps code removed from %s inside the code",
+    async (_name, before, after, del) => {
+      const { container } = await renderDiff(before, after);
+      expect(texts(container, "code .spec-del")).toEqual([del]);
     },
   );
 

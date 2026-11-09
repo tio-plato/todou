@@ -596,6 +596,28 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
       "bar [baz]",
       { lineStart: 2, lineEnd: 2, colStart: 5, colEnd: 7 },
     ],
+    [
+      "two characters of inline code",
+      "a `code` b\n",
+      "c[od]e",
+      { lineStart: 1, lineEnd: 1, colStart: 5, colEnd: 6 },
+    ],
+    [
+      // The page shows the line ending as a space and keeps the four blanks
+      // past the item's indent: five between "co" and "de".
+      "a word of code folded in a list item",
+      "- a `co\n      de` b\n",
+      "co     [de]",
+      { lineStart: 2, lineEnd: 2, colStart: 7, colEnd: 8 },
+    ],
+    [
+      // Code folded at a lone CR stays whole, but shows a space there, and
+      // so must its segment for the words after it to line up.
+      "a word after code folded at a lone CR",
+      "a `co\rde` b c\n",
+      "b [c]",
+      { lineStart: 1, lineEnd: 1, colStart: 13, colEnd: 13 },
+    ],
   ])("anchors %s to its own columns", async (_name, body, pick, anchor) => {
     const { onStage, button } = await stageSelection(body, (container) =>
       bracketedIn(container, pick),

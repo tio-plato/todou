@@ -132,11 +132,12 @@ describe("buildSegmentIndex", () => {
     ]);
   });
 
-  it("marks inline code and escapes inexact, and nothing around them", () => {
+  it("marks only the escapes inexact: inline code reads like its source", () => {
     // The text around an escape still reads like its source, so only the
-    // two escapes themselves are indivisible.
+    // two escapes themselves are indivisible; so does the code between a
+    // code span's backticks.
     const inexact = index.segments.filter((s) => !s.exact).map((s) => s.text);
-    expect(inexact).toEqual(["code", "*", "*"]);
+    expect(inexact).toEqual(["*", "*"]);
   });
 
   it("keeps inline HTML out of the flattened prose", () => {
@@ -168,11 +169,11 @@ describe("buildSegmentIndex", () => {
     );
   });
 
-  it("locates a whole inexact segment rather than guessing inside it", () => {
-    const at = index.text.indexOf("code");
-    const ranges = sourceRangesOfText(index, at + 1, at + 2);
+  it("locates an indivisible segment whole, backslash and all", () => {
+    const at = index.text.indexOf("*");
+    const ranges = sourceRangesOfText(index, at, at + 1);
     expect(source.slice(ranges[0]?.start ?? 0, ranges[0]?.end ?? 0)).toBe(
-      "`code`",
+      "\\*",
     );
   });
 
@@ -205,6 +206,44 @@ describe("buildSegmentIndex", () => {
     const at = index.text.indexOf("的段落");
     expect(sourceOffsetOfText(index, at)).toBe(source.indexOf("的段落"));
   });
+
+  // [shape, source, what the page shows selected, the source it maps to,
+  // where that starts].
+  it.each([
+    ["two characters of code", "a `code` b\n", "od", "od", [1, 5]],
+    ["a backtick in double backticks", "a `` x`y `` b\n", "`y", "`y", [1, 7]],
+    ["code whose padding is dropped", "a ` code ` b\n", "od", "od", [1, 6]],
+    ["code keeping one of two blanks", "a `  x  ` b\n", " x", " x", [1, 5]],
+    ["a line ending in code", "a `co\nde` b\n", "o d", "o\nd", [1, 5]],
+    ["a CRLF in code", "a `co\r\nde` b\n", "o d", "o\r\nd", [1, 5]],
+    ["code folded in a quote", "> a `co\n>    de` b\n", "de", "de", [2, 6]],
+    ["code on a quote's lazy line", "> a `co\nde` b\n", "de", "de", [2, 1]],
+    [
+      "code indented past its item",
+      "- a `co\n      de` b\n",
+      "de",
+      "de",
+      [2, 7],
+    ],
+    ["line endings as padding", "a `\nfoo\n` b\n", "foo", "foo", [2, 1]],
+    ["an escaped pipe in a cell", "| `a\\|b` |\n| - |\n", "|b", "\\|b", [1, 5]],
+  ] as const)(
+    "maps %s to its own characters",
+    (_shape, source, selected, expected, [line, col]) => {
+      const index = buildSegmentIndex(source);
+      const from = index.text.indexOf(selected);
+      if (from < 0) {
+        throw new Error(
+          `${JSON.stringify(selected)} not in ${JSON.stringify(index.text)}`,
+        );
+      }
+      const ranges = sourceRangesOfText(index, from, from + selected.length);
+      expect(ranges.map((r) => source.slice(r.start, r.end)).join("")).toBe(
+        expected,
+      );
+      expect(lineColAt(index, ranges[0]?.start ?? 0)).toEqual({ line, col });
+    },
+  );
 });
 
 describe("list structure metadata", () => {
