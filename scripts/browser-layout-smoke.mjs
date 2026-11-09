@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * Manual real-Chromium layout smoke for board overlay scrollbars and collapsed
- * assignee badge clipping. It is intentionally independent of `pnpm test`/CI.
+ * Manual real-Chromium layout smoke for board overlay scrollbars, collapsed
+ * assignee badge clipping and the rendered spec's annotation gutter. It is
+ * intentionally independent of `pnpm test`/CI.
  *
  * Usage: node scripts/browser-layout-smoke.mjs [--self-test|--self-test-cdp] [--keep] [--help]
  * Preconditions: the devshell's Node 24+, installed workspace dependencies,
@@ -22,6 +23,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runBadgeClip } from "./browser/badge-clip.mjs";
 import { runBoardScrollbars } from "./browser/board-scrollbars.mjs";
+import { runSpecChipGutter } from "./browser/spec-chip-gutter.mjs";
 import { selfCheckCdpPipe, startBrowser } from "./lib/browser-cdp.mjs";
 import { createBrowserStack } from "./lib/browser-stack.mjs";
 
@@ -48,6 +50,10 @@ After changing scripts/lib/:
 Preconditions:
   Node 24+ from the devshell, workspace dependencies, flock, and Chromium at
   CHROMIUM (default /usr/bin/chromium). No existing app is reused.
+
+spec-chip-gutter: below 640px the rendered spec's text reaches the card's
+padding, annotation chips stay off the text and their popovers on screen;
+from 640px up the 40px chip gutter and left-opening popovers stay.
 
 Exit codes:
   0 checks passed; 1 named layout/self-test assertion failed; 2 usage,
@@ -103,6 +109,10 @@ const COVERAGE_FAILURES = new Set([
   "clipping-ancestor-missing",
   "641-horizontal-overflow-missing",
   "641-truncation-contract",
+  "markdown-missing",
+  "card-missing",
+  "chip-missing",
+  "popover-missing",
 ]);
 
 function isCoverageFailure(entry) {
@@ -181,6 +191,7 @@ async function main() {
     for (const [name, run] of [
       ["board-scrollbars", runBoardScrollbars],
       ["badge-clip", runBadgeClip],
+      ["spec-chip-gutter", runSpecChipGutter],
     ]) {
       const stage = Date.now();
       try {

@@ -102,6 +102,7 @@ import {
   type SegmentIndex,
   type TextOrigin,
 } from "@/lib/spec-source-index.ts";
+import { SM_UP, useMediaQuery } from "@/lib/use-media-query.ts";
 import { cn } from "@/lib/utils";
 
 type RehypePlugins = ComponentProps<typeof Markdown>["rehypePlugins"];
@@ -158,10 +159,13 @@ const OLD_HOLDER = `[${OLD_LINE_ATTR}], .spec-del-block, .${DEL_ROW_CLASS}`;
 const CODE_WRAPPERS = `[${CODE_CONTENT_START_ATTR}], ${OLD_CODE_BLOCK}`;
 
 /**
- * How tall a chip is drawn (`AnnotationChip`: a 16px line, 2px padding and
- * a 1px border, top and bottom): two closer than this overlap.
+ * How tall `AnnotationChip` draws a chip, so how close two can sit before
+ * they overlap: from `sm` up a 16px line, 2px padding and a 1px border, top
+ * and bottom; below it a 24px count badge (`max-sm:h-6`).
  */
-const CHIP_HEIGHT = 22;
+function chipHeight(wide: boolean): number {
+  return wide ? 22 : 24;
+}
 
 /** Runs of removed text, which say where in the baseline they start. */
 const OLD_RUNS = `[${OLD_FLAT_ATTR}], [${OLD_SOURCE_ATTR}]`;
@@ -495,6 +499,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
   /** The element each chip of a baseline annotation hangs on, by its key. */
   const oldChipEls = useRef(new Map<string, HTMLElement>());
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(NO_FOLDS);
+  const wide = useMediaQuery(SM_UP);
   const remarkPlugins = useMarkdownRemarkPlugins(slug);
 
   const index = useMemo(() => buildSegmentIndex(body), [body]);
@@ -756,7 +761,9 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       // A block put back where another chip hangs — first in a current
       // block, inside another restored one, under the same closed fold —
       // would draw its chip over that one: it joins it instead.
-      const near = next.find((chip) => Math.abs(chip.top - top) < CHIP_HEIGHT);
+      const near = next.find(
+        (chip) => Math.abs(chip.top - top) < chipHeight(wide),
+      );
       if (near !== undefined) {
         near.items = [...near.items, ...items];
         continue;
@@ -791,6 +798,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     baselineIndex,
     oldSpans,
     baselineCodeRows,
+    wide,
   ]);
 
   /**
@@ -1036,7 +1044,10 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     // biome-ignore lint/a11y/useKeyWithClickEvents: what the click delegates to is a real <button>, which answers Enter and Space by firing this same click
     <div
       ref={containerRef}
-      className="relative pr-10"
+      // The gutter holds the chips and the mouse's "Comment Lx" button, and
+      // only from `sm` up: below it the text takes the width and the chips
+      // ride on the border of the card around it.
+      className="relative sm:pr-10"
       onClick={onClick}
       data-testid="annotated-markdown"
     >
@@ -1061,6 +1072,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
           onRemoveDraft={onRemoveDraft}
           onResolve={onResolve}
           resolving={resolving}
+          wide={wide}
         />
       ))}
 
@@ -1080,6 +1092,7 @@ const AnnotationChip = memo(function AnnotationChip({
   onRemoveDraft,
   onResolve,
   resolving,
+  wide,
 }: {
   /**
    * Which issue a published annotation's comment belongs to. Passed down
@@ -1095,6 +1108,8 @@ const AnnotationChip = memo(function AnnotationChip({
   onRemoveDraft: (id: string) => void;
   onResolve: (commentId: number) => void;
   resolving: boolean;
+  /** At least `sm`: the chip sits in the gutter and opens to its left. */
+  wide: boolean;
 }) {
   const draftCount = chip.items.filter((i) => i.kind === "draft").length;
   const locate = (item: DisplayedAnnotation) => (
@@ -1109,23 +1124,30 @@ const AnnotationChip = memo(function AnnotationChip({
   );
   return (
     <Popover>
+      {/* Below `sm` the chip is a count badge centred on the card's right
+          border, `--spec-card-inset` past the text's edge (0 where nothing
+          sets it), and opaque, so the border does not run through it: the
+          same tint, laid over the page's background. Its 24px height is
+          also `chipHeight`'s: change one, change the other. */}
       <PopoverTrigger
         data-annotation-ui=""
-        className={`absolute right-0 inline-flex cursor-pointer items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs shadow-sm ${
+        className={cn(
+          "absolute right-0 inline-flex cursor-pointer items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs shadow-sm",
+          "max-sm:right-[calc(var(--spec-card-inset,0px)*-1)] max-sm:h-6 max-sm:min-w-6 max-sm:translate-x-1/2 max-sm:justify-center max-sm:py-0",
           draftCount > 0
-            ? "border-indigo-500/60 bg-indigo-500/10 text-indigo-700 dark:text-indigo-400"
-            : "border-amber-500/60 bg-amber-500/10 text-amber-700 dark:text-amber-400"
-        }`}
+            ? "border-indigo-500/60 bg-indigo-500/10 text-indigo-700 max-sm:bg-[color-mix(in_srgb,var(--color-indigo-500)_10%,var(--background))] dark:text-indigo-400"
+            : "border-amber-500/60 bg-amber-500/10 text-amber-700 max-sm:bg-[color-mix(in_srgb,var(--color-amber-500)_10%,var(--background))] dark:text-amber-400",
+        )}
         style={{ top: chip.top }}
         aria-label={`${chip.items.length} comment(s) on this block`}
       >
-        <MessageSquareTextIcon className="size-3.5" />
+        <MessageSquareTextIcon className="size-3.5 max-sm:hidden" />
         {chip.items.length}
       </PopoverTrigger>
       <PopoverContent
-        side="left"
-        align="start"
-        className="max-h-96 w-96 space-y-3 overflow-y-auto"
+        side={wide ? "left" : "bottom"}
+        align={wide ? "start" : "end"}
+        className="max-h-96 w-96 max-w-[calc(100vw-2rem)] space-y-3 overflow-y-auto"
       >
         {chip.items.map((item) =>
           item.kind === "draft" ? (
