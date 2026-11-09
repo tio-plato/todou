@@ -794,11 +794,7 @@ export function Timeline({
         style={{ bottom: aboveDock(PILL_GAP) }}
       >
         {look !== "plain" ? (
-          <Button
-            size="sm"
-            className={cn("shadow-lg", motion)}
-            onClick={toFirstNew}
-          >
+          <Button className={cn("shadow-lg", motion)} onClick={toFirstNew}>
             {look === "up" ? (
               <ArrowUpIcon className="size-4" />
             ) : (
@@ -808,19 +804,25 @@ export function Timeline({
           </Button>
         ) : (
           <Button
-            size="icon-sm"
+            size="icon"
             variant="outline"
             aria-label="Scroll to bottom"
             title="Scroll to bottom"
             // Opaque in the dark theme too, where the outline's own fill is
-            // see-through and the comment under it would show.
+            // see-through and the comment under it would show. Border and
+            // arrow take the theme's primary colour in every theme, so the
+            // outline's dark border is overridden as well, and the colour
+            // sits on the icon, out of reach of the outline's hover text.
             className={cn(
-              "rounded-full shadow-lg dark:bg-background dark:hover:bg-muted",
+              "rounded-full border-[1.5px] border-primary shadow-lg dark:border-primary dark:bg-background dark:hover:bg-muted",
               motion,
             )}
             onClick={toBottom}
           >
-            <ArrowDownIcon />
+            <ArrowDownIcon
+              className="size-4.5 text-primary"
+              strokeWidth={2.5}
+            />
           </Button>
         )}
       </div>
