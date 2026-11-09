@@ -24,6 +24,7 @@ import {
   assertIssueReadable,
   assertIssueWritable,
   gateColumns,
+  lockWritableIssue,
 } from "./trash.ts";
 import { getUserRefs } from "./users.ts";
 
@@ -211,6 +212,9 @@ export async function writeIssueMetadata(
   const writtenAt = new Date();
 
   const changes = await db.transaction(async (tx) => {
+    // Asked again under the card's lock, before any row under it is written
+    // (see lockIssueRows).
+    await lockWritableIssue(tx, { id: issue.id, actor, role });
     const before = await tx
       .select({
         namespace: issueMetadata.namespace,
