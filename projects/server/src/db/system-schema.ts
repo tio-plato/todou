@@ -113,7 +113,13 @@ export const cliAuthRequests = pgTable(
     createdAt: createdAt(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   },
-  (t) => [uniqueIndex("cli_auth_requests_code_idx").on(t.code)],
+  (t) => [
+    uniqueIndex("cli_auth_requests_code_idx").on(t.code),
+    // Every create sweeps expired rows first, and create is public: without
+    // this the sweep scans the whole table, so a flood makes each create
+    // dearer for everyone (T-649).
+    index("cli_auth_requests_expires_at_idx").on(t.expiresAt),
+  ],
 );
 
 export const userPrefs = pgTable("user_prefs", {
@@ -549,4 +555,29 @@ export const projectAccessRequests = pgTable(
     createdAt: createdAt(),
   },
   (t) => [primaryKey({ columns: [t.projectId, t.userId] })],
+);
+
+// Objects a deleted project left in storage (T-659), waiting for their last
+// delete. Here rather than in the project's own database because that one is
+// unreachable once the registry row goes: nothing that walks the registry
+// would ever find these keys again. So `project_id` has no foreign key — the
+// row has to outlive the project it names.
+//
+// `delete_after` is the deletion moment for attachments and icons; for an
+// upload key it is the ticket's expiry plus the reaping margin, because a
+// ticket still accepts PUTs after its project is gone and a replay would
+// write the object back behind an earlier delete.
+export const blobReaps = pgTable(
+  "blob_reaps",
+  {
+    key: text("key").primaryKey(),
+    kind: text("kind", { enum: ["attachment", "upload", "icon"] }).notNull(),
+    projectId: bigint("project_id", { mode: "number" }).notNull(),
+    deleteAfter: timestamp("delete_after", { withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("blob_reaps_delete_after_idx").on(t.deleteAfter),
+    index("blob_reaps_project_id_idx").on(t.projectId),
+  ],
 );

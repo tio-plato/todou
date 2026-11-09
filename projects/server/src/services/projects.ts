@@ -18,12 +18,19 @@ import {
   comments,
   insightsSettings,
   issueEvents,
+  issueMentions,
+  issueMetadata,
+  issueMutes,
   issueReads,
   issues,
   labels,
   pendingUploads,
   projectMeta,
+  readFrontiers,
   refFormats,
+  revisions,
+  specVersionFiles,
+  specVersions,
   statuses,
 } from "../db/project-schema.ts";
 import {
@@ -41,6 +48,40 @@ import { type ProjectRow, requireCapability, routeInfoOf } from "./access.ts";
 import { announceBlockChanges, reevaluateProjectBlocks } from "./blocks.ts";
 import { markPendingMirror } from "./pending-mirror.ts";
 import { mirrorRefFormat } from "./reference-directory.ts";
+import {
+  type BlobReapEntry,
+  enlistBlobs,
+  reapBlobs,
+  UPLOAD_GC_MIN_AGE_HOURS,
+} from "./storage-admin.ts";
+
+/**
+ * Every table holding a project's rows, in the order a deletion empties
+ * them: `issues` first so its cascades run, then the rest. The tables the
+ * cascade already reached are still named, so that the list can be checked
+ * against the schema whole. `revisions` has no key to cascade along at all.
+ */
+export const PROJECT_OWNED_TABLES = [
+  issues,
+  comments,
+  issueEvents,
+  issueMetadata,
+  issueReads,
+  issueMutes,
+  issueMentions,
+  revisions,
+  specVersions,
+  specVersionFiles,
+  attachments,
+  pendingUploads,
+  labels,
+  autolinks,
+  refFormats,
+  readFrontiers,
+  insightsSettings,
+  statuses,
+  projectMeta,
+] as const;
 
 /**
  * The icon's URL, or null. Minted with the project's **id** although the
@@ -78,13 +119,28 @@ export function toProject(row: ProjectRow, viewerRole?: MemberRole): Project {
 }
 
 /**
+ * The one refusal a slug held by someone else gets, whether it is held now,
+ * held by a project we only route to, or lost to a concurrent write. Every
+ * path shares it because any difference between them tells a caller which
+ * slugs a private project uses and used (T-662).
+ */
+function slugTakenError(slug: string): ConflictError {
+  return new ConflictError(`slug "${slug}" is already taken`);
+}
+
+/**
  * The three states a target slug can be in, as one check shared by creation
  * and rename: held by someone else (409), held by nobody but still routing
  * to a previous holder (409 unless reclaimed), or free. "Free" includes a
  * slug this very project used to hold, so renaming A→B→A needs no ceremony.
+ *
+ * Only someone who can read the previous holder learns that the slug is
+ * reserved rather than taken: everyone else gets the plain "taken" refusal,
+ * so the slug's history stays as private as the project it points to.
  */
 async function checkSlugAvailable(
   system: Db,
+  actor: UserRow,
   slug: string,
   forProjectId: number | null,
   reclaim: boolean,
@@ -96,7 +152,7 @@ async function checkSlugAvailable(
   const holder = current[0];
   if (holder !== undefined) {
     if (holder.id === forProjectId) return;
-    throw new ConflictError(`slug "${slug}" is already taken`);
+    throw slugTakenError(slug);
   }
   if (reclaim) return;
   const previous = await system
@@ -106,9 +162,35 @@ async function checkSlugAvailable(
     .orderBy(desc(slugHistory.effectiveFrom), desc(slugHistory.id))
     .limit(1);
   const last = previous[0];
-  if (last !== undefined && last.projectId !== forProjectId) {
+  if (last === undefined || last.projectId === forProjectId) return;
+  if (await canSeeProject(system, actor, last.projectId)) {
     throw new SlugReservedError(slug);
   }
+  throw slugTakenError(slug);
+}
+
+/**
+ * The membership test `rolesByProject` makes, on the handle the caller is
+ * already using: inside the colocated create that is a transaction, and a
+ * second handle beside it would wait on it.
+ */
+async function canSeeProject(
+  system: Db,
+  actor: UserRow,
+  projectId: number,
+): Promise<boolean> {
+  if (actor.isInstanceAdmin) return true;
+  const rows = await system
+    .select({ projectId: projectMembers.projectId })
+    .from(projectMembers)
+    .where(
+      and(
+        eq(projectMembers.projectId, projectId),
+        eq(projectMembers.userId, actor.id),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
 }
 
 /**
@@ -205,7 +287,7 @@ async function insertRegistryRow(
     .returning()
     .catch((cause: unknown) => {
       if (uniqueViolation(cause) === null) throw cause;
-      throw new ConflictError(`slug "${input.slug}" is already taken`);
+      throw slugTakenError(input.slug);
     });
   const row = inserted[0];
   if (!row) throw new Error("project insert returned no row");
@@ -224,7 +306,13 @@ export async function createProject(
     // makes the same comparison and returns without a statement, and calling
     // it from inside the transaction would take a second handle.
     const created = await system.transaction(async (tx) => {
-      await checkSlugAvailable(tx, input.slug, null, input.reclaim ?? false);
+      await checkSlugAvailable(
+        tx,
+        actor,
+        input.slug,
+        null,
+        input.reclaim ?? false,
+      );
       const row = await insertRegistryRow(tx, input);
       // The transaction is only sound while both tiers are this one
       // database; a route that says otherwise means rolling the whole
@@ -245,7 +333,13 @@ export async function createProject(
     return toProject(created);
   }
 
-  await checkSlugAvailable(system, input.slug, null, input.reclaim ?? false);
+  await checkSlugAvailable(
+    system,
+    actor,
+    input.slug,
+    null,
+    input.reclaim ?? false,
+  );
 
   // The check above races anyone creating the same slug concurrently; the
   // unique index is what actually decides, so translate its verdict rather
@@ -454,6 +548,7 @@ export async function updateProject(
   if (rename !== null) {
     await checkSlugAvailable(
       system,
+      actor,
       rename,
       project.id,
       input.reclaim ?? false,
@@ -510,11 +605,20 @@ export async function updateProject(
           // this transaction already holds. Inserting first, two renames
           // would each hold KEY SHARE and wait for the other's to update the
           // row (see lockIssueRows).
+          //
+          // The availability check ran outside this transaction, so a
+          // concurrent create or rename can still win the unique index.
           const updated = await tx
             .update(projects)
             .set(registryPatch)
             .where(eq(projects.id, project.id))
-            .returning();
+            .returning()
+            .catch((cause: unknown) => {
+              if (rename === null || uniqueViolation(cause) === null) {
+                throw cause;
+              }
+              throw slugTakenError(rename);
+            });
           if (rename !== null) {
             await tx
               .insert(slugHistory)
@@ -563,8 +667,15 @@ export async function deleteProject(
   const system = ctx.router.system();
   const url = ctx.router.resolveProjectUrl(routeInfoOf(project));
 
-  // Remove the registry row FIRST so the project stops routing; cleanup
-  // failures below only leave orphaned data behind (logged, not fatal).
+  // Read every key the project owns while its database is still reachable.
+  // A failure here fails the deletion: with neither the keys nor the rows
+  // in hand, reporting success would leave all of it behind unrecorded.
+  const blobs = await collectBlobs(ctx, project);
+
+  // The list and the registry row go together, so the project never stops
+  // routing with keys nobody wrote down. Once it has stopped, the failures
+  // below only leave data behind, logged rather than fatal — and the list
+  // is what the hourly tick retries from.
   await system.transaction(async (tx) => {
     // The delete cascades to the block edges at either end of this project:
     // locked first in id order, as every write of several edges does (see
@@ -580,6 +691,7 @@ export async function deleteProject(
       )
       .orderBy(asc(issueBlocks.id))
       .for("update");
+    await enlistBlobs(tx, blobs);
     await tx.delete(projects).where(eq(projects.id, project.id));
   });
 
@@ -658,36 +770,27 @@ export async function deleteProject(
               .for("update")
               .as("locked"),
           );
-        // issues cascade to assignees/labels/comments/events/attachments.
-        await tx.delete(issues).where(eq(issues.projectId, project.id));
-        await tx.delete(comments).where(eq(comments.projectId, project.id));
-        await tx
-          .delete(issueEvents)
-          .where(eq(issueEvents.projectId, project.id));
-        await tx
-          .delete(attachments)
-          .where(eq(attachments.projectId, project.id));
-        // A direct upload of a draft with no card yet has no issue to cascade
-        // from, and `gcPendingUploads` walks live projects only.
-        await tx
-          .delete(pendingUploads)
-          .where(eq(pendingUploads.projectId, project.id));
-        await tx.delete(labels).where(eq(labels.projectId, project.id));
-        await tx
-          .delete(insightsSettings)
-          .where(eq(insightsSettings.projectId, project.id));
-        await tx.delete(statuses).where(eq(statuses.projectId, project.id));
-        await tx
-          .delete(projectMeta)
-          .where(eq(projectMeta.projectId, project.id));
+        for (const table of PROJECT_OWNED_TABLES) {
+          await tx.delete(table).where(eq(table.projectId, project.id));
+        }
       });
     }
-    // The icon blob lives outside every table above, so nothing cascades to
-    // it; left behind it would be unreachable storage nobody can name.
-    if (project.iconKey) await ctx.storage.delete(project.iconKey);
   } catch (cause) {
     console.error(
       `project ${project.slug} deleted from registry but data cleanup failed`,
+      cause,
+    );
+  }
+  try {
+    await reapBlobs(ctx.router, ctx.storage, {
+      dryRun: false,
+      projectId: project.id,
+      log: (line) => console.error(`project ${project.slug}: ${line}`),
+    });
+  } catch (cause) {
+    // Every key is listed already; the hourly tick deletes what this missed.
+    console.error(
+      `project ${project.slug} deleted but its stored files were not, yet`,
       cause,
     );
   }
@@ -696,4 +799,60 @@ export async function deleteProject(
     id: project.id,
     action: "deleted",
   });
+}
+
+/**
+ * The keys of every object a project owns: its attachments (drafts too),
+ * every upload key a ticket of its may still write to, and its icon.
+ *
+ * An upload row's `attachment_key` is not read: while the attachment is
+ * still here its key is in the first list, and once its card has moved away
+ * it is the target project's.
+ */
+async function collectBlobs(
+  ctx: AppContext,
+  project: ProjectRow,
+): Promise<BlobReapEntry[]> {
+  const db = await ctx.router.forProject(routeInfoOf(project));
+  const now = new Date();
+  const entries: BlobReapEntry[] = [];
+  const attached = await db
+    .select({ key: attachments.storageKey })
+    .from(attachments)
+    .where(eq(attachments.projectId, project.id));
+  for (const { key } of attached) {
+    entries.push({
+      key,
+      kind: "attachment",
+      projectId: project.id,
+      deleteAfter: now,
+    });
+  }
+  const uploads = await db
+    .select({
+      key: pendingUploads.storageKey,
+      expiresAt: pendingUploads.expiresAt,
+    })
+    .from(pendingUploads)
+    .where(eq(pendingUploads.projectId, project.id));
+  for (const { key, expiresAt } of uploads) {
+    const last = new Date(
+      expiresAt.getTime() + UPLOAD_GC_MIN_AGE_HOURS * 3600 * 1000,
+    );
+    entries.push({
+      key,
+      kind: "upload",
+      projectId: project.id,
+      deleteAfter: last > now ? last : now,
+    });
+  }
+  if (project.iconKey) {
+    entries.push({
+      key: project.iconKey,
+      kind: "icon",
+      projectId: project.id,
+      deleteAfter: now,
+    });
+  }
+  return entries;
 }

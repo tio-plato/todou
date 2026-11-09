@@ -21,6 +21,8 @@ export function oidcErrorText(code: string): string {
       return "The identity provider rejected the sign-in. Try again, and check the server logs if it persists.";
     case "claim_missing":
       return "The identity provider sent no usable username. Check the login_claim configuration.";
+    case "admission_denied":
+      return "Signed in, but this deployment does not admit that account. Ask an administrator to check its admission settings.";
     case "provision_denied":
       return "Signed in, but no account exists here for that identity (and auto-creation is off).";
     default:
@@ -38,7 +40,9 @@ export function oidcLoginUrl(redirect: string | undefined): string {
  * Login is always explicit, but never interactive: single mode exchanges
  * nothing for a session, oidc navigates to the IdP. The page only really
  * shows itself on errors — or in forward mode, where reaching it at all
- * means the proxy did not do its job.
+ * means the proxy did not do its job. The exception is oidc right after a
+ * logout: going straight back to the IdP would sign the same account in
+ * again, so the page waits for a click (T-636).
  */
 export function LoginPage() {
   const navigate = useNavigate();
@@ -53,6 +57,7 @@ export function LoginPage() {
     typeof search.subject === "string" && search.subject !== ""
       ? search.subject
       : null;
+  const loggedOut = search.logged_out === true;
 
   const login = useMutation({
     mutationFn: () => api.login(),
@@ -74,10 +79,10 @@ export function LoginPage() {
     attempted.current = true;
     if (modeName === "single") {
       login.mutate();
-    } else if (modeName === "oidc" && !oidcError) {
+    } else if (modeName === "oidc" && !oidcError && !loggedOut) {
       window.location.assign(oidcLoginUrl(redirect));
     }
-  }, [modeName, oidcError, redirect, login.mutate]);
+  }, [modeName, oidcError, loggedOut, redirect, login.mutate]);
 
   return (
     <div className="flex min-h-dvh items-center justify-center bg-background">
@@ -122,6 +127,16 @@ export function LoginPage() {
                 onClick={() => window.location.assign(oidcLoginUrl(redirect))}
               >
                 Try again
+              </Button>
+            </>
+          ) : modeName === "oidc" && loggedOut ? (
+            <>
+              <p className="text-center text-sm text-muted-foreground">
+                Your identity provider may still have you signed in. On a shared
+                computer, sign out there too.
+              </p>
+              <Button asChild>
+                <a href={oidcLoginUrl(redirect)}>Sign in</a>
               </Button>
             </>
           ) : login.isError ? (

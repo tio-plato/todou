@@ -4,7 +4,7 @@ import { AwsClient, AwsV4Signer } from "aws4fetch";
 import { type Config, ConfigError, type S3Credentials } from "../config.ts";
 import { NotFoundError, UpstreamError } from "../errors.ts";
 import { contentDisposition } from "../http/content-disposition.ts";
-import type { StorageBackend } from "./types.ts";
+import type { StorageBackend, StoredObject } from "./types.ts";
 
 type S3Settings = Config["storage"]["s3"];
 
@@ -79,6 +79,16 @@ export class S3Storage implements StorageBackend {
     return url;
   }
 
+  #bucketUrl(): URL {
+    if (this.#settings.force_path_style) {
+      return new URL(`${this.#settings.endpoint}/${this.#settings.bucket}`);
+    }
+    const url = new URL(this.#settings.endpoint);
+    url.host = `${this.#settings.bucket}.${url.host}`;
+    url.pathname = "/";
+    return url;
+  }
+
   async #call(
     op: string,
     key: string,
@@ -88,7 +98,24 @@ export class S3Storage implements StorageBackend {
       headers?: Record<string, string>;
     },
   ): Promise<Response> {
-    const url = this.#objectUrl(key, this.#settings.endpoint);
+    return this.#send(
+      op,
+      key,
+      this.#objectUrl(key, this.#settings.endpoint),
+      init,
+    );
+  }
+
+  async #send(
+    op: string,
+    key: string,
+    url: URL,
+    init: {
+      method: string;
+      body?: Uint8Array;
+      headers?: Record<string, string>;
+    },
+  ): Promise<Response> {
     let lastFailure = "";
     for (let attempt = 0; ; attempt++) {
       let res: Response | undefined;
@@ -140,6 +167,25 @@ export class S3Storage implements StorageBackend {
     });
   }
 
+  /** Server-side CopyObject; the bytes never pass through this process. */
+  async copy(from: string, to: string): Promise<void> {
+    const source = `/${this.#settings.bucket}/${this.#settings.key_prefix}${from}`;
+    const res = await this.#call("copy", to, {
+      method: "PUT",
+      headers: { "x-amz-copy-source": encodeURI(source) },
+    });
+    // CopyObject can fail after the 200 status line has gone out, in which
+    // case the error only shows up in the body.
+    const body = await res.text();
+    if (body.includes("<Error>")) {
+      console.error(`s3 copy failed for ${to}: ${body.slice(0, 200)}`);
+      throw new UpstreamError("storage copy failed", {
+        op: "copy",
+        upstream: "error in 200 response",
+      });
+    }
+  }
+
   async getStream(key: string) {
     const res = await this.#call("get", key, { method: "GET" });
     if (!res.body) throw new UpstreamError("storage get returned no body");
@@ -168,6 +214,30 @@ export class S3Storage implements StorageBackend {
       if (err instanceof NotFoundError) return null;
       throw err;
     }
+  }
+
+  /** ListObjectsV2 under the deployment's prefix, one page per request. */
+  async *list(opts?: { pageSize?: number }): AsyncIterable<StoredObject> {
+    const prefix = this.#settings.key_prefix;
+    let token: string | null = null;
+    do {
+      const url = this.#bucketUrl();
+      url.searchParams.set("list-type", "2");
+      if (prefix) url.searchParams.set("prefix", prefix);
+      if (opts?.pageSize) {
+        url.searchParams.set("max-keys", String(opts.pageSize));
+      }
+      if (token) url.searchParams.set("continuation-token", token);
+      const res = await this.#send("list", prefix || "/", url, {
+        method: "GET",
+      });
+      const page = parseListPage(await res.text());
+      for (const object of page.objects) {
+        if (!object.key.startsWith(prefix)) continue;
+        yield { ...object, key: object.key.slice(prefix.length) };
+      }
+      token = page.truncated ? page.nextToken : null;
+    } while (token);
   }
 
   async urlFor(
@@ -241,4 +311,62 @@ export class S3Storage implements StorageBackend {
     const { url: signed } = await signer.sign();
     return new URL(signed.toString());
   }
+}
+
+/**
+ * The few fields of a ListObjectsV2 response `list` needs, read by tag.
+ * Not an XML parser: the response is a flat document of simple elements,
+ * so CDATA, comments and attributes — none of which it carries — are not
+ * handled. Text is decoded for the five predefined entities and numeric
+ * character references, which is how a key with `&` or `<` comes back.
+ */
+function parseListPage(xml: string): {
+  objects: StoredObject[];
+  truncated: boolean;
+  nextToken: string | null;
+} {
+  const objects: StoredObject[] = [];
+  for (const [, body = ""] of xml.matchAll(
+    /<Contents>([\s\S]*?)<\/Contents>/g,
+  )) {
+    const key = tagText(body, "Key");
+    if (key === null) continue;
+    objects.push({
+      key,
+      size: Number(tagText(body, "Size") ?? 0),
+      modifiedAt: new Date(tagText(body, "LastModified") ?? 0),
+    });
+  }
+  // The page's own fields sit outside every <Contents>.
+  const outside = xml.replace(/<Contents>[\s\S]*?<\/Contents>/g, "");
+  return {
+    objects,
+    truncated: tagText(outside, "IsTruncated") === "true",
+    nextToken: tagText(outside, "NextContinuationToken"),
+  };
+}
+
+function tagText(xml: string, tag: string): string | null {
+  const match = xml.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`));
+  return match?.[1] === undefined ? null : decodeXmlText(match[1]);
+}
+
+const XML_ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+};
+
+function decodeXmlText(text: string): string {
+  return text.replace(/&(#x[0-9a-fA-F]+|#[0-9]+|[a-z]+);/g, (whole, ref) => {
+    if (ref.startsWith("#x")) {
+      return String.fromCodePoint(Number.parseInt(ref.slice(2), 16));
+    }
+    if (ref.startsWith("#")) {
+      return String.fromCodePoint(Number.parseInt(ref.slice(1), 10));
+    }
+    return XML_ENTITIES[ref] ?? whole;
+  });
 }

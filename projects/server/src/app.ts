@@ -31,11 +31,13 @@ import {
 import { cliDistRoutes } from "./routes/cli-dist.ts";
 import { inboxRoutes } from "./routes/inbox.ts";
 import { insightsRoutes } from "./routes/insights.ts";
+import { issueWatchRoutes } from "./routes/issue-watch.ts";
 import { issueRoutes } from "./routes/issues.ts";
 import { labelRoutes } from "./routes/labels.ts";
 import { meRoutes } from "./routes/me.ts";
 import { metadataRoutes } from "./routes/metadata.ts";
 import { muteRoutes } from "./routes/mutes.ts";
+import { serveOpenAPIDocument } from "./routes/openapi-doc.ts";
 import { projectRoutes } from "./routes/projects.ts";
 import { referenceRoutes } from "./routes/references.ts";
 import { searchRoutes } from "./routes/search.ts";
@@ -158,7 +160,7 @@ export function createApp(ctx: AppContext) {
     "/",
     batchRoutes(() => app),
   );
-  api.doc31("/openapi.json", {
+  serveOpenAPIDocument(api, "/openapi.json", {
     openapi: "3.1.0",
     info: {
       title: "todou",
@@ -207,6 +209,8 @@ export function createApp(ctx: AppContext) {
   api.route("/", sseRoutes());
   // Both /watchers and /projects/{slug}/watchers (T-540).
   api.route("/", watcherRoutes());
+  // PUT/DELETE /projects/{slug}/issues/{number}/watch (T-669).
+  api.route("/", issueWatchRoutes());
 
   app.route("/", api);
   if (ctx.config.http.static_dir) {

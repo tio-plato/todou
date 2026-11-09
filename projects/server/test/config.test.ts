@@ -119,6 +119,114 @@ describe("loadConfig", () => {
     expect(config.auth.forward.user_header).toBe("Remote-User");
   });
 
+  it("leaves every admission setting open by default", () => {
+    const { oidc, forward } = loadConfig({ tomlSource: "", env: {} }).auth;
+    expect(oidc.require_email_verified).toBe(false);
+    expect(oidc.allowed_email_domains).toEqual([]);
+    expect(oidc.allowed_groups).toEqual([]);
+    expect(oidc.groups_claim).toBe("groups");
+    expect(forward.allowed_email_domains).toEqual([]);
+    expect(forward.allowed_groups).toEqual([]);
+  });
+
+  it("reads admission lists from ENV and normalises domains", () => {
+    const { oidc } = loadConfig({
+      tomlSource: "",
+      env: {
+        TODOU_AUTH_OIDC_ALLOWED_EMAIL_DOMAINS: "@Corp.Example, lab.example",
+        TODOU_AUTH_OIDC_ALLOWED_GROUPS: "todou-users,ops",
+        TODOU_AUTH_OIDC_REQUIRE_EMAIL_VERIFIED: "true",
+      },
+    }).auth;
+    expect(oidc.allowed_email_domains).toEqual(["corp.example", "lab.example"]);
+    expect(oidc.allowed_groups).toEqual(["todou-users", "ops"]);
+    expect(oidc.require_email_verified).toBe(true);
+  });
+
+  it("refuses forward admission lists with no header to read them from", () => {
+    const forward = (...lines: string[]) =>
+      loadConfig({
+        tomlSource: [
+          "[auth]",
+          'mode = "forward"',
+          "[auth.forward]",
+          'user_header = "Remote-User"',
+          ...lines,
+        ].join("\n"),
+        env: {},
+      });
+    expect(() => forward('allowed_groups = ["ops"]')).toThrow(
+      /allowed_groups needs auth\.forward\.groups_header/,
+    );
+    expect(() => forward('allowed_email_domains = ["corp.example"]')).toThrow(
+      /allowed_email_domains needs auth\.forward\.email_header/,
+    );
+    expect(() =>
+      forward(
+        'allowed_groups = ["ops"]',
+        'groups_header = "Remote-Groups"',
+        'allowed_email_domains = ["corp.example"]',
+        'email_header = "Remote-Email"',
+      ),
+    ).not.toThrow();
+  });
+
+  it("leaves the forward subject on the username by default", () => {
+    const { forward } = loadConfig({ tomlSource: "", env: {} }).auth;
+    expect(forward.subject_header).toBeUndefined();
+    expect(forward.migrate_legacy_subjects).toBe(false);
+  });
+
+  it("reads the forward subject settings from ENV", () => {
+    const { forward } = loadConfig({
+      tomlSource: "",
+      env: {
+        TODOU_AUTH_FORWARD_SUBJECT_HEADER: "X-Uid",
+        TODOU_AUTH_FORWARD_MIGRATE_LEGACY_SUBJECTS: "true",
+      },
+    }).auth;
+    expect(forward.subject_header).toBe("X-Uid");
+    expect(forward.migrate_legacy_subjects).toBe(true);
+  });
+
+  describe("forward subject settings that cannot work", () => {
+    const forward = (...lines: string[]) =>
+      loadConfig({
+        tomlSource: [
+          "[auth]",
+          'mode = "forward"',
+          "[auth.forward]",
+          'user_header = "Remote-User"',
+          ...lines,
+        ].join("\n"),
+        env: {},
+      });
+
+    it("refuses subject_header naming user_header in another case", () => {
+      expect(() => forward('subject_header = "remote-user"')).toThrow(
+        ConfigError,
+      );
+      expect(() => forward('subject_header = "remote-user"')).toThrow(
+        /subject_header must name a different header than user_header/,
+      );
+    });
+
+    it("refuses migrate_legacy_subjects without subject_header", () => {
+      expect(() => forward("migrate_legacy_subjects = true")).toThrow(
+        ConfigError,
+      );
+      expect(() => forward("migrate_legacy_subjects = true")).toThrow(
+        /migrate_legacy_subjects requires auth\.forward\.subject_header/,
+      );
+    });
+
+    it("accepts a distinct subject_header with the migration on", () => {
+      expect(() =>
+        forward('subject_header = "X-Uid"', "migrate_legacy_subjects = true"),
+      ).not.toThrow();
+    });
+  });
+
   it("leaves cookie_secure a tri-state (absent = per request)", () => {
     expect(
       loadConfig({ tomlSource: "", env: {} }).auth.cookie_secure,

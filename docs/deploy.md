@@ -215,7 +215,10 @@ remote home, or whatever `--deploy-script` names — and warns when it carries
 no `cli-dist` activation step. That host takes the upload and then never
 swaps it in, so `/api/cli` goes on serving the previous build; a stale
 manifest answers exactly like a current one, and without this warning
-nothing in the pipeline is in a position to notice.
+nothing in the pipeline is in a position to notice. A `git describe` in that
+script without `--abbrev=9` is fatal instead: the host would compute the
+version with its own abbreviation length and refuse the drop as staged for
+another commit.
 
 `--activate` performs the swap, the restart and the version check from here
 instead, for a CLI refresh with no deploy behind it — it additionally wants
@@ -392,7 +395,7 @@ fi
 # Fetched rather than pulled, so the drop can be judged against the commit this
 # run is about to move to while the checkout is still untouched.
 git fetch origin
-TARGET="$(git describe --tags --always origin/master)"
+TARGET="$(git describe --tags --always --abbrev=9 origin/master)"
 
 # Refuse before anything moves. A deploy with no drop for TARGET succeeds at
 # everything it was asked to do and still leaves /api/cli handing out an older
@@ -443,7 +446,7 @@ systemctl --user restart todou
 # The check before the build read a manifest; this one asks the process that
 # had to boot on it. cli-dist.old outlives the restart for exactly this window.
 if [ "$CLI" = 1 ]; then
-  DEPLOYED="$(git describe --tags --always)"
+  DEPLOYED="$(git describe --tags --always --abbrev=9)"
   SERVED=""
   # The server needs a few seconds to listen after the restart, so refused
   # connections are expected here; only the last attempt's error is worth showing.
@@ -519,8 +522,9 @@ static files, or the session cookie and SSE stream stop being same-origin.
 Have the proxy set `X-Forwarded-Proto` (and `X-Forwarded-Host` if it
 rewrites hosts), and append the client to `X-Forwarded-For`: the CLI
 authorization page shows that address, and `todou login --no-browser` is
-capped at 10 new codes per address per 10 minutes. A proxy the server does
-not trust puts every user behind its one address, sharing that cap.
+capped at 10 new codes per address (per /64 for IPv6) per 10 minutes. A
+proxy the server does not trust puts every user behind its one address,
+sharing that cap.
 Forwarded headers are only believed when the TCP peer matches
 `http.trusted_proxies`, which defaults to loopback:
 
@@ -616,7 +620,9 @@ described so far; nothing to configure.
 
 Authorization-code + PKCE against any OpenID Connect provider
 (Keycloak, Authelia, Authentik, Google, …); the callback creates the same
-30-day sliding DB session single mode uses.
+30-day sliding DB session single mode uses. On a public provider like
+Google, read [Who can sign in](#who-can-sign-in) first: unconfigured,
+every account there can sign in.
 
 ```toml
 [auth]
@@ -629,6 +635,13 @@ client_secret = "…"                  # or TODOU_AUTH_OIDC_CLIENT_SECRET
 # scopes = "openid profile email"    # defaults
 # login_claim = "preferred_username"
 # auto_create = true
+
+# Admission — unset by default, which admits anyone the IdP signs in.
+# See "Who can sign in" below before leaving these empty.
+# require_email_verified = true
+# allowed_email_domains = ["example.com"]
+# allowed_groups = ["todou-users"]
+# groups_claim = "groups"           # default
 ```
 
 Register the client with redirect URI `<origin>/api/auth/callback`. The
@@ -647,8 +660,64 @@ lowercase letters, digits, dashes). Accounts are matched by the IdP's
 `sub` claim alone — an asserted username is a public, re-registrable
 name, never proof of owning an existing account, so it never matches
 one. Unknown subjects are auto-created when `auto_create` is on, with
-the username as the login; a taken login (human or machine alike) gets
+the username as the login; a taken login (human or machine alike), or
+one made only of digits (which `/users/<id>` would read as an id), gets
 a random `-xxxx` suffix instead.
+
+Logging out ends the todou session only; the IdP session stays, so a
+user who holds several accounts there can sign back in as another. The
+next sign-in from that browser sends `prompt=login`, asking the IdP for
+credentials again rather than reusing its session. An IdP that ignores
+`prompt` signs the previous account straight back in, so on shared
+machines users must also sign out at the IdP.
+
+#### Who can sign in
+
+**With the admission settings unset — the default — anyone the IdP will
+authenticate for this client can sign in, and with `auto_create` on,
+gets an account.** Every account can create projects, upload
+attachments and reach every endpoint that only asks for a signed-in
+user. Connecting an IdP is not access control by itself: the IdP's own
+rules are then the only boundary. On a public provider such as Google
+or GitLab.com, or an IdP with self-registration, that boundary is
+"anyone with an account there", which makes the deployment an open
+signup service.
+
+Narrow it at the IdP (assign the client to specific users or groups,
+turn self-registration off), or here, or both:
+
+| Setting | Admits a sign-in when |
+|---|---|
+| `require_email_verified = true` | the `email_verified` claim is `true` |
+| `allowed_email_domains = [...]` | the `email` claim's domain is one of these, matched exactly and case-insensitively (`corp.example` does not admit `dev.corp.example`) |
+| `allowed_groups = [...]` | the `groups_claim` claim (default `groups`, a list or a single string) shares at least one entry with this list, case-sensitively |
+
+Every setting given must hold. A claim missing from the ID token is
+read from userinfo; a claim the IdP sends in neither place refuses the
+sign-in, so make sure the client's scopes and claim mappers actually
+emit it (Keycloak, for one, sends `groups` only through a mapper you
+add). The refused user lands on the login page with
+`admission_denied`; the subject and the reason go to the server log.
+
+`allowed_email_domains` trusts the `email` claim as the IdP states it.
+On an IdP where users can type in any address unverified, a domain
+list without `require_email_verified` admits anyone who claims an
+address at your domain; turn both on unless your IdP only issues
+addresses it controls.
+
+The check runs on every sign-in, existing accounts included, before
+any account is looked up or created. Two things it does not reach:
+
+- **Sessions and tokens already issued.** A web session lasts 30 days
+  and slides on use; PATs, including those the CLI obtained through
+  device authorization, do not expire by themselves, and neither do
+  the agents the account owns. Removing someone from the IdP group
+  stops their next sign-in and nothing else; todou has no command yet
+  that ends a human account's existing sessions and tokens.
+- **The first instance admin.** The bootstrap below still applies, but
+  only to the first sign-in that passes admission — so set the
+  settings before the first sign-in, and make sure your own account
+  passes them.
 
 #### The first sign-in becomes instance admin
 
@@ -799,10 +868,17 @@ UI hides its logout button.
 mode = "forward"
 
 [auth.forward]
-user_header = "Remote-User"          # Authelia; oauth2-proxy: "X-Auth-Request-User"
+user_header = "Remote-User"          # Authelia
+# subject_header = "X-Auth-Request-User"  # a stable id; see "Stable subjects"
+# migrate_legacy_subjects = false
 # name_header = "Remote-Name"        # optional, read only when creating the user
 # email_header = "Remote-Email"
 # auto_create = true
+
+# Admission — unset by default, which admits anyone the proxy lets through.
+# groups_header = "Remote-Groups"     # oauth2-proxy: "X-Auth-Request-Groups"
+# allowed_groups = ["todou-users"]    # needs groups_header
+# allowed_email_domains = ["example.com"]  # needs email_header
 ```
 
 Two hard requirements, both enforced:
@@ -831,14 +907,95 @@ belong to another reverse proxy, so it never appears in a response.
 Provisioning follows the same rules as oidc (subject keying, auto-create
 with suffixing, and [the first sign-in becomes instance
 admin](#the-first-sign-in-becomes-instance-admin) — here any request the
-proxy authenticates counts as one): the header value doubles as the
-stored subject, so renaming a login inside todou never detaches the
-identity. One caveat comes with that: an ex-single-mode builtin account
+proxy authenticates counts as one). Without `subject_header` the
+`user_header` value, lowercased, doubles as the stored subject, so
+renaming a login inside todou never detaches the identity. One caveat
+comes with that: an ex-single-mode builtin account
 is tracked by the sentinel subject `builtin`, which is also a valid
 username — an upstream user literally named `builtin` would match that
 account, history and admin bit included. The header namespace is the
 operator's responsibility; retire or rebind the builtin account when
 migrating (see the single-mode migration above).
+
+**Admission works the same way as oidc's, and leaving it unset carries
+the same risk**: anyone the proxy authenticates gets an account, so the
+proxy's own access rules (Authelia's access control, oauth2-proxy's
+`--allowed-group` / `--email-domain`) are the only boundary unless the
+settings above are set. `allowed_groups` reads `groups_header` as a
+comma-separated list, the form oauth2-proxy and Authelia send;
+`allowed_email_domains` reads `email_header`. The server refuses to
+start with either list set but its header not. A refused request gets a
+403, with the reason in the server log.
+
+Because forward mode has no sessions, the check runs on every request,
+so an account the proxy stops vouching for loses web access straight
+away. Bearer PATs skip the identity headers entirely and keep working,
+as they do in oidc mode. There is no `require_email_verified`: proxies
+do not forward a verified-email flag, so whether `email_header` carries
+a verified address is up to the proxy and its IdP.
+
+#### Stable subjects
+
+Without `subject_header`, the username is the identity: whoever the
+upstream later hands the same username to — after the original holder
+left, or in different capitals, since it is lowercased — signs in to the
+original holder's account. That is safe only while the upstream never
+reissues usernames. A proxy that can forward a stable per-user id should
+send it in a second header and name that header `subject_header`. Its
+value is stored and compared exactly as sent, case included, like an
+oidc `sub`; `user_header` still supplies the login. A request without it
+gets the same 401 as a missing `user_header` — never a fall-back to the
+username.
+
+oauth2-proxy with an OIDC provider (and `--set-xauthrequest`):
+
+```toml
+user_header = "X-Auth-Request-Preferred-Username"
+subject_header = "X-Auth-Request-User"
+```
+
+With an OIDC provider, `X-Auth-Request-User` is the IdP's `sub`, not a
+username. With oauth2-proxy's GitHub provider it is the GitHub handle,
+which can be renamed and re-registered by someone else, so it is no
+stable id there.
+
+Authentik:
+
+```toml
+user_header = "X-authentik-username"
+subject_header = "X-authentik-uid"
+```
+
+The uid changes if Authentik is reinstalled; rebind each account then
+with `user bind-subject`.
+
+Authelia and Tailscale serve forward no stable id. Behind them, the only
+protection is an upstream that never reissues usernames.
+
+#### Moving an existing deployment onto a stable subject
+
+Every account an existing forward deployment created is keyed by its old
+subject, so configuring `subject_header` alone makes each person a new,
+empty, suffixed account on their next request. Move them across:
+
+1. Set `subject_header`, set `migrate_legacy_subjects = true`, restart.
+2. Have everybody sign in once. Each first request re-keys that account
+   onto the stable id (matched by the lowercased username or the
+   lowercased old subject); the server log reports every one, by login
+   and account id.
+3. Remove `migrate_legacy_subjects` and restart.
+4. Anyone who missed the window: `todou-server user bind-subject <login>
+   --subject <id> --force`.
+
+While the switch is on, a username can still claim any account that has
+not been re-keyed yet, which is the hole this closes; the server warns at
+startup until the switch is off.
+
+Deployments that followed earlier versions of this guide and set
+`user_header = "X-Auth-Request-User"` for oauth2-proxy have the IdP's
+`sub` (a UUID or a long number) as everybody's login. After switching to
+the configuration above, users can change their login in their profile
+settings.
 
 ## S3 attachment storage
 
@@ -934,9 +1091,12 @@ up anything uploaded to s3 since the switch) plus flipping
 ### Reaping abandoned direct uploads
 
 A direct upload that is requested but never completed leaves an object
-with no attachment row. Every issued upload is recorded in the database,
-so cleanup is database-driven, and the server does it on its own: the
-hourly housekeeping tick deletes orphans older than expiry+24h and logs
+with no attachment row. A completed one can too: completing copies the
+file to the attachment's own key and deletes the uploaded object, but the
+upload URL keeps accepting writes until it expires. Every issued upload is
+recorded in the database, so cleanup is database-driven, and the server
+does it on its own: the hourly housekeeping tick deletes what is left at
+the upload key once it is older than expiry+24h and logs
 each one as `housekeeping: deleted orphan object …`. The tick only runs
 this on the s3 backend; rows left over from an earlier s3 deployment are
 kept, since they name objects in a bucket the server no longer uses.
@@ -962,6 +1122,38 @@ drafts older than 24 hours — row and object, on every backend, fs included —
 and logs `housekeeping: deleted draft attachment …`. `storage gc` runs that
 pass too, after the direct-upload one, with `--min-age` as the draft's age in
 hours.
+
+### Files of deleted projects
+
+Deleting a project deletes its attachments, its icon and its direct-upload
+objects on the spot. Before anything is removed, every one of those keys is
+written to a list in the system database, in the same transaction that takes
+the project out of the registry; a delete that fails there stays on the list.
+So does an upload key whose URL has not expired yet, because the URL keeps
+accepting writes after the project is gone. The hourly tick works through
+the list — failed deletes at once, upload keys at expiry+24h — on every
+backend, and `storage gc` runs the same pass after the other two. A key that
+a live project's attachment still names, such as one on a card moved out
+before the deletion, is dropped from the list and its file kept.
+
+If a project's database cannot be read, deleting the project fails with a
+500 and nothing is removed, rather than leaving files nobody can find again.
+
+Projects deleted before this list existed left their files behind with no
+record anywhere. `storage orphans` finds them by listing the store itself —
+the whole bucket or fs root, so it runs only when you ask:
+
+```sh
+todou-server storage orphans            # list orphans; deletes nothing
+todou-server storage orphans --delete   # delete what it lists
+```
+
+It considers only keys of the shape this server mints, older than
+`--min-age` hours (default 24), that no avatar, icon, attachment, direct
+upload or pending list entry names; other objects in a shared bucket are never
+touched. `--delete` reads the databases again before deleting and spares
+anything named by then. Read the list once without `--delete` first. It exits
+1 if any project database cannot be read, deleting nothing.
 
 ### Storing references as links, once
 

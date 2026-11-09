@@ -6,6 +6,11 @@ import type { AppContext } from "../bootstrap.ts";
 import { CLIENT_AUTH_METHODS, type Config } from "../config.ts";
 import { DomainError } from "../errors.ts";
 import { requestOrigin } from "../http/proxy.ts";
+import {
+  admissionActive,
+  admissionRefusal,
+  oidcAdmissionPolicy,
+} from "./admission.ts";
 import { cookieSecure } from "./cookies.ts";
 import { normalizeLogin, ProvisionError, provisionUser } from "./provision.ts";
 import { createSession, SESSION_COOKIE } from "./session.ts";
@@ -16,10 +21,23 @@ const TRANSIENT_MAX_AGE_S = 300;
 // Narrow path: the browser only replays it to /api/auth/login|callback.
 const TRANSIENT_PATH = "/api/auth";
 
+/**
+ * Left by an oidc logout so the next login makes the IdP ask for credentials
+ * again (T-636). Logging out ends only todou's session, and /login sends the
+ * browser straight back to the IdP, whose own session would otherwise sign
+ * whoever sits down next straight in as the account that just left. Long-lived
+ * on purpose: that IdP session can outlast any short window, and the marker
+ * only goes once a login actually completes.
+ */
+const REAUTH_COOKIE = "todou_oidc_reauth";
+// The cap browsers put on a cookie's lifetime anyway.
+const REAUTH_MAX_AGE_S = 400 * 24 * 60 * 60;
+
 export type OidcErrorCode =
   | "state_mismatch"
   | "exchange_failed"
   | "claim_missing"
+  | "admission_denied"
   | "provision_denied";
 
 /** Only same-site paths may be resumed after login (mirrors the web rule). */
@@ -224,6 +242,9 @@ export async function oidcLoginRedirect(
     state,
     code_challenge: challenge,
     code_challenge_method: "S256",
+    // Not select_account: the account that logged out must not be one click
+    // away. A login form still lets the next person pick any account.
+    ...(getCookie(c, REAUTH_COOKIE) ? { prompt: "login" } : {}),
   });
 
   setCookie(
@@ -282,18 +303,22 @@ export async function oidcCallback(
   const claims = tokens.claims();
   if (!claims?.sub) return fail("claim_missing");
 
+  // Some IdPs keep profile claims off the ID token; userinfo has them all.
+  // Fetched at most once, and only when a claim the callback needs is absent.
+  const subject = claims.sub;
+  let userinfo: Promise<oidc.UserInfoResponse> | undefined;
+  const fromUserinfo = () => {
+    userinfo ??= getIdp(ctx.config).then((idp) =>
+      oidc.fetchUserInfo(idp, tokens.access_token, subject),
+    );
+    return userinfo;
+  };
+
   const loginClaim = ctx.config.auth.oidc.login_claim;
   let rawLogin = claims[loginClaim];
   if (typeof rawLogin !== "string" || rawLogin === "") {
-    // Some IdPs keep profile claims off the ID token; userinfo has them all.
     try {
-      const idp = await getIdp(ctx.config);
-      const info = await oidc.fetchUserInfo(
-        idp,
-        tokens.access_token,
-        claims.sub,
-      );
-      rawLogin = info[loginClaim];
+      rawLogin = (await fromUserinfo())[loginClaim];
     } catch (cause) {
       console.error("oidc userinfo fetch failed:", String(cause));
       return fail("claim_missing");
@@ -306,6 +331,37 @@ export async function oidcCallback(
       `oidc login_claim "${loginClaim}" value ${JSON.stringify(rawLogin)} is not a usable login`,
     );
     return fail("claim_missing");
+  }
+
+  // Before provisioning, so a refused identity never gets an account, and
+  // on every login, so an existing account that stops qualifying stops
+  // signing in.
+  const policy = oidcAdmissionPolicy(ctx.config);
+  if (admissionActive(policy)) {
+    // A claim nobody could produce reads as absent, which refuses.
+    const claim = async (name: string, needed: boolean): Promise<unknown> => {
+      if (!needed || claims[name] !== undefined) return claims[name];
+      try {
+        return (await fromUserinfo())[name];
+      } catch (cause) {
+        console.error("oidc userinfo fetch failed:", String(cause));
+        return undefined;
+      }
+    };
+    const refusal = admissionRefusal(policy, {
+      email: await claim("email", policy.allowedEmailDomains.length > 0),
+      emailVerified: await claim("email_verified", policy.requireEmailVerified),
+      groups: await claim(
+        ctx.config.auth.oidc.groups_claim,
+        policy.allowedGroups.length > 0,
+      ),
+    });
+    if (refusal !== null) {
+      console.error(
+        `oidc admission refused subject ${JSON.stringify(subject)}: ${refusal}`,
+      );
+      return fail("admission_denied");
+    }
   }
 
   let user: Awaited<ReturnType<typeof provisionUser>>;
@@ -337,8 +393,19 @@ export async function oidcCallback(
     secure: cookieSecure(c, ctx.config),
     expires: session.expiresAt,
   });
+  deleteCookie(c, REAUTH_COOKIE, { path: TRANSIENT_PATH });
   // The cookie is unsigned, so what it carries is checked like any input.
   return c.redirect(safeRedirect(transient.redirect), 302);
+}
+
+export function markReauthRequired(c: AnyContext, config: Config): void {
+  setCookie(c, REAUTH_COOKIE, "1", {
+    httpOnly: true,
+    sameSite: "Lax",
+    secure: cookieSecure(c, config),
+    path: TRANSIENT_PATH,
+    maxAge: REAUTH_MAX_AGE_S,
+  });
 }
 
 function callbackUri(c: AnyContext, config: Config): string {

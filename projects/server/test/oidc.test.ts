@@ -1,4 +1,6 @@
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { users } from "../src/db/system-schema.ts";
 import { makeTestApp, type TestApp } from "./helpers.ts";
 import { type StubIssuer, startStubIssuer } from "./stub-issuer.ts";
 
@@ -49,10 +51,12 @@ beforeEach(() => {
   idp.userinfoClaims = {};
 });
 
-/** Drive GET /api/auth/login and pull apart the redirect + transient cookie. */
-async function startLogin(redirect = "/projects") {
+/** Drive GET /api/auth/login and pull apart the redirect + transient cookie.
+ * `jar` is whatever else the browser would replay to /api/auth. */
+async function startLogin(redirect = "/projects", jar?: string) {
   const res = await t.app.request(
     `/api/auth/login?redirect=${encodeURIComponent(redirect)}`,
+    jar ? { headers: { cookie: jar } } : undefined,
   );
   expect(res.status).toBe(302);
   const location = new URL(res.headers.get("location") ?? "");
@@ -61,13 +65,23 @@ async function startLogin(redirect = "/projects") {
   return { location, cookie };
 }
 
-async function completeCallback(options?: { state?: string; cookie?: string }) {
-  const { location, cookie } = await startLogin();
+async function completeCallback(options?: {
+  state?: string;
+  cookie?: string;
+  jar?: string;
+}) {
+  const { location, cookie } = await startLogin("/projects", options?.jar);
   const state = options?.state ?? location.searchParams.get("state") ?? "";
+  const sent = options?.cookie ?? cookie;
   return t.app.request(
     `/api/auth/callback?code=stub-code&state=${encodeURIComponent(state)}`,
-    { headers: { cookie: options?.cookie ?? cookie } },
+    { headers: { cookie: options?.jar ? `${sent}; ${options.jar}` : sent } },
   );
+}
+
+/** The Set-Cookie line (attributes included) a response wrote for `name`. */
+function setCookieFor(res: Response, name: string): string | undefined {
+  return res.headers.getSetCookie().find((v) => v.startsWith(`${name}=`));
 }
 
 describe("oidc login flow", () => {
@@ -247,6 +261,76 @@ describe("oidc login flow", () => {
   });
 });
 
+// T-636: the IdP session outlives todou's, and /login goes straight back to
+// it, so without this a logout signed the next person in as the same account.
+describe("oidc login after logout", () => {
+  async function logOut(session?: string) {
+    const out = await t.app.request("/api/auth/logout", {
+      method: "POST",
+      headers: session ? { cookie: session } : {},
+    });
+    expect(out.status).toBe(204);
+    const marker = setCookieFor(out, "todou_oidc_reauth");
+    expect(marker).toBeDefined();
+    return { out, jar: (marker as string).split(";")[0] as string };
+  }
+
+  it("makes the next login ask the IdP to re-authenticate", async () => {
+    const session = sessionCookieOf(await completeCallback());
+    const { jar } = await logOut(session);
+    const { location } = await startLogin("/projects", jar);
+    expect(location.searchParams.get("prompt")).toBe("login");
+  });
+
+  it("scopes the marker to /api/auth and keeps it for longer than a session", async () => {
+    const { out } = await logOut(sessionCookieOf(await completeCallback()));
+    const line = setCookieFor(out, "todou_oidc_reauth") as string;
+    expect(line).toContain("Path=/api/auth");
+    expect(line).toContain("HttpOnly");
+    const maxAge = Number(/Max-Age=(\d+)/.exec(line)?.[1]);
+    expect(maxAge).toBeGreaterThanOrEqual(30 * 24 * 60 * 60);
+  });
+
+  it("marks even a logout that finds no session", async () => {
+    const { jar } = await logOut();
+    const { location } = await startLogin("/projects", jar);
+    expect(location.searchParams.get("prompt")).toBe("login");
+  });
+
+  it("asks nothing extra of a first login or a returning visitor", async () => {
+    const first = await startLogin();
+    expect(first.location.searchParams.has("prompt")).toBe(false);
+    // Session expired rather than logged out: no marker, so the IdP may
+    // still sign them straight back in.
+    const again = await startLogin("/projects", "todou_session=stale");
+    expect(again.location.searchParams.has("prompt")).toBe(false);
+  });
+
+  it("lets another account sign in, then drops the marker", async () => {
+    await completeCallback();
+    const { jar } = await logOut();
+    idp.subject = "stub-sub-bob";
+    idp.idTokenClaims = { preferred_username: "bob" };
+    const done = await completeCallback({ jar });
+    expect(done.status).toBe(302);
+    expect(done.headers.get("location")).toBe("/projects");
+    const cleared = setCookieFor(done, "todou_oidc_reauth") as string;
+    expect(cleared).toMatch(/Max-Age=0|Expires=Thu, 01 Jan 1970/);
+    expect(cleared).toContain("Path=/api/auth");
+    const me = await t.app.request("/api/me", {
+      headers: { cookie: sessionCookieOf(done) },
+    });
+    expect((await json(me)).login).toBe("bob");
+  });
+
+  it("keeps the marker through a login that fails at the callback", async () => {
+    const { jar } = await logOut();
+    const failed = await completeCallback({ jar, state: "tampered" });
+    expect(failed.headers.get("location")).toBe("/login?error=state_mismatch");
+    expect(setCookieFor(failed, "todou_oidc_reauth")).toBeUndefined();
+  });
+});
+
 describe("oidc provisioning denials", () => {
   it("redirects with provision_denied when auto_create is off", async () => {
     const strict = await makeTestApp("shared", {
@@ -293,6 +377,127 @@ describe("oidc provisioning denials", () => {
     } finally {
       await single.cleanup();
     }
+  });
+});
+
+describe("oidc admission settings", () => {
+  let gated: TestApp;
+
+  beforeAll(async () => {
+    gated = await makeTestApp("shared", {
+      extraToml: [
+        "[auth]",
+        'mode = "oidc"',
+        "[auth.oidc]",
+        `issuer = "${idp.origin}"`,
+        `client_id = "${CLIENT_ID}"`,
+        'client_secret = "test-secret"',
+        "require_email_verified = true",
+        'allowed_email_domains = ["corp.example"]',
+        'allowed_groups = ["todou-users", "ops"]',
+      ].join("\n"),
+    });
+  });
+
+  afterAll(async () => {
+    await gated.cleanup();
+  });
+
+  async function gatedCallback() {
+    const start = await gated.app.request("/api/auth/login");
+    const flow = new URL(start.headers.get("location") ?? "");
+    const cookie = (start.headers.get("set-cookie") ?? "").split(
+      ";",
+    )[0] as string;
+    return gated.app.request(
+      `/api/auth/callback?code=c&state=${encodeURIComponent(
+        flow.searchParams.get("state") ?? "",
+      )}`,
+      { headers: { cookie } },
+    );
+  }
+
+  const admitted = {
+    email: "owner@corp.example",
+    email_verified: true,
+    groups: ["todou-users"],
+  };
+
+  async function subjectRows(subject: string) {
+    return gated.ctx.router
+      .system()
+      .select()
+      .from(users)
+      .where(eq(users.oidcSubject, subject));
+  }
+
+  it("admits the first sign-in that passes and makes it instance admin", async () => {
+    idp.subject = "owner-sub";
+    idp.idTokenClaims = { preferred_username: "owner", ...admitted };
+    const res = await gatedCallback();
+    expect(res.headers.get("location")).toBe("/");
+    const me = await gated.app.request("/api/me", {
+      headers: { cookie: sessionCookieOf(res) },
+    });
+    expect((await json(me)).is_instance_admin).toBe(true);
+  });
+
+  it.each([
+    ["an unverified email", { email_verified: false }],
+    ["no email_verified claim", { email_verified: undefined }],
+    ["an email outside the domains", { email: "mallory@evil.test" }],
+    ["a look-alike subdomain", { email: "mallory@evil.corp.example" }],
+    ["none of the groups", { groups: ["everyone"] }],
+    ["no groups claim", { groups: undefined }],
+  ])(
+    "refuses an unknown subject with %s and creates no account",
+    async (_label, override) => {
+      idp.subject = "stranger-sub";
+      idp.idTokenClaims = {
+        preferred_username: "mallory",
+        ...admitted,
+        email: "mallory@corp.example",
+        ...override,
+      };
+      const res = await gatedCallback();
+      expect(res.headers.get("location")).toBe("/login?error=admission_denied");
+      expect(sessionCookieOf(res)).toBe("");
+      expect(await subjectRows("stranger-sub")).toHaveLength(0);
+    },
+  );
+
+  it("reads claims the ID token lacks from userinfo", async () => {
+    idp.subject = "userinfo-gated-sub";
+    idp.idTokenClaims = { preferred_username: "dana" };
+    idp.userinfoClaims = {
+      email: "Dana@CORP.example",
+      email_verified: true,
+      groups: ["ops"],
+    };
+    const res = await gatedCallback();
+    expect(res.headers.get("location")).toBe("/");
+    expect(await subjectRows("userinfo-gated-sub")).toHaveLength(1);
+  });
+
+  it("re-checks an existing account on every login", async () => {
+    idp.subject = "leaver-sub";
+    idp.idTokenClaims = { preferred_username: "leaver", ...admitted };
+    const first = await gatedCallback();
+    expect(first.headers.get("location")).toBe("/");
+    const session = sessionCookieOf(first);
+
+    idp.idTokenClaims = { ...idp.idTokenClaims, groups: ["alumni"] };
+    const second = await gatedCallback();
+    expect(second.headers.get("location")).toBe(
+      "/login?error=admission_denied",
+    );
+
+    // A login gate only: the session already issued lives on until the
+    // account is disabled, which the deploy docs say in so many words.
+    const me = await gated.app.request("/api/me", {
+      headers: { cookie: session },
+    });
+    expect(me.status).toBe(200);
   });
 });
 
@@ -536,5 +741,51 @@ describe("oidc client authentication method", () => {
     } finally {
       await t.cleanup();
     }
+  });
+});
+
+describe("oidc login mapping", () => {
+  async function loginAs(subject: string, claims: Record<string, unknown>) {
+    idp.subject = subject;
+    idp.idTokenClaims = claims;
+    const res = await completeCallback();
+    expect(res.status).toBe(302);
+    const me = await t.app.request("/api/me", {
+      headers: { cookie: sessionCookieOf(res) },
+    });
+    expect(me.status).toBe(200);
+    return json(me);
+  }
+
+  async function seed(login: string, oidcSubject: string) {
+    const rows = await t.ctx.router
+      .system()
+      .insert(users)
+      .values({ kind: "human", login, displayName: login, oidcSubject })
+      .returning();
+    const row = rows[0];
+    if (!row) throw new Error("insert returned no row");
+    return row;
+  }
+
+  it("suffixes an all-digit login on the first sign-in", async () => {
+    const body = await loginAs("digits-sub", { preferred_username: "12345" });
+    expect(body.login).toMatch(/^12345-[a-z0-9]{4}$/);
+  });
+
+  it("keeps an existing user on its subject, whatever the claim says", async () => {
+    const erin = await seed("erin", "erin-sub");
+    const body = await loginAs("erin-sub", {
+      preferred_username: "somebody-else",
+    });
+    expect(body.id).toBe(erin.id);
+    expect(body.login).toBe("erin");
+  });
+
+  it("keeps an existing all-digit login as it is", async () => {
+    const old = await seed("4242", "s-4242");
+    const body = await loginAs("s-4242", { preferred_username: "4242" });
+    expect(body.id).toBe(old.id);
+    expect(body.login).toBe("4242");
   });
 });
