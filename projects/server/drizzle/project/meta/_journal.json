@@ -176,6 +176,13 @@
       "when": 1794825834448,
       "tag": "0024_loose_drafts",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1794836997856,
+      "tag": "0025_tombstones_out_of_trash",
+      "breakpoints": true
     }
   ]
 }
