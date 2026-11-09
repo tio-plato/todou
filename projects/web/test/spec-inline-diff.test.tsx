@@ -199,6 +199,52 @@ describe("word-level diff in the rendered view (T-142)", () => {
     },
   );
 
+  // Removed prose at either edge of a code span sat beside the code, and its
+  // strike-through belongs there, not inside the code; so does a whole code
+  // span removed, and a run that reaches out of the code into the prose.
+  it.each([
+    [
+      "prose removed after the code",
+      "call `foo()` now.\n",
+      "call `foo()`.\n",
+      "now",
+    ],
+    [
+      "prose removed before the code",
+      "first `foo` bar\n",
+      "`foo` bar\n",
+      "first",
+    ],
+    [
+      "a whole code span removed beside it",
+      "x `old` `foo` y\n",
+      "x `foo` y\n",
+      "old",
+    ],
+    [
+      "a run of code and prose removed",
+      "run `foo bar` baz\n",
+      "run `foo`\n",
+      "bar baz",
+    ],
+  ])("keeps %s outside the code", async (_name, before, after, del) => {
+    const { container } = await renderDiff(before, after);
+    expect(texts(container, "del.spec-del")).toEqual([del]);
+    expect(container.querySelector("code .spec-del")).toBeNull();
+  });
+
+  // …while code removed from either end of a span was code, and stays in it.
+  it.each([
+    ["its end", "run `pnpm test --watch`\n", "run `pnpm test`\n", "--watch"],
+    ["its start", "a `old foo` b\n", "a `foo` b\n", "old"],
+  ])(
+    "keeps code removed from %s inside the code",
+    async (_name, before, after, del) => {
+      const { container } = await renderDiff(before, after);
+      expect(texts(container, "code .spec-del")).toEqual([del]);
+    },
+  );
+
   it("keeps emphasis markers out of the highlight", async () => {
     const { container } = await renderDiff(
       "这是 **强调** 的段落。\n",
@@ -2833,14 +2879,14 @@ describe("an edit inside an inline code span (T-695)", () => {
     expect(container.querySelector("p code")?.textContent).toBe("a`b-oldnew");
   });
 
-  it("still marks a span it cannot enter, as a whole", async () => {
+  it("marks only the changed part of a span wrapped inside a blockquote", async () => {
     // Wrapped inside a blockquote, the span's source holds a `>` its content
-    // does not, so no offset inside it can be trusted.
+    // does not, so the span is lined up piece by piece around it.
     const { container } = await renderDiff(
       "> 写入 `co-old\n> de` 头。\n",
       "> 写入 `co-new\n> de` 头。\n",
     );
-    expect(texts(container, "p code ins.spec-ins")).toEqual(["co-new de"]);
+    expect(texts(container, "p code ins.spec-ins")).toEqual(["new"]);
     expect(texts(container, "del.spec-del")).toEqual(["old"]);
   });
 });
