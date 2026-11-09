@@ -123,12 +123,14 @@ const ConfigSchema = z.object({
         })
         .prefault({}),
       // Applied to every postgres:// pool (system and dedicated project
-      // databases); pglite ignores it. Defaults mirror pg's own.
+      // databases); pglite ignores it. max and idle_timeout_ms mirror pg's
+      // defaults. connection_timeout_ms does not: pg's 0 waits forever, so a
+      // pool held full would leave every request queued on it hanging.
       pool: z
         .object({
           max: z.coerce.number().int().min(1).default(10),
           idle_timeout_ms: z.coerce.number().int().min(0).default(10_000),
-          connection_timeout_ms: z.coerce.number().int().min(0).default(0),
+          connection_timeout_ms: z.coerce.number().int().min(0).default(30_000),
         })
         .prefault({}),
     })
