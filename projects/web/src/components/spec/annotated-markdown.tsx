@@ -41,7 +41,7 @@ import {
   supportsCodeHighlights,
   useCodeHighlights,
 } from "@/lib/code-highlights.ts";
-import { codeRowSource } from "@/lib/code-rows.ts";
+import { codeBodyLines, codeRowSource } from "@/lib/code-rows.ts";
 import {
   DELETION_LINE_TYPE,
   LINE_TYPE_ATTR,
@@ -56,7 +56,10 @@ import {
   NO_DECORATIONS,
   rehypeDecorations,
 } from "@/lib/rehype-decorations.ts";
-import { rehypeExpandDetails } from "@/lib/rehype-details.ts";
+import {
+  MARKER as DETAILS_MARKER,
+  rehypeExpandDetails,
+} from "@/lib/rehype-details.ts";
 import {
   FOLD_CLASS,
   FOLD_KEY_ATTR,
@@ -140,6 +143,11 @@ export type { AnchorRange };
  * that its whole-block wash can step aside for them (styles.css).
  */
 const CODE_PAINTED_CLASS = "spec-code-painted";
+
+/** Worn by a block that annotations on whole lines cover (styles.css). */
+const ANNOTATED_CLASS = "spec-annotated";
+/** Worn with it while every one of those annotations is a draft. */
+const ANNOTATED_DRAFT_CLASS = "spec-annotated-draft";
 
 /** Restored old structure and explicit old list numbers have no current source. */
 function isOldEndpoint(node: Node): boolean {
@@ -502,6 +510,133 @@ export function blockForLine(
   return found >= 0 ? found : fallback;
 }
 
+/** A stamped block with the source lines it renders. */
+type StampedBlock = { el: HTMLElement; start: number; end: number };
+
+/** The nearest stamped block around `el`, which a stamped block nests in. */
+function stampedParent(el: Element): Element | null {
+  return el.parentElement?.closest(`[${SOURCE_LINE_ATTR}]`) ?? null;
+}
+
+/**
+ * The blocks that one of `ranges` reaches and that hold no other such block.
+ * Stamped blocks nest, a table and its rows, a list item and the items under
+ * it, and the deepest of them say where in their ancestors the lines lie.
+ * `linesOf` gives the lines a block counts as its own, null for none. Found
+ * by walking up from each block reached to the nearest one around it, rather
+ * than asking every pair, since a range can reach every block of a document.
+ */
+function innermostIntersecting<B extends { el: Element }>(
+  blocks: B[],
+  ranges: LineRange[],
+  linesOf: (block: B) => LineRange | null,
+): B[] {
+  const hit = blocks.filter((block) => {
+    const lines = linesOf(block);
+    return (
+      lines !== null && ranges.some((range) => rangesIntersect(range, lines))
+    );
+  });
+  const reached = new Set(hit.map((block) => block.el));
+  const holders = new Set<Element>();
+  for (const block of hit) {
+    for (
+      let up = stampedParent(block.el);
+      up !== null;
+      up = stampedParent(up)
+    ) {
+      // The one reached around it holds the ones around itself already.
+      if (reached.has(up)) {
+        holders.add(up);
+        break;
+      }
+    }
+  }
+  return hit.filter((block) => !holders.has(block.el));
+}
+
+/**
+ * The innermost stamped block holding each source line by its `data-loc`:
+ * the block the line's text belongs to once rendered. Blocks come in
+ * document order, an ancestor before the blocks it holds, so the deepest
+ * one is the last written.
+ */
+function lineOwners<B extends StampedBlock>(blocks: B[]): Map<number, B> {
+  const owners = new Map<number, B>();
+  for (const block of blocks) {
+    for (let line = block.start; line <= block.end; line++) {
+      owners.set(line, block);
+    }
+  }
+  return owners;
+}
+
+/** A table's delimiter row: pipes, dashes, colons and nothing else. */
+const DELIMITER_ROW = /^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?$/;
+
+/**
+ * Which source lines show something once rendered, worked out on first ask
+ * and kept for the pass. A blank line, a table's delimiter row and a line of
+ * `<details>` and `<summary>` markers alone show nothing; quote markers and
+ * indentation in front of a line are not text. Those markers are the only
+ * HTML drawn as HTML (`rehypeDetails`); any other reaches the reader as its
+ * source, so it shows. A marker that pairs with nothing is drawn as its
+ * source too, and is still read as showing nothing here.
+ */
+function lineVisibility(index: SegmentIndex): (line: number) => boolean {
+  const markers = new RegExp(DETAILS_MARKER.source, DETAILS_MARKER.flags);
+  const shown = new Map<number, boolean>();
+  return (line) => {
+    const known = shown.get(line);
+    if (known !== undefined) return known;
+    const start = index.lineStarts[line - 1];
+    const next = index.lineStarts[line];
+    const text =
+      start === undefined
+        ? ""
+        : index.source
+            .slice(start, next === undefined ? index.source.length : next - 1)
+            .replace(/^[\s>]*/, "")
+            .trim();
+    const shows =
+      text !== "" &&
+      !(text.includes("|") && DELIMITER_ROW.test(text)) &&
+      text.replace(markers, "").trim() !== "";
+    shown.set(line, shows);
+    return shows;
+  };
+}
+
+/**
+ * The blocks a whole-line annotation over `range` washes: the innermost
+ * blocks it reaches, and any block a line of whose own text is in the range,
+ * text no stamped block inside it holds, such as a tight list item's
+ * continuation line above the items nested in it, or a `<details>`'s
+ * summary. A line that shows nothing (`lineVisibility`) washes nothing of its
+ * own. A code block reaches only as far as its body (`lines`): its fence
+ * markers are no line of its code.
+ */
+function annotatedBlocks(
+  blocks: Array<StampedBlock & { lines: LineRange | null }>,
+  range: LineRange,
+  owners: Map<number, StampedBlock & { lines: LineRange | null }>,
+  shows: (line: number) => boolean,
+): HTMLElement[] {
+  const washed = new Set<Element>(
+    innermostIntersecting(blocks, [range], (block) => block.lines).map(
+      (block) => block.el,
+    ),
+  );
+  for (let line = range.start; line <= range.end; line++) {
+    const owner = owners.get(line);
+    const own = owner?.lines;
+    if (owner === undefined || own == null) continue;
+    if (line < own.start || line > own.end || washed.has(owner.el)) continue;
+    if (shows(line)) washed.add(owner.el);
+  }
+  return blocks.flatMap((block) => (washed.has(block.el) ? [block.el] : []));
+}
+
 /**
  * A block's top within the annotation container. `offsetTop` agrees for a
  * paragraph but lies for a `<tr>`: HTML cuts the offsetParent chain at
@@ -694,50 +829,77 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     const els = [
       ...container.querySelectorAll<HTMLElement>(`[${SOURCE_LINE_ATTR}]`),
     ];
-    const blocks = els.map((el) => ({
-      el,
-      ...(parseSourceLoc(el.getAttribute(SOURCE_LINE_ATTR)) ?? {
+    const blocks = els.map((el) => {
+      const loc = parseSourceLoc(el.getAttribute(SOURCE_LINE_ATTR)) ?? {
         start: 0,
         end: 0,
-      }),
-    }));
+      };
+      return {
+        el,
+        ...loc,
+        lines: el.hasAttribute(CODE_CONTENT_START_ATTR)
+          ? codeBodyLines(index, el)
+          : loc,
+      };
+    });
+    // A column-anchored annotation paints its own words; the block-wide
+    // wash would only smear over the precision it just gained. One on whole
+    // lines washes every block it covers, in the draft colour while drafts
+    // alone wash that block, and hangs its chip by the first of them rather
+    // than by the block above a blank line it starts on, which it leaves
+    // unwashed.
+    const owners = lineOwners(blocks);
+    const shows = lineVisibility(index);
+    const washedBy = new Map<HTMLElement, Set<DisplayedAnnotation["kind"]>>();
     const grouped = new Map<number, DisplayedAnnotation[]>();
     for (const annotation of annotations) {
-      const index = blockForLine(blocks, annotation.start);
-      if (index < 0) continue;
-      grouped.set(index, [...(grouped.get(index) ?? []), annotation]);
+      let at = blockForLine(blocks, annotation.start);
+      if ((annotation.colStart ?? null) === null) {
+        const range = { start: annotation.start, end: annotation.end };
+        let targets = annotatedBlocks(blocks, range, owners, shows);
+        if (targets.length === 0) {
+          const fallback = blocks[at];
+          targets = fallback === undefined ? [] : [fallback.el];
+        }
+        for (const el of targets) {
+          washedBy.set(
+            el,
+            (washedBy.get(el) ?? new Set()).add(annotation.kind),
+          );
+        }
+        const first = targets[0];
+        if (first !== undefined) at = els.indexOf(first);
+      }
+      if (at < 0) continue;
+      grouped.set(at, [...(grouped.get(at) ?? []), annotation]);
     }
     // Innermost wins: one edited cell lights its own row, not the table it
     // sits in (T-142). Ancestors that only contain a marked descendant stay
     // plain, so the ↑↓ navigation lands on rows rather than whole tables.
-    const changed = blocks.filter((block) =>
-      changedRanges.some((range) =>
-        rangesIntersect(range, { start: block.start, end: block.end }),
-      ),
+    const changed = innermostIntersecting(
+      blocks,
+      changedRanges,
+      (block) => block,
     );
     for (const block of blocks) {
-      block.el.classList.remove("spec-annotated");
+      block.el.classList.remove(ANNOTATED_CLASS, ANNOTATED_DRAFT_CLASS);
       block.el.classList.toggle(
         "spec-changed",
         changed.includes(block) &&
-          !changed.some(
-            (other) => other !== block && block.el.contains(other.el),
-          ) &&
           // A wholly-new block already says so, louder (T-158). Stacking
           // the "something here changed" wash under it only shifts the
           // padding and muddies the colour.
           block.el.closest(`.${INS_BLOCK_CLASS}`) === null,
       );
     }
+    for (const [el, kinds] of washedBy) {
+      el.classList.add(ANNOTATED_CLASS);
+      if (!kinds.has("comment")) el.classList.add(ANNOTATED_DRAFT_CLASS);
+    }
     const next: Chip[] = [];
-    for (const [index, items] of grouped) {
-      const block = blocks[index];
+    for (const [at, items] of grouped) {
+      const block = blocks[at];
       if (block === undefined) continue;
-      // A column-anchored comment paints its own words; the block-wide
-      // amber would only smear over the precision it just gained.
-      if (items.some((item) => (item.colStart ?? null) === null)) {
-        block.el.classList.add("spec-annotated");
-      }
       next.push({
         blockKey: `${block.start}-${block.end}`,
         // The key still names the block the annotation belongs to; only what
@@ -764,7 +926,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         ? prev
         : kept;
     });
-  }, [annotations, changedRanges]);
+  }, [annotations, changedRanges, index]);
 
   /**
    * The characters of code that column anchors cover, painted as ranges over
