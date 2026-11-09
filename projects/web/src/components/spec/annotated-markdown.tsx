@@ -1147,6 +1147,11 @@ const AnnotationChip = memo(function AnnotationChip({
       <PopoverContent
         side={wide ? "left" : "bottom"}
         align={wide ? "start" : "end"}
+        // A thread belongs to its chip's block. The popover layer's "always"
+        // keeps the surface on screen after the chip has scrolled away, which
+        // pins it to the viewport edge over unrelated text; "partial" still
+        // pushes it back while part of the chip shows, then lets it follow.
+        sticky="partial"
         className="max-h-96 w-96 max-w-[calc(100vw-2rem)] space-y-3 overflow-y-auto"
       >
         {chip.items.map((item) =>
