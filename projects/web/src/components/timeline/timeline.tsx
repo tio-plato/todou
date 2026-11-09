@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useRouterState } from "@tanstack/react-router";
+import { useRouter, useRouterState } from "@tanstack/react-router";
 import type { TimelineComment, TimelineItem } from "@todou/shared";
 import { enumValue, settlementsByComment } from "@todou/shared";
 import { ArrowDownIcon, ArrowUpIcon } from "lucide-react";
@@ -248,6 +248,31 @@ export function Timeline({
     forgetScroll();
     keepHold(landAtBottom());
   }, [keepHold, forgetScroll]);
+  // Once it has rendered an arrival, the router scrolls the page to the top,
+  // from a listener it registered when it was created, so ahead of this one.
+  // A card whose timeline is cached mounts in that same render and lands
+  // first. A production build's hold puts the page back on its first resize
+  // callback; in development StrictMode's simulated unmount has already
+  // released that hold. So a landing made while the route is still arriving
+  // lands again right after the reset. Only then: a landing after the arrival
+  // has nothing to undo, and a mark left standing would pull the reader to
+  // the end on the card's next navigation, a hash or a search change. Only
+  // without a hash, too: the router renders no arrival a newer navigation has
+  // taken over, and for a location with a hash, a comment link's, it leaves
+  // the page alone, the landing being the anchor's.
+  // Subscribed in a layout effect, which has run by the end of any commit,
+  // since the router emits after the commit it waits for.
+  const router = useRouter();
+  const landAfterArrival = useRef(false);
+  useLayoutEffect(
+    () =>
+      router.subscribe("onRendered", ({ toLocation }) => {
+        if (!landAfterArrival.current) return;
+        landAfterArrival.current = false;
+        if (!toLocation.hash) scrollToBottom();
+      }),
+    [router, scrollToBottom],
+  );
   const questionLanding = useQuestionLanding(slug, issueNumber);
   const timelineReady = tail.isSuccess && (!headEnabled || head.isSuccess);
 
@@ -412,8 +437,10 @@ export function Timeline({
         !anchorActive &&
         !questionLanding.ownsScroll &&
         !isQuestionLandingHash(anchorHash ?? "")
-      )
+      ) {
         scrollToBottom();
+        landAfterArrival.current = router.state.status === "pending";
+      }
     }
   }, [
     renderedCount,
@@ -421,6 +448,7 @@ export function Timeline({
     anchorActive,
     anchorHash,
     questionLanding.ownsScroll,
+    router,
   ]);
 
   // Insertions above the viewport must not shift what the reader sees.

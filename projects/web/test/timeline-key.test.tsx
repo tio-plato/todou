@@ -367,12 +367,127 @@ describe("the issue page's timeline, keyed by card", () => {
 
     // `didInitialScroll` is a ref, so a remount is the only thing that resets
     // it. That scroll is this one, by its exact arguments — `scrollToBottom()`
-    // puts the conversation's end on the viewport's bottom. The router also
-    // scrolls to the top on arrival, so counting calls would mix the two;
-    // assert the landing instead. Unkeyed the ref is already true and this
-    // call never happens.
+    // puts the conversation's end on the viewport's bottom. Unkeyed the ref is
+    // already true and this call never happens. The router scrolls to the top
+    // once it has rendered the arrival, after the cached card has already
+    // landed, so the landing has to be the last scroll. happy-dom's
+    // ResizeObserver never calls back, so no hold puts the page back either:
+    // this is the development build, where StrictMode has already released
+    // that hold.
     await waitFor(() => expect(scrollTo).toHaveBeenCalled());
     expect(scrollTo.mock.calls).toContainEqual([0, DOC_HEIGHT - 800]);
+    expect(scrollTo.mock.calls.at(-1)).toEqual([0, DOC_HEIGHT - 800]);
+  });
+
+  it("lands for the arrival only, not again on the card's next navigation", async () => {
+    stubPage();
+    const scrollTo = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    vi.spyOn(window, "scrollBy").mockImplementation(() => {});
+    const DOC_HEIGHT = 5_000;
+    vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
+      DOC_HEIGHT,
+    );
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(800);
+    vi.spyOn(window, "scrollY", "get").mockReturnValue(0);
+    stubConversationEnd(() => DOC_HEIGHT);
+    const view = renderAt("/projects/p/issues/7");
+    await waitFor(() =>
+      expect(view.container.querySelectorAll("[data-comment-id]").length).toBe(
+        6,
+      ),
+    );
+    // A navigation that leaves the reader where they are, as a question's
+    // landing makes on the card it is already on.
+    const stay = (number: number) =>
+      view.router.navigate({
+        to: "/projects/$slug/issues/$number",
+        params: { slug: "p", number: String(number) },
+        search: { seen: number },
+        resetScroll: false,
+      });
+
+    // Card 8 is cold: it lands once its timeline arrives, after the route.
+    await goToCard(view, 8);
+    await waitFor(() =>
+      expect(scrollTo).toHaveBeenCalledWith(0, DOC_HEIGHT - 800),
+    );
+    scrollTo.mockClear();
+    await stay(8);
+    expect(scrollTo).not.toHaveBeenCalled();
+
+    // Card 7 is cached: it lands again once the route has arrived.
+    await goToCard(view, 7);
+    expect(scrollTo.mock.calls.at(-1)).toEqual([0, DOC_HEIGHT - 800]);
+    scrollTo.mockClear();
+    await stay(7);
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it("leaves a cached card to a comment link followed before it has arrived", async () => {
+    stubPage();
+    const scrollTo = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    vi.spyOn(window, "scrollBy").mockImplementation(() => {});
+    const DOC_HEIGHT = 5_000;
+    vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
+      DOC_HEIGHT,
+    );
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(800);
+    vi.spyOn(window, "scrollY", "get").mockReturnValue(0);
+    stubConversationEnd(() => DOC_HEIGHT);
+    const view = renderAt("/projects/p/issues/7");
+    await waitFor(() =>
+      expect(view.container.querySelectorAll("[data-comment-id]").length).toBe(
+        6,
+      ),
+    );
+    await warmBothCards(view);
+
+    // The router renders no arrival it has already left: the link's own
+    // navigation takes the render over, and with a hash the router leaves the
+    // page to the timeline's anchor rather than scrolling it to the top.
+    let linked = 0;
+    let rendered = false;
+    const offResolved = view.router.subscribe("onResolved", () => {
+      offResolved();
+      linked = scrollTo.mock.calls.length;
+      // As the app's comment links navigate.
+      void view.router.navigate({
+        to: "/projects/$slug/issues/$number",
+        params: { slug: "p", number: "8" },
+        hash: "comment-3",
+        hashScrollIntoView: false,
+      });
+    });
+    const offRendered = view.router.subscribe("onRendered", () => {
+      offRendered();
+      rendered = true;
+    });
+    void view.router.navigate({
+      to: "/projects/$slug/issues/$number",
+      params: { slug: "p", number: "8" },
+    });
+    await waitFor(() => expect(rendered).toBe(true));
+
+    expect(view.router.state.location.hash).toBe("comment-3");
+    expect(scrollTo.mock.calls.slice(linked)).not.toContainEqual([
+      0,
+      DOC_HEIGHT - 800,
+    ]);
+
+    // That render was the arrival's last word: the card's next one, the hash
+    // dropped as a question's landing drops it, keeps the reader where they are.
+    const dropped = scrollTo.mock.calls.length;
+    await view.router.navigate({
+      to: "/projects/$slug/issues/$number",
+      params: { slug: "p", number: "8" },
+      hash: "",
+      resetScroll: false,
+    });
+    expect(view.router.state.location.hash).toBe("");
+    expect(scrollTo.mock.calls.slice(dropped)).not.toContainEqual([
+      0,
+      DOC_HEIGHT - 800,
+    ]);
   });
 });
 
