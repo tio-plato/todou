@@ -305,8 +305,16 @@ export async function rewriteBlockAddresses(
  * lineage's first row, and that row's own id becomes the identity every
  * later address inherits. Written in two statements because the value is
  * the id the insert is still generating.
+ *
+ * `system` has to be a transaction when the insert runs. The placeholder 0
+ * is shared by every card minting a lineage at once, and `(lineage,
+ * project_id)` is unique: inside a transaction another card's insert waits
+ * for this one to commit, by which time the row carries its own id. Both
+ * callers hold one there — `registerMove` reaches the insert only inside a
+ * same-database move's transaction, since across databases
+ * `registerLineageOnly` has minted the lineage before it runs.
  */
-async function ensureLineage(
+export async function ensureLineage(
   system: Db,
   from: Address,
   to: Address,

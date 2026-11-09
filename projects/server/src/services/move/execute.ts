@@ -15,17 +15,13 @@ import {
   issues,
   projectMeta,
 } from "../../db/project-schema.ts";
-import {
-  issueAddresses,
-  issueMoves,
-  projects,
-} from "../../db/system-schema.ts";
+import { issueMoves, projects } from "../../db/system-schema.ts";
 import { IssueMovingError, NotFoundError } from "../../errors.ts";
 import { type ProjectRow, routeInfoOf } from "../access.ts";
 import { markDraftAttachments } from "../attachments.ts";
 import { announceBlockChanges, evaluateBlockerStatus } from "../blocks.ts";
 import { getIssue } from "../issues.ts";
-import { lineageOf, recordAliases, registerMove } from "../relocation.ts";
+import { ensureLineage, recordAliases, registerMove } from "../relocation.ts";
 import {
   type ActivityImportedMaxIds,
   clearIssueChildren,
@@ -401,30 +397,10 @@ async function registerLineageOnly(
   ctx: AppContext,
   plan: MovePlan,
 ): Promise<number> {
-  const system = ctx.router.system();
-  const existing = await lineageOf(
-    system,
-    plan.source.project.id,
-    plan.row.number,
-  );
-  if (existing !== null) return existing;
-  const inserted = await system
-    .insert(issueAddresses)
-    .values({
-      lineage: 0,
-      projectId: plan.source.project.id,
-      number: plan.row.number,
-      currentProjectId: plan.source.project.id,
-      currentNumber: plan.row.number,
-    })
-    .returning({ id: issueAddresses.id });
-  const id = inserted[0]?.id;
-  if (id === undefined) throw new Error("address insert returned no row");
-  await system
-    .update(issueAddresses)
-    .set({ lineage: id })
-    .where(eq(issueAddresses.id, id));
-  return id;
+  const source = { projectId: plan.source.project.id, number: plan.row.number };
+  return ctx.router
+    .system()
+    .transaction((tx) => ensureLineage(tx, source, source));
 }
 
 /** Step 4: the redirects start working here. */
