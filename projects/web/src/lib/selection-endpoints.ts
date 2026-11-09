@@ -31,6 +31,60 @@ export type SelectionEndpoints = {
 };
 
 /**
+ * A point in the light DOM standing for `node`: an endpoint inside a shadow
+ * root becomes its outermost host, from before it or after it, since a range
+ * cannot hold a point in another tree.
+ */
+function lightPoint(
+  node: Node,
+  offset: number,
+  side: "before" | "after",
+): { node: Node; offset: number } {
+  let host: Element | null = null;
+  for (
+    let root = node.getRootNode();
+    root instanceof ShadowRoot;
+    root = root.host.getRootNode()
+  ) {
+    host = root.host;
+  }
+  const parent = host?.parentNode;
+  if (host === null || parent == null) return { node, offset };
+  const at = Array.prototype.indexOf.call(parent.childNodes, host);
+  return { node: parent, offset: side === "before" ? at : at + 1 };
+}
+
+/**
+ * `ends` in document order, with the light-DOM range from one to the other;
+ * null where the two cannot be compared. The legacy endpoints are anchor and
+ * focus, which a backwards drag hands over backwards.
+ */
+export function orderedEndpoints(
+  ends: SelectionEndpoints,
+): { ends: SelectionEndpoints; range: Range } | null {
+  const range = document.createRange();
+  try {
+    const start = lightPoint(ends.start.node, ends.start.offset, "before");
+    const end = lightPoint(ends.end.node, ends.end.offset, "after");
+    range.setStart(start.node, start.offset);
+    if (range.comparePoint(end.node, end.offset) >= 0) {
+      range.setEnd(end.node, end.offset);
+      return { ends, range };
+    }
+    const first = lightPoint(ends.end.node, ends.end.offset, "before");
+    const last = lightPoint(ends.start.node, ends.start.offset, "after");
+    range.setStart(first.node, first.offset);
+    range.setEnd(last.node, last.offset);
+    return {
+      ends: { start: ends.end, end: ends.start, collapsed: ends.collapsed },
+      range,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Both ends of a selection, seen through open shadow roots (T-164). pierre
  * renders code inside one, and the legacy endpoints misreport anything that
  * lands in there: dragging from prose *into* a code line puts the focus on
