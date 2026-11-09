@@ -359,6 +359,15 @@ async function copyInDestination(
     (await registerLineageOnly(ctx, plan));
 
   return plan.target.db.transaction(async (tx) => {
+    if (plan.sameProjectDb) {
+      // The copy deletes the source card's attachment rows below, so it
+      // locks that card first, as the last step does (see retireSource).
+      await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(eq(issues.id, plan.row.id))
+        .for("update");
+    }
     const number =
       plan.reinhabit ?? (await nextNumber(tx, plan.target.project.id));
     // When both projects live in one database the source has to be read
@@ -441,7 +450,13 @@ async function finishCopying(
     .where(eq(issueMoves.moveToken, moveToken));
 }
 
-/** Step 5: replayable, because the sweep may run it again. */
+/**
+ * Step 5: replayable, because the sweep may run it again.
+ *
+ * The card before anything under it, like every write (see lockIssueRows): a
+ * write holding the card while it attaches a draft there finishes first, and
+ * one that comes after finds the card gone.
+ */
 async function retireSource(
   plan: MovePlan,
   copied: Copied,
@@ -450,6 +465,11 @@ async function retireSource(
   agentContext: AgentContext | null,
 ): Promise<void> {
   await plan.source.db.transaction(async (tx) => {
+    await tx
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.id, plan.row.id))
+      .for("update");
     // Read here rather than taken from the plan: a recovered plan carries
     // no assignees, while the source still holds them until the clear below.
     const heldBy = await sourceAssigneeIds(tx, plan.row.id);

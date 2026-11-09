@@ -32,7 +32,7 @@ import {
   scanReferenceTokens,
   spliceResolved,
 } from "@todou/shared";
-import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import type { AppContext, DbContext } from "../bootstrap.ts";
 import type { Db } from "../db/driver.ts";
@@ -818,9 +818,11 @@ class Resolver {
 /**
  * Lock the issue rows a write in this project touches, before it locks or
  * writes anything else: `write`, the card it writes (null when it writes
- * none), asking the write gate again under its lock, and the cards
- * `numbers` references. Returns the referenced cards that are still
- * referenceable, which are the ones owed a `referenced` event.
+ * none), asking the write gate again under its lock; `updates`, the other
+ * cards it updates, which are the cards the drafts it attaches were
+ * uploaded on (see `findLinkedDrafts`); and the cards `numbers` references.
+ * Returns the referenced cards that are still referenceable, those it also
+ * updates included, which are the ones owed a `referenced` event.
  *
  * Row locks on PostgreSQL follow one order across the server, so that the
  * waits between transactions never form a cycle:
@@ -831,36 +833,43 @@ class Resolver {
  *    events), and asks the write gate again under that lock
  *    (`lockWritableIssue`, or this function for `write`). Writes to one card
  *    therefore queue on the card, and which of them locks a comment first no
- *    longer matters to any other.
+ *    longer matters to any other. The gate is asked of the card the write is
+ *    aimed at only: the cards whose drafts it attaches are locked with the
+ *    others but not gated. A draft on a card in the trash is attached as it
+ *    always was, and refusing it would fail a write on one card because of
+ *    another the writer may not even see.
  * 2. Every card a write touches, in one statement, in ascending id, FOR NO
- *    KEY UPDATE: the card it writes and the cards it references. FOR UPDATE
- *    is for a transaction that moves a card away, as its first lock. With
- *    one mode for every other write, no lock is ever upgraded.
+ *    KEY UPDATE: the card it writes, the cards the drafts it attaches were
+ *    uploaded on, and the cards it references. FOR UPDATE is for a
+ *    transaction that moves a card away, as its first lock: a move on the
+ *    card it moves (the same-database move, the copy of a move to another
+ *    database when both share the project database, and the move's last
+ *    step). With one mode for every other write, no lock is ever upgraded.
  * 3. Cards before `project_meta`: creating a card locks the cards it
  *    touches, then takes a number; a same-database move locks its card, then
  *    the target's `project_meta`.
  *
- * Three places keep another order, and none can form a cycle. The last
- * step of a cross-database move empties the frozen source before it writes
- * the card row: a write that locks a frozen card finds `moving_since` and
- * gives up, so none holds a row under it. A move back into a tombstone
- * updates the tombstone after the card it moves, out of id order, and locks
- * nothing else in the tombstone's project before it: whatever else locks a
- * tombstone is a write about to be refused by the gate, which while it
- * holds it waits only for other cards of the tombstone's project, none of
- * which the move holds, and references skip tombstones. And a single
- * autocommit statement that writes one row under a card without the card's
- * lock (a read position, a mute, a block event, a cross-project reference,
- * a direct-upload request or its expiry) holds nothing to wait with.
+ * Two places keep another order, and neither can form a cycle. A move back
+ * into a tombstone updates the tombstone after the card it moves, out of id
+ * order, and locks nothing else in the tombstone's project before it:
+ * whatever else locks a tombstone is a write about to be refused by the
+ * gate, which while it holds it waits only for other cards of the
+ * tombstone's project, none of which the move holds, or a write attaching a
+ * draft that was on the card before it moved, which waits only on rows of
+ * that project, and references skip tombstones. And a single autocommit
+ * statement that writes one row under a card without the card's lock (a
+ * read position, a mute, a block event, a cross-project reference, a
+ * direct-upload request or its expiry) holds nothing to wait with.
  *
  * The one statement sorts the rows before it locks them: `ORDER BY` and the
  * locking clause belong to the same query, never a subquery. A card it
  * waits for may stop being referenceable meanwhile; PostgreSQL then checks
  * the row again as it is now, so a card only referenced drops out of the
- * rows returned, though it stays locked until the transaction ends.
- * Referencing a card therefore waits for the writes to it, and several
- * writes referencing one card queue on it. With no card at all nothing is
- * locked.
+ * rows returned, though it stays locked until the transaction ends, and one
+ * also written or updated comes back but its `referenceable`, read from the
+ * locked row, keeps it out of the cards returned. Referencing a card
+ * therefore waits for the writes to it, and several writes referencing one
+ * card queue on it. With no card at all nothing is locked.
  *
  * The lock on a referenced card is also what makes a single-transaction
  * move wait: it takes FOR UPDATE on the same row, and without it an event
@@ -875,14 +884,19 @@ export async function lockIssueRows(
   project: ProjectRow,
   write: WriteGate | null,
   numbers: number[],
+  updates: readonly number[],
 ): Promise<Array<{ id: number; number: number }>> {
-  if (write === null && numbers.length === 0) return [];
+  const ids = write === null ? [...updates] : [write.id, ...updates];
+  if (ids.length === 0 && numbers.length === 0) return [];
   const rows = await tx
-    .select(gateColumns)
+    .select({
+      ...gateColumns,
+      referenceable: sql<boolean>`${referenceable}`,
+    })
     .from(issues)
     .where(
       or(
-        write === null ? undefined : eq(issues.id, write.id),
+        ids.length === 0 ? undefined : inArray(issues.id, ids),
         numbers.length === 0
           ? undefined
           : and(
@@ -901,7 +915,12 @@ export async function lockIssueRows(
   }
   const named = new Set(numbers);
   return rows
-    .filter((row) => named.has(row.number))
+    .filter(
+      (row) =>
+        row.referenceable &&
+        row.projectId === project.id &&
+        named.has(row.number),
+    )
     .map((row) => ({ id: row.id, number: row.number }));
 }
 

@@ -1088,16 +1088,68 @@ export async function listDeletedAttachments(
   return result;
 }
 
+/** The drafts a text attaches, and the cards they were uploaded on. */
+export type LinkedDrafts = { ids: number[]; cards: number[] };
+
 /**
- * Turn the drafts `texts` link into attachments (T-568), inside the
+ * Find the drafts `texts` link that `commitDraftAttachments` may turn into
+ * attachments, and the cards they sit on. A write calls this before
+ * `lockIssueRows` and hands it `cards`: attaching a draft updates the card it
+ * was uploaded on, which must be locked with the others (see lockIssueRows).
+ *
+ * The read takes no lock, so it can come ahead of every lock the write
+ * takes. An attachment's `issue_id` never changes once set, so attaching the
+ * drafts writes no card but the ones read here. A draft read here without a
+ * card has none to lock: only `createIssue` gives it one, the card it
+ * creates, which no other transaction can see.
+ *
+ * Owners are this project's id and current slug only — what an editor
+ * writes for a file it uploaded a moment ago. A draft lives a day at most,
+ * so no former slug can be holding one.
+ */
+export async function findLinkedDrafts(
+  tx: Db,
+  project: ProjectRow,
+  actorId: number,
+  texts: readonly string[],
+): Promise<LinkedDrafts> {
+  const owners = new Set([String(project.id), project.slug]);
+  const ids = new Set<number>();
+  for (const text of texts) {
+    for (const id of linkedAttachmentIds(text, owners)) ids.add(id);
+  }
+  if (ids.size === 0) return { ids: [], cards: [] };
+  const rows = await tx
+    .select({ id: attachments.id, issueId: attachments.issueId })
+    .from(attachments)
+    .where(
+      and(
+        eq(attachments.projectId, project.id),
+        eq(attachments.uploaderId, actorId),
+        eq(attachments.draft, true),
+        inArray(attachments.id, [...ids]),
+      ),
+    );
+  const linked: LinkedDrafts = { ids: [], cards: [] };
+  for (const row of rows) {
+    linked.ids.push(row.id);
+    if (row.issueId !== null) linked.cards.push(row.issueId);
+  }
+  return linked;
+}
+
+/**
+ * Turn the drafts `linked` names into attachments (T-568), inside the
  * transaction that writes the text, so the file and the words that show it
  * reach the card together. Only the writer's own drafts: they are the only
  * ones the writer has been shown, and an id typed by hand must not be able
  * to publish somebody else's unsent file.
  *
- * Owners are this project's id and current slug only — what an editor
- * writes for a file it uploaded a moment ago. A draft lives a day at most,
- * so no former slug can be holding one.
+ * The caller found `linked` with `findLinkedDrafts` and locked `linked.cards`
+ * through `lockIssueRows`. An attachment's `issue_id` never changes once set,
+ * so every issue row this writes is already locked, or is the card
+ * `createIssue` is creating, and the order it writes them in makes no
+ * transaction wait.
  *
  * Returns the change events to publish after commit.
  */
@@ -1105,15 +1157,10 @@ export async function commitDraftAttachments(
   tx: Db,
   project: ProjectRow,
   actorId: number,
-  texts: readonly string[],
+  linked: LinkedDrafts,
   agentContext: AgentContext | null,
 ): Promise<ChangeEvent[]> {
-  const owners = new Set([String(project.id), project.slug]);
-  const ids = new Set<number>();
-  for (const text of texts) {
-    for (const id of linkedAttachmentIds(text, owners)) ids.add(id);
-  }
-  if (ids.size === 0) return [];
+  if (linked.ids.length === 0) return [];
   const committed = await tx
     .update(attachments)
     .set({ draft: false })
@@ -1125,7 +1172,7 @@ export async function commitDraftAttachments(
         // A draft with no card stays one: only `createIssue` gives it a card,
         // through `attachLooseDrafts`, before it gets here.
         isNotNull(attachments.issueId),
-        inArray(attachments.id, [...ids]),
+        inArray(attachments.id, linked.ids),
       ),
     )
     .returning();
