@@ -169,6 +169,13 @@
       "when": 1794139671304,
       "tag": "0023_upload-attachment-key",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1794196780621,
+      "tag": "0024_tombstones_out_of_trash",
+      "breakpoints": true
     }
   ]
 }
