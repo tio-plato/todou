@@ -112,6 +112,11 @@ function mountWebApp(app: OpenAPIHono<AppEnv>, root: string): void {
 
 export function createApp(ctx: AppContext) {
   const app = new OpenAPIHono<AppEnv>({ defaultHook });
+  // No project database a request uses is evicted before its response
+  // exists. An SSE stream runs on after that, outside the hold (router.ts).
+  app.use("*", async (c, next) => {
+    await ctx.router.withPinnedHandles(next, `${c.req.method} ${c.req.path}`);
+  });
   app.use("*", async (c, next) => {
     c.set("appCtx", ctx);
     await next();
