@@ -29,7 +29,7 @@ import {
   requireCapability,
   routeInfoOf,
 } from "./access.ts";
-import { commitDraftAttachments } from "./attachments.ts";
+import { commitDraftAttachments, findLinkedDrafts } from "./attachments.ts";
 import { loadReferenceInputs } from "./cross-references.ts";
 import { encodeTimelineCursor } from "./cursor.ts";
 import {
@@ -111,9 +111,9 @@ async function loadIssue(db: Db, projectId: number, number: number) {
  * because resolving reads the system database and other projects' — which a
  * project transaction must not hold a second connection for.
  *
- * The referenced cards and this one are locked in id order before anything
- * is written, and this one is checked against the write gate under its lock
- * (see `lockIssueRows`).
+ * The referenced cards, this one and the cards whose drafts the body
+ * attaches are locked in id order before anything is written, and this one
+ * is checked against the write gate under its lock (see `lockIssueRows`).
  */
 export async function insertCommentInTx(
   tx: Db,
@@ -141,11 +141,13 @@ export async function insertCommentInTx(
   const component = args.component ?? null;
   const issueNumber = issue.number;
 
+  const linked = await findLinkedDrafts(tx, project, actorId, [body]);
   const targets = await lockIssueRows(
     tx,
     project,
     { id: issue.id, ...args.gate },
     localRefs,
+    linked.cards,
   );
   const inserted = await tx
     .insert(comments)
@@ -213,7 +215,7 @@ export async function insertCommentInTx(
       tx,
       project,
       actorId,
-      [body],
+      linked,
       agentContext,
     )),
   );
@@ -480,6 +482,9 @@ export async function updateComment(
     return toTimelineComment(ctx, row, { elideHidden: false });
 
   const { after, refs, drafts } = await db.transaction(async (tx) => {
+    const linked = await findLinkedDrafts(tx, project, actor.id, [
+      resolved.storedText,
+    ]);
     // The cards before the comment (see lockIssueRows). A comment gone by
     // now went with a move or a delete; the gate answers for a move first.
     const targets = await lockIssueRows(
@@ -487,6 +492,7 @@ export async function updateComment(
       project,
       { id: row.issueId, actor, role },
       resolved.local,
+      linked.cards,
     );
     const updated = await tx
       .update(comments)
@@ -525,7 +531,7 @@ export async function updateComment(
       tx,
       project,
       actor.id,
-      [resolved.storedText],
+      linked,
       agentContext,
     );
     return { after, refs, drafts };
