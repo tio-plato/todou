@@ -1290,7 +1290,9 @@ function fenceWithRows(
   if (wrapper === null) throw new Error("the fence rendered no wrapper");
   const host = document.createElement("diffs-container");
   wrapper.append(host);
-  const shadow = host.attachShadow({ mode: "open" });
+  // Once pierre's module has loaded (a patch fence parses through it), the
+  // host is its registered element and arrives with a shadow root already.
+  const shadow = host.shadowRoot ?? host.attachShadow({ mode: "open" });
   shadow.innerHTML = rows;
   return {
     container: view.container,
