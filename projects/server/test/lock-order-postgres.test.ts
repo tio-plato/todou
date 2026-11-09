@@ -422,6 +422,104 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       await Promise.allSettled([reaping]);
     }
   });
+
+  it("a command that removes and re-adds a label queues behind its deletion", async () => {
+    const p = await project();
+    const x = await card(p.slug, "X");
+    const created = await send("POST", `/projects/${p.slug}/labels`, {
+      name: "L",
+    });
+    expect(created.status).toBe(201);
+    const label = (await json(created)).id as number;
+    const labeled = await send(
+      "PATCH",
+      `/projects/${p.slug}/issues/${x.number}`,
+      {
+        label_ids: [label],
+      },
+    );
+    expect(labeled.status).toBe(200);
+
+    // The holder deletes the label: the label row first, then the card rows
+    // its cascade removes. It rolls back, so the label is still there for
+    // the command to put back.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query("SELECT id FROM labels WHERE id = $1 FOR UPDATE", [
+        label,
+      ]);
+      pending = send(
+        "POST",
+        `/projects/${p.slug}/issues/${x.number}/commands`,
+        {
+          body: "",
+          commands: [
+            { type: "label_remove", label_id: label },
+            { type: "label_add", label_id: label },
+          ],
+        },
+      );
+      await waitForLockWaiters(1);
+      await holder.query("DELETE FROM labels WHERE id = $1", [label]);
+      await holder.query("ROLLBACK");
+      expect((await pending).status).toBe(200);
+      const kept = await observer.query<{ label_id: string }>(
+        "SELECT label_id FROM issue_labels WHERE issue_id = $1",
+        [x.id],
+      );
+      expect(kept.rows).toEqual([{ label_id: String(label) }]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("a command removing a label that is being deleted reads the card after it", async () => {
+    const p = await project();
+    const x = await card(p.slug, "X");
+    const created = await send("POST", `/projects/${p.slug}/labels`, {
+      name: "L",
+    });
+    expect(created.status).toBe(201);
+    const label = (await json(created)).id as number;
+    const labeled = await send(
+      "PATCH",
+      `/projects/${p.slug}/issues/${x.number}`,
+      {
+        label_ids: [label],
+      },
+    );
+    expect(labeled.status).toBe(200);
+
+    // The holder deletes the label and commits: the command finds the card
+    // without it, and owes no event for a removal it did not make.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query("SELECT id FROM labels WHERE id = $1 FOR UPDATE", [
+        label,
+      ]);
+      pending = send(
+        "POST",
+        `/projects/${p.slug}/issues/${x.number}/commands`,
+        { body: "", commands: [{ type: "label_remove", label_id: label }] },
+      );
+      await waitForLockWaiters(1);
+      await holder.query("DELETE FROM labels WHERE id = $1", [label]);
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(200);
+      const removed = await observer.query<{ count: string }>(
+        `SELECT count(*) FROM issue_events
+         WHERE issue_id = $1 AND type = 'label_removed'`,
+        [x.id],
+      );
+      expect(removed.rows).toEqual([{ count: "0" }]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
 });
 
 // The same holder, against the steps of a move to another database: the
