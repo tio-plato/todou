@@ -50,6 +50,8 @@ const PER_GROUP_READS = 3;
 const ANNOUNCE_PER_CHANGE = 3;
 /** Both drifted edges in the fixture below need the same verdict. */
 const VERDICT_BATCHES = 1;
+/** A batch locks its edges in id order, then writes them. */
+const STATEMENTS_PER_BATCH = 2;
 /**
  * The mirror sweep's system-tier statements: the projects scan, the mirror
  * read `where project_id in (…)`, and the merged insert — the last of which
@@ -189,7 +191,7 @@ describe("repairBlocks with drift, shared placement (k = 1)", () => {
     expect(m8.log.total).toBe(
       SYSTEM_READS +
         1 * PER_GROUP_READS +
-        VERDICT_BATCHES +
+        VERDICT_BATCHES * STATEMENTS_PER_BATCH +
         2 * ANNOUNCE_PER_CHANGE,
     );
   });
