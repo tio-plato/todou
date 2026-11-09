@@ -1,12 +1,14 @@
 import {
   type CSSProperties,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   useSyncExternalStore,
 } from "react";
 import { CodeBlock } from "@/components/shared/pierre.tsx";
 import { Button } from "@/components/ui/button.tsx";
+import { announceCodeRendered } from "@/lib/code-highlights.ts";
 import {
   type DiagramPalette,
   type DiagramResult,
@@ -104,6 +106,20 @@ export function MermaidBlock({
   }, [source, theme]);
 
   const diagram = result?.ok === true ? result : null;
+  const pictured = diagram !== null && !showSource;
+  // Rows painted on the source go with it when the diagram takes its place,
+  // and pierre says nothing as its rows leave: the swap is announced here,
+  // either way, so that the page paints the block again. The source drawn
+  // on mount announces itself.
+  const swapped = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the swap itself is what runs this
+  useLayoutEffect(() => {
+    if (!swapped.current) {
+      swapped.current = true;
+      return;
+    }
+    if (probe.current !== null) announceCodeRendered(probe.current);
+  }, [pictured]);
   return (
     // The toggle sits in a strip of its own: over the diagram it would cover
     // whichever node lands in the corner.

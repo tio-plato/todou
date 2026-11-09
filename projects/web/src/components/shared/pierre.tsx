@@ -15,6 +15,10 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  announceCodeRendered,
+  CODE_HIGHLIGHT_CSS,
+} from "@/lib/code-highlights.ts";
 import type { PatchCommit } from "@/lib/patch-commit.ts";
 import { syntaxThemeOf, type ThemePref, useThemePref } from "@/lib/theme.ts";
 
@@ -227,8 +231,16 @@ const READY_HANDLERS = new WeakMap<Element, () => void>();
  * `emitPostRender` does run right after the error is painted, in the same
  * task, so spotting the wrapper here swaps in plain text before the next
  * paint — the stack never reaches the screen.
+ *
+ * Every render also replaced the rows' text nodes, which is what the surface
+ * around the block is told: its code highlights were built on the old ones.
  */
-function handlePostRender(container: HTMLElement): void {
+function handlePostRender(
+  container: HTMLElement,
+  _instance?: unknown,
+  phase?: "mount" | "update" | "unmount",
+): void {
+  announceCodeRendered(container, phase);
   const shadow = container.shadowRoot;
   if (shadow?.querySelector("[data-error-wrapper]") != null) {
     for (
@@ -286,7 +298,7 @@ function handleDiffPostRender(
   phase: "mount" | "update" | "unmount",
 ) {
   redrawOnRemount(node, instance, phase);
-  handlePostRender(node);
+  handlePostRender(node, instance, phase);
 }
 
 /**
@@ -341,7 +353,7 @@ function patchOptions(theme: SyntaxTheme): CodeViewProps["options"] {
     overflow: "wrap",
     preferredHighlighter: PIERRE_HIGHLIGHTER,
     onPostRender: handlePostRender,
-    unsafeCSS: COMMIT_MESSAGE_CSS,
+    unsafeCSS: COMMIT_MESSAGE_CSS + CODE_HIGHLIGHT_CSS,
     layout: { paddingTop: 0, paddingBottom: 0, gap: 8 },
     itemMetrics: { diffHeaderHeight: PATCH_HEADER_HEIGHT },
   } as const;
@@ -360,6 +372,7 @@ function snippetOptions(theme: SyntaxTheme): CodeViewProps["options"] {
     overflow: "wrap",
     preferredHighlighter: PIERRE_HIGHLIGHTER,
     onPostRender: handlePostRender,
+    unsafeCSS: CODE_HIGHLIGHT_CSS,
   } as const;
   SNIPPET_OPTIONS.set(theme, options);
   return options;
@@ -374,6 +387,7 @@ function fileOptions(theme: SyntaxTheme): CodeViewProps["options"] {
     disableFileHeader: true,
     preferredHighlighter: PIERRE_HIGHLIGHTER,
     onPostRender: handlePostRender,
+    unsafeCSS: CODE_HIGHLIGHT_CSS,
   } as const;
   FILE_OPTIONS.set(theme, options);
   return options;
@@ -399,6 +413,7 @@ function fenceDiffOptions(
     // 34-line block with one edited line came out as 10 rendered lines.
     expandUnchanged: true,
     onPostRender: handleDiffPostRender,
+    unsafeCSS: CODE_HIGHLIGHT_CSS,
   } as const;
   FENCE_DIFF_OPTIONS.set(theme, options);
   return options;
