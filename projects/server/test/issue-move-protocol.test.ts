@@ -177,10 +177,10 @@ const expectPreservedAcrossSweeps = async (
  * the app exists: the move reads `ctx.testHooks` only when it runs.
  */
 const pauseAfter = (t: TestApp, at: Step) => {
-  let reach = () => {};
+  let arrive = () => {};
   let release = () => {};
   const reached = new Promise<void>((resolve) => {
-    reach = resolve;
+    arrive = resolve;
   });
   const released = new Promise<void>((resolve) => {
     release = resolve;
@@ -189,7 +189,7 @@ const pauseAfter = (t: TestApp, at: Step) => {
     ...t.ctx.testHooks,
     afterMoveStep: async (step) => {
       if (step !== at) return;
-      reach();
+      arrive();
       await released;
     },
   };
@@ -582,7 +582,7 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
         sweepMoves(t.ctx),
         sweepMoves(t.ctx),
       ]);
-      expect((first as number) + (second as number)).toBe(1);
+      expect(first + second).toBe(1);
 
       const dbA = await dbOf(t, ids[A] as number, A);
       const trace = await dbA
