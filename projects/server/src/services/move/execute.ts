@@ -413,8 +413,8 @@ async function moveAcrossDbs(
       plan,
     };
   } catch (err) {
-    // Whatever this move left unfinished is the next sweep's at once,
-    // rather than when the lease runs out.
+    // Given up, so the next sweep takes over whatever this move left
+    // unfinished instead of waiting for the lease to run out.
     await releaseLease(system, moveToken, moveToken);
     throw err;
   } finally {
