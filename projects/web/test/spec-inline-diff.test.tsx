@@ -3211,6 +3211,32 @@ describe("baseline annotations on deleted text", () => {
     expect(chips.map((chip) => chip.style.top)).toEqual(["340px"]);
   });
 
+  it("hangs a baseline comment on a removed table row's stand-in, at the row", async () => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (this.classList.contains("spec-del-row")) {
+          return DOMRect.fromRect({ y: 380 });
+        }
+        return DOMRect.fromRect({ y: this.tagName === "TABLE" ? 300 : 0 });
+      },
+    );
+    const before =
+      "| name | kept |\n| --- | --- |\n| alpha | gamma |\n| delta | epsilon |\n| eta | iota |\n";
+    const after =
+      "| name | kept |\n| --- | --- |\n| alpha | gamma |\n| eta | iota |\n";
+    const { view, container } = await renderDiff(
+      before,
+      after,
+      [],
+      [onBaseline("comment", before, 4)],
+    );
+    expect(container.querySelector("tr.spec-del-row")).not.toBeNull();
+    const chips = await view.findAllByRole("button", {
+      name: /comment\(s\) on this block/,
+    });
+    expect(chips.map((chip) => chip.style.top)).toEqual(["380px"]);
+  });
+
   it("hangs no chip for a baseline line that nothing removed shows", async () => {
     const { view } = await renderDiff(
       PARAGRAPH_BEFORE,
