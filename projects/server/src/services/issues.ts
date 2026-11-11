@@ -408,6 +408,28 @@ async function validateLabelIds(
   return rows;
 }
 
+/**
+ * Lock the labels of this project that `ids` names, FOR KEY SHARE, in one
+ * statement, in ascending id, where the lock order puts them (see
+ * lockIssueRows, rule 6). Returns the ones still there once locked: a label
+ * deleted meanwhile is missing from the rows, and the caller refuses the
+ * write or skips the label, rather than letting the foreign key of the row
+ * it inserts fail.
+ */
+export async function lockLabels(
+  tx: Db,
+  projectId: number,
+  ids: readonly number[],
+): Promise<Array<typeof labels.$inferSelect>> {
+  if (ids.length === 0) return [];
+  return tx
+    .select()
+    .from(labels)
+    .where(and(eq(labels.projectId, projectId), inArray(labels.id, [...ids])))
+    .orderBy(asc(labels.id))
+    .for("key share");
+}
+
 async function validateAssigneeIds(
   ctx: AppContext,
   projectId: number,
@@ -599,6 +621,12 @@ export async function createIssue(
         );
     }
     if (input.label_ids.length > 0) {
+      // After the number, never before it (see lockIssueRows): cleaning up
+      // a deleted project locks its project_meta and then its labels.
+      const locked = await lockLabels(tx, project.id, input.label_ids);
+      if (locked.length !== new Set(input.label_ids).size) {
+        throw new ValidationFailedError("unknown label_ids");
+      }
       await tx
         .insert(issueLabels)
         .values(
@@ -1041,9 +1069,6 @@ export async function updateIssue(
   assertIssueWritable(before, actor, role);
   assertMayEditFields(input, before, actor, role);
 
-  if (input.label_ids !== undefined) {
-    await validateLabelIds(db, project.id, input.label_ids);
-  }
   if (input.assignee_ids !== undefined) {
     await validateAssigneeIds(ctx, project.id, input.assignee_ids);
   }
@@ -1129,6 +1154,21 @@ export async function updateIssue(
       resolved?.local ?? [],
       linked.cards,
     );
+    // The labels it puts on the card, under the card's lock and before the
+    // card's label rows (see lockIssueRows). One deleted meanwhile is gone
+    // from the rows, and refused like an id that never existed.
+    const labelById =
+      input.label_ids === undefined
+        ? new Map<number, typeof labels.$inferSelect>()
+        : new Map(
+            (await lockLabels(tx, project.id, input.label_ids)).map((l) => [
+              l.id,
+              l,
+            ]),
+          );
+    if (input.label_ids?.some((id) => !labelById.has(id))) {
+      throw new ValidationFailedError("unknown label_ids");
+    }
     const addEvent = async (
       type: (typeof issueEvents.$inferInsert)["type"],
       payload: Record<string, unknown>,
@@ -1205,11 +1245,6 @@ export async function updateIssue(
         .where(eq(issueLabels.issueId, before.id));
       const current = new Map(currentRows.map((r) => [r.labelId, r.label]));
       const desired = new Set(input.label_ids);
-      const allLabels = await tx
-        .select()
-        .from(labels)
-        .where(eq(labels.projectId, project.id));
-      const labelById = new Map(allLabels.map((l) => [l.id, l]));
 
       for (const labelId of desired) {
         if (!current.has(labelId)) {
@@ -1224,14 +1259,18 @@ export async function updateIssue(
       }
       for (const [labelId, label] of current) {
         if (!desired.has(labelId)) {
-          await tx
+          // A label deleted meanwhile has taken its row with it: the
+          // removal is recorded only if this removed the row.
+          const removed = await tx
             .delete(issueLabels)
             .where(
               and(
                 eq(issueLabels.issueId, before.id),
                 eq(issueLabels.labelId, labelId),
               ),
-            );
+            )
+            .returning({ labelId: issueLabels.labelId });
+          if (removed.length === 0) continue;
           await addEvent("label_removed", {
             label: { id: label.id, name: label.name, color: label.color },
           });
