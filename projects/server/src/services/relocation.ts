@@ -305,8 +305,16 @@ export async function rewriteBlockAddresses(
  * lineage's first row, and that row's own id becomes the identity every
  * later address inherits. Written in two statements because the value is
  * the id the insert is still generating.
+ *
+ * `system` has to be a transaction when the insert runs. The placeholder 0
+ * is shared by every card minting a lineage at once, and `(lineage,
+ * project_id)` is unique: inside a transaction another card's insert waits
+ * for this one to commit, by which time the row carries its own id. Both
+ * callers hold one there — `registerMove` reaches the insert only inside a
+ * same-database move's transaction, since across databases
+ * `registerLineageOnly` has minted the lineage before it runs.
  */
-async function ensureLineage(
+export async function ensureLineage(
   system: Db,
   from: Address,
   to: Address,
@@ -419,12 +427,16 @@ export async function recordAliases(
     });
 }
 
-/** One arrival, with the parts of its event only a rewrite needs. */
+/** One arrival, with the parts of its event only the server reads. */
 export type MoveRecord = IssueMove & {
   /** Who performed the move: the only actor an offline rewrite can borrow. */
   actorId: number;
   /** The comment ids this move renumbered, old → new; empty if it recorded none. */
   commentIdMap: Map<number, number>;
+  /** Names the move's row in `issue_moves`; null if the event carries none. */
+  moveToken: string | null;
+  /** The event's own id: the arrival written last has the highest. */
+  eventId: number;
 };
 
 /**
@@ -441,6 +453,7 @@ export async function movedInHistory(
 ): Promise<MoveRecord[]> {
   const rows = await db
     .select({
+      id: issueEvents.id,
       payload: issueEvents.payload,
       createdAt: issueEvents.createdAt,
       actorId: issueEvents.actorId,
@@ -452,6 +465,7 @@ export async function movedInHistory(
     .orderBy(asc(issueEvents.createdAt), asc(issueEvents.id));
   return rows.map((row) => {
     const payload = row.payload as {
+      move_token?: string;
       from_project_id?: number;
       from_project?: string;
       from_number?: number;
@@ -469,6 +483,8 @@ export async function movedInHistory(
           to,
         ]),
       ),
+      moveToken: payload.move_token ?? null,
+      eventId: row.id,
     };
   });
 }

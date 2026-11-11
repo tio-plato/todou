@@ -1,5 +1,5 @@
 import type { UserRef } from "@todou/shared";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne } from "drizzle-orm";
 import type { UserRow } from "../../auth/pat.ts";
 import type { AppContext } from "../../bootstrap.ts";
 import type { Db } from "../../db/driver.ts";
@@ -10,7 +10,11 @@ import {
   labels,
   statuses,
 } from "../../db/project-schema.ts";
-import { projectMembers } from "../../db/system-schema.ts";
+import {
+  issueMoves,
+  projectMembers,
+  projects,
+} from "../../db/system-schema.ts";
 import {
   IssueDeletedError,
   IssueMovedError,
@@ -19,7 +23,7 @@ import {
 } from "../../errors.ts";
 import { type ProjectRow, requireCapability, routeInfoOf } from "../access.ts";
 import { loadIssueRow } from "../issues.ts";
-import { lineageOf, tombstoneNumberOf } from "../relocation.ts";
+import { lineageOf, movedInHistory, tombstoneNumberOf } from "../relocation.ts";
 import { assertIssueWritable } from "../trash.ts";
 import { getUserRefs } from "../users.ts";
 
@@ -78,6 +82,7 @@ export async function planMove(
   const row = await loadIssueRow(sourceDb, source.id, number);
   // Trash, tombstone and freeze all refuse here, with their own codes.
   assertIssueWritable(row, actor, role);
+  await assertArrived({ source: sourceDb, system: ctx.router.system() }, row);
 
   // A project the mover cannot see is a 404 from here, same as anywhere.
   const { project: target } = await requireCapability(
@@ -100,11 +105,11 @@ export async function planMove(
     row,
   );
 
-  const lineage = await lineageOf(ctx.router.system(), source.id, number);
-  const reinhabit =
-    lineage === null
-      ? null
-      : await tombstoneNumberOf(ctx.router.system(), lineage, target.id);
+  const { lineage, reinhabit } = await addressPlan(
+    ctx.router.system(),
+    { projectId: source.id, number },
+    target.id,
+  );
 
   // Two independent questions. Collapsing them into one would misjudge the
   // deployment where A and B share a dedicated database while the system
@@ -143,18 +148,31 @@ export function assertStillMovable(row: IssueRow): void {
 }
 
 /**
- * The row-derived half of the plan, decided again from the held row,
- * because that row is what gets copied: an edit that committed after
- * `planMove` read the card would otherwise be dropped by the copy, or carry
- * the status and labels it had before. Each handle has to be the one the
- * caller holds the card through — a colocated move passes its transaction
- * for all three.
+ * The plan decided again from the held row. The row-derived half, because
+ * that row is what gets copied: an edit that committed after `planMove`
+ * read the card would otherwise be dropped by the copy, or carry the status
+ * and labels it had before. The address half, because a card that moved
+ * away and back after the plan left a tombstone in the target the plan
+ * never saw; held and arrived, the card's addresses cannot change any more.
+ * Each handle has to be the one the caller holds the card through — a
+ * colocated move passes its transaction for all three.
+ *
+ * The arrival is asked again too. A card that moved away after the plan
+ * and is on its way back into the same row started an arrival the plan
+ * never saw; once the card is held and that arrival is done, no other move
+ * can start one.
  */
 export async function replanHeld(
   plan: MovePlan,
   row: IssueRow,
   handles: { source: Db; target: Db; system: Db },
 ): Promise<MovePlan> {
+  await assertArrived(handles, row);
+  const { lineage, reinhabit } = await addressPlan(
+    handles.system,
+    { projectId: plan.source.project.id, number: row.number },
+    plan.target.project.id,
+  );
   const status = await mapStatus(
     handles.source,
     handles.target,
@@ -181,7 +199,71 @@ export async function replanHeld(
     labelIds: labelMap.ids,
     assigneeIds: assigneeMap.ids,
     dropped: { labels: labelMap.dropped, assignees: assigneeMap.dropped },
+    reinhabit,
+    lineage,
   };
+}
+
+/**
+ * The card's lineage, if it has ever moved, and the number its tombstone
+ * still holds in the target, which a card moving back takes again.
+ */
+async function addressPlan(
+  system: Db,
+  source: { projectId: number; number: number },
+  targetId: number,
+): Promise<{ lineage: number | null; reinhabit: number | null }> {
+  const lineage = await lineageOf(system, source.projectId, source.number);
+  const reinhabit =
+    lineage === null
+      ? null
+      : await tombstoneNumberOf(system, lineage, targetId);
+  return { lineage, reinhabit };
+}
+
+/**
+ * Refuses a card that is still arriving from a move across databases. Its
+ * copy is a live card from step 3, but the address book learns of it at
+ * step 4 and its source becomes a tombstone at step 5; a move planned in
+ * between reads neither, and splits the lineage, wedges on the address
+ * book's unique keys, or moves back into a source that is about to be
+ * emptied.
+ *
+ * Still arriving: the card's latest `moved_in` names a registration row
+ * that is not done and whose source project still exists.
+ * - The latest is the one with the highest id, written after the copy of
+ *   the card's history in the same transaction. Only it can still be in
+ *   flight, since this check keeps a card from moving on before it has
+ *   arrived; an earlier one left unfinished by the races this check closes
+ *   would otherwise pin the card for good.
+ * - The copy and its `moved_in` commit together, and the row is registered
+ *   at step 1 and done only at step 6, so the whole gap counts.
+ * - A move within one database writes its `moved_in` and a done row in one
+ *   transaction.
+ * - A token with no row counts as arrived. A row is deleted only before its
+ *   copy should have landed, so such a copy landed after the sweep rolled
+ *   its move back, and refusing it would pin it for good.
+ * - A row whose source project is gone counts as arrived. Step 5 has nowhere
+ *   to write and the sweep skips the row, so it is never done; counting it
+ *   would pin the copy for good. The price: while that move's own request
+ *   is still between steps 3 and 4, its copy can be moved.
+ */
+async function assertArrived(
+  handles: { source: Db; system: Db },
+  row: IssueRow,
+): Promise<void> {
+  const [latest] = (await movedInHistory(handles.source, row.id)).sort(
+    (a, b) => b.eventId - a.eventId,
+  );
+  const token = latest?.moveToken ?? null;
+  if (token === null) return;
+  const arriving = await handles.system
+    .select({ id: issueMoves.id })
+    .from(issueMoves)
+    .innerJoin(projects, eq(projects.id, issueMoves.fromProjectId))
+    .where(and(eq(issueMoves.moveToken, token), ne(issueMoves.state, "done")))
+    .limit(1);
+  if (arriving.length > 0) throw new IssueMovingError();
 }
 
 /**
