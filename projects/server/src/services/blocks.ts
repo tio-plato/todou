@@ -743,7 +743,8 @@ export async function announceBlockChanges(
  *
  * Best effort, and nothing repairs it: a lost entry costs one line of one
  * timeline, while the edge itself — and the clearing notification that hangs
- * off it — is already durable.
+ * off it — is already durable. An entry for a card that has moved follows it
+ * there; one for a card in the middle of a move to another database is lost.
  */
 async function announceEdge(
   ctx: AppContext,
@@ -780,7 +781,31 @@ async function announceEdge(
   );
 }
 
-/** One timeline entry on one card, wherever it lives. False = it did not land. */
+/**
+ * One timeline entry on one card, wherever it lives now. False = it did not
+ * land.
+ *
+ * The card is read under its own lock and the event written in the same
+ * transaction. A move takes FOR UPDATE on the card it moves, and the freeze
+ * of a move to another database updates it, so each either waits for this
+ * to commit, and the event goes with the card, or has committed first, and
+ * the locked row shows it: `moved_at` on the tombstone a move leaves behind,
+ * `moving_since` on a card being copied. An event on either is lost — nobody
+ * reads a tombstone's timeline, and the move's last step empties the frozen
+ * card — and a clearing that lands there would be stamped as told, so the
+ * repair sweep would never send it again.
+ *
+ * A card that has left is looked up in the address book, once: the book is
+ * flat, so the address it gives is where the card is now, and a card that
+ * has left that one too is being moved again this instant. Until a move to
+ * another database publishes its copy, the book has nothing newer than the
+ * frozen card, and this gives up: a clearing is then left unstamped, and the
+ * repair sweep sends it to the address the move rewrites the edge to.
+ *
+ * The book is read once the transaction has ended. On the shared placement
+ * on PGlite the system database is the project database, whose one
+ * connection the transaction is holding.
+ */
 async function landEvent(
   ctx: AppContext,
   card: Address,
@@ -790,62 +815,16 @@ async function landEvent(
   agentContext: AgentContext | null,
 ): Promise<boolean> {
   try {
-    const project = (await findProjectByRef(ctx, String(card.projectId)))
-      ?.project;
-    if (project === undefined) return false;
-    // Held only while the event is written: one status change can announce
-    // to blocked cards in many projects.
-    const landed = await ctx.router.withProject(
-      routeInfoOf(project),
-      async (db) => {
-        const rows = await db
-          .select({ id: issues.id })
-          .from(issues)
-          .where(
-            and(
-              eq(issues.projectId, project.id),
-              eq(issues.number, card.number),
-            ),
-          );
-        const issueId = rows[0]?.id;
-        if (issueId === undefined) return null;
-        const inserted = await db
-          .insert(issueEvents)
-          .values({
-            projectId: project.id,
-            issueId,
-            actorId,
-            type,
-            payload,
-            agentContext,
-          })
-          .returning({ id: issueEvents.id });
-        return { issueId, eventId: inserted[0]?.id };
-      },
+    const event = { type, payload, actorId, agentContext };
+    const here = await landAt(ctx, card, event);
+    if (here !== "away") return here;
+    const now = await currentAddressOf(
+      ctx.router.system(),
+      card.projectId,
+      card.number,
     );
-    if (landed === null) return false;
-    const { issueId, eventId } = landed;
-    const events: ChangeEvent[] = [];
-    if (eventId !== undefined) {
-      events.push({
-        entity: "timeline",
-        id: eventId,
-        action: "created",
-        issue_number: card.number,
-      });
-    }
-    // `activity` rather than `fields`: an edge changing moves no card
-    // between the lists a subscriber is holding — `?blocked=` is a filter a
-    // client asks for, not a membership the feed tracks.
-    events.push({
-      entity: "issue",
-      id: issueId,
-      action: "updated",
-      issue_number: card.number,
-      list_row: { kind: "activity" },
-    });
-    for (const e of events) ctx.bus.publish(project.id, e);
-    return eventId !== undefined;
+    if (now === null || sameCard(now, card)) return false;
+    return (await landAt(ctx, now, event)) === true;
   } catch (cause) {
     console.error(
       `block event ${type} could not be landed on ${card.projectId}/${card.number}`,
@@ -853,6 +832,74 @@ async function landEvent(
     );
     return false;
   }
+}
+
+/**
+ * `landEvent` at one address: true when the event landed, false when no
+ * card is there, "away" when the card there has moved or is being moved.
+ */
+async function landAt(
+  ctx: AppContext,
+  card: Address,
+  event: {
+    type: "block_added" | "block_removed" | "block_cleared" | "block_reblocked";
+    payload: Record<string, unknown>;
+    actorId: number;
+    agentContext: AgentContext | null;
+  },
+): Promise<boolean | "away"> {
+  const project = (await findProjectByRef(ctx, String(card.projectId)))
+    ?.project;
+  if (project === undefined) return false;
+  // Held only while the event is written: one status change can announce
+  // to blocked cards in many projects.
+  const landed = await ctx.router.withProject(routeInfoOf(project), (db) =>
+    db.transaction(async (tx) => {
+      const rows = await tx
+        .select({
+          id: issues.id,
+          movedAt: issues.movedAt,
+          movingSince: issues.movingSince,
+        })
+        .from(issues)
+        .where(
+          and(eq(issues.projectId, project.id), eq(issues.number, card.number)),
+        )
+        .for("no key update");
+      const row = rows[0];
+      if (row === undefined) return null;
+      if (row.movedAt !== null || row.movingSince !== null) return "away";
+      const inserted = await tx
+        .insert(issueEvents)
+        .values({ projectId: project.id, issueId: row.id, ...event })
+        .returning({ id: issueEvents.id });
+      return { issueId: row.id, eventId: inserted[0]?.id };
+    }),
+  );
+  if (landed === null) return false;
+  if (landed === "away") return "away";
+  const { issueId, eventId } = landed;
+  const events: ChangeEvent[] = [];
+  if (eventId !== undefined) {
+    events.push({
+      entity: "timeline",
+      id: eventId,
+      action: "created",
+      issue_number: card.number,
+    });
+  }
+  // `activity` rather than `fields`: an edge changing moves no card
+  // between the lists a subscriber is holding — `?blocked=` is a filter a
+  // client asks for, not a membership the feed tracks.
+  events.push({
+    entity: "issue",
+    id: issueId,
+    action: "updated",
+    issue_number: card.number,
+    list_row: { kind: "activity" },
+  });
+  for (const e of events) ctx.bus.publish(project.id, e);
+  return eventId !== undefined;
 }
 
 // ——— reading ————————————————————————————————————————————————————————————
@@ -1065,8 +1112,9 @@ export type BlockRepairResult = { recomputed: number; announced: number };
  * spanning those two writes even when one database holds both. Nor is the
  * announcement one: it is deliberately outside the verdict's write —
  * `evaluateBlockerStatus` says so in as many words, `landEvent` logs its
- * failures and returns false, and `cleared_notified_at` is a separate write
- * that follows a successful announcement. Colocation closes none of that.
+ * failures or finds the card mid-move and returns false, and
+ * `cleared_notified_at` is a separate write that follows a successful
+ * announcement. Colocation closes none of that.
  *
  * Two things the batching changed, said out loud rather than left to be
  * rediscovered:

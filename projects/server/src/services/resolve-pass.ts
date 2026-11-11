@@ -887,8 +887,8 @@ class Resolver {
  * draft that was on the card before it moved, which waits only on rows of
  * that project, and references skip tombstones. And a single autocommit
  * statement that writes one row under a card without the card's lock (a
- * read position, a mute, a block event, a cross-project reference, a
- * direct-upload request or its expiry) holds nothing to wait with.
+ * read position, a mute, a cross-project reference, a direct-upload request
+ * or its expiry) holds nothing to wait with.
  *
  * The one statement sorts the rows before it locks them: `ORDER BY` and the
  * locking clause belong to the same query, never a subquery. A card it

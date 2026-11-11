@@ -7,8 +7,13 @@ import {
   issues,
   revisions,
 } from "../src/db/project-schema.ts";
-import { issueAddresses, issueMoves } from "../src/db/system-schema.ts";
+import {
+  issueAddresses,
+  issueBlocks,
+  issueMoves,
+} from "../src/db/system-schema.ts";
 import { routeInfoOf } from "../src/services/access.ts";
+import { announceBlockChanges, repairBlocks } from "../src/services/blocks.ts";
 import type { ActivityImportedMaxIds } from "../src/services/move/copy.ts";
 import { sweepMoves } from "../src/services/move/execute.ts";
 import { makeTestApp, type TestApp } from "./helpers.ts";
@@ -599,6 +604,129 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
       );
       expect(targets.size).toBe(1);
       expect([...targets][0]).toBe(`${ids[A]}/${back.moved_to.number}`);
+    });
+
+    /**
+     * The next move stops after `at` until `release` is called. Swapped in
+     * after `app()`: the move reads `ctx.testHooks` at every step.
+     */
+    const pauseAfter = (t: TestApp, at: Step) => {
+      let reach = () => {};
+      let release = () => {};
+      const reached = new Promise<void>((resolve) => {
+        reach = resolve;
+      });
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      if (!t.ctx.testHooks) throw new Error("the test app has no hooks");
+      t.ctx.testHooks.afterMoveStep = async (step) => {
+        if (step !== at) return;
+        reach();
+        await released;
+      };
+      return { reached, release: () => release() };
+    };
+
+    /** `blocked` waits for `blocker`, both in A; the edge as stored. */
+    const blockIn = async (
+      t: TestApp,
+      who: Who,
+      blocked: { number: number },
+      blocker: { number: number },
+    ) => {
+      const res = await req(
+        t,
+        `/projects/${A}/issues/${blocked.number}/blocked-by`,
+        who,
+        { method: "POST", body: JSON.stringify({ ref: `#${blocker.number}` }) },
+      );
+      expect(res.status).toBe(200);
+      const edgeId = (await json(res)).blocked_by[0].edge_id as number;
+      const [edge] = await t.ctx.router
+        .system()
+        .select()
+        .from(issueBlocks)
+        .where(eq(issueBlocks.id, edgeId));
+      if (edge === undefined) throw new Error("the edge was not stored");
+      return edge;
+    };
+
+    const clearingsOn = async (
+      t: TestApp,
+      who: Who,
+      slug: string,
+      number: number,
+    ) => {
+      const res = await req(
+        t,
+        `/projects/${slug}/issues/${number}/timeline?types=block_cleared&limit=100`,
+        who,
+      );
+      expect(res.status).toBe(200);
+      return (await json(res)).items as unknown[];
+    };
+
+    it("sends a clearing that came while the blocked card was frozen once the move is done", async () => {
+      const { t, admin } = await app();
+      const blocker = await createIssue(t, admin, A, "ships mid-move");
+      const blocked = await createIssue(t, admin, A, "frozen when it clears");
+      await blockIn(t, admin, blocked, blocker);
+      const statuses = await json(
+        await req(t, `/projects/${A}/statuses`, admin),
+      );
+      const done = statuses.find((s: { name: string }) => s.name === "Done");
+
+      const paused = pauseAfter(t, 3);
+      try {
+        const moving = move(t, admin, A, blocked.number, B);
+        await paused.reached;
+        const shipped = await req(
+          t,
+          `/projects/${A}/issues/${blocker.number}`,
+          admin,
+          { method: "PATCH", body: JSON.stringify({ status_id: done.id }) },
+        );
+        expect(shipped.status).toBe(200);
+        paused.release();
+        const moved = await moving;
+        expect(moved.status).toBe(200);
+        const landed = (await json(moved)).moved_to.number as number;
+
+        await repairBlocks(t.ctx);
+        expect(await clearingsOn(t, admin, B, landed)).toHaveLength(1);
+      } finally {
+        paused.release();
+      }
+    });
+
+    it("lands a clearing on the copy once the move has published it", async () => {
+      const { t, admin } = await app();
+      const blocker = await createIssue(t, admin, A, "ships mid-move");
+      const blocked = await createIssue(
+        t,
+        admin,
+        A,
+        "published when it clears",
+      );
+      // Read before the move, as `evaluateBlockerStatus` may have read it.
+      const edge = await blockIn(t, admin, blocked, blocker);
+      const me = await json(await req(t, "/me", admin));
+
+      const paused = pauseAfter(t, 4);
+      try {
+        const moving = move(t, admin, A, blocked.number, B);
+        await paused.reached;
+        await announceBlockChanges(t.ctx, [{ edge, cleared: true }], me.id);
+        paused.release();
+        const moved = await moving;
+        expect(moved.status).toBe(200);
+        const landed = (await json(moved)).moved_to.number as number;
+
+        expect(await clearingsOn(t, admin, B, landed)).toHaveLength(1);
+      } finally {
+        paused.release();
+      }
     });
   },
 );
