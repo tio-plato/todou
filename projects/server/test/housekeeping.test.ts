@@ -112,8 +112,8 @@ describe("startHousekeeping", () => {
     const dead = await addSession(past);
 
     // Interval far in the future: only the immediate startup sweep runs.
-    // Only the router is exercised here; the move recovery walks an empty
-    // table and the auth sweep is what this asserts on.
+    // Only the router is exercised here, and the auth sweep is what this
+    // asserts on.
     const stop = startHousekeeping(
       { router } as unknown as AppContext,
       24 * HOUR_MS,
