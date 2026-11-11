@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, max, ne, or } from "drizzle-orm";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "../src/db/driver.ts";
 import {
   comments,
@@ -16,6 +16,7 @@ import {
   projects,
 } from "../src/db/system-schema.ts";
 import { routeInfoOf } from "../src/services/access.ts";
+import { startHousekeeping } from "../src/services/housekeeping.ts";
 import type { ActivityImportedMaxIds } from "../src/services/move/copy.ts";
 import { sweepMoves } from "../src/services/move/execute.ts";
 import { makeTestApp, type TestApp } from "./helpers.ts";
@@ -665,6 +666,59 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
           .from(issueMoves),
       ).toEqual([{ state: "done" }]);
     });
+
+    // Real timers on a short lease: the interval does not depend on the
+    // placement.
+    it.runIf(placement === "dedicated")(
+      "recovers a move whose lease runs out after boot, without a restart",
+      async () => {
+        const { t, admin, ids } = await app();
+        t.ctx.testHooks = { ...t.ctx.testHooks, moveLeaseMs: 300 };
+        const source = await createIssue(t, admin, A, "cut off");
+        // What a crash moments before boot leaves: the card frozen and a
+        // registration row whose dead mover's lease has not run out yet.
+        const dbA = await dbOf(t, ids[A] as number, A);
+        const movedAt = new Date();
+        const [frozen] = await dbA
+          .update(issues)
+          .set({ movingSince: movedAt })
+          .where(eq(issues.id, source.id))
+          .returning({ authorId: issues.authorId });
+        await t.ctx.router
+          .system()
+          .insert(issueMoves)
+          .values({
+            moveToken: randomUUID(),
+            fromProjectId: ids[A] as number,
+            fromNumber: source.number,
+            toProjectId: ids[B] as number,
+            actorId: frozen?.authorId as number,
+            movedAt,
+            state: "copying",
+            leasedBy: "crashed",
+            leasedUntil: new Date(Date.now() + 1000),
+          });
+
+        // An hourly tick, so only the move interval can reach the row.
+        const stop = startHousekeeping(t.ctx, 60 * 60 * 1000);
+        try {
+          await vi.waitFor(
+            async () => {
+              const write = await req(
+                t,
+                `/projects/${A}/issues/${source.number}`,
+                admin,
+                { method: "PATCH", body: JSON.stringify({ title: "thawed" }) },
+              );
+              expect(write.status).toBe(200);
+            },
+            { timeout: 5000, interval: 100 },
+          );
+        } finally {
+          stop();
+        }
+      },
+    );
 
     // The renewals do not depend on the placement, and this waits for real.
     it.runIf(placement === "dedicated")(

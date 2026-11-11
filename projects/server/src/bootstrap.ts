@@ -49,7 +49,7 @@ export type TestHooks = DbTestHooks & {
   /**
    * Shortens the lease a cross-database move holds on its registration row
    * (`MOVE_LEASE_MS`), so a test can outlast it; the mover renews it every
-   * fifth of this.
+   * fifth of this, and housekeeping runs the move recovery once every lease.
    */
   moveLeaseMs?: number;
   /**
