@@ -47,6 +47,12 @@ export type AppContext = {
 export type TestHooks = DbTestHooks & {
   afterMoveStep?(step: 1 | 2 | 3 | 4 | 5 | 6): Promise<void>;
   /**
+   * Shortens the lease a cross-database move holds on its registration row
+   * (`MOVE_LEASE_MS`), so a test can outlast it; the mover renews it every
+   * fifth of this.
+   */
+  moveLeaseMs?: number;
+  /**
    * The two gaps a competing write can land in (T-666): between a move's
    * plan and the point where it takes the card, and between the trash's
    * checks and its write. Racing real requests cannot pick which side of
