@@ -427,12 +427,16 @@ export async function recordAliases(
     });
 }
 
-/** One arrival, with the parts of its event only a rewrite needs. */
+/** One arrival, with the parts of its event only the server reads. */
 export type MoveRecord = IssueMove & {
   /** Who performed the move: the only actor an offline rewrite can borrow. */
   actorId: number;
   /** The comment ids this move renumbered, old → new; empty if it recorded none. */
   commentIdMap: Map<number, number>;
+  /** Names the move's row in `issue_moves`; null if the event carries none. */
+  moveToken: string | null;
+  /** The event's own id: the arrival written last has the highest. */
+  eventId: number;
 };
 
 /**
@@ -449,6 +453,7 @@ export async function movedInHistory(
 ): Promise<MoveRecord[]> {
   const rows = await db
     .select({
+      id: issueEvents.id,
       payload: issueEvents.payload,
       createdAt: issueEvents.createdAt,
       actorId: issueEvents.actorId,
@@ -460,6 +465,7 @@ export async function movedInHistory(
     .orderBy(asc(issueEvents.createdAt), asc(issueEvents.id));
   return rows.map((row) => {
     const payload = row.payload as {
+      move_token?: string;
       from_project_id?: number;
       from_project?: string;
       from_number?: number;
@@ -477,6 +483,8 @@ export async function movedInHistory(
           to,
         ]),
       ),
+      moveToken: payload.move_token ?? null,
+      eventId: row.id,
     };
   });
 }
