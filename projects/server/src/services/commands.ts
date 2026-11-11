@@ -6,7 +6,7 @@ import type {
   IssueListRow,
   TimelineComment,
 } from "@todou/shared";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import type { AppContext } from "../bootstrap.ts";
 import {
@@ -33,6 +33,7 @@ import {
 import { loadReferenceInputs } from "./cross-references.ts";
 import {
   bundleIssues,
+  lockLabels,
   type StatusRow,
   statusEventOf,
   toIssue,
@@ -284,12 +285,11 @@ export async function executeCommands(
       events.push(...result.timeline);
     }
 
-    // The labels the commands name, before the card's rows under them:
-    // deleting a label locks it and then the rows its cascade removes, and
-    // adding one takes KEY SHARE on it for its foreign key. Taken here, it
-    // makes the deletion wait for this write or this write wait for it,
-    // never each for the other, and the card's labels are read below only
-    // once a deletion this waited for has removed its row.
+    // The labels the commands name, before the card's rows under them (see
+    // lockIssueRows), so the card's labels are read below only once a
+    // deletion this waited for has removed its row. A label to add that was
+    // deleted meanwhile fails the submission; one to remove has nothing
+    // left to remove.
     const named = [
       ...new Set(
         input.commands.flatMap((command) =>
@@ -299,13 +299,13 @@ export async function executeCommands(
         ),
       ),
     ];
-    if (named.length > 0) {
-      await tx
-        .select({ id: labels.id })
-        .from(labels)
-        .where(inArray(labels.id, named))
-        .orderBy(asc(labels.id))
-        .for("key share");
+    const locked = new Set(
+      (await lockLabels(tx, project.id, named)).map((row) => row.id),
+    );
+    for (const [i, command] of input.commands.entries()) {
+      if (command.type === "label_add" && !locked.has(command.label_id)) {
+        throw new ValidationFailedError(`command[${i}]: unknown label_id`);
+      }
     }
     // Read the sets being mutated inside the transaction and diff against
     // them as commands apply: the point of incremental semantics is that a
