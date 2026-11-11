@@ -225,12 +225,13 @@ async function moveWithinDb(
  */
 export const MOVE_LEASE_MS = 5 * 60 * 1000;
 
-const leaseMs = (ctx: AppContext): number =>
+/** The lease's length: `MOVE_LEASE_MS`, unless a test shortens it. */
+export const moveLeaseMs = (ctx: AppContext): number =>
   ctx.testHooks?.moveLeaseMs ?? MOVE_LEASE_MS;
 
 /** When a lease taken or renewed at `now` runs out. */
 const leaseUntil = (ctx: AppContext, now: Date = new Date()): Date =>
-  new Date(now.getTime() + leaseMs(ctx));
+  new Date(now.getTime() + moveLeaseMs(ctx));
 
 /**
  * Renews the mover's lease until the returned function is called. A
@@ -254,7 +255,7 @@ function renewLease(ctx: AppContext, moveToken: string): () => void {
       console.error(`renewing the lease on move ${moveToken} failed`, err);
     }
   };
-  const timer = setInterval(() => void renew(), leaseMs(ctx) / 5);
+  const timer = setInterval(() => void renew(), moveLeaseMs(ctx) / 5);
   timer.unref();
   return () => clearInterval(timer);
 }

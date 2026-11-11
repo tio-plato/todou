@@ -4,7 +4,7 @@ import type { Db } from "../db/driver.ts";
 import { sessions, tokens } from "../db/system-schema.ts";
 import { S3Storage } from "../storage/s3.ts";
 import { repairBlocks } from "./blocks.ts";
-import { MOVE_LEASE_MS, sweepMoves } from "./move/execute.ts";
+import { moveLeaseMs, sweepMoves } from "./move/execute.ts";
 import { drainPendingMirrors } from "./pending-mirror.ts";
 import { syncRefPrefixMirror } from "./reference-directory.ts";
 import {
@@ -252,7 +252,7 @@ export function startHousekeeping(
     recovering = recoverMoves(ctx).finally(() => {
       recovering = null;
     });
-  }, MOVE_LEASE_MS);
+  }, moveLeaseMs(ctx));
   moves.unref();
   return () => {
     clearInterval(timer);
