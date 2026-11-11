@@ -744,7 +744,8 @@ export async function announceBlockChanges(
  * Best effort, and nothing repairs it: a lost entry costs one line of one
  * timeline, while the edge itself — and the clearing notification that hangs
  * off it — is already durable. An entry for a card that has moved follows it
- * there; one for a card in the middle of a move to another database is lost.
+ * there, and one for a card that a move to another database is still copying
+ * lands on that card (see landEvent).
  */
 async function announceEdge(
   ctx: AppContext,
@@ -790,17 +791,21 @@ async function announceEdge(
  * of a move to another database updates it, so each either waits for this
  * to commit, and the event goes with the card, or has committed first, and
  * the locked row shows it: `moved_at` on the tombstone a move leaves behind,
- * `moving_since` on a card being copied. An event on either is lost — nobody
- * reads a tombstone's timeline, and the move's last step empties the frozen
- * card — and a clearing that lands there would be stamped as told, so the
- * repair sweep would never send it again.
+ * `moving_since` on a card being copied. Nobody reads a tombstone's
+ * timeline, so nothing lands there.
  *
  * A card that has left is looked up in the address book, once: the book is
  * flat, so the address it gives is where the card is now, and a card that
  * has left that one too is being moved again this instant. Until a move to
  * another database publishes its copy, the book has nothing newer than the
- * frozen card, and this gives up: a clearing is then left unstamped, and the
- * repair sweep sends it to the address the move rewrites the edge to.
+ * frozen card, and the event lands on that card: the copy takes it if it
+ * has not read the card's events yet, the card keeps it if the move fails
+ * and is undone, and otherwise the move's last step empties it away.
+ *
+ * A clearing does not land on a frozen card. It would be stamped as told
+ * even when that last step then empties it away, and the repair sweep would
+ * never send it again; left unstamped, the sweep sends it wherever the move
+ * leaves the card, the copy or the card itself.
  *
  * The book is read once the transaction has ended. On the shared placement
  * on PGlite the system database is the project database, whose one
@@ -809,22 +814,25 @@ async function announceEdge(
 async function landEvent(
   ctx: AppContext,
   card: Address,
-  type: "block_added" | "block_removed" | "block_cleared" | "block_reblocked",
+  type: BlockEvent["type"],
   payload: Record<string, unknown>,
   actorId: number,
   agentContext: AgentContext | null,
 ): Promise<boolean> {
   try {
     const event = { type, payload, actorId, agentContext };
-    const here = await landAt(ctx, card, event);
+    const here = await landAt(ctx, card, event, false);
     if (here !== "away") return here;
     const now = await currentAddressOf(
       ctx.router.system(),
       card.projectId,
       card.number,
     );
-    if (now === null || sameCard(now, card)) return false;
-    return (await landAt(ctx, now, event)) === true;
+    if (now !== null && !sameCard(now, card)) {
+      return (await landAt(ctx, now, event, false)) === true;
+    }
+    if (type === "block_cleared") return false;
+    return (await landAt(ctx, card, event, true)) === true;
   } catch (cause) {
     console.error(
       `block event ${type} could not be landed on ${card.projectId}/${card.number}`,
@@ -834,19 +842,23 @@ async function landEvent(
   }
 }
 
+type BlockEvent = {
+  type: "block_added" | "block_removed" | "block_cleared" | "block_reblocked";
+  payload: Record<string, unknown>;
+  actorId: number;
+  agentContext: AgentContext | null;
+};
+
 /**
  * `landEvent` at one address: true when the event landed, false when no
- * card is there, "away" when the card there has moved or is being moved.
+ * card is there, "away" when the card there has moved, or is being moved
+ * and `ontoFrozen` is false.
  */
 async function landAt(
   ctx: AppContext,
   card: Address,
-  event: {
-    type: "block_added" | "block_removed" | "block_cleared" | "block_reblocked";
-    payload: Record<string, unknown>;
-    actorId: number;
-    agentContext: AgentContext | null;
-  },
+  event: BlockEvent,
+  ontoFrozen: boolean,
 ): Promise<boolean | "away"> {
   const project = (await findProjectByRef(ctx, String(card.projectId)))
     ?.project;
@@ -868,7 +880,9 @@ async function landAt(
         .for("no key update");
       const row = rows[0];
       if (row === undefined) return null;
-      if (row.movedAt !== null || row.movingSince !== null) return "away";
+      if (row.movedAt !== null || (row.movingSince !== null && !ontoFrozen)) {
+        return "away";
+      }
       const inserted = await tx
         .insert(issueEvents)
         .values({ projectId: project.id, issueId: row.id, ...event })

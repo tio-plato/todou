@@ -652,15 +652,16 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
       return edge;
     };
 
-    const clearingsOn = async (
+    const eventsOn = async (
       t: TestApp,
       who: Who,
       slug: string,
       number: number,
+      type: string,
     ) => {
       const res = await req(
         t,
-        `/projects/${slug}/issues/${number}/timeline?types=block_cleared&limit=100`,
+        `/projects/${slug}/issues/${number}/timeline?types=${type}&limit=100`,
         who,
       );
       expect(res.status).toBe(200);
@@ -694,7 +695,9 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
         const landed = (await json(moved)).moved_to.number as number;
 
         await repairBlocks(t.ctx);
-        expect(await clearingsOn(t, admin, B, landed)).toHaveLength(1);
+        expect(
+          await eventsOn(t, admin, B, landed, "block_cleared"),
+        ).toHaveLength(1);
       } finally {
         paused.release();
       }
@@ -723,10 +726,33 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
         expect(moved.status).toBe(200);
         const landed = (await json(moved)).moved_to.number as number;
 
-        expect(await clearingsOn(t, admin, B, landed)).toHaveLength(1);
+        expect(
+          await eventsOn(t, admin, B, landed, "block_cleared"),
+        ).toHaveLength(1);
       } finally {
         paused.release();
       }
+    });
+
+    it("keeps a block event on the card when its move fails and is undone", async () => {
+      const { t, admin } = await app(2);
+      const blocker = await createIssue(t, admin, A, "drops its edge");
+      const blocked = await createIssue(t, admin, A, "frozen, then thawed");
+      const edge = await blockIn(t, admin, blocked, blocker);
+      expect((await move(t, admin, A, blocked.number, B)).status).toBe(500);
+
+      // Dropped from the blocker's end: the frozen card takes no write.
+      const dropped = await req(
+        t,
+        `/projects/${A}/issues/${blocker.number}/blocks/${edge.id}`,
+        admin,
+        { method: "DELETE" },
+      );
+      expect(dropped.status).toBe(204);
+      expect(await sweepMoves(t.ctx)).toBe(1);
+      expect(
+        await eventsOn(t, admin, A, blocked.number, "block_removed"),
+      ).toHaveLength(1);
     });
   },
 );
