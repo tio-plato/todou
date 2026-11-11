@@ -424,7 +424,8 @@ export const issueMoves = pgTable(
     // Who is driving the move: the mover's own `move_token`, or the id one
     // sweep claimed the row under.
     leasedBy: text("leased_by"),
-    // How long `leased_by` holds the row; null when nobody does.
+    // How long `leased_by` holds the row; null when nobody does. Only an
+    // unfinished row is ever claimed, so a done row keeps its last lease.
     leasedUntil: timestamp("leased_until", { withTimezone: true }),
   },
   (t) => [
