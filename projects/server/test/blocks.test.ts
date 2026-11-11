@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { issueBlocks } from "../src/db/system-schema.ts";
 import { accessibleProjectRows, routeInfoOf } from "../src/services/access.ts";
-import { repairBlocks } from "../src/services/blocks.ts";
+import { announceBlockChanges, repairBlocks } from "../src/services/blocks.ts";
 import { visibleProjects } from "../src/services/cross-references.ts";
 import { inboxRowState } from "../src/services/inbox.ts";
 import { readPrefs } from "../src/services/prefs.ts";
@@ -814,6 +814,47 @@ describe("issue block edges T-377", () => {
       project: PB,
       number: landed,
     });
+  });
+
+  // `evaluateBlockerStatus` reads the edge, then `announceBlockChanges`
+  // lands the event at the address it read. The edge here is that read, and
+  // the move comes between the two.
+  it("lands a clearing on the card's new address when it moved after the verdict was read", async () => {
+    const blocked = await createIssue(PA, "moves before it hears");
+    const blocker = await createIssue(PA, "ships meanwhile");
+    expect((await block(PA, blocked, "blocked-by", `#${blocker}`)).status).toBe(
+      200,
+    );
+    const edgeId = (await issue(PA, blocked)).blocked_by[0].edge_id as number;
+    const [edge] = await t.ctx.router
+      .system()
+      .select()
+      .from(issueBlocks)
+      .where(eq(issueBlocks.id, edgeId));
+    expect(edge).toBeDefined();
+
+    const res = await t.app.request(
+      `/api/projects/${PA}/issues/${blocked}/move`,
+      {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ to_project: PB }),
+      },
+    );
+    expect(res.status).toBe(200);
+    const landed = (await json(res)).moved_to.number as number;
+
+    const me = await json(
+      await t.app.request("/api/me", { headers: { cookie } }),
+    );
+    await announceBlockChanges(
+      t.ctx,
+      [{ edge: edge as typeof issueBlocks.$inferSelect, cleared: true }],
+      me.id,
+    );
+    expect(
+      (await timelineTypes(PB, landed)).filter((t) => t === "block_cleared"),
+    ).toHaveLength(1);
   });
 
   it("takes its edges with it when the project is deleted", async () => {
