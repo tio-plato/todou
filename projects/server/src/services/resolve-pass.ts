@@ -883,9 +883,10 @@ class Resolver {
  * order, and locks nothing else in the tombstone's project before it:
  * whatever else locks a tombstone is a write about to be refused by the
  * gate, which while it holds it waits only for other cards of the
- * tombstone's project, none of which the move holds, or a write attaching a
+ * tombstone's project, none of which the move holds, a write attaching a
  * draft that was on the card before it moved, which waits only on rows of
- * that project, and references skip tombstones. And a single autocommit
+ * that project, or a block event, which on a tombstone locks nothing else
+ * and ends at once; references skip tombstones. And a single autocommit
  * statement that writes one row under a card without the card's lock (a
  * read position, a mute, a direct-upload request or its expiry) holds
  * nothing to wait with.
