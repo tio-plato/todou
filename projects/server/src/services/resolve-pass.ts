@@ -862,6 +862,12 @@ class Resolver {
  *    KEY SHARE a foreign-key check takes on the parent of a row it inserts:
  *    renaming a project updates the project row before recording the slug in
  *    its history.
+ * 6. The labels a write puts on a card (an edit's or a new card's
+ *    `label_ids`, the labels a command names), FOR KEY SHARE, in one
+ *    statement, in ascending id, before it reads or writes the card's label
+ *    rows (`lockLabels`): after the card (rule 1), and after `project_meta`
+ *    when it creates the card (rule 3), the order cleaning up a deleted
+ *    project takes them in.
  *
  * Two places keep another order, and neither can form a cycle. A move back
  * into a tombstone updates the tombstone after the card it moves, out of id

@@ -128,6 +128,22 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
     return (await json(created)) as { id: number; number: number };
   };
 
+  const label = async (slug: string, name: string) => {
+    const created = await send("POST", `/projects/${slug}/labels`, { name });
+    expect(created.status).toBe(201);
+    return (await json(created)).id as number;
+  };
+
+  /** The payloads of a card's events of one type, oldest first. */
+  const eventsOf = async (issue: { id: number }, type: string) =>
+    (
+      await observer.query<{ payload: Record<string, unknown> }>(
+        `SELECT payload FROM issue_events
+         WHERE issue_id = $1 AND type = $2 ORDER BY id`,
+        [issue.id, type],
+      )
+    ).rows.map((row) => row.payload);
+
   /** `blocked` waits for `blocker`, both in the project `slug`. */
   const block = async (
     slug: string,
@@ -727,6 +743,200 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
         [x.id],
       );
       expect(removed.rows).toEqual([{ count: "0" }]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("a PATCH adding a label that is being deleted is refused", async () => {
+    const p = await project();
+    const x = await card(p.slug, "X");
+    const l = await label(p.slug, "L");
+
+    // The holder deletes the label and commits while the edit waits for it.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query("SELECT id FROM labels WHERE id = $1 FOR UPDATE", [l]);
+      pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
+        label_ids: [l],
+      });
+      await waitForLockWaiters(1);
+      await holder.query("DELETE FROM labels WHERE id = $1", [l]);
+      await holder.query("COMMIT");
+      const res = await pending;
+      expect(res.status).toBe(422);
+      expect((await json(res)).error.message).toBe("unknown label_ids");
+      const rows = await observer.query(
+        "SELECT label_id FROM issue_labels WHERE issue_id = $1",
+        [x.id],
+      );
+      expect(rows.rows).toEqual([]);
+      expect(await eventsOf(x, "label_added")).toEqual([]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("a command adding a label that is being deleted refuses the whole submission", async () => {
+    const p = await project();
+    const x = await card(p.slug, "X");
+    const l = await label(p.slug, "L");
+
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query("SELECT id FROM labels WHERE id = $1 FOR UPDATE", [l]);
+      pending = send(
+        "POST",
+        `/projects/${p.slug}/issues/${x.number}/commands`,
+        {
+          body: "posted with it",
+          commands: [{ type: "label_add", label_id: l }],
+        },
+      );
+      await waitForLockWaiters(1);
+      await holder.query("DELETE FROM labels WHERE id = $1", [l]);
+      await holder.query("COMMIT");
+      const res = await pending;
+      expect(res.status).toBe(422);
+      expect((await json(res)).error.message).toBe(
+        "command[0]: unknown label_id",
+      );
+      const posted = await observer.query<{ count: string }>(
+        "SELECT count(*) FROM comments WHERE issue_id = $1",
+        [x.id],
+      );
+      expect(posted.rows).toEqual([{ count: "0" }]);
+      expect(await eventsOf(x, "label_added")).toEqual([]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("creating a card with a label that is being deleted is refused", async () => {
+    const p = await project();
+    const l = await label(p.slug, "L");
+    const title = `with L ${Date.now()}`;
+
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query("SELECT id FROM labels WHERE id = $1 FOR UPDATE", [l]);
+      pending = send("POST", `/projects/${p.slug}/issues`, {
+        title,
+        label_ids: [l],
+      });
+      await waitForLockWaiters(1);
+      await holder.query("DELETE FROM labels WHERE id = $1", [l]);
+      await holder.query("COMMIT");
+      const res = await pending;
+      expect(res.status).toBe(422);
+      expect((await json(res)).error.message).toBe("unknown label_ids");
+      const created = await observer.query<{ count: string }>(
+        "SELECT count(*) FROM issues WHERE project_id = $1 AND title = $2",
+        [p.id, title],
+      );
+      expect(created.rows).toEqual([{ count: "0" }]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("a PATCH dropping a label that is being deleted records no removal", async () => {
+    const p = await project();
+    const x = await card(p.slug, "X");
+    const l = await label(p.slug, "L");
+    const labeled = await send(
+      "PATCH",
+      `/projects/${p.slug}/issues/${x.number}`,
+      { label_ids: [l] },
+    );
+    expect(labeled.status).toBe(200);
+
+    // The holder's deletion has already cascaded to the card's row when the
+    // edit reaches it; the edit removes nothing and owes no event.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query("DELETE FROM labels WHERE id = $1", [l]);
+      pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
+        label_ids: [],
+      });
+      await waitForLockWaiters(1);
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(200);
+      expect(await eventsOf(x, "label_removed")).toEqual([]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("creating a card locks its labels after its number", async () => {
+    const p = await project();
+    const l = await label(p.slug, "L");
+
+    // The holder plays the cleanup of a deleted project: its number, then
+    // its labels. It rolls back, so the card is still created.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT project_id FROM project_meta WHERE project_id = $1 FOR UPDATE",
+        [p.id],
+      );
+      pending = send("POST", `/projects/${p.slug}/issues`, {
+        title: "with L",
+        label_ids: [l],
+      });
+      await waitForLockWaiters(1);
+      await holder.query(
+        "SELECT id FROM labels WHERE project_id = $1 ORDER BY id FOR UPDATE",
+        [p.id],
+      );
+      await holder.query("ROLLBACK");
+      const res = await pending;
+      expect(res.status).toBe(201);
+      expect(
+        (await json(res)).labels.map((row: { id: number }) => row.id),
+      ).toEqual([l]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("editing a card's labels locks the card before its labels", async () => {
+    const p = await project();
+    const x = await card(p.slug, "X");
+    const l = await label(p.slug, "L");
+
+    // The same cleanup: the project's cards, then its labels.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query("SELECT id FROM issues WHERE id = $1 FOR UPDATE", [
+        x.id,
+      ]);
+      pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
+        label_ids: [l],
+      });
+      await waitForLockWaiters(1);
+      await holder.query(
+        "SELECT id FROM labels WHERE project_id = $1 ORDER BY id FOR UPDATE",
+        [p.id],
+      );
+      await holder.query("ROLLBACK");
+      const res = await pending;
+      expect(res.status).toBe(200);
+      expect(
+        (await json(res)).labels.map((row: { id: number }) => row.id),
+      ).toEqual([l]);
     } finally {
       await holder.query("ROLLBACK");
       await Promise.allSettled([pending]);
