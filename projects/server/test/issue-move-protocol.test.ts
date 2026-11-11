@@ -993,8 +993,8 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
       const done = statuses.find((s: { name: string }) => s.name === "Done");
 
       const paused = pauseAfter(t, 3);
+      const moving = move(t, admin, A, blocked.number, B);
       try {
-        const moving = move(t, admin, A, blocked.number, B);
         await reach(paused.reached, moving);
         const shipped = await req(
           t,
@@ -1013,7 +1013,9 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
           await eventsOn(t, admin, B, landed, "block_cleared"),
         ).toHaveLength(1);
       } finally {
+        // The move ends before the app is closed, whatever failed.
         paused.release();
+        await Promise.allSettled([moving]);
       }
     });
 
@@ -1031,8 +1033,8 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
       const me = await json(await req(t, "/me", admin));
 
       const paused = pauseAfter(t, 4);
+      const moving = move(t, admin, A, blocked.number, B);
       try {
-        const moving = move(t, admin, A, blocked.number, B);
         await reach(paused.reached, moving);
         await announceBlockChanges(t.ctx, [{ edge, cleared: true }], me.id);
         paused.release();
@@ -1044,7 +1046,9 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
           await eventsOn(t, admin, B, landed, "block_cleared"),
         ).toHaveLength(1);
       } finally {
+        // The move ends before the app is closed, whatever failed.
         paused.release();
+        await Promise.allSettled([moving]);
       }
     });
 
