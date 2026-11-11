@@ -831,7 +831,7 @@ describe("issue block edges T-377", () => {
       .select()
       .from(issueBlocks)
       .where(eq(issueBlocks.id, edgeId));
-    expect(edge).toBeDefined();
+    if (edge === undefined) throw new Error("the edge was not stored");
 
     const res = await t.app.request(
       `/api/projects/${PA}/issues/${blocked}/move`,
@@ -847,11 +847,7 @@ describe("issue block edges T-377", () => {
     const me = await json(
       await t.app.request("/api/me", { headers: { cookie } }),
     );
-    await announceBlockChanges(
-      t.ctx,
-      [{ edge: edge as typeof issueBlocks.$inferSelect, cleared: true }],
-      me.id,
-    );
+    await announceBlockChanges(t.ctx, [{ edge, cleared: true }], me.id);
     expect(
       (await timelineTypes(PB, landed)).filter((t) => t === "block_cleared"),
     ).toHaveLength(1);
