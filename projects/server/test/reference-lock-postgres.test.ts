@@ -462,6 +462,45 @@ describe.skipIf(!PG_URL)("reference lock order", () => {
     expect(Number(added.rows[0]?.count)).toBe(0);
   });
 
+  // The holder freezes T, in another project, the way a move to another
+  // database does: it holds the card, then marks it. The reference waits for
+  // the card and must then see the mark.
+  it("a reference into another project checks the card under its lock", async () => {
+    const other = `${slug}-q`;
+    await createProject(other);
+    const target = await createCard(other, "T");
+    const writer = await createCard(slug, "W");
+    const pid = await pidOf(holder);
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query("SELECT id FROM issues WHERE id = $1 FOR UPDATE", [
+        target.id,
+      ]);
+      pending = send(
+        "POST",
+        `/projects/${slug}/issues/${writer.number}/comments`,
+        { body: `see ${other}#${target.number}` },
+      );
+      await blockedBy(pid);
+      await holder.query(
+        "UPDATE issues SET moving_since = now() WHERE id = $1",
+        [target.id],
+      );
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(201);
+      const referenced = await observer.query<{ count: string }>(
+        `SELECT count(*) FROM issue_events
+         WHERE issue_id = $1 AND type = 'referenced'`,
+        [target.id],
+      );
+      expect(Number(referenced.rows[0]?.count)).toBe(0);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
   // The last step of a move to another database locks the frozen card,
   // then empties it, its attachment rows included, and raises the
   // tombstone. A write attaching a draft on that card waits for the card,
