@@ -602,19 +602,23 @@ export async function sweepMoves(
     .from(issueMoves)
     .where(unfinished);
   let finished = 0;
+  const started = Date.now();
 
   for (const { id } of pending) {
     const holder = randomUUID();
+    // Each claim is judged and leased at its own time, offset as `now` is:
+    // a slow recovery before it must not hand this row a lease already over.
+    const at = new Date(now.getTime() + (Date.now() - started));
     let claimed: typeof issueMoves.$inferSelect | undefined;
     try {
       [claimed] = await system
         .update(issueMoves)
-        .set({ leasedBy: holder, leasedUntil: leaseUntil(ctx, now) })
+        .set({ leasedBy: holder, leasedUntil: leaseUntil(ctx, at) })
         .where(
           and(
             eq(issueMoves.id, id),
             unfinished,
-            or(isNull(issueMoves.leasedUntil), lt(issueMoves.leasedUntil, now)),
+            or(isNull(issueMoves.leasedUntil), lt(issueMoves.leasedUntil, at)),
           ),
         )
         .returning();
