@@ -57,6 +57,7 @@ import {
 import { rangeInRow, rowText } from "@/lib/pierre-rows.ts";
 import {
   coverageOf,
+  DEL_ROW_CLASS,
   INS_BLOCK_CLASS,
   MARK_KEY_ATTR,
   NO_DECORATIONS,
@@ -149,9 +150,10 @@ function anchoredOf(item: DisplayedAnnotation): AnchoredAnnotation {
 
 /**
  * What a comparison puts back of its baseline whole, and so what a baseline
- * annotation on it hangs its chip on: a restored block, or a marker.
+ * annotation on it hangs its chip on: a restored block, a marker, or the row
+ * drawn in for a removed table row, which carries no `OLD_LINE_ATTR`.
  */
-const OLD_HOLDER = `[${OLD_LINE_ATTR}], .spec-del-block`;
+const OLD_HOLDER = `[${OLD_LINE_ATTR}], .spec-del-block, .${DEL_ROW_CLASS}`;
 
 /** The wrappers of the code blocks pierre draws rows in, old ones included. */
 const CODE_WRAPPERS = `[${CODE_CONTENT_START_ATTR}], ${OLD_CODE_BLOCK}`;
@@ -675,8 +677,9 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     }
     // An annotation on the baseline hangs where its text was put back: on
     // the current block a removed word or a deleted code row sits in,
-    // sharing that block's chip, or on a restored block or a marker, with
-    // a chip of its own. One with none of its text put back hangs nowhere.
+    // sharing that block's chip, or on a restored block, a marker or a
+    // removed table row, with a chip of its own. One with none of its text
+    // put back hangs nowhere.
     const holders = [...container.querySelectorAll<HTMLElement>(OLD_HOLDER)];
     const oldGrouped = new Map<number, DisplayedAnnotation[]>();
     if (baselineIndex !== null && baselineAnnotations.length > 0) {
