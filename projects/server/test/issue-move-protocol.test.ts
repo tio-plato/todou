@@ -165,6 +165,39 @@ const expectPreservedAcrossSweeps = async (
 };
 
 /**
+ * Holds the next move after `at` until `release` is called. Swapped in once
+ * the app exists: the move reads `ctx.testHooks` only when it runs.
+ */
+const pauseAfter = (t: TestApp, at: Step) => {
+  let reach = () => {};
+  let release = () => {};
+  const reached = new Promise<void>((resolve) => {
+    reach = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  t.ctx.testHooks = {
+    ...t.ctx.testHooks,
+    afterMoveStep: async (step) => {
+      if (step !== at) return;
+      reach();
+      await released;
+    },
+  };
+  return { reached, release: () => release() };
+};
+
+/** Waits for the pause, or fails at once if the move ended before it. */
+const reach = (reached: Promise<void>, moving: Response | Promise<Response>) =>
+  Promise.race([
+    reached,
+    Promise.resolve(moving).then((res) => {
+      throw new Error(`the move ended before its pause: ${res.status}`);
+    }),
+  ]);
+
+/**
  * The cross-database protocol, interrupted on purpose.
  *
  * With no transaction spanning the two databases, "it recovers" is not
@@ -537,6 +570,61 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
       // The source project's only remaining record of the card; a replayed
       // step 5 must not turn it into two.
       expect(trace).toHaveLength(1);
+    });
+
+    it("recovers an interrupted move once when two sweeps find it", async () => {
+      const { t, admin, ids } = await app(3);
+      const source = await createIssue(t, admin, A, "two sweeps");
+      expect((await move(t, admin, A, source.number, B)).status).toBe(500);
+
+      const [first, second] = await Promise.all([
+        sweepMoves(t.ctx),
+        sweepMoves(t.ctx),
+      ]);
+      expect((first as number) + (second as number)).toBe(1);
+
+      const dbA = await dbOf(t, ids[A] as number, A);
+      const trace = await dbA
+        .select({ id: issueEvents.id })
+        .from(issueEvents)
+        .where(
+          and(
+            eq(issueEvents.issueId, source.id),
+            eq(issueEvents.type, "moved_out"),
+          ),
+        );
+      expect(trace).toHaveLength(1);
+      expect(
+        (await req(t, `/projects/${A}/issues/${source.number}`, admin)).status,
+      ).toBe(301);
+    });
+
+    it("takes over a move that has gone quiet, which then still finishes", async () => {
+      const { t, admin, ids } = await app();
+      const source = await createIssue(t, admin, A, "gone quiet");
+      const paused = pauseAfter(t, 3);
+      const moving = move(t, admin, A, source.number, B);
+      try {
+        await reach(paused.reached, moving);
+        expect(await sweepMoves(t.ctx)).toBe(1);
+        expect(
+          (await req(t, `/projects/${A}/issues/${source.number}`, admin))
+            .status,
+        ).toBe(301);
+      } finally {
+        paused.release();
+      }
+
+      // Every step after the copy replays, so the move finishing what the
+      // sweep already finished leaves one card behind.
+      expect((await moving).status).toBe(200);
+      const dbB = await dbOf(t, ids[B] as number, B);
+      expect(
+        await dbB
+          .select({ id: issues.id })
+          .from(issues)
+          .where(eq(issues.projectId, ids[B] as number)),
+      ).toHaveLength(1);
     });
 
     it("refuses a second move during the freeze and leaves no second row", async () => {
