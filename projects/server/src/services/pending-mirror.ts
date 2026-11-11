@@ -110,15 +110,15 @@ export async function drainPendingMirrors(
     .orderBy(asc(pendingPrefixMirrors.nextAttemptAt))
     .limit(MIRROR_CLAIM_LIMIT);
 
-  // A conditional UPDATE rather than the row lease `sweepMoves` takes. That
-  // lease guards a row private to one move, which no request path ever
-  // touches; a pending row is shared with every `markPendingMirror`, so
-  // holding it locked across a cross-database reconcile would queue that
-  // project's format writes behind us — and on PGlite, whose single
-  // connection is the whole process, behind every other system query too.
-  // Re-testing `next_attempt_at` in the outer UPDATE is enough: a second
-  // drainer's identical UPDATE blocks until this one commits and then, under
-  // READ COMMITTED, re-reads the predicate.
+  // A conditional UPDATE that commits at once, as `sweepMoves` claims its
+  // rows, never a row lock held across the reconcile: a pending row is
+  // shared with every `markPendingMirror`, so holding it locked across a
+  // cross-database reconcile would queue that project's format writes
+  // behind us — and on PGlite, whose single connection is the whole
+  // process, behind every other system query too. Re-testing
+  // `next_attempt_at` in the outer UPDATE is enough: a second drainer's
+  // identical UPDATE blocks until this one commits and then, under READ
+  // COMMITTED, re-reads the predicate.
   const claims: Claim[] = await system
     .update(pendingPrefixMirrors)
     .set({

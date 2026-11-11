@@ -5,7 +5,7 @@ import type {
   MoveIssueInput,
   MoveIssueResult,
 } from "@todou/shared";
-import { and, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { UserRow } from "../../auth/pat.ts";
 import type { AppContext } from "../../bootstrap.ts";
 import type { Db } from "../../db/driver.ts";
@@ -219,10 +219,78 @@ async function moveWithinDb(
 }
 
 /**
+ * How long a lease on a registration row lasts unless renewed. A mover
+ * renews its own every fifth of this for as long as it runs.
+ */
+export const MOVE_LEASE_MS = 5 * 60 * 1000;
+
+const leaseMs = (ctx: AppContext): number =>
+  ctx.testHooks?.moveLeaseMs ?? MOVE_LEASE_MS;
+
+/** When a lease taken or renewed at `now` runs out. */
+const leaseUntil = (ctx: AppContext, now: Date = new Date()): Date =>
+  new Date(now.getTime() + leaseMs(ctx));
+
+/**
+ * Renews the mover's lease until the returned function is called. A
+ * renewal that fails is logged and the next one tries again; one that finds
+ * the row taken over changes nothing, since it names the mover.
+ */
+function renewLease(ctx: AppContext, moveToken: string): () => void {
+  const system = ctx.router.system();
+  const renew = async () => {
+    try {
+      await system
+        .update(issueMoves)
+        .set({ leasedUntil: leaseUntil(ctx) })
+        .where(
+          and(
+            eq(issueMoves.moveToken, moveToken),
+            eq(issueMoves.leasedBy, moveToken),
+          ),
+        );
+    } catch (err) {
+      console.error(`renewing the lease on move ${moveToken} failed`, err);
+    }
+  };
+  const timer = setInterval(() => void renew(), leaseMs(ctx) / 5);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
+/**
+ * Gives up `holder`'s lease, so the next sweep takes the row at once rather
+ * than when the lease runs out. A lease someone else holds by now is left
+ * alone. Failing is logged, never thrown: the lease still runs out.
+ */
+async function releaseLease(
+  system: Db,
+  moveToken: string,
+  holder: string,
+): Promise<void> {
+  try {
+    await system
+      .update(issueMoves)
+      .set({ leasedBy: null, leasedUntil: null })
+      .where(
+        and(
+          eq(issueMoves.moveToken, moveToken),
+          eq(issueMoves.leasedBy, holder),
+        ),
+      );
+  } catch (err) {
+    console.error(`releasing the lease on move ${moveToken} failed`, err);
+  }
+}
+
+/**
  * Two databases, so no transaction covers the whole move. The registration
  * row in `issue_moves` is the coordinator instead: its `state` is the only
  * truth about how far the move got, and every step is replayable, so a
  * crash anywhere is finished by `sweepMoves` rather than left half-done.
+ * The row also carries a lease, which this move takes at step 1 and renews
+ * until it ends: the sweep takes over only a row whose lease ran out or was
+ * given up, never a move that is still running.
  *
  * Step 4 is the commit point — before it the card is still at its old
  * address, after it every link resolves to the new one.
@@ -240,6 +308,7 @@ async function moveAcrossDbs(
     ctx.testHooks?.afterMoveStep?.(n);
 
   // 1. Register, so a crash from here on is something the sweep can find.
+  // The lease is there from the first moment the sweep can see the row.
   await system.insert(issueMoves).values({
     lineage: plan.lineage,
     moveToken,
@@ -249,90 +318,106 @@ async function moveAcrossDbs(
     actorId: actor.id,
     movedAt: plan.movedAt,
     state: "copying",
+    leasedBy: moveToken,
+    leasedUntil: leaseUntil(ctx),
   });
-  await step(1);
-
-  // 2. Freeze the source. Reads carry on; writes get a 409 until this ends.
-  const frozen = await plan.source.db
-    .update(issues)
-    .set({ movingSince: plan.movedAt })
-    .where(
-      and(
-        eq(issues.id, plan.row.id),
-        isNull(issues.movingSince),
-        isNull(issues.movedAt),
-        // The trash's own write is guarded the same way, so exactly one of
-        // the two lands (T-666).
-        isNull(issues.deletedAt),
-      ),
-    )
-    .returning();
-  const held = frozen[0];
-  if (held === undefined) {
-    // Another move or the trash got there first. The registration row has
-    // to go before the 409, or the sweep would later thaw a freeze that is
-    // not ours.
-    await system.delete(issueMoves).where(eq(issueMoves.moveToken, moveToken));
-    const [now] = await plan.source.db
-      .select()
-      .from(issues)
-      .where(eq(issues.id, plan.row.id));
-    if (now === undefined) throw new NotFoundError("issue not found");
-    assertStillMovable(now);
-    throw new IssueMovingError();
-  }
-  // The freeze's predicate already re-asked what `assertStillMovable` asks.
+  const stopRenewing = renewLease(ctx, moveToken);
   try {
-    plan = await replanHeld(plan, held, {
-      source: plan.source.db,
-      target: plan.target.db,
-      system,
-    });
-  } catch (err) {
-    // Nothing was copied yet, so this is the sweep's rollback done now
-    // rather than an hour from now.
-    await plan.source.db
+    await step(1);
+
+    // 2. Freeze the source. Reads carry on; writes get a 409 until this ends.
+    const frozen = await plan.source.db
       .update(issues)
-      .set({ movingSince: null })
+      .set({ movingSince: plan.movedAt })
       .where(
-        and(eq(issues.id, plan.row.id), eq(issues.movingSince, plan.movedAt)),
-      );
-    await system.delete(issueMoves).where(eq(issueMoves.moveToken, moveToken));
+        and(
+          eq(issues.id, plan.row.id),
+          isNull(issues.movingSince),
+          isNull(issues.movedAt),
+          // The trash's own write is guarded the same way, so exactly one of
+          // the two lands (T-666).
+          isNull(issues.deletedAt),
+        ),
+      )
+      .returning();
+    const held = frozen[0];
+    if (held === undefined) {
+      // Another move or the trash got there first. The registration row has
+      // to go before the 409, or the sweep would later thaw a freeze that is
+      // not ours.
+      await system
+        .delete(issueMoves)
+        .where(eq(issueMoves.moveToken, moveToken));
+      const [now] = await plan.source.db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, plan.row.id));
+      if (now === undefined) throw new NotFoundError("issue not found");
+      assertStillMovable(now);
+      throw new IssueMovingError();
+    }
+    // The freeze's predicate already re-asked what `assertStillMovable` asks.
+    try {
+      plan = await replanHeld(plan, held, {
+        source: plan.source.db,
+        target: plan.target.db,
+        system,
+      });
+    } catch (err) {
+      // Nothing was copied yet, so this is the sweep's rollback done now
+      // rather than an hour from now.
+      await plan.source.db
+        .update(issues)
+        .set({ movingSince: null })
+        .where(
+          and(eq(issues.id, plan.row.id), eq(issues.movingSince, plan.movedAt)),
+        );
+      await system
+        .delete(issueMoves)
+        .where(eq(issueMoves.moveToken, moveToken));
+      throw err;
+    }
+    await step(2);
+
+    // 3. The whole copy, in one transaction in the destination.
+    const copied = await copyInDestination(
+      ctx,
+      plan,
+      actor,
+      agentContext,
+      moveToken,
+    );
+    await step(3);
+
+    // 4. Publish it: the address book and the aliases. Commit point.
+    await finishCopying(ctx, plan, copied, moveToken);
+    await step(4);
+
+    // 5. Empty the source and raise the tombstone.
+    await retireSource(plan, copied, moveToken, actor, agentContext);
+    await step(5);
+
+    // 6. Nothing left for the sweep to do.
+    await markDone(system, moveToken);
+    await step(6);
+
+    return {
+      number: copied.number,
+      issueId: copied.idMap.issueId,
+      idMap: copied.idMap,
+      movedOutEventId: undefined,
+      movedInEventId: copied.movedInEventId,
+      tombstoneId: plan.row.id,
+      plan,
+    };
+  } catch (err) {
+    // Whatever this move left unfinished is the next sweep's at once,
+    // rather than when the lease runs out.
+    await releaseLease(system, moveToken, moveToken);
     throw err;
+  } finally {
+    stopRenewing();
   }
-  await step(2);
-
-  // 3. The whole copy, in one transaction in the destination.
-  const copied = await copyInDestination(
-    ctx,
-    plan,
-    actor,
-    agentContext,
-    moveToken,
-  );
-  await step(3);
-
-  // 4. Publish it: the address book and the aliases. Commit point.
-  await finishCopying(ctx, plan, copied, moveToken);
-  await step(4);
-
-  // 5. Empty the source and raise the tombstone.
-  await retireSource(plan, copied, moveToken, actor, agentContext);
-  await step(5);
-
-  // 6. Nothing left for the sweep to do.
-  await markDone(system, moveToken);
-  await step(6);
-
-  return {
-    number: copied.number,
-    issueId: copied.idMap.issueId,
-    idMap: copied.idMap,
-    movedOutEventId: undefined,
-    movedInEventId: copied.movedInEventId,
-    tombstoneId: plan.row.id,
-    plan,
-  };
 }
 
 type Copied = {
@@ -409,11 +494,8 @@ async function finishCopying(
   plan: MovePlan,
   copied: Copied,
   moveToken: string,
-  // The sweep replays this step while holding a lease on the registration
-  // row, and that lease is a transaction — so its writes have to go through
-  // the same handle or they would queue behind the lock it already holds.
-  system: Db = ctx.router.system(),
 ): Promise<void> {
+  const system = ctx.router.system();
   await registerMove(system, {
     lineage: plan.lineage,
     from: { projectId: plan.source.project.id, number: plan.row.number },
@@ -486,53 +568,74 @@ async function markDone(system: Db, moveToken: string): Promise<void> {
 }
 
 /**
- * Drive every unfinished cross-database move to a conclusion.
+ * Drive every unfinished cross-database move whose lease has run out, or
+ * was given up, to a conclusion. `now` is the time leases are judged at.
  *
  * Safe to run concurrently from several instances and safe to replay, which
  * `housekeeping.ts` requires of everything it sweeps. Three things buy that:
- * the row lease below, the `NOT EXISTS` guard on `moved_out`, and thawing a
- * freeze only when it still carries this row's own `moved_at`.
+ * the lease on the registration row, the `NOT EXISTS` guard on `moved_out`,
+ * and thawing a freeze only when it still carries this row's own `moved_at`.
+ *
+ * The lease keeps the sweep off a move that is still running and keeps two
+ * sweeps off one row. A mover holds it from step 1 to its end, renewing it
+ * all along; a sweep claims a row with one conditional UPDATE, which a
+ * second instance's identical UPDATE re-reads once this one commits, and
+ * finds the lease taken. `moved_out` carries no unique index, so its
+ * `NOT EXISTS` guard alone would not stop two replays of step 5.
+ *
+ * The recovery itself runs outside any transaction. A transaction held
+ * across it would wait on its own statements wherever a project's database
+ * is the system database on PGlite, whose one connection is the whole
+ * process.
  */
-export async function sweepMoves(ctx: AppContext): Promise<number> {
+export async function sweepMoves(
+  ctx: AppContext,
+  now: Date = new Date(),
+): Promise<number> {
   const system = ctx.router.system();
+  // `IN` rather than `<> 'done'`: done rows are never deleted, and only this
+  // form can use `issue_moves_state_idx`.
+  const unfinished = inArray(issueMoves.state, ["copying", "copied"]);
   const pending = await system
-    .select()
+    .select({ id: issueMoves.id })
     .from(issueMoves)
-    .where(ne(issueMoves.state, "done"));
+    .where(unfinished);
   let finished = 0;
-  if (pending.length === 0) return finished;
 
-  for (const row of pending) {
+  for (const { id } of pending) {
+    const holder = randomUUID();
+    let claimed: typeof issueMoves.$inferSelect | undefined;
     try {
-      // The lease has to span the recovery, not just the SELECT that takes
-      // it: a row lock acquired outside a transaction is released the
-      // moment that statement returns, which would leave a second instance
-      // free to replay step 5 alongside this one — and `moved_out` carries
-      // no unique index, so its NOT EXISTS guard is not a race the database
-      // arbitrates on its own.
-      const recovered = await system.transaction(async (tx) => {
-        const leased = await tx
-          .select({ id: issueMoves.id })
-          .from(issueMoves)
-          .where(and(eq(issueMoves.id, row.id), ne(issueMoves.state, "done")))
-          .for("update", { skipLocked: true });
-        if (leased.length === 0) return false;
-        return recoverOne(ctx, tx, row);
-      });
-      if (recovered) finished += 1;
+      [claimed] = await system
+        .update(issueMoves)
+        .set({ leasedBy: holder, leasedUntil: leaseUntil(ctx, now) })
+        .where(
+          and(
+            eq(issueMoves.id, id),
+            unfinished,
+            or(isNull(issueMoves.leasedUntil), lt(issueMoves.leasedUntil, now)),
+          ),
+        )
+        .returning();
+      if (claimed === undefined) continue;
+      if (await recoverOne(ctx, claimed, holder)) finished += 1;
     } catch (err) {
-      console.error(`recovering move ${row.moveToken} failed`, err);
+      console.error(`recovering move ${claimed?.moveToken ?? id} failed`, err);
+      if (claimed !== undefined) {
+        await releaseLease(system, claimed.moveToken, holder);
+      }
     }
   }
   return finished;
 }
 
+/** `row` as claimed under `holder`'s lease. */
 async function recoverOne(
   ctx: AppContext,
-  /** The lease's transaction: every system-tier read and write uses it. */
-  system: Db,
   row: typeof issueMoves.$inferSelect,
+  holder: string,
 ): Promise<boolean> {
+  const system = ctx.router.system();
   const source = await projectRowById(system, row.fromProjectId);
   const target = await projectRowById(system, row.toProjectId);
   if (source === undefined || target === undefined) return false;
@@ -555,7 +658,9 @@ async function recoverOne(
           eq(issues.movingSince, row.movedAt),
         ),
       );
-    await system.delete(issueMoves).where(eq(issueMoves.id, row.id));
+    await system
+      .delete(issueMoves)
+      .where(and(eq(issueMoves.id, row.id), eq(issueMoves.leasedBy, holder)));
     return true;
   }
   if (landedEvent === null) return false;
@@ -576,7 +681,7 @@ async function recoverOne(
     movedInEventId: undefined,
   };
   if (row.state === "copying") {
-    await finishCopying(ctx, plan, copied, row.moveToken, system);
+    await finishCopying(ctx, plan, copied, row.moveToken);
   }
   await retireSource(
     plan,
