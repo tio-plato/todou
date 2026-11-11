@@ -45,6 +45,7 @@ import { bootstrap } from "../src/bootstrap.ts";
 import { loadConfig } from "../src/config.ts";
 import { users } from "../src/db/system-schema.ts";
 import { runHousekeepingTick } from "../src/services/housekeeping.ts";
+import { sweepMoves } from "../src/services/move/execute.ts";
 import { reapDraftAttachments } from "../src/services/storage-admin.ts";
 import { issueToken } from "../src/services/tokens.ts";
 
@@ -1068,8 +1069,9 @@ const refresher = (async () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
 })();
-// The draft reaper at a zero-hour threshold and the housekeeping tick, back
-// to back for the whole run.
+// The draft reaper at a zero-hour threshold, the housekeeping tick and the
+// move recovery, which the server runs on an interval of its own, back to
+// back for the whole run.
 const chores = (async () => {
   while (!stopped) {
     await reapDraftAttachments(ctx.router, ctx.storage, {
@@ -1085,6 +1087,9 @@ const chores = (async () => {
     );
     await runHousekeepingTick(ctx).catch((cause) =>
       failures.push({ op: "tick", status: -2, body: String(cause) }),
+    );
+    await sweepMoves(ctx).catch((cause) =>
+      failures.push({ op: "sweep", status: -2, body: String(cause) }),
     );
     await new Promise((resolve) => setTimeout(resolve, 150));
   }
