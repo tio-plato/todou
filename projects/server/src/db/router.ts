@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { Logger } from "drizzle-orm/logger";
 import type { Config, ProjectRouteInfo } from "../config.ts";
 import {
@@ -28,12 +29,24 @@ export class DbRouter {
   /** url → handle, insertion order doubles as LRU order. */
   #projectHandles = new Map<string, DbHandle>();
   /**
-   * Resolved url → how many task bodies are holding that handle right now.
-   * Keyed by url rather than kept on the DbHandle: a handle can be evicted
-   * and reopened as a new object, while eviction, closeUrl and #migrated all
-   * account by url — a count on the object would silently reset.
+   * Resolved url → how many units of work (withPinnedHandles) are holding
+   * that handle right now. Keyed by url rather than kept on the DbHandle: a
+   * handle can be evicted and reopened as a new object, while eviction,
+   * closeUrl and #migrated all account by url — a count on the object would
+   * silently reset.
    */
   #pins = new Map<string, number>();
+  /**
+   * The unit of work the current async context runs in, if any. Ambient
+   * rather than an argument: some 85 callers take a Db from forProject and
+   * use it until their request ends, and handing each of them a lease would
+   * thread one through every service file.
+   */
+  #units = new AsyncLocalStorage<{
+    urls: Set<string>;
+    open: boolean;
+    label: string | undefined;
+  }>();
   /**
    * url → the open already under way for it. Opening awaits the driver and
    * the migration before the handle reaches #projectHandles, so without this
@@ -120,6 +133,23 @@ export class DbRouter {
   async #handleForProject(project: ProjectRouteInfo): Promise<DbHandle> {
     const url = this.resolveProjectUrl(project);
     if (url === this.#system.url) return this.#system;
+    // Pinned before the open, so the handle is held from the first moment
+    // it exists. A failed open keeps the pin until the unit ends, where it
+    // holds nothing.
+    const unit = this.#units.getStore();
+    if (unit?.open && !unit.urls.has(url)) {
+      unit.urls.add(url);
+      this.#pins.set(url, (this.#pins.get(url) ?? 0) + 1);
+      const max = this.#config.database.projects.max_open;
+      // Once per unit: code that goes through many databases one by one
+      // belongs in withProject, which lets each go when it is done.
+      if (unit.urls.size === max + 1) {
+        console.warn(
+          `db router: one unit of work holds more than max_open (${max}) project databases`,
+          { unit: unit.label, at: new Error().stack },
+        );
+      }
+    }
 
     const cached = this.#projectHandles.get(url);
     if (cached) {
@@ -162,7 +192,7 @@ export class DbRouter {
   }
 
   /**
-   * Projects that resolve to one database are one unit of work: they can be
+   * Projects that resolve to one database are one group: they can be
    * read in a single pass, and `forProject` needs opening only once for the
    * whole group (any member resolves to the same url).
    *
@@ -202,33 +232,64 @@ export class DbRouter {
       this.#config.database.projects.max_open,
       [...groups.values()].map(
         (group) => () =>
-          this.#withPinnedHandle(group.route, (db) => run(db, group.members)),
+          this.withProject(group.route, (db) => run(db, group.members)),
       ),
     );
   }
 
   /**
-   * A handle is not an eviction candidate while a task body holds it.
+   * Run `run` on the project's database, holding it only until `run`
+   * settles rather than until the enclosing unit (the request) ends. Code
+   * that goes through many project databases in one request uses this, so
+   * that it does not keep every one of them open until it responds.
+   */
+  withProject<R>(
+    project: ProjectRouteInfo,
+    run: (db: Db) => Promise<R>,
+  ): Promise<R> {
+    return this.withPinnedHandles(async () =>
+      run(await this.forProject(project)),
+    );
+  }
+
+  /**
+   * Run `work` as a unit of work: every project database handle it reaches
+   * through forProject or provision is pinned until `work` settles, and a
+   * pinned handle is never an eviction candidate. That covers the gaps
+   * between statements, which `busy()` cannot see.
    *
    * Closing a handle mid-transaction does not "cut the query off": on inline
    * PGlite the next statement inside the open transaction wedges the whole
    * event loop (measured on 0.5.4 — no rejection, and timers stop firing),
    * and on the worker host the evicting side first waits out close()'s 2s
-   * grace race. So the pin is taken before the open: the handle is claimed
-   * from the first moment it exists.
+   * grace race.
+   *
+   * Units nest: an inner unit pins and releases its own urls, and the outer
+   * one does not see them. `label` names the unit in the warning a unit
+   * holding more than max_open databases logs; an inner unit inherits it.
+   * A continuation still running after `work` has settled (an SSE stream's
+   * loop, past the handler that returned it) is in an ended unit and takes
+   * no pin, since nothing would ever release it; it relies on `busy()`
+   * alone, as code outside any unit does.
    */
-  async #withPinnedHandle<R>(
-    project: ProjectRouteInfo,
-    run: (db: Db) => Promise<R>,
+  async withPinnedHandles<R>(
+    work: () => Promise<R>,
+    label?: string,
   ): Promise<R> {
-    const url = this.resolveProjectUrl(project);
-    this.#pins.set(url, (this.#pins.get(url) ?? 0) + 1);
+    const unit = {
+      urls: new Set<string>(),
+      open: true,
+      label: label ?? this.#units.getStore()?.label,
+    };
     try {
-      return await run(await this.forProject(project));
+      return await this.#units.run(unit, work);
     } finally {
-      const left = (this.#pins.get(url) ?? 1) - 1;
-      if (left > 0) this.#pins.set(url, left);
-      else this.#pins.delete(url);
+      unit.open = false;
+      for (const url of unit.urls) {
+        const left = (this.#pins.get(url) ?? 1) - 1;
+        if (left > 0) this.#pins.set(url, left);
+        else this.#pins.delete(url);
+      }
     }
   }
 
@@ -257,8 +318,9 @@ export class DbRouter {
   }
 
   /**
-   * max_open bounds the idle cache, not the peak. A handle a task body holds
-   * (#withPinnedHandle), an in-memory instance, and the most recently touched
+   * max_open bounds the idle cache, not the peak. A handle a unit of work
+   * holds (withPinnedHandles), one with a statement or transaction still
+   * running (`busy()`), an in-memory instance, and the most recently touched
    * max_open handles all stay, so one pass may legitimately end over budget;
    * the excess is collected by the next open's pass.
    *
@@ -281,6 +343,10 @@ export class DbRouter {
       // "PGlite is closed", pg-pool "Called end on pool more than once").
       if (this.#projectHandles.get(url) !== handle) continue;
       if ((this.#pins.get(url) ?? 0) > 0) continue;
+      // Closing it would cut the running work off, or on pg wait it out:
+      // end() waits for every borrowed connection. Nothing awaits between
+      // this check and the close, so no statement can slip in.
+      if (handle.busy()) continue;
       // In-memory instances lose their data on close; never evict them
       // (only reachable in tests, which bound their own handle counts).
       if (url.startsWith("pglite://memory")) continue;
@@ -294,8 +360,8 @@ export class DbRouter {
 
   /**
    * The cache's current size, which can briefly exceed `max_open`: pinned
-   * handles, in-memory ones, and the most recently touched `max_open` are all
-   * kept by an eviction pass.
+   * handles, busy ones, in-memory ones, and the most recently touched
+   * `max_open` are all kept by an eviction pass.
    */
   openHandleCount(): number {
     return this.#projectHandles.size;
@@ -330,9 +396,10 @@ export class DbRouter {
  * Run `tasks`, at most `limit` of them in flight, results in input order.
  *
  * The bound is `database.projects.max_open` because that is the router's
- * handle budget, not because safety rests on it: a handle a task body holds
- * is pinned (`#withPinnedHandle`) and is never an eviction candidate, so a
- * burst past the budget costs open connections rather than cut-off queries.
+ * handle budget, not because safety rests on it: each task body runs as a
+ * unit of work (`withPinnedHandles`), and neither a handle a unit holds nor
+ * a busy one is an eviction candidate, so a burst past the budget costs
+ * open connections rather than cut-off queries.
  *
  * One task runs exactly as sequentially as a bare `await` would, which is the
  * whole of `placement=shared` — hence no separate serial path to keep in step
