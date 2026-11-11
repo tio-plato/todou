@@ -467,6 +467,32 @@ function races(
     expect(result.moved_to.number).toBe(card.number);
   });
 
+  // The plan reads the card's address before the move holds the card; a
+  // round trip in between leaves a tombstone the plan never saw.
+  it("takes the tombstone a card left after the move planned", async () => {
+    const card = await createIssue("away and back");
+    let away = 0;
+    pending.afterMovePlan = async () => {
+      const out = await move(card.number, B);
+      expect(out.status).toBe(200);
+      away = (await json(out)).moved_to.number;
+      const back = await move(away, A, B);
+      expect(back.status).toBe(200);
+      expect((await json(back)).reinhabited).toBe(true);
+    };
+
+    const res = await move(card.number, B);
+    expect(res.status).toBe(200);
+    const result = await json(res);
+    expect(result.reinhabited).toBe(true);
+    expect(result.moved_to.number).toBe(away);
+    const source = await req(`/projects/${A}/issues/${card.number}`);
+    expect(source.status).toBe(301);
+    expect(source.headers.get("location")).toBe(
+      `/api/projects/${B}/issues/${away}`,
+    );
+  });
+
   it("never answers both a move and a trash with success", async () => {
     for (let round = 0; round < ROUNDS; round++) {
       const title = `move or trash ${round}`;
