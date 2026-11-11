@@ -14,6 +14,7 @@ import {
   issueAddresses,
   issueMoves,
   projects,
+  users,
 } from "../src/db/system-schema.ts";
 import { routeInfoOf } from "../src/services/access.ts";
 import { startHousekeeping } from "../src/services/housekeeping.ts";
@@ -1003,6 +1004,53 @@ describe("recovery through PGlite's one connection", () => {
       );
       expect(write.status).toBe(200);
     } finally {
+      await t.cleanup();
+    }
+  });
+});
+
+describe("claiming a row", () => {
+  it("leases each row from the time it is claimed", async () => {
+    let claims = 0;
+    // The first claim stands in for a recovery that takes ten minutes.
+    const t = await makeTestApp("shared", undefined, {
+      onQuery: (sql) => {
+        if (!sql.startsWith('update "issue_moves" set "leased_by"')) return;
+        claims += 1;
+        if (claims === 1) vi.setSystemTime(Date.now() + 10 * 60 * 1000);
+      },
+    });
+    try {
+      await t.login();
+      const system = t.ctx.router.system();
+      const [user] = await system.select({ id: users.id }).from(users);
+      // Rows whose source project is gone: the sweep claims them and leaves
+      // them as they are, so each keeps the lease it was given.
+      await system.insert(issueMoves).values(
+        [1, 2].map((number) => ({
+          moveToken: randomUUID(),
+          fromProjectId: 999_999,
+          fromNumber: number,
+          toProjectId: 999_998,
+          actorId: user?.id as number,
+          movedAt: new Date(),
+          state: "copying" as const,
+        })),
+      );
+
+      vi.useFakeTimers({ toFake: ["Date"] });
+      expect(await sweepMoves(t.ctx)).toBe(0);
+      expect(claims).toBe(2);
+      const leases = await system
+        .select({ until: issueMoves.leasedUntil })
+        .from(issueMoves);
+      // The row claimed after the slow one holds a lease that runs from then.
+      const latest = Math.max(
+        ...leases.map((row) => row.until?.getTime() ?? 0),
+      );
+      expect(latest).toBeGreaterThan(Date.now());
+    } finally {
+      vi.useRealTimers();
       await t.cleanup();
     }
   });
