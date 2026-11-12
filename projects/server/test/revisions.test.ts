@@ -122,6 +122,22 @@ describe.each(PLACEMENTS)("revisions capture (%s placement)", (placement) => {
     expect(fetched.body_edited_at).toBeNull();
   });
 
+  it("a body re-sent unchanged stays unedited even when a reference in it would now resolve", async () => {
+    // `#n` names no card yet when it is saved, so it is stored as typed; the
+    // card it names exists by the time the same text is sent again.
+    const first = await createIssue({ title: "first" });
+    const n = first.number + 2;
+    const issue = await createIssue({ title: "ahead", body: `see #${n}` });
+    expect(issue.body).toBe(`see #${n}`);
+    const named = await createIssue({ title: "named" });
+    expect(named.number).toBe(n);
+
+    const resent = await patchIssue(issue.number, { body: `see #${n}` });
+    expect(resent.body).toBe(`see #${n}`);
+    expect(resent.body_edited_at).toBeNull();
+    expect(await revisionRows("issue_body", issue.id)).toHaveLength(0);
+  });
+
   it("records comment revisions; no-op saves record nothing", async () => {
     const issue = await createIssue({ title: "commented" });
     const comment = await addComment(issue.number, "first");
