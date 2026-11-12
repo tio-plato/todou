@@ -19,8 +19,9 @@ import {
 import { microIso } from "../timeline.ts";
 
 /**
- * Rows per statement, read or insert. What is read still accumulates in
- * memory: the whole card is read before its first row is written.
+ * Rows per paged read (versions, for spec files) and per insert of spec
+ * files and events. What is read still accumulates in memory: the whole
+ * card is read before its first row is written.
  */
 const BATCH = 500;
 
