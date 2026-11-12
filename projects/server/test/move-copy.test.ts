@@ -485,6 +485,102 @@ describe("copyIssueTree", () => {
     expect(listed).toContain("spec_version_files");
     expect(listed).toContain("revisions");
   });
+
+  it("copies a card longer than one read batch", async () => {
+    // One more than `BATCH` in copy.ts, which pages its reads by that many
+    // rows: the last row of each table is one only a second read finds.
+    const count = 501;
+    const created = await json(
+      await req(`/projects/${A}/issues`, {
+        method: "POST",
+        body: JSON.stringify({ title: "long history", body: "" }),
+      }),
+    );
+    const numbers = Array.from({ length: count }, (_, i) => i + 1);
+    const versions = await db
+      .insert(specVersions)
+      .values(
+        numbers.map((number) => ({
+          projectId: idA,
+          issueId: created.id,
+          number,
+          authorId: 1,
+        })),
+      )
+      .returning({ id: specVersions.id, number: specVersions.number });
+    await db.insert(specVersionFiles).values(
+      versions.map((version) => {
+        const body = `version ${version.number}`;
+        return {
+          projectId: idA,
+          versionId: version.id,
+          path: "spec.md",
+          body,
+          size: body.length,
+        };
+      }),
+    );
+    await db.insert(issueEvents).values(
+      numbers.map((i) => ({
+        projectId: idA,
+        issueId: created.id,
+        actorId: 1,
+        type: "title_changed" as const,
+        payload: { from: `${i}`, to: `${i + 1}` },
+      })),
+    );
+    const eventsOf = async (issueId: number) =>
+      (
+        await db
+          .select({ id: issueEvents.id })
+          .from(issueEvents)
+          .where(eq(issueEvents.issueId, issueId))
+      ).length;
+    const sourceEvents = await eventsOf(created.id);
+    expect(sourceEvents).toBeGreaterThan(count);
+
+    const [row] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, created.id));
+    const [status] = await db
+      .select()
+      .from(statuses)
+      .where(eq(statuses.projectId, idB))
+      .limit(1);
+    if (row === undefined || status === undefined) throw new Error("fixture");
+    const map = await copyIssueTree(
+      db,
+      db,
+      {
+        row,
+        source: { project: { id: idA } },
+        target: { project: { id: idB } },
+        status: { to: { id: status.id } },
+        labelIds: [],
+        assigneeIds: [],
+        movedAt: new Date(),
+        sameProjectDb: true,
+      },
+      { number: 3, reinhabit: false },
+    );
+
+    // One row per version: a version copied without its file, or with two,
+    // shows up here as a null body or as a number listed twice.
+    const copied = await db
+      .select({ number: specVersions.number, body: specVersionFiles.body })
+      .from(specVersions)
+      .leftJoin(
+        specVersionFiles,
+        eq(specVersionFiles.versionId, specVersions.id),
+      )
+      .where(eq(specVersions.issueId, map.issueId));
+    expect(copied.map((v) => v.number).sort((a, b) => a - b)).toEqual(numbers);
+    for (const version of copied) {
+      expect(version.body).toBe(`version ${version.number}`);
+    }
+    expect(await eventsOf(map.issueId)).toBe(sourceEvents);
+  });
 });
 
 describe("remapPayload", () => {
