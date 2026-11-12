@@ -810,6 +810,33 @@ describe("issue block edges T-377", () => {
     ).toHaveLength(1);
   });
 
+  it("marks a clearing that landed without its stamp as told, and sends it once", async () => {
+    expect((await setClearLine(PA, "Shipped")).status).toBe(200);
+    const blocked = await createIssue(PA, "heard, not stamped");
+    const blocker = await createIssue(PA, "shipped once");
+    await block(PA, blocked, "blocked-by", `#${blocker}`);
+    await setStatus(PA, blocker, "Shipped");
+    const edgeId = (await issue(PA, blocked)).blocked_by[0].edge_id as number;
+
+    // The entry reached the card; only the stamp after it was lost.
+    await t.ctx.router
+      .system()
+      .update(issueBlocks)
+      .set({ clearedNotifiedAt: null })
+      .where(eq(issueBlocks.id, edgeId));
+
+    await repairBlocks(t.ctx);
+    expect(
+      (await timelineTypes(PA, blocked)).filter((t) => t === "block_cleared"),
+    ).toHaveLength(1);
+    const [edge] = await t.ctx.router
+      .system()
+      .select()
+      .from(issueBlocks)
+      .where(eq(issueBlocks.id, edgeId));
+    expect(edge?.clearedNotifiedAt).not.toBeNull();
+  });
+
   it("carries edges along when the card moves to another project", async () => {
     const blocked = await createIssue(PA, "moves away");
     const blocker = await createIssue(PA, "stays put");
