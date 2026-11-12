@@ -734,7 +734,7 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
       "keeps a row a recovery is still working on from the next sweep",
       async () => {
         const { t, admin, ids } = await app(2);
-        t.ctx.testHooks = { ...t.ctx.testHooks, moveLeaseMs: 300 };
+        t.ctx.testHooks = { ...t.ctx.testHooks, moveLeaseMs: 1000 };
         const source = await createIssue(t, admin, A, "slow recovery");
         expect((await move(t, admin, A, source.number, B)).status).toBe(500);
 
@@ -760,8 +760,9 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
         try {
           await held;
           first = sweepMoves(t.ctx);
-          // Three leases: only a renewal keeps the first sweep's claim.
-          await new Promise((resolve) => setTimeout(resolve, 900));
+          // Three leases: only a renewal keeps the first sweep's claim, and
+          // it has to come 800 ms late to lose it.
+          await new Promise((resolve) => setTimeout(resolve, 3000));
           second = sweepMoves(t.ctx);
           let timer: NodeJS.Timeout | undefined;
           const outcome = await Promise.race([
