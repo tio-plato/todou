@@ -581,6 +581,75 @@ describe("copyIssueTree", () => {
     }
     expect(await eventsOf(map.issueId)).toBe(sourceEvents);
   });
+
+  it("copies more spec files than one insert can bind", async () => {
+    // At the 64 files a version may hold, 210 versions make 13,440 rows: five
+    // columns each, past the 65535 parameters one statement can carry.
+    const versionCount = 210;
+    const filesPerVersion = 64;
+    const created = await json(
+      await req(`/projects/${A}/issues`, {
+        method: "POST",
+        body: JSON.stringify({ title: "wide spec", body: "" }),
+      }),
+    );
+    const versions = await db
+      .insert(specVersions)
+      .values(
+        Array.from({ length: versionCount }, (_, i) => ({
+          projectId: idA,
+          issueId: created.id,
+          number: i + 1,
+          authorId: 1,
+        })),
+      )
+      .returning({ id: specVersions.id });
+    const files = versions.flatMap((version) =>
+      Array.from({ length: filesPerVersion }, (_, k) => ({
+        projectId: idA,
+        versionId: version.id,
+        path: `f${k}.md`,
+        body: "x",
+        size: 1,
+      })),
+    );
+    for (let i = 0; i < files.length; i += 1000) {
+      await db.insert(specVersionFiles).values(files.slice(i, i + 1000));
+    }
+
+    const [row] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, created.id));
+    const [status] = await db
+      .select()
+      .from(statuses)
+      .where(eq(statuses.projectId, idB))
+      .limit(1);
+    if (row === undefined || status === undefined) throw new Error("fixture");
+    const map = await copyIssueTree(
+      db,
+      db,
+      {
+        row,
+        source: { project: { id: idA } },
+        target: { project: { id: idB } },
+        status: { to: { id: status.id } },
+        labelIds: [],
+        assigneeIds: [],
+        movedAt: new Date(),
+        sameProjectDb: true,
+      },
+      { number: 4, reinhabit: false },
+    );
+
+    const copied = await db
+      .select({ id: specVersionFiles.id })
+      .from(specVersionFiles)
+      .innerJoin(specVersions, eq(specVersions.id, specVersionFiles.versionId))
+      .where(eq(specVersions.issueId, map.issueId));
+    expect(copied).toHaveLength(versionCount * filesPerVersion);
+  });
 });
 
 describe("remapPayload", () => {
