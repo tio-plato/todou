@@ -834,7 +834,8 @@ async function announceEdge(
  * card returns false: a clearing there is left unstamped, and the repair
  * sweep, which finds it on the card it ends up on or does not, sends it
  * only in the second case (`unlessSaid`). A clearing and a reblock that
- * both come during the freeze therefore stay together, in order.
+ * both come during the freeze therefore go or stay together, in order,
+ * unless the copy reads the card's events between the two.
  *
  * The book is read once the transaction has ended. On the shared placement
  * on PGlite the system database is the project database, whose one
