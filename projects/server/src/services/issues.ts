@@ -93,6 +93,7 @@ import { loadMuteContext } from "./mutes.ts";
 import { unreadIssueState } from "./reads.ts";
 import {
   lockIssueRows,
+  type ResolveResult,
   recordCrossReferences,
   recordIssueMentions,
   recordLocalReferences,
@@ -408,6 +409,28 @@ async function validateLabelIds(
   return rows;
 }
 
+/**
+ * Lock the labels of this project that `ids` names, FOR KEY SHARE, in one
+ * statement, in ascending id, where the lock order puts them (see
+ * lockIssueRows, rule 6). Returns the ones still there once locked: a label
+ * deleted meanwhile is missing from the rows, and the caller refuses the
+ * write or skips the label, rather than letting the foreign key of the row
+ * it inserts fail.
+ */
+export async function lockLabels(
+  tx: Db,
+  projectId: number,
+  ids: readonly number[],
+): Promise<Array<typeof labels.$inferSelect>> {
+  if (ids.length === 0) return [];
+  return tx
+    .select()
+    .from(labels)
+    .where(and(eq(labels.projectId, projectId), inArray(labels.id, [...ids])))
+    .orderBy(asc(labels.id))
+    .for("key share");
+}
+
 async function validateAssigneeIds(
   ctx: AppContext,
   projectId: number,
@@ -599,6 +622,12 @@ export async function createIssue(
         );
     }
     if (input.label_ids.length > 0) {
+      // After the number, never before it (see lockIssueRows): cleaning up
+      // a deleted project locks its project_meta and then its labels.
+      const locked = await lockLabels(tx, project.id, input.label_ids);
+      if (locked.length !== new Set(input.label_ids).size) {
+        throw new ValidationFailedError("unknown label_ids");
+      }
       await tx
         .insert(issueLabels)
         .values(
@@ -1041,65 +1070,52 @@ export async function updateIssue(
   assertIssueWritable(before, actor, role);
   assertMayEditFields(input, before, actor, role);
 
-  if (input.label_ids !== undefined) {
-    await validateLabelIds(db, project.id, input.label_ids);
-  }
   if (input.assignee_ids !== undefined) {
     await validateAssigneeIds(ctx, project.id, input.assignee_ids);
   }
 
-  const statusRows = await db
-    .select()
-    .from(statuses)
-    .where(eq(statuses.projectId, project.id));
-  const statusById = new Map(statusRows.map((s) => [s.id, s]));
-  if (input.status_id !== undefined && !statusById.has(input.status_id)) {
-    throw new ValidationFailedError("unknown status_id");
-  }
-
-  // Pre-read project-db state and PREFETCH all system-db lookups here: in
-  // shared placement both tiers share one PGlite connection, so a system
-  // query issued inside the project transaction would deadlock it.
-  const currentAssignees = new Set(
-    (
-      await db
-        .select()
-        .from(issueAssignees)
-        .where(eq(issueAssignees.issueId, before.id))
-    ).map((a) => a.userId),
-  );
+  // The system database is queried out here only: in shared placement both
+  // tiers share one PGlite connection, so a system query issued inside the
+  // project transaction would deadlock it. The logins the assignment events
+  // carry are fetched ahead, for the assignees read now and the ones asked
+  // for; one assigned after this read comes back from the transaction.
   const desiredAssignees = new Set(input.assignee_ids ?? []);
   const assigneeRefs =
     input.assignee_ids === undefined
-      ? new Map()
+      ? new Map<number, UserRef>()
       : await getUserRefs(ctx.router.system(), [
-          ...new Set([...currentAssignees, ...desiredAssignees]),
+          ...(
+            await db
+              .select({ userId: issueAssignees.userId })
+              .from(issueAssignees)
+              .where(eq(issueAssignees.issueId, before.id))
+          ).map((a) => a.userId),
+          ...desiredAssignees,
         ]);
 
   const refInputs = await loadReferenceInputs(ctx, db, project.id);
   // Every save is read under the project the card is in now, at this instant.
   // A body that moved here carries links, not spellings, so there is nothing
   // left for an origin anchor to disagree about (T-266).
-  const rescanned =
+  const resolveBody = (text: string) =>
+    resolveContent({
+      ctx,
+      db,
+      project,
+      actor,
+      inputs: refInputs,
+      text,
+      self: { projectId: project.id, number },
+    });
+  // A body sent back as it was read is left unresolved: resolving reads the
+  // projects it references, and the cards it names are then locked with the
+  // card, which a save that changes nothing should not pay for. Whether a
+  // body edits the card is decided under the card's lock, against the body
+  // found there.
+  let resolved =
     input.body === undefined || input.body === before.body
       ? null
-      : await resolveContent({
-          ctx,
-          db,
-          project,
-          actor,
-          inputs: refInputs,
-          text: input.body,
-          self: { projectId: project.id, number },
-        });
-  // Sending `#12` where `[#12](…)` is already stored resolves to what is
-  // there. That is not an edit: recording a revision of identical text and
-  // stamping "(edited)" on it would punish a client for writing the token
-  // form, which is exactly what clients are told to keep doing.
-  const resolved =
-    rescanned !== null && rescanned.storedText === before.body
-      ? null
-      : rescanned;
+      : await resolveBody(input.body);
 
   const events: ChangeEvent[] = [];
   const pushTimeline = (eventId: number | undefined) => {
@@ -1113,7 +1129,7 @@ export async function updateIssue(
     }
   };
 
-  await db.transaction(async (tx) => {
+  const attempt = async (tx: Db) => {
     const linked = await findLinkedDrafts(
       tx,
       project,
@@ -1129,6 +1145,103 @@ export async function updateIssue(
       resolved?.local ?? [],
       linked.cards,
     );
+    // The card as it stands under its lock. Every change below is decided
+    // against it, not against the read before the transaction, so a write
+    // that landed in between is what this one changes from.
+    const [locked] = await tx
+      .select({
+        title: issues.title,
+        body: issues.body,
+        statusId: issues.statusId,
+      })
+      .from(issues)
+      .where(eq(issues.id, before.id));
+    if (locked === undefined) {
+      throw new Error("issue row missing under its lock");
+    }
+    const statusById = new Map(
+      (
+        await tx
+          .select()
+          .from(statuses)
+          .where(eq(statuses.projectId, project.id))
+      ).map((s) => [s.id, s]),
+    );
+    const statusTo =
+      input.status_id === undefined
+        ? undefined
+        : statusById.get(input.status_id);
+    if (input.status_id !== undefined && statusTo === undefined) {
+      throw new ValidationFailedError("unknown status_id");
+    }
+    // Sending `#12` where `[#12](…)` is already stored resolves to what is
+    // there. That is not an edit: recording a revision of identical text
+    // and stamping "(edited)" on it would punish a client for writing the
+    // token form, which is exactly what clients are told to keep doing.
+    // Nor is sending the stored text back, though a `#12` kept as typed
+    // would resolve now that card 12 exists.
+    const edit =
+      resolved === null ||
+      input.body === locked.body ||
+      resolved.storedText === locked.body
+        ? null
+        : resolved;
+    // A body sent back as it was read, on a card whose body has changed
+    // since, is an edit after all, and has to be resolved first.
+    const unresolved =
+      resolved === null &&
+      input.body !== undefined &&
+      input.body !== locked.body
+        ? input.body
+        : null;
+
+    let assign: number[] = [];
+    let unassign: number[] = [];
+    if (input.assignee_ids !== undefined) {
+      const current = new Set(
+        (
+          await tx
+            .select({ userId: issueAssignees.userId })
+            .from(issueAssignees)
+            .where(eq(issueAssignees.issueId, before.id))
+        ).map((a) => a.userId),
+      );
+      assign = [...desiredAssignees].filter((id) => !current.has(id));
+      unassign = [...current].filter((id) => !desiredAssignees.has(id));
+    }
+    const missing = unassign.filter((id) => !assigneeRefs.has(id));
+    if (missing.length > 0 || unresolved !== null) {
+      return { again: { missing, body: unresolved } };
+    }
+
+    // The labels it puts on the card, under the card's lock and before the
+    // card's label rows (see lockIssueRows). One deleted meanwhile is gone
+    // from the rows, and refused like an id that never existed.
+    const labelById =
+      input.label_ids === undefined
+        ? new Map<number, typeof labels.$inferSelect>()
+        : new Map(
+            (await lockLabels(tx, project.id, input.label_ids)).map((l) => [
+              l.id,
+              l,
+            ]),
+          );
+    if (input.label_ids?.some((id) => !labelById.has(id))) {
+      throw new ValidationFailedError("unknown label_ids");
+    }
+    const currentLabels =
+      input.label_ids === undefined
+        ? new Map<number, typeof labels.$inferSelect>()
+        : new Map(
+            (
+              await tx
+                .select({ labelId: issueLabels.labelId, label: labels })
+                .from(issueLabels)
+                .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+                .where(eq(issueLabels.issueId, before.id))
+            ).map((r) => [r.labelId, r.label]),
+          );
+
     const addEvent = async (
       type: (typeof issueEvents.$inferInsert)["type"],
       payload: Record<string, unknown>,
@@ -1147,72 +1260,47 @@ export async function updateIssue(
       pushTimeline(inserted[0]?.id);
     };
 
-    if (input.title !== undefined && input.title !== before.title) {
+    if (input.title !== undefined && input.title !== locked.title) {
       await addEvent("title_changed", {
-        from: before.title,
+        from: locked.title,
         to: input.title,
       });
     }
 
-    if (input.status_id !== undefined && input.status_id !== before.statusId) {
-      const to = statusById.get(input.status_id);
-      if (!to) throw new ValidationFailedError("unknown status_id");
+    if (statusTo !== undefined && statusTo.id !== locked.statusId) {
       const { type, payload } = statusEventOf(
-        statusById.get(before.statusId),
-        to,
+        statusById.get(locked.statusId),
+        statusTo,
       );
       await addEvent(type, payload);
     }
 
-    if (input.assignee_ids !== undefined) {
-      const current = currentAssignees;
-      const desired = desiredAssignees;
-      const refs = assigneeRefs;
-      for (const userId of desired) {
-        if (!current.has(userId)) {
-          await tx
-            .insert(issueAssignees)
-            .values({ issueId: before.id, userId });
-          const ref = refs.get(userId);
-          await addEvent("assigned", {
-            user: { id: userId, login: ref?.login ?? "ghost" },
-          });
-        }
-      }
-      for (const userId of current) {
-        if (!desired.has(userId)) {
-          await tx
-            .delete(issueAssignees)
-            .where(
-              and(
-                eq(issueAssignees.issueId, before.id),
-                eq(issueAssignees.userId, userId),
-              ),
-            );
-          const ref = refs.get(userId);
-          await addEvent("unassigned", {
-            user: { id: userId, login: ref?.login ?? "ghost" },
-          });
-        }
-      }
+    for (const userId of assign) {
+      await tx.insert(issueAssignees).values({ issueId: before.id, userId });
+      const ref = assigneeRefs.get(userId);
+      await addEvent("assigned", {
+        user: { id: userId, login: ref?.login ?? "ghost" },
+      });
+    }
+    for (const userId of unassign) {
+      await tx
+        .delete(issueAssignees)
+        .where(
+          and(
+            eq(issueAssignees.issueId, before.id),
+            eq(issueAssignees.userId, userId),
+          ),
+        );
+      const ref = assigneeRefs.get(userId);
+      await addEvent("unassigned", {
+        user: { id: userId, login: ref?.login ?? "ghost" },
+      });
     }
 
     if (input.label_ids !== undefined) {
-      const currentRows = await tx
-        .select({ labelId: issueLabels.labelId, label: labels })
-        .from(issueLabels)
-        .innerJoin(labels, eq(issueLabels.labelId, labels.id))
-        .where(eq(issueLabels.issueId, before.id));
-      const current = new Map(currentRows.map((r) => [r.labelId, r.label]));
       const desired = new Set(input.label_ids);
-      const allLabels = await tx
-        .select()
-        .from(labels)
-        .where(eq(labels.projectId, project.id));
-      const labelById = new Map(allLabels.map((l) => [l.id, l]));
-
       for (const labelId of desired) {
-        if (!current.has(labelId)) {
+        if (!currentLabels.has(labelId)) {
           await tx.insert(issueLabels).values({ issueId: before.id, labelId });
           const label = labelById.get(labelId);
           await addEvent("label_added", {
@@ -1222,16 +1310,20 @@ export async function updateIssue(
           });
         }
       }
-      for (const [labelId, label] of current) {
+      for (const [labelId, label] of currentLabels) {
         if (!desired.has(labelId)) {
-          await tx
+          // A label deleted meanwhile has taken its row with it: the
+          // removal is recorded only if this removed the row.
+          const removed = await tx
             .delete(issueLabels)
             .where(
               and(
                 eq(issueLabels.issueId, before.id),
                 eq(issueLabels.labelId, labelId),
               ),
-            );
+            )
+            .returning({ labelId: issueLabels.labelId });
+          if (removed.length === 0) continue;
           await addEvent("label_removed", {
             label: { id: label.id, name: label.name, color: label.color },
           });
@@ -1243,16 +1335,16 @@ export async function updateIssue(
       updatedAt: new Date(),
     };
     if (input.title !== undefined) patch.title = input.title;
-    if (resolved !== null) patch.body = resolved.storedText;
+    if (edit !== null) patch.body = edit.storedText;
     if (input.status_id !== undefined) patch.statusId = input.status_id;
-    if (resolved !== null) {
+    if (edit !== null) {
       // History, not timeline: body edits record a revision (the
       // superseded text) and deliberately emit no event.
       await recordRevision(tx, {
         projectId: project.id,
         subjectType: "issue_body",
         subjectId: before.id,
-        body: before.body,
+        body: locked.body,
         actorId: actor.id,
         agentContext,
       });
@@ -1260,7 +1352,7 @@ export async function updateIssue(
     }
     await tx.update(issues).set(patch).where(eq(issues.id, before.id));
 
-    if (resolved !== null) {
+    if (edit !== null) {
       const refs = await recordLocalReferences(
         tx,
         project,
@@ -1275,7 +1367,7 @@ export async function updateIssue(
         actor.id,
         before.id,
         undefined,
-        resolved.mentions,
+        edit.mentions,
       );
       events.push(
         ...(await commitDraftAttachments(
@@ -1295,7 +1387,30 @@ export async function updateIssue(
         });
       }
     }
-  });
+    return { edit, statusBefore: locked.statusId };
+  };
+
+  // A round that lacks something hands it back before it writes anything:
+  // the logins of assignees to remove that were not fetched, or a body sent
+  // back as read on a card whose body has changed since. It runs again once
+  // they are fetched and resolved. getUserRefs answers every id it is asked,
+  // with a ghost for one that is gone, so each round gains a login the one
+  // before lacked, and the body is resolved once at most: the rounds end, and
+  // in practice there is one more at most.
+  let landed: { edit: ResolveResult | null; statusBefore: number } | undefined;
+  while (landed === undefined) {
+    const round = await db.transaction(attempt);
+    if (round.again === undefined) {
+      landed = round;
+      continue;
+    }
+    const { missing, body } = round.again;
+    if (missing.length > 0) {
+      const fetched = await getUserRefs(ctx.router.system(), missing);
+      for (const [id, ref] of fetched) assigneeRefs.set(id, ref);
+    }
+    if (body !== null) resolved = await resolveBody(body);
+  }
 
   // Whether this save could move the row between lists, answered from the
   // sets the caller handed us rather than from a read-back (T-279). A save
@@ -1314,7 +1429,7 @@ export async function updateIssue(
     list_row: movesMembership
       ? {
           kind: "fields",
-          status_id: input.status_id ?? before.statusId,
+          status_id: input.status_id ?? landed.statusBefore,
           // Left out rather than set to undefined, so a subscriber reading
           // the object off the bus sees the same shape as one reading the
           // JSON off the wire.
@@ -1328,13 +1443,13 @@ export async function updateIssue(
       : { kind: "activity" },
   });
   for (const e of events) ctx.bus.publish(project.id, e);
-  if (resolved !== null) {
+  if (landed.edit !== null) {
     await recordCrossReferences(
       ctx,
       actor,
       project,
       { issueNumber: number },
-      resolved.cross,
+      landed.edit.cross,
       agentContext,
     );
   }
@@ -1342,7 +1457,10 @@ export async function updateIssue(
   // above: the verdict is decided here, in the blocker's own database, and
   // only its conclusion travels (T-377). A save that did not move the status
   // cannot move any verdict, so it asks nothing.
-  if (input.status_id !== undefined && input.status_id !== before.statusId) {
+  if (
+    input.status_id !== undefined &&
+    input.status_id !== landed.statusBefore
+  ) {
     const changes = await evaluateBlockerStatus(ctx, project, db, [number]);
     await announceBlockChanges(ctx, changes, actor.id, agentContext);
   }

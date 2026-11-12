@@ -128,6 +128,22 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
     return (await json(created)) as { id: number; number: number };
   };
 
+  const label = async (slug: string, name: string) => {
+    const created = await send("POST", `/projects/${slug}/labels`, { name });
+    expect(created.status).toBe(201);
+    return (await json(created)).id as number;
+  };
+
+  /** The payloads of a card's events of one type, oldest first. */
+  const eventsOf = async (issue: { id: number }, type: string) =>
+    (
+      await observer.query<{ payload: Record<string, unknown> }>(
+        `SELECT payload FROM issue_events
+         WHERE issue_id = $1 AND type = $2 ORDER BY id`,
+        [issue.id, type],
+      )
+    ).rows.map((row) => row.payload);
+
   /** `blocked` waits for `blocker`, both in the project `slug`. */
   const block = async (
     slug: string,
@@ -728,6 +744,617 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       );
       expect(removed.rows).toEqual([{ count: "0" }]);
     } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("a PATCH adding a label that is being deleted is refused", async () => {
+    const p = await project();
+    const x = await card(p.slug, "X");
+    const l = await label(p.slug, "L");
+
+    // The holder deletes the label and commits while the edit waits for it.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query("SELECT id FROM labels WHERE id = $1 FOR UPDATE", [l]);
+      pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
+        label_ids: [l],
+      });
+      await waitForLockWaiters(1);
+      await holder.query("DELETE FROM labels WHERE id = $1", [l]);
+      await holder.query("COMMIT");
+      const res = await pending;
+      expect(res.status).toBe(422);
+      expect((await json(res)).error.message).toBe("unknown label_ids");
+      const rows = await observer.query(
+        "SELECT label_id FROM issue_labels WHERE issue_id = $1",
+        [x.id],
+      );
+      expect(rows.rows).toEqual([]);
+      expect(await eventsOf(x, "label_added")).toEqual([]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("a command adding a label that is being deleted refuses the whole submission", async () => {
+    const p = await project();
+    const x = await card(p.slug, "X");
+    const l = await label(p.slug, "L");
+
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query("SELECT id FROM labels WHERE id = $1 FOR UPDATE", [l]);
+      pending = send(
+        "POST",
+        `/projects/${p.slug}/issues/${x.number}/commands`,
+        {
+          body: "posted with it",
+          commands: [{ type: "label_add", label_id: l }],
+        },
+      );
+      await waitForLockWaiters(1);
+      await holder.query("DELETE FROM labels WHERE id = $1", [l]);
+      await holder.query("COMMIT");
+      const res = await pending;
+      expect(res.status).toBe(422);
+      expect((await json(res)).error.message).toBe(
+        "command[0]: unknown label_id",
+      );
+      const posted = await observer.query<{ count: string }>(
+        "SELECT count(*) FROM comments WHERE issue_id = $1",
+        [x.id],
+      );
+      expect(posted.rows).toEqual([{ count: "0" }]);
+      expect(await eventsOf(x, "label_added")).toEqual([]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("creating a card with a label that is being deleted is refused", async () => {
+    const p = await project();
+    const l = await label(p.slug, "L");
+    const title = `with L ${Date.now()}`;
+
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query("SELECT id FROM labels WHERE id = $1 FOR UPDATE", [l]);
+      pending = send("POST", `/projects/${p.slug}/issues`, {
+        title,
+        label_ids: [l],
+      });
+      await waitForLockWaiters(1);
+      await holder.query("DELETE FROM labels WHERE id = $1", [l]);
+      await holder.query("COMMIT");
+      const res = await pending;
+      expect(res.status).toBe(422);
+      expect((await json(res)).error.message).toBe("unknown label_ids");
+      const created = await observer.query<{ count: string }>(
+        "SELECT count(*) FROM issues WHERE project_id = $1 AND title = $2",
+        [p.id, title],
+      );
+      expect(created.rows).toEqual([{ count: "0" }]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("a PATCH dropping a label that is being deleted records no removal", async () => {
+    const p = await project();
+    const x = await card(p.slug, "X");
+    const l = await label(p.slug, "L");
+    const labeled = await send(
+      "PATCH",
+      `/projects/${p.slug}/issues/${x.number}`,
+      { label_ids: [l] },
+    );
+    expect(labeled.status).toBe(200);
+
+    // The holder's deletion has already cascaded to the card's row when the
+    // edit reaches it; the edit removes nothing and owes no event.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query("DELETE FROM labels WHERE id = $1", [l]);
+      pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
+        label_ids: [],
+      });
+      await waitForLockWaiters(1);
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(200);
+      expect(await eventsOf(x, "label_removed")).toEqual([]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("creating a card locks its labels after its number", async () => {
+    const p = await project();
+    const l = await label(p.slug, "L");
+
+    // The holder plays the cleanup of a deleted project: its number, then
+    // its labels. It rolls back, so the card is still created.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT project_id FROM project_meta WHERE project_id = $1 FOR UPDATE",
+        [p.id],
+      );
+      pending = send("POST", `/projects/${p.slug}/issues`, {
+        title: "with L",
+        label_ids: [l],
+      });
+      await waitForLockWaiters(1);
+      await holder.query(
+        "SELECT id FROM labels WHERE project_id = $1 ORDER BY id FOR UPDATE",
+        [p.id],
+      );
+      await holder.query("ROLLBACK");
+      const res = await pending;
+      expect(res.status).toBe(201);
+      expect(
+        (await json(res)).labels.map((row: { id: number }) => row.id),
+      ).toEqual([l]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("editing a card's labels locks the card before its labels", async () => {
+    const p = await project();
+    const x = await card(p.slug, "X");
+    const l = await label(p.slug, "L");
+
+    // The same cleanup: the project's cards, then its labels.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query("SELECT id FROM issues WHERE id = $1 FOR UPDATE", [
+        x.id,
+      ]);
+      pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
+        label_ids: [l],
+      });
+      await waitForLockWaiters(1);
+      await holder.query(
+        "SELECT id FROM labels WHERE project_id = $1 ORDER BY id FOR UPDATE",
+        [p.id],
+      );
+      await holder.query("ROLLBACK");
+      const res = await pending;
+      expect(res.status).toBe(200);
+      expect(
+        (await json(res)).labels.map((row: { id: number }) => row.id),
+      ).toEqual([l]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  /** A writer of the project `slug` other than the author. */
+  const member = async (slug: string) => {
+    const added = await addUserWithToken(t.ctx, `${slug}-b`);
+    const set = await send(
+      "PUT",
+      `/projects/${slug}/members/${added.user.id}`,
+      {
+        role: "writer",
+      },
+    );
+    expect(set.status).toBe(204);
+    return added.user;
+  };
+
+  it("a PATCH assigning someone whose assignment lands first assigns them once", async () => {
+    const p = await project();
+    const x = await card(p.slug, "X");
+    const b = await member(p.slug);
+
+    // The holder is a write on the card that assigns b and commits while
+    // the edit waits for the card.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issues WHERE id = $1 FOR NO KEY UPDATE",
+        [x.id],
+      );
+      pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
+        assignee_ids: [b.id],
+      });
+      await waitForLockWaiters(1);
+      await holder.query(
+        "INSERT INTO issue_assignees (issue_id, user_id) VALUES ($1, $2)",
+        [x.id, b.id],
+      );
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(200);
+      const assigned = await observer.query(
+        "SELECT user_id FROM issue_assignees WHERE issue_id = $1",
+        [x.id],
+      );
+      expect(assigned.rows).toEqual([{ user_id: String(b.id) }]);
+      expect(await eventsOf(x, "assigned")).toEqual([]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("a PATCH emptying the assignees removes one assigned meanwhile, under their login", async () => {
+    const p = await project();
+    const x = await card(p.slug, "T1");
+    const b = await member(p.slug);
+
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issues WHERE id = $1 FOR NO KEY UPDATE",
+        [x.id],
+      );
+      pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
+        title: "renamed",
+        assignee_ids: [],
+      });
+      await waitForLockWaiters(1);
+      await holder.query(
+        "INSERT INTO issue_assignees (issue_id, user_id) VALUES ($1, $2)",
+        [x.id, b.id],
+      );
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(200);
+      const assigned = await observer.query(
+        "SELECT user_id FROM issue_assignees WHERE issue_id = $1",
+        [x.id],
+      );
+      expect(assigned.rows).toEqual([]);
+      expect(await eventsOf(x, "unassigned")).toEqual([
+        { user: { id: b.id, login: b.login } },
+      ]);
+      expect(await eventsOf(x, "title_changed")).toHaveLength(1);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("a PATCH body saved against a card edited meanwhile lands, and its revision keeps the text it replaced", async () => {
+    const p = await project();
+    const created = await send("POST", `/projects/${p.slug}/issues`, {
+      title: "X",
+      body: "A",
+    });
+    expect(created.status).toBe(201);
+    const x = (await json(created)) as { id: number; number: number };
+
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issues WHERE id = $1 FOR NO KEY UPDATE",
+        [x.id],
+      );
+      pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
+        body: "A",
+      });
+      await waitForLockWaiters(1);
+      await holder.query("UPDATE issues SET body = 'B' WHERE id = $1", [x.id]);
+      await holder.query("COMMIT");
+      const res = await pending;
+      expect(res.status).toBe(200);
+      expect((await json(res)).body).toBe("A");
+      const stored = await observer.query(
+        "SELECT body FROM issues WHERE id = $1",
+        [x.id],
+      );
+      expect(stored.rows).toEqual([{ body: "A" }]);
+      const revisions = await observer.query(
+        `SELECT body FROM revisions
+         WHERE subject_type = 'issue_body' AND subject_id = $1`,
+        [x.id],
+      );
+      expect(revisions.rows).toEqual([{ body: "B" }]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("a PATCH body sent back as read on a card edited meanwhile records its references", async () => {
+    const p = await project();
+    // `#n` names no card yet when x is saved, so it is stored as typed, and
+    // then n is created: sent back as read, the body resolves to a link.
+    const first = await card(p.slug, "first");
+    const typed = `see #${first.number + 2}`;
+    const created = await send("POST", `/projects/${p.slug}/issues`, {
+      title: "X",
+      body: typed,
+    });
+    expect(created.status).toBe(201);
+    const x = (await json(created)) as { id: number; number: number };
+    const n = await card(p.slug, "N");
+    expect(n.number).toBe(first.number + 2);
+
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issues WHERE id = $1 FOR NO KEY UPDATE",
+        [x.id],
+      );
+      pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
+        body: typed,
+      });
+      await waitForLockWaiters(1);
+      await holder.query("UPDATE issues SET body = 'B' WHERE id = $1", [x.id]);
+      await holder.query("COMMIT");
+      const res = await pending;
+      expect(res.status).toBe(200);
+      expect((await json(res)).body).toBe(
+        `see [#${n.number}](/projects/${p.id}/issues/${n.number})`,
+      );
+      const referenced = await observer.query<{ count: string }>(
+        `SELECT count(*) FROM issue_events
+         WHERE issue_id = $1 AND type = 'referenced'`,
+        [n.id],
+      );
+      expect(referenced.rows).toEqual([{ count: "1" }]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("a PATCH body the card already holds when it lands is no edit", async () => {
+    const p = await project();
+    const n = await card(p.slug, "N");
+    const created = await send("POST", `/projects/${p.slug}/issues`, {
+      title: "X",
+      body: "first",
+    });
+    expect(created.status).toBe(201);
+    const x = (await json(created)) as { id: number; number: number };
+    const typed = `see #${n.number}`;
+
+    // The holder saves the same text, kept as typed, while the edit waits.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issues WHERE id = $1 FOR NO KEY UPDATE",
+        [x.id],
+      );
+      pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
+        body: typed,
+      });
+      await waitForLockWaiters(1);
+      await holder.query("UPDATE issues SET body = $2 WHERE id = $1", [
+        x.id,
+        typed,
+      ]);
+      await holder.query("COMMIT");
+      const res = await pending;
+      expect(res.status).toBe(200);
+      const saved = await json(res);
+      expect(saved.body).toBe(typed);
+      expect(saved.body_edited_at).toBeNull();
+      const revisions = await observer.query(
+        `SELECT body FROM revisions
+         WHERE subject_type = 'issue_body' AND subject_id = $1`,
+        [x.id],
+      );
+      expect(revisions.rows).toEqual([]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("a PATCH sending the body back as stored waits for none of the cards it references", async () => {
+    const p = await project();
+    const z = await card(p.slug, "Z");
+    const created = await send("POST", `/projects/${p.slug}/issues`, {
+      title: "X",
+      body: `see #${z.number}`,
+    });
+    expect(created.status).toBe(201);
+    const x = (await json(created)) as {
+      id: number;
+      number: number;
+      body: string;
+    };
+
+    // The holder holds z the way a move does. A save that changes nothing
+    // has no reference to record, so it has no reason to wait for z.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    let queued: Promise<string> | undefined;
+    try {
+      await holder.query("SELECT id FROM issues WHERE id = $1 FOR UPDATE", [
+        z.id,
+      ]);
+      pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
+        body: x.body,
+      });
+      let answered = false;
+      const status = pending.then((res) => {
+        answered = true;
+        return res.status;
+      });
+      // Watches for the edit queueing behind z until it answers.
+      queued = (async () => {
+        while (!answered) {
+          if ((await lockWaiters()) > 0) return "queued behind z";
+        }
+        return "answered";
+      })();
+      expect(await Promise.race([status, queued])).toBe(200);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending, queued]);
+    }
+  });
+
+  it("a PATCH setting the title and status back records the change from what landed meanwhile", async () => {
+    const p = await project();
+    const status = async (name: string) => {
+      const res = await send("POST", `/projects/${p.slug}/statuses`, {
+        name,
+        category: "open",
+      });
+      expect(res.status).toBe(201);
+      return (await json(res)).id as number;
+    };
+    const s1 = await status("S1");
+    const s2 = await status("S2");
+    const created = await send("POST", `/projects/${p.slug}/issues`, {
+      title: "T1",
+      status_id: s1,
+    });
+    expect(created.status).toBe(201);
+    const x = (await json(created)) as { id: number; number: number };
+
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issues WHERE id = $1 FOR NO KEY UPDATE",
+        [x.id],
+      );
+      pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
+        title: "T1",
+        status_id: s1,
+      });
+      await waitForLockWaiters(1);
+      await holder.query(
+        "UPDATE issues SET title = 'T2', status_id = $2 WHERE id = $1",
+        [x.id, s2],
+      );
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(200);
+      const stored = await observer.query(
+        "SELECT title, status_id FROM issues WHERE id = $1",
+        [x.id],
+      );
+      expect(stored.rows).toEqual([{ title: "T1", status_id: String(s1) }]);
+      expect(await eventsOf(x, "title_changed")).toEqual([
+        { from: "T2", to: "T1" },
+      ]);
+      const moved = await eventsOf(x, "status_changed");
+      expect(moved).toHaveLength(1);
+      expect(moved[0]).toMatchObject({ from: { id: s2 }, to: { id: s1 } });
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("a PATCH reopening a card closed meanwhile blocks what it blocks again", async () => {
+    const p = await project();
+    const status = async (name: string, category: string) => {
+      const res = await send("POST", `/projects/${p.slug}/statuses`, {
+        name,
+        category,
+      });
+      expect(res.status).toBe(201);
+      return (await json(res)).id as number;
+    };
+    const open = await status("Open", "open");
+    const closed = await status("Closed", "closed");
+    const created = await send("POST", `/projects/${p.slug}/issues`, {
+      title: "X",
+      status_id: open,
+    });
+    expect(created.status).toBe(201);
+    const x = (await json(created)) as { id: number; number: number };
+    const y = await card(p.slug, "Y");
+    await block(p.slug, y, x);
+
+    // The holder closes x and, as the close does once it commits, marks the
+    // edge cleared.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issues WHERE id = $1 FOR NO KEY UPDATE",
+        [x.id],
+      );
+      pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
+        status_id: open,
+      });
+      await waitForLockWaiters(1);
+      await holder.query("UPDATE issues SET status_id = $2 WHERE id = $1", [
+        x.id,
+        closed,
+      ]);
+      await holder.query(
+        `UPDATE issue_blocks SET cleared_at = now()
+         WHERE blocker_project_id = $1 AND blocker_number = $2`,
+        [p.id, x.number],
+      );
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(200);
+      const edges = await observer.query(
+        `SELECT cleared_at FROM issue_blocks
+         WHERE blocker_project_id = $1 AND blocker_number = $2`,
+        [p.id, x.number],
+      );
+      expect(edges.rows).toEqual([{ cleared_at: null }]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("a PATCH publishes the status the card has under its lock", async () => {
+    const p = await project();
+    const created = await send("POST", `/projects/${p.slug}/statuses`, {
+      name: "Moved",
+      category: "open",
+    });
+    expect(created.status).toBe(201);
+    const moved = (await json(created)).id as number;
+    const x = await card(p.slug, "X");
+    const published: unknown[] = [];
+    const stop = t.ctx.bus.subscribe((projectId, event) => {
+      if (projectId === p.id && event.entity === "issue") published.push(event);
+    });
+
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issues WHERE id = $1 FOR NO KEY UPDATE",
+        [x.id],
+      );
+      pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
+        label_ids: [],
+      });
+      await waitForLockWaiters(1);
+      await holder.query("UPDATE issues SET status_id = $2 WHERE id = $1", [
+        x.id,
+        moved,
+      ]);
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(200);
+      expect(published).toMatchObject([
+        { action: "updated", list_row: { kind: "fields", status_id: moved } },
+      ]);
+    } finally {
+      stop();
       await holder.query("ROLLBACK");
       await Promise.allSettled([pending]);
     }
