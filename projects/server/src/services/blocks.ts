@@ -24,7 +24,17 @@ import {
   parseRefLocator,
   resolveClaim,
 } from "@todou/shared";
-import { and, asc, eq, inArray, isNotNull, isNull, or } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  or,
+  sql,
+} from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import type { AppContext } from "../bootstrap.ts";
 import type { Db } from "../db/driver.ts";
@@ -711,28 +721,46 @@ export async function announceBlockChanges(
   agentContext: AgentContext | null = null,
 ): Promise<void> {
   for (const change of changes) {
-    const landed = await landEvent(
-      ctx,
-      {
-        projectId: change.edge.blockedProjectId,
-        number: change.edge.blockedNumber,
-      },
-      change.cleared ? "block_cleared" : "block_reblocked",
-      {
-        edge_id: change.edge.id,
-        blocker_project_id: change.edge.blockerProjectId,
-        blocker_number: change.edge.blockerNumber,
-      },
-      actorId ?? change.edge.createdBy,
-      agentContext,
-    );
-    if (landed && change.cleared) {
-      await ctx.router
-        .system()
-        .update(issueBlocks)
-        .set({ clearedNotifiedAt: new Date() })
-        .where(eq(issueBlocks.id, change.edge.id));
-    }
+    await announceChange(ctx, change, actorId, agentContext, false);
+  }
+}
+
+/**
+ * One change of `announceBlockChanges`. `unlessSaid` is for a clearing the
+ * repair sweep finds unstamped, which may already be on the card: one that
+ * landed on a card a move was copying, or one whose stamp failed to write.
+ * When the card's last block entry for the edge is that clearing, it is
+ * stamped and not written twice.
+ */
+async function announceChange(
+  ctx: AppContext,
+  change: BlockChange,
+  actorId: number | null,
+  agentContext: AgentContext | null,
+  unlessSaid: boolean,
+): Promise<void> {
+  const landed = await landEvent(
+    ctx,
+    {
+      projectId: change.edge.blockedProjectId,
+      number: change.edge.blockedNumber,
+    },
+    change.cleared ? "block_cleared" : "block_reblocked",
+    {
+      edge_id: change.edge.id,
+      blocker_project_id: change.edge.blockerProjectId,
+      blocker_number: change.edge.blockerNumber,
+    },
+    actorId ?? change.edge.createdBy,
+    agentContext,
+    unlessSaid,
+  );
+  if (landed && change.cleared) {
+    await ctx.router
+      .system()
+      .update(issueBlocks)
+      .set({ clearedNotifiedAt: new Date() })
+      .where(eq(issueBlocks.id, change.edge.id));
   }
 }
 
@@ -784,7 +812,7 @@ async function announceEdge(
 
 /**
  * One timeline entry on one card, wherever it lives now. False = it did not
- * land.
+ * land on a card it is sure to stay on.
  *
  * The card is read under its own lock and the event written in the same
  * transaction. A move takes FOR UPDATE on the card it moves, and the freeze
@@ -802,10 +830,11 @@ async function announceEdge(
  * has not read the card's events yet, the card keeps it if the move fails
  * and is undone, and otherwise the move's last step empties it away.
  *
- * A clearing does not land on a frozen card. It would be stamped as told
- * even when that last step then empties it away, and the repair sweep would
- * never send it again; left unstamped, the sweep sends it wherever the move
- * leaves the card, the copy or the card itself.
+ * Which of the three it will be is not known yet, so an event on a frozen
+ * card returns false: a clearing there is left unstamped, and the repair
+ * sweep, which finds it on the card it ends up on or does not, sends it
+ * only in the second case (`unlessSaid`). A clearing and a reblock that
+ * both come during the freeze therefore stay together, in order.
  *
  * The book is read once the transaction has ended. On the shared placement
  * on PGlite the system database is the project database, whose one
@@ -818,21 +847,21 @@ async function landEvent(
   payload: Record<string, unknown>,
   actorId: number,
   agentContext: AgentContext | null,
+  unlessSaid = false,
 ): Promise<boolean> {
   try {
     const event = { type, payload, actorId, agentContext };
-    const here = await landAt(ctx, card, event, false);
-    if (here !== "away") return here;
+    const here = await landAt(ctx, card, event, false, unlessSaid);
+    if (here !== "away") return here === "landed";
     const now = await currentAddressOf(
       ctx.router.system(),
       card.projectId,
       card.number,
     );
     if (now !== null && !sameCard(now, card)) {
-      return (await landAt(ctx, now, event, false)) === true;
+      return (await landAt(ctx, now, event, false, unlessSaid)) === "landed";
     }
-    if (type === "block_cleared") return false;
-    return (await landAt(ctx, card, event, true)) === true;
+    return (await landAt(ctx, card, event, true, unlessSaid)) === "landed";
   } catch (cause) {
     console.error(
       `block event ${type} could not be landed on ${card.projectId}/${card.number}`,
@@ -850,19 +879,23 @@ type BlockEvent = {
 };
 
 /**
- * `landEvent` at one address: true when the event landed, false when no
- * card is there, "away" when the card there has moved, or is being moved
- * and `ontoFrozen` is false.
+ * `landEvent` at one address: "landed" when the event is on a card that is
+ * staying, "frozen" when it is on a card a move is copying (`ontoFrozen`),
+ * "away" when the card there has moved, or is being moved and `ontoFrozen`
+ * is false, and null when no card is there or nothing was written. With
+ * `unlessSaid`, an event the card's last block entry for the same edge
+ * already is counts as there, and is not written again.
  */
 async function landAt(
   ctx: AppContext,
   card: Address,
   event: BlockEvent,
   ontoFrozen: boolean,
-): Promise<boolean | "away"> {
+  unlessSaid: boolean,
+): Promise<"landed" | "frozen" | "away" | null> {
   const project = (await findProjectByRef(ctx, String(card.projectId)))
     ?.project;
-  if (project === undefined) return false;
+  if (project === undefined) return null;
   // Held only while the event is written: one status change can announce
   // to blocked cards in many projects.
   const landed = await ctx.router.withProject(routeInfoOf(project), (db) =>
@@ -883,37 +916,67 @@ async function landAt(
       if (row.movedAt !== null || (row.movingSince !== null && !ontoFrozen)) {
         return "away";
       }
+      const at: "landed" | "frozen" =
+        row.movingSince === null ? "landed" : "frozen";
+      if (unlessSaid && (await lastSaid(tx, row.id, event)) === event.type) {
+        return { at, issueId: row.id, eventId: null };
+      }
       const inserted = await tx
         .insert(issueEvents)
         .values({ projectId: project.id, issueId: row.id, ...event })
         .returning({ id: issueEvents.id });
-      return { issueId: row.id, eventId: inserted[0]?.id };
+      return { at, issueId: row.id, eventId: inserted[0]?.id };
     }),
   );
-  if (landed === null) return false;
-  if (landed === "away") return "away";
-  const { issueId, eventId } = landed;
-  const events: ChangeEvent[] = [];
-  if (eventId !== undefined) {
-    events.push({
+  if (landed === null || landed === "away") return landed;
+  const { at, issueId, eventId } = landed;
+  if (eventId === null) return at;
+  if (eventId === undefined) return null;
+  const events: ChangeEvent[] = [
+    {
       entity: "timeline",
       id: eventId,
       action: "created",
       issue_number: card.number,
-    });
-  }
-  // `activity` rather than `fields`: an edge changing moves no card
-  // between the lists a subscriber is holding — `?blocked=` is a filter a
-  // client asks for, not a membership the feed tracks.
-  events.push({
-    entity: "issue",
-    id: issueId,
-    action: "updated",
-    issue_number: card.number,
-    list_row: { kind: "activity" },
-  });
+    },
+    // `activity` rather than `fields`: an edge changing moves no card
+    // between the lists a subscriber is holding — `?blocked=` is a filter a
+    // client asks for, not a membership the feed tracks.
+    {
+      entity: "issue",
+      id: issueId,
+      action: "updated",
+      issue_number: card.number,
+      list_row: { kind: "activity" },
+    },
+  ];
   for (const e of events) ctx.bus.publish(project.id, e);
-  return eventId !== undefined;
+  return at;
+}
+
+/** The type of the card's last block entry for `event`'s edge, if any. */
+async function lastSaid(
+  tx: Db,
+  issueId: number,
+  event: BlockEvent,
+): Promise<string | undefined> {
+  const rows = await tx
+    .select({ type: issueEvents.type })
+    .from(issueEvents)
+    .where(
+      and(
+        eq(issueEvents.issueId, issueId),
+        inArray(issueEvents.type, [
+          "block_added",
+          "block_cleared",
+          "block_reblocked",
+        ]),
+        sql`${issueEvents.payload} ->> 'edge_id' = ${String(event.payload.edge_id)}`,
+      ),
+    )
+    .orderBy(desc(issueEvents.id))
+    .limit(1);
+  return rows[0]?.type;
 }
 
 // ——— reading ————————————————————————————————————————————————————————————
@@ -1211,7 +1274,7 @@ export async function repairBlocks(
       ),
     );
   for (const edge of pending) {
-    await announceBlockChanges(ctx, [{ edge, cleared: true }], null);
+    await announceChange(ctx, { edge, cleared: true }, null, null, true);
   }
   return { recomputed, announced: pending.length };
 }

@@ -1072,6 +1072,94 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
         await eventsOn(t, admin, A, blocked.number, "block_removed"),
       ).toHaveLength(1);
     });
+
+    /** Move `card` to the status called `name`. */
+    const setStatus = async (
+      t: TestApp,
+      who: Who,
+      card: { number: number },
+      name: string,
+    ) => {
+      const statuses = await json(await req(t, `/projects/${A}/statuses`, who));
+      const status = statuses.find((s: { name: string }) => s.name === name);
+      const res = await req(t, `/projects/${A}/issues/${card.number}`, who, {
+        method: "PATCH",
+        body: JSON.stringify({ status_id: status.id }),
+      });
+      expect(res.status).toBe(200);
+    };
+
+    it("lands a clearing that came while the blocked card was frozen on the copy, once", async () => {
+      const { t, admin } = await app();
+      const blocker = await createIssue(t, admin, A, "ships mid-move");
+      const blocked = await createIssue(t, admin, A, "frozen before the copy");
+      const edge = await blockIn(t, admin, blocked, blocker);
+
+      const paused = pauseAfter(t, 2);
+      const moving = move(t, admin, A, blocked.number, B);
+      try {
+        await Promise.race([paused.reached, moving]);
+        await setStatus(t, admin, blocker, "Done");
+        paused.release();
+        const moved = await moving;
+        expect(moved.status).toBe(200);
+        const landed = (await json(moved)).moved_to.number as number;
+
+        expect(
+          await eventsOn(t, admin, B, landed, "block_cleared"),
+        ).toHaveLength(1);
+        // The sweep finds it there, and only marks it as told.
+        await repairBlocks(t.ctx);
+        expect(
+          await eventsOn(t, admin, B, landed, "block_cleared"),
+        ).toHaveLength(1);
+        const [after] = await t.ctx.router
+          .system()
+          .select()
+          .from(issueBlocks)
+          .where(eq(issueBlocks.id, edge.id));
+        expect(after?.clearedNotifiedAt).not.toBeNull();
+      } finally {
+        paused.release();
+        await Promise.allSettled([moving]);
+      }
+    });
+
+    it("shows the clearing before a reblock that both came while the blocked card was frozen", async () => {
+      const { t, admin } = await app();
+      const blocker = await createIssue(t, admin, A, "ships, then reopens");
+      const blocked = await createIssue(t, admin, A, "frozen through both");
+      await blockIn(t, admin, blocked, blocker);
+
+      const paused = pauseAfter(t, 2);
+      const moving = move(t, admin, A, blocked.number, B);
+      try {
+        await Promise.race([paused.reached, moving]);
+        await setStatus(t, admin, blocker, "Done");
+        await setStatus(t, admin, blocker, "Todo");
+        paused.release();
+        const moved = await moving;
+        expect(moved.status).toBe(200);
+        const landed = (await json(moved)).moved_to.number as number;
+
+        await repairBlocks(t.ctx);
+        const events = (await eventsOn(
+          t,
+          admin,
+          B,
+          landed,
+          "block_added,block_cleared,block_reblocked",
+        )) as Array<{ event_type: string }>;
+        expect(events.map((e) => e.event_type)).toEqual([
+          "block_added",
+          "block_cleared",
+          "block_reblocked",
+        ]);
+      } finally {
+        paused.release();
+        await Promise.allSettled([moving]);
+      }
+    });
   },
 );
 

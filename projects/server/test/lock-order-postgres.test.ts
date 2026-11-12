@@ -375,7 +375,9 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
 
   // The holder freezes Y the way a move to another database does: it holds
   // the card, then marks it. The clearing for Y waits for the card and must
-  // then see the mark, or it lands on a card the move is about to empty.
+  // then see the mark: it may land on the frozen card, but not be stamped as
+  // told, or the repair sweep would never send it again once the move's last
+  // step empties the card.
   it("a clearing checks the card it lands on under that card's lock", async () => {
     const p = await project();
     const x = await card(p.slug, "X");
@@ -407,7 +409,14 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
          WHERE issue_id = $1 AND type = 'block_cleared'`,
         [y.id],
       );
-      expect(Number(cleared.rows[0]?.count)).toBe(0);
+      expect(Number(cleared.rows[0]?.count)).toBe(1);
+      const edge = await observer.query<{ told: Date | null }>(
+        `SELECT cleared_notified_at AS told FROM issue_blocks
+         WHERE blocked_project_id = $1 AND blocked_number = $2`,
+        [p.id, y.number],
+      );
+      expect(edge.rows).toHaveLength(1);
+      expect(edge.rows[0]?.told).toBeNull();
     } finally {
       await holder.query("ROLLBACK");
       await Promise.allSettled([pending]);
