@@ -233,10 +233,9 @@ export async function runHousekeepingTick(ctx: AppContext): Promise<void> {
  *
  * Move recovery runs on its own interval, one lease long: a move a crash
  * cut off stays frozen until its lease runs out and the next recovery after
- * that, about two leases at most rather than an hour. A run still going when
- * the next is due finishes alone; a recovery stuck on a lock would otherwise
- * be joined by another every interval, each claiming the stuck row again
- * once its lease ran out.
+ * that, about two leases at most rather than an hour. A run can outlast the
+ * interval when a recovery waits on a lock; the next run goes past the row
+ * that recovery still holds and on to the others.
  */
 export function startHousekeeping(
   ctx: AppContext,
@@ -246,13 +245,7 @@ export function startHousekeeping(
   run();
   const timer = setInterval(run, intervalMs);
   timer.unref();
-  let recovering: Promise<void> | null = null;
-  const moves = setInterval(() => {
-    if (recovering !== null) return;
-    recovering = recoverMoves(ctx).finally(() => {
-      recovering = null;
-    });
-  }, moveLeaseMs(ctx));
+  const moves = setInterval(() => void recoverMoves(ctx), moveLeaseMs(ctx));
   moves.unref();
   return () => {
     clearInterval(timer);

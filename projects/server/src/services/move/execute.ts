@@ -219,9 +219,9 @@ async function moveWithinDb(
 }
 
 /**
- * How long a lease on a registration row lasts unless renewed. A mover
- * renews its own every fifth of this for as long as it runs, and
- * housekeeping runs `sweepMoves` once every lease.
+ * How long a lease on a registration row lasts unless renewed. A mover, or
+ * a sweep recovering the row, renews its own every fifth of this for as
+ * long as it runs, and housekeeping runs `sweepMoves` once every lease.
  */
 export const MOVE_LEASE_MS = 5 * 60 * 1000;
 
@@ -234,11 +234,16 @@ const leaseUntil = (ctx: AppContext, now: Date = new Date()): Date =>
   new Date(now.getTime() + moveLeaseMs(ctx));
 
 /**
- * Renews the mover's lease until the returned function is called. A
+ * Renews `holder`'s lease until the returned function is called: the
+ * mover's for its whole move, a sweep's while it recovers the row. A
  * renewal that fails is logged and the next one tries again; one that finds
- * the row taken over changes nothing, since it names the mover.
+ * the row taken over changes nothing, since it names the holder.
  */
-function renewLease(ctx: AppContext, moveToken: string): () => void {
+function renewLease(
+  ctx: AppContext,
+  moveToken: string,
+  holder: string,
+): () => void {
   const system = ctx.router.system();
   const renew = async () => {
     try {
@@ -248,7 +253,7 @@ function renewLease(ctx: AppContext, moveToken: string): () => void {
         .where(
           and(
             eq(issueMoves.moveToken, moveToken),
-            eq(issueMoves.leasedBy, moveToken),
+            eq(issueMoves.leasedBy, holder),
           ),
         );
     } catch (err) {
@@ -323,7 +328,7 @@ async function moveAcrossDbs(
     leasedBy: moveToken,
     leasedUntil: leaseUntil(ctx),
   });
-  const stopRenewing = renewLease(ctx, moveToken);
+  const stopRenewing = renewLease(ctx, moveToken, moveToken);
   try {
     await step(1);
 
@@ -582,8 +587,10 @@ async function markDone(system: Db, moveToken: string): Promise<void> {
  * sweeps off one row. A mover holds it from step 1 to its end, renewing it
  * all along; a sweep claims a row with one conditional UPDATE, which a
  * second instance's identical UPDATE re-reads once this one commits, and
- * finds the lease taken. `moved_out` carries no unique index, so its
- * `NOT EXISTS` guard alone would not stop two replays of step 5.
+ * finds the lease taken. The sweep renews its claim the same way while it
+ * recovers the row, so a recovery waiting on a lock keeps the row and the
+ * next sweep goes on to the others. `moved_out` carries no unique index, so
+ * its `NOT EXISTS` guard alone would not stop two replays of step 5.
  *
  * The recovery itself runs outside any transaction. A transaction held
  * across it would wait on its own statements wherever a project's database
@@ -624,7 +631,12 @@ export async function sweepMoves(
         )
         .returning();
       if (claimed === undefined) continue;
-      if (await recoverOne(ctx, claimed, holder)) finished += 1;
+      const stopRenewing = renewLease(ctx, claimed.moveToken, holder);
+      try {
+        if (await recoverOne(ctx, claimed, holder)) finished += 1;
+      } finally {
+        stopRenewing();
+      }
     } catch (err) {
       console.error(`recovering move ${claimed?.moveToken ?? id} failed`, err);
       if (claimed !== undefined) {
