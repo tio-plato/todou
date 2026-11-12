@@ -455,7 +455,8 @@ async function copyInDestination(
   // moving the other way at the same time holds it while waiting on this
   // one. No database sees that cycle, so nothing ever breaks it. Within one
   // database the copy reads through the transaction instead, after the lock
-  // below: the outer handle would wait on this very transaction.
+  // below, so that the source attachment rows it deletes are the ones it
+  // copied; the outer handle would wait on this very transaction.
   const tree = plan.sameProjectDb
     ? null
     : await readIssueTree(plan.source.db, plan);
