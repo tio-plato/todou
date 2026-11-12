@@ -47,8 +47,8 @@ export type AppContext = {
 export type TestHooks = DbTestHooks & {
   afterMoveStep?(step: 1 | 2 | 3 | 4 | 5 | 6): Promise<void>;
   /**
-   * Shortens the lease a cross-database move holds on its registration row
-   * (`MOVE_LEASE_MS`), so a test can outlast it; the mover renews it every
+   * Shortens the lease on a cross-database move's registration row
+   * (`MOVE_LEASE_MS`), so a test can outlast it; its holder renews it every
    * fifth of this, and housekeeping runs the move recovery once every lease.
    */
   moveLeaseMs?: number;

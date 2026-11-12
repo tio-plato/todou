@@ -721,6 +721,68 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
       },
     );
 
+    // The source's one PGlite connection, held by a transaction, stands in
+    // for a lock the recovery waits on.
+    it.runIf(placement === "dedicated")(
+      "keeps a row a recovery is still working on from the next sweep",
+      async () => {
+        const { t, admin, ids } = await app(2);
+        t.ctx.testHooks = { ...t.ctx.testHooks, moveLeaseMs: 300 };
+        const source = await createIssue(t, admin, A, "slow recovery");
+        expect((await move(t, admin, A, source.number, B)).status).toBe(500);
+
+        const dbA = await dbOf(t, ids[A] as number, A);
+        let hold = () => {};
+        let release = () => {};
+        const held = new Promise<void>((resolve) => {
+          hold = resolve;
+        });
+        const released = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const holding = dbA.transaction(async (tx) => {
+          await tx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(eq(issues.id, source.id));
+          hold();
+          await released;
+        });
+        let first: Promise<number> | undefined;
+        let second: Promise<number> | undefined;
+        try {
+          await held;
+          first = sweepMoves(t.ctx);
+          // Three leases: only a renewal keeps the first sweep's claim.
+          await new Promise((resolve) => setTimeout(resolve, 900));
+          second = sweepMoves(t.ctx);
+          let timer: NodeJS.Timeout | undefined;
+          const outcome = await Promise.race([
+            second,
+            new Promise<string>((resolve) => {
+              timer = setTimeout(() => resolve("still waiting after 2s"), 2000);
+            }),
+          ]);
+          clearTimeout(timer);
+          expect(outcome).toBe(0);
+        } finally {
+          // Pass or fail, both sweeps end before the app closes under them.
+          release();
+          await holding;
+          await Promise.all([first, second]);
+        }
+
+        expect(await first).toBe(1);
+        const write = await req(
+          t,
+          `/projects/${A}/issues/${source.number}`,
+          admin,
+          { method: "PATCH", body: JSON.stringify({ title: "thawed" }) },
+        );
+        expect(write.status).toBe(200);
+      },
+    );
+
     // The renewals do not depend on the placement, and this waits for real.
     it.runIf(placement === "dedicated")(
       "keeps the lease of a move slower than the lease",
