@@ -388,7 +388,8 @@ async function moveAcrossDbs(
     }
     await step(2);
 
-    // 3. The whole copy, in one transaction in the destination.
+    // 3. The whole copy: read from the source, then written in one
+    // transaction in the destination.
     const copied = await copyInDestination(
       ctx,
       plan,
