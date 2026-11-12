@@ -4,7 +4,7 @@ import type { Db } from "../db/driver.ts";
 import { sessions, tokens } from "../db/system-schema.ts";
 import { S3Storage } from "../storage/s3.ts";
 import { repairBlocks } from "./blocks.ts";
-import { sweepMoves } from "./move/execute.ts";
+import { moveLeaseMs, sweepMoves } from "./move/execute.ts";
 import { drainPendingMirrors } from "./pending-mirror.ts";
 import { syncRefPrefixMirror } from "./reference-directory.ts";
 import {
@@ -76,8 +76,10 @@ export async function runStartupChores(ctx: AppContext): Promise<void> {
     console.error("housekeeping: reference-prefix mirror sync failed", err);
   }
   // A cross-database move interrupted by a crash leaves the card readable at
-  // one address or both; finishing it at boot bounds how long that lasts to
-  // the restart rather than to the next hourly tick.
+  // one address or both. The moves finished here are the ones whose lease
+  // has run out or was given up; one a crash cut off just before the
+  // restart still holds its lease and is left to the interval
+  // `startHousekeeping` runs the recovery on.
   await recoverMoves(ctx);
 }
 
@@ -206,7 +208,6 @@ async function reapBlobList(ctx: AppContext): Promise<void> {
  * against a real context instead of asserting on a timer.
  */
 export async function runHousekeepingTick(ctx: AppContext): Promise<void> {
-  await recoverMoves(ctx);
   await reconcileMarkedMirrors(ctx);
   await repairBlockEdges(ctx);
   await reapExpiredUploads(ctx);
@@ -228,7 +229,13 @@ export async function runHousekeepingTick(ctx: AppContext): Promise<void> {
 /**
  * Run the auth sweep now and then on an interval. Returns a stop function —
  * the serve shutdown path must call it (see T-56's graceful-shutdown hook).
- * The timer is unref'd so a missed stop can never hold the process open.
+ * The timers are unref'd so a missed stop can never hold the process open.
+ *
+ * Move recovery runs on its own interval, one lease long: a move a crash
+ * cut off stays frozen until its lease runs out and the next recovery after
+ * that, about two leases at most rather than an hour. A run can outlast the
+ * interval when a recovery waits on a lock; the next run goes past the row
+ * that recovery still holds and on to the others.
  */
 export function startHousekeeping(
   ctx: AppContext,
@@ -238,5 +245,10 @@ export function startHousekeeping(
   run();
   const timer = setInterval(run, intervalMs);
   timer.unref();
-  return () => clearInterval(timer);
+  const moves = setInterval(() => void recoverMoves(ctx), moveLeaseMs(ctx));
+  moves.unref();
+  return () => {
+    clearInterval(timer);
+    clearInterval(moves);
+  };
 }

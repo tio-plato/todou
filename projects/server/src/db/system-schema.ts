@@ -421,6 +421,12 @@ export const issueMoves = pgTable(
     movedAt: timestamp("moved_at", { withTimezone: true }).notNull(),
     state: text("state", { enum: ["copying", "copied", "done"] }).notNull(),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
+    // Who is driving the move: the mover's own `move_token`, or the id one
+    // sweep claimed the row under.
+    leasedBy: text("leased_by"),
+    // How long `leased_by` holds the row; null when nobody does. Only an
+    // unfinished row is ever claimed, so a done row keeps its last lease.
+    leasedUntil: timestamp("leased_until", { withTimezone: true }),
   },
   (t) => [
     uniqueIndex("issue_moves_token_idx").on(t.moveToken),
