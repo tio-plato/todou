@@ -324,6 +324,40 @@ function races(
     expect(landed.size).toBe(4);
   });
 
+  // Each copy holds a transaction in its destination, which is the other
+  // move's source: a copy reading its source inside it waits for the other
+  // copy to commit, which is waiting for it.
+  it("lands two cards moving opposite ways at once", async () => {
+    const x = await createIssue("eastbound", A);
+    const y = await createIssue("westbound", B);
+    for (let k = 0; k < 3; k++) {
+      for (const [slug, card] of [
+        [A, x],
+        [B, y],
+      ] as const) {
+        const res = await req(
+          `/projects/${slug}/issues/${card.number}/comments`,
+          { method: "POST", body: JSON.stringify({ body: `note ${k}` }) },
+        );
+        expect(res.status).toBe(201);
+      }
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const results = await Promise.race([
+      together([() => move(x.number, B, A), () => move(y.number, A, B)]),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("the two moves hung")),
+          10_000,
+        );
+      }),
+    ]).finally(() => clearTimeout(timer));
+    expect(results.map((r) => r.status)).toEqual([200, 200]);
+    const [east, west] = await Promise.all(results.map(json));
+    expect(east.moved_to.slug).toBe(B);
+    expect(west.moved_to.slug).toBe(A);
+  });
+
   // The copy is a live card from step 3, but its address is published only
   // at step 4 and its source emptied only at step 5. A move planned in
   // between reads an address book that does not know the copy yet.
