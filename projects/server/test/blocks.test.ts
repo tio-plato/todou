@@ -1,7 +1,12 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { issueEvents } from "../src/db/project-schema.ts";
 import { issueBlocks } from "../src/db/system-schema.ts";
-import { accessibleProjectRows, routeInfoOf } from "../src/services/access.ts";
+import {
+  accessibleProjectRows,
+  getProjectByRef,
+  routeInfoOf,
+} from "../src/services/access.ts";
 import { announceBlockChanges, repairBlocks } from "../src/services/blocks.ts";
 import { visibleProjects } from "../src/services/cross-references.ts";
 import { inboxRowState } from "../src/services/inbox.ts";
@@ -775,19 +780,34 @@ describe("issue block edges T-377", () => {
     await setStatus(PA, blocker, "Shipped");
     const edgeId = (await issue(PA, blocked)).blocked_by[0].edge_id as number;
 
-    // The verdict stands; only the announcement was lost. This is the state
-    // the two columns exist to make findable.
+    // The verdict stands; only the announcement was lost: no stamp, and no
+    // entry on the card. This is the state the two columns exist to make
+    // findable.
     await t.ctx.router
       .system()
       .update(issueBlocks)
       .set({ clearedNotifiedAt: null })
       .where(eq(issueBlocks.id, edgeId));
+    const project = await getProjectByRef(t.ctx, PA);
+    if (!project) throw new Error(`no project ${PA}`);
+    await (await t.ctx.router.forProject(routeInfoOf(project)))
+      .delete(issueEvents)
+      .where(
+        and(
+          eq(issueEvents.projectId, project.id),
+          eq(issueEvents.type, "block_cleared"),
+          sql`${issueEvents.payload} ->> 'edge_id' = ${String(edgeId)}`,
+        ),
+      );
+    expect(
+      (await timelineTypes(PA, blocked)).filter((t) => t === "block_cleared"),
+    ).toHaveLength(0);
 
     const result = await repairBlocks(t.ctx);
     expect(result.announced).toBeGreaterThan(0);
     expect(
       (await timelineTypes(PA, blocked)).filter((t) => t === "block_cleared"),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
   });
 
   it("carries edges along when the card moves to another project", async () => {
