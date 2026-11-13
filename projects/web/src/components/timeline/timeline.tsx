@@ -82,6 +82,11 @@ function itemKey(item: TimelineItem): string {
   return `${item.type}-${item.id}`;
 }
 
+/** Whether the reader is at the end of the conversation, and where they are. */
+function whereReaderIs(): { atEnd: boolean; y: number } {
+  return { atEnd: atConversationEnd(), y: window.scrollY };
+}
+
 /** The key a unit renders under, and its identity across fills. */
 function unitKey(unit: RenderUnit): string {
   if (unit.kind === "item") return itemKey(unit.item);
@@ -345,7 +350,7 @@ export function Timeline({
   const finishQuestionLanding = (error?: "unavailable" | "stalled") => {
     // revealBlock has already moved the viewport. Do not wait for a native
     // scroll event before restoring the ordinary follow-bottom policy.
-    atEndRef.current = { atEnd: atConversationEnd(), y: window.scrollY };
+    atEndRef.current = whereReaderIs();
     questionLanding.finish(error);
   };
 
@@ -530,7 +535,7 @@ export function Timeline({
   // biome-ignore lint/correctness/useExhaustiveDependencies(hasContent): the list mounts with the content, and only then is there one to observe
   useEffect(() => {
     const record = () => {
-      atEndRef.current = { atEnd: atConversationEnd(), y: window.scrollY };
+      atEndRef.current = whereReaderIs();
     };
     const onScroll = () => {
       record();
