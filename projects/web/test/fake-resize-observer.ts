@@ -25,9 +25,14 @@ export class FakeResizeObserver {
   }
 }
 
+/** Every resize of `el` that an observer watching it would hear. */
+export function resizeElement(el: Element): void {
+  for (const observer of FakeResizeObserver.instances) {
+    if (observer.observed.includes(el)) observer.fire();
+  }
+}
+
 /** Every resize of the page that a live hold would hear. */
 export function resizePage(): void {
-  for (const observer of FakeResizeObserver.instances) {
-    if (observer.observed.includes(document.body)) observer.fire();
-  }
+  resizeElement(document.body);
 }

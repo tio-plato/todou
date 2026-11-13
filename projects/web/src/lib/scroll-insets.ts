@@ -151,6 +151,14 @@ export function isHoldingTarget(): boolean {
 }
 
 /**
+ * Whether an untouched reader is being held on the end: they have not left it
+ * since they landed there, wherever the page has yet to be put back.
+ */
+export function isHoldingEnd(): boolean {
+  return held !== null && held.onEnd;
+}
+
+/**
  * Run `place` again every time `container` resizes, until the reader's first
  * input. Returns the release, for when the landing stops mattering first.
  *
@@ -271,6 +279,23 @@ function endTarget(): number {
 
 function scrollToEnd() {
   window.scrollTo(0, endTarget());
+}
+
+/** How far short of a landing on the bottom still counts as at the end. */
+const END_SLACK = 40;
+
+/**
+ * Whether the reader is at the end of the conversation: no more than a line or
+ * two short of where a landing on the bottom puts the page, or past it with
+ * the end still below the top overlays. Past it is a phone's sidebar or a
+ * desktop's footer; a reader who has taken the end out of sight above is
+ * reading those instead.
+ */
+export function atConversationEnd(): boolean {
+  const y = window.scrollY;
+  return (
+    y >= endTarget() - END_SLACK && conversationEnd() - y > usableViewport().top
+  );
 }
 
 /** Go to the end of the conversation and stay there; see `hold`. */
