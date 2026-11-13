@@ -179,13 +179,13 @@ export function endHeldAt(): number | null {
  * the top at a tap on the status bar, or find in page scrolling to a match,
  * sends none of those inputs, and the next image or new item would put the
  * reader back at the end. Off means all of: away from where it last put the
- * page, more than `END_SLACK` from where it would put it now, and on a page as
- * tall as it was then. A page that grows before the hold has put it back can
- * still deliver the `scroll` of the last placement, the target moved and
- * nobody having moved the page. Scroll anchoring, and the timeline keeping its
- * place as its head mounts above, move the page as it grows, usually with the
- * target; a target above what grew stays behind, and only the page's new
- * height says the hold has yet to put it back.
+ * page, more than `END_SLACK` from where it would put it now, and by other
+ * than what the page has grown since. A page that grows before the hold has
+ * put it back can still deliver the `scroll` of the last placement, the
+ * target moved and nobody having moved the page. Scroll anchoring, and the
+ * timeline keeping its place as its head mounts above, move the page by just
+ * what it grew, usually with the target; a target above what grew stays
+ * behind, to be put back once the hold hears of the growth.
  */
 function hold(
   container: Element,
@@ -224,7 +224,11 @@ function hold(
         if (
           Math.abs(y - held.placedAt) > 1 &&
           Math.abs(y - target()) > END_SLACK &&
-          document.documentElement.scrollHeight === held.placedHeight
+          Math.abs(
+            y -
+              held.placedAt -
+              (document.documentElement.scrollHeight - held.placedHeight),
+          ) > 1
         )
           release();
       },

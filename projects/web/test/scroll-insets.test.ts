@@ -562,7 +562,7 @@ describe("landing on the end of the conversation", () => {
     expect(targets).toEqual([2000 - VIEWPORT, 2300 - VIEWPORT]);
   });
 
-  it("keeps holding an item above what grew, while the page is taller than it was placed on", () => {
+  it("keeps holding an item above what grew, as the page moves by just what it grew", () => {
     const end = { y: 2000 };
     const { targets, moveTo, setHeight } = page(end);
     revealAboveEnd(item(500));
@@ -575,6 +575,37 @@ describe("landing on the end of the conversation", () => {
     fireEvent.scroll(window);
     resizePage();
     expect(targets).toEqual([placed, placed]);
+  });
+
+  it("keeps holding through anchoring after it has put the page back on a taller one", () => {
+    const end = { y: 2000 };
+    const { targets, moveTo, setHeight } = page(end);
+    revealAboveEnd(item(500));
+    const placed = 500 - usableViewport().top;
+    end.y = 2600;
+    setHeight(HEIGHT + 600);
+    resizePage();
+    // Grown by 300 more, the page moving down with the comment box.
+    end.y = 2900;
+    setHeight(HEIGHT + 900);
+    moveTo(placed + 300);
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([placed, placed, placed]);
+  });
+
+  // iOS scrolling to the top at a tap on the status bar while an image is
+  // still loading.
+  it("lets go of a landing moved off with no input while the page grows", () => {
+    const end = { y: 2000 };
+    const { targets, moveTo, setHeight } = page(end);
+    landAtBottom();
+    end.y = 2300;
+    setHeight(HEIGHT + 300);
+    moveTo(0);
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([2000 - VIEWPORT]);
   });
 
   it("lets go of a landing moved off with no input once it has put the page back on a taller one", () => {
