@@ -341,8 +341,8 @@ export function AttachmentViewerDialog({
             </div>
             <div
               className={cn(
-                "min-h-0 overflow-auto",
-                maximized ? "flex-1" : "max-h-[75vh]",
+                "-m-1 min-h-0 overflow-auto p-1",
+                maximized ? "flex-1" : "max-h-[calc(75vh+0.5rem)]",
               )}
             >
               {kind === "image" ? (

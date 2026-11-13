@@ -821,6 +821,16 @@ diffs-container > [slot^="annotation-"] {
   time {
     @apply tabular-nums;
     }
+  /* A control the keyboard scrolls into view stops 4px short of the scroll
+     container's edge instead of touching it, so its focus ring (3px on a
+     button, 4px on an activity calendar day) is not cut off. Only for
+     :focus-visible, so a click scrolls as it always did. Editable text is
+     left out: clicking into a field or the composer matches :focus-visible
+     too, and the scrolling around the phone keyboard (scroll-insets.ts)
+     should not move. Firefox ignores scroll-margin when focus scrolls. */
+  :focus-visible:not(:read-write) {
+    scroll-margin: 0.25rem;
+    }
 }
 
 /* T-585: once scrolling stops, the auto-hiding header (and whatever rides
