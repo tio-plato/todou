@@ -84,8 +84,14 @@ function TimelineWithPending() {
  */
 async function open(hash = "") {
   const items: TimelineItem[] = [comment(101), comment(102), comment(103)];
+  const reads = { refused: false };
   vi.stubGlobal("fetch", (async (input: unknown) => {
     const url = String(input);
+    if (reads.refused && url.includes("/timeline"))
+      return new Response(JSON.stringify({ error: "forbidden" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      });
     const page: TimelinePage = {
       items: [...items],
       prev_cursor: null,
@@ -163,6 +169,10 @@ async function open(hash = "") {
     at: () => state.y,
     grow: (by: number) => {
       state.height += by;
+    },
+    /** Whether the timeline's reads are refused, as a revoked share is. */
+    refuse: (refused: boolean) => {
+      reads.refused = refused;
     },
     /** Where a reveal put the viewport, which is no gesture of the reader's. */
     revealedAt: (y: number) => {
@@ -351,6 +361,25 @@ describe("landings on the end of the timeline (T-527)", () => {
     page.readerAt(HEIGHT - VIEWPORT);
     // An image loading in the last comment: the end moves down a screen and a
     // half, and nothing scrolls.
+    page.grow(1200);
+    resizeElement(page.view.getByTestId("timeline-scroll"));
+    await page.arrive(104);
+    expect(page.bottoms()).toBe(1);
+    expect(newMessagesShown(page.view)).toBe(true);
+  });
+
+  it("reads where the reader is off the list mounted again after a refused read", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.refuse(true);
+    await page.refetch();
+    const retry = await page.view.findByRole("button", { name: "Retry" });
+    page.refuse(false);
+    fireEvent.click(retry);
+    await waitFor(() =>
+      expect(page.view.queryByRole("button", { name: "Retry" })).toBeNull(),
+    );
+    page.readerAt(HEIGHT - VIEWPORT);
     page.grow(1200);
     resizeElement(page.view.getByTestId("timeline-scroll"));
     await page.arrive(104);
