@@ -306,6 +306,13 @@ export function Timeline({
   const fill = useRef({ keys: unitKeys, index: fillIndex });
   fill.current = { keys: unitKeys, index: fillIndex };
   const listRef = useRef<HTMLDivElement>(null);
+  // The list itself, for what observes it: it mounts with the content, and
+  // again after a refused read has stood in for it.
+  const [list, setList] = useState<HTMLDivElement | null>(null);
+  const attachList = useCallback((el: HTMLDivElement | null) => {
+    listRef.current = el;
+    setList(el);
+  }, []);
   // Whether the reader is past the end of the list, in what follows it: a
   // phone's sidebar, or the comment box with the list's end gone under the
   // header. Only New messages asks, so only measured while it is up.
@@ -532,7 +539,6 @@ export function Timeline({
   // has not scrolled: an image loading, a fold opened, an item arriving. Not
   // as anything else grows: a reader at the end whose draft or keyboard
   // pushes the end down is still where they were, and is followed.
-  // biome-ignore lint/correctness/useExhaustiveDependencies(hasContent): the list mounts with the content, and only then is there one to observe
   useEffect(() => {
     const record = () => {
       atEndRef.current = whereReaderIs();
@@ -542,7 +548,6 @@ export function Timeline({
       if (atEndRef.current.atEnd) setLastSeen(null);
     };
     window.addEventListener("scroll", onScroll, { passive: true });
-    const list = listRef.current;
     const observer =
       list === null || typeof ResizeObserver === "undefined"
         ? null
@@ -552,7 +557,7 @@ export function Timeline({
       window.removeEventListener("scroll", onScroll);
       observer?.disconnect();
     };
-  }, [hasContent]);
+  }, [list]);
 
   // The list's end moves with a scroll, a resize or a rotation, and with
   // content loading or arriving on either side of it.
@@ -767,7 +772,7 @@ export function Timeline({
     // above, adjusting the viewport a second time for the same insertion.
     <TimelineSettlementsProvider settlements={settlements}>
       <div
-        ref={listRef}
+        ref={attachList}
         className="[overflow-anchor:none]"
         data-testid="timeline-scroll"
       >
