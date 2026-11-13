@@ -405,6 +405,37 @@ describe("landings on the end of the timeline (T-527)", () => {
     await waitFor(() => expect(page.bottoms()).toBe(2));
   });
 
+  it("follows a reader the opening still holds, though the list grew before it put them back", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    // An image loading: the list's observer hears of it before the hold
+    // does, so the reader reads as off the end.
+    page.grow(1200);
+    resizeElement(page.view.getByTestId("timeline-scroll"));
+    placeAt((el) => el.id === "comment-104", {
+      top: VIEWPORT + 1200 - 100,
+      height: 80,
+    });
+    await page.arrive(104);
+    await waitFor(() => expect(page.bottoms()).toBe(2));
+  });
+
+  it("goes to the end, not up, while the opening holds the end and no scroll has said where", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.items.push(labelAdded(200), labelAdded(201));
+    await page.refetch();
+    await page.view.findByTestId("event-group");
+    const bottoms = page.bottoms();
+    placeAt((el) => el.getAttribute("data-unit") === "group-200", {
+      top: -500,
+      height: 600,
+    });
+    page.items.push(labelAdded(202));
+    await page.refetch();
+    await waitFor(() => expect(page.bottoms()).toBe(bottoms + 1));
+  });
+
   it("leaves a reader half a screen above the end there when they send", async () => {
     const page = await open();
     await waitFor(() => expect(page.bottoms()).toBe(1));

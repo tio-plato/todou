@@ -146,11 +146,13 @@ export function isHoldingTarget(): boolean {
 }
 
 /**
- * Whether an untouched reader is being held on the end: they have not left it
- * since they landed there, wherever the page has yet to be put back.
+ * Where a hold on the end last put the page, or null with no hold or one on a
+ * target. An untouched reader held there has not left the end since they
+ * landed on it, wherever the page has moved meanwhile: it is still to be put
+ * back, or scroll anchoring moved it along with the end.
  */
-export function isHoldingEnd(): boolean {
-  return held !== null && held.onEnd;
+export function endHeldAt(): number | null {
+  return held?.onEnd ? held.placedAt : null;
 }
 
 /**
