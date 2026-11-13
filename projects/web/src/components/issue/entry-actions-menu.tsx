@@ -137,8 +137,12 @@ export function EntryActionsMenu({
   // the document clears it silently (T-60). Reading before either happens
   // means never having to argue about which of them opening a menu performs.
   const selected = useRef<QuotableSelection | null>(null);
-  /** Set when Quote reply closed the menu: the comment box keeps the focus. */
-  const quoted = useRef(false);
+  /**
+   * Set when Quote reply closed the menu, so that the comment box keeps the
+   * focus: the fading menu is inert, and the focus is not handed back to the
+   * trigger.
+   */
+  const [quoted, setQuoted] = useState(false);
 
   const permalink = `${window.location.origin}/projects/${slug}/issues/${issueNumber}${
     commentId === undefined ? "" : `#${commentAnchor(commentId)}`
@@ -165,10 +169,19 @@ export function EntryActionsMenu({
     // raises the keyboard for, and an open menu traps the focus and would pull
     // it straight back. So the menu closes first, by hand, which leaves Radix
     // no change to report: `onOpenChange` never runs for this close, and the
-    // capture is dropped here instead.
-    quoted.current = true;
+    // capture is dropped here instead. A closed menu still fades out for
+    // about 100ms, and its items still answer the mouse meanwhile: moving
+    // onto one focuses it, leaving one focuses the menu, and the focus they
+    // take from the comment box ends on the body once the menu unmounts. So
+    // this close also makes the menu inert: it fades as usual and can take no
+    // focus. In the commit that closes it, because a menu with no exit
+    // animation unmounts in that commit and hands the focus on with what its
+    // last render saw.
     selected.current = null;
-    flushSync(() => setOpen(false));
+    flushSync(() => {
+      setOpen(false);
+      setQuoted(true);
+    });
     quote(cut.trim() === "" ? wholeQuoteOf(entry, body) : cut);
   };
 
@@ -177,9 +190,9 @@ export function EntryActionsMenu({
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
-        // Reopened before the last close finished: this one hands the focus
-        // back as usual.
-        if (next) quoted.current = false;
+        // Reopened before the last close finished, Quote reply's fade
+        // included: this one takes the focus and hands it back as usual.
+        if (next) setQuoted(false);
         else selected.current = null;
       }}
     >
@@ -212,10 +225,11 @@ export function EntryActionsMenu({
       <DropdownMenuContent
         className="w-auto"
         align="end"
+        inert={quoted}
         onCloseAutoFocus={(event) => {
-          if (quoted.current) {
+          if (quoted) {
             // The comment box has the focus now, not the trigger.
-            quoted.current = false;
+            setQuoted(false);
             event.preventDefault();
             return;
           }
