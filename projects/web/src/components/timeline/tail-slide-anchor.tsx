@@ -1,11 +1,11 @@
 import { Component, type RefObject } from "react";
 
 /**
- * Whether a fold block's top, `seamTop` down the viewport, says the reader
- * came up from the tail (T-30). In the upper half, the tail side is what they
- * are reading, and it stays where it is as the seam changes; in the lower
- * half, they are reading the head side, and what lies above the seam does not
- * move by itself.
+ * Whether the seam between the head and the tail, `seamTop` down the
+ * viewport, says the reader came up from the tail (T-30). In the upper half,
+ * the tail side is what they are reading, and it stays where it is as the
+ * seam changes; in the lower half, they are reading the head side, and what
+ * lies above the seam does not move by itself.
  */
 export function readingFromTail(seamTop: number): boolean {
   return seamTop < window.innerHeight / 2;
