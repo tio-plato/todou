@@ -8,6 +8,7 @@ import type {
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Timeline } from "../src/components/timeline/timeline.tsx";
+import { usableViewport } from "../src/lib/scroll-insets.ts";
 import {
   FakeResizeObserver,
   resizeElement,
@@ -115,8 +116,10 @@ async function open(hash = "") {
   );
   let bottoms = 0;
   let scrolls = 0;
+  let scrolledTo: unknown = null;
   vi.spyOn(window, "scrollTo").mockImplementation((...args: unknown[]) => {
     scrolls += 1;
+    scrolledTo = args[1];
     // The largest offset there is, never `scrollHeight` itself: iOS takes
     // the overshoot literally for a frame and shows a blank screen (T-585).
     if (args[1] === state.height - VIEWPORT) {
@@ -153,6 +156,8 @@ async function open(hash = "") {
     reveals,
     bottoms: () => bottoms,
     scrolls: () => scrolls,
+    /** Where the last scroll the page made went. */
+    scrolledTo: () => scrolledTo,
     /** What a landing flashed, the way an anchor's is. */
     flashed: () => [...view.container.querySelectorAll(".anchor-flash")],
     at: () => state.y,
@@ -170,6 +175,24 @@ async function open(hash = "") {
       fireEvent.scroll(window);
     },
   };
+}
+
+/**
+ * A box of their own for the elements `match` picks, in client coordinates;
+ * the rest keep happy-dom's, all zero.
+ */
+function placeAt(
+  match: (el: Element) => boolean,
+  { top, height }: { top: number; height: number },
+) {
+  const measure = Element.prototype.getBoundingClientRect;
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: Element) {
+      return match(this)
+        ? ({ top, bottom: top + height, height } as DOMRect)
+        : measure.call(this);
+    },
+  );
 }
 
 /**
@@ -336,8 +359,71 @@ describe("landings on the end of the timeline (T-527)", () => {
     // The composer grows with the draft: the page does, the list does not.
     page.grow(300);
     resizePage();
+    // Short, on the viewport's bottom edge: what follows it is the end.
+    placeAt((el) => el.id === "comment-104", {
+      top: VIEWPORT - 100,
+      height: 80,
+    });
     await page.arrive(104);
     await waitFor(() => expect(page.bottoms()).toBe(2));
+  });
+
+  it("shows a long item arriving at the end from its top, unflashed", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(HEIGHT - VIEWPORT);
+    // Three screens long, starting just above the end the reader is at, and
+    // the page grown by as much. No resize: where the reader is would be
+    // read against the grown page before the arrival is.
+    placeAt((el) => el.id === "comment-104", { top: 300, height: 3000 });
+    page.grow(3000);
+    await page.arrive(104);
+    expect(page.scrolledTo()).toBe(
+      HEIGHT - VIEWPORT + 300 - usableViewport().top,
+    );
+    expect(page.flashed()).toEqual([]);
+    const scrolls = page.scrolls();
+    // Held on its top: what comes next is announced, not followed.
+    await page.arrive(105);
+    expect(newMessagesShown(page.view)).toBe(true);
+    expect(page.scrolls()).toBe(scrolls);
+  });
+
+  it("lands the reader's own long comment at the end, and announces nothing as it is replaced", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(HEIGHT - VIEWPORT);
+    placeAt((el) => el.getAttribute("data-unit") === "pending-1", {
+      top: 300,
+      height: 3000,
+    });
+    page.grow(3000);
+    await page.pending([{ key: 1, comment: comment(104) }]);
+    expect(page.bottoms()).toBe(2);
+    page.items.push(comment(104));
+    await page.refetch();
+    await page.pending([]);
+    expect(newMessagesShown(page.view)).toBe(false);
+  });
+
+  it("goes to the end, not up, for an event folded into a group above", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(HEIGHT - VIEWPORT);
+    page.items.push(labelAdded(200), labelAdded(201));
+    await page.refetch();
+    await page.view.findByTestId("event-group");
+    page.readerAt(HEIGHT - VIEWPORT);
+    const bottoms = page.bottoms();
+    // The group starts above the reader, and the next label joins it.
+    placeAt((el) => el.getAttribute("data-unit") === "group-200", {
+      top: -500,
+      height: 600,
+    });
+    page.items.push(labelAdded(202));
+    await page.refetch();
+    await waitFor(() => expect(page.bottoms()).toBe(bottoms + 1));
+    expect(page.view.getAllByTestId("event-group")).toHaveLength(1);
   });
 
   it("New messages holds the first new item it jumps to", async () => {
@@ -549,6 +635,11 @@ describe("the scroll-to-bottom button", () => {
     // At the end, a little short of it, and turning the wheel there.
     page.readerAt(HEIGHT - VIEWPORT - 30);
     fireEvent.wheel(window, { deltaY: 100 });
+    // Short, on the viewport's bottom edge: what follows it is the end.
+    placeAt((el) => el.id === "comment-104", {
+      top: VIEWPORT - 100,
+      height: 80,
+    });
     await page.arrive(104);
     await waitFor(() => expect(page.bottoms()).toBe(2));
     page.revealedAt(page.at());
@@ -561,6 +652,10 @@ describe("the scroll-to-bottom button", () => {
     page.readerAt(HEIGHT - VIEWPORT - 30);
     // A scrollbar press that never sent its pointerup, and no move since.
     fireEvent.pointerDown(document.documentElement);
+    placeAt((el) => el.id === "comment-104", {
+      top: VIEWPORT - 100,
+      height: 80,
+    });
     await page.arrive(104);
     await waitFor(() => expect(page.bottoms()).toBe(2));
     page.revealedAt(page.at());

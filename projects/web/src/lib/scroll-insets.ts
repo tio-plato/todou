@@ -336,8 +336,11 @@ export function landAtBottom(): () => void {
   return hold(document.body, scrollToEnd, true, endTarget);
 }
 
-/** Where `revealBlock` in `"start"` mode puts the page for `el`. */
-function startTarget(el: HTMLElement): number {
+/**
+ * Where `revealBlock` in `"start"` mode puts the page for `el`, in page
+ * coordinates.
+ */
+export function startTarget(el: HTMLElement): number {
   const rect = el.getBoundingClientRect();
   return restingScrollY(
     { top: rect.top + window.scrollY, height: rect.height },
@@ -350,14 +353,17 @@ function startTarget(el: HTMLElement): number {
  * Bring `el`'s top under the top overlays, as `revealBlock` does in `"start"`
  * mode, but no further down than a landing on the bottom goes: what follows
  * `el` may be shorter than a screen, and the rest of the way down is the
- * footer or, on a phone, the sidebar below the comment box. Flash it, and
- * hold it there; see `hold`. Each placement measures both again, so `el` rises
+ * footer or, on a phone, the sidebar below the comment box. Flash it unless
+ * told not to, and hold it there; see `hold`. Each placement measures both again, so `el` rises
  * as what follows it loads. While stopped short at the bottom it is a landing
  * on the bottom, and what arrives meanwhile is followed.
  */
-export function revealAboveEnd(el: HTMLElement): () => void {
+export function revealAboveEnd(
+  el: HTMLElement,
+  { flash: highlight = true }: { flash?: boolean } = {},
+): () => void {
   openEnclosingFolds(el);
-  flash(el);
+  if (highlight) flash(el);
   // Where it goes, and whether that stops it short at the bottom.
   const spot = () => {
     const start = startTarget(el);

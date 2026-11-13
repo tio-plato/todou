@@ -47,7 +47,9 @@ the comment box when they are too short to bring the first any higher.
 A comment arriving is followed only from the end of the conversation: a
 reader half a screen up, one the page grew away from with no scroll, one
 sending their own comment from up there, and one moved off the end with no
-input stay where they are, while one at the end typing a reply is followed.
+input stay where they are, while one at the end typing a reply is followed;
+a comment longer than the screen arriving then is shown from its top, a
+short one at the end.
 
 --keep  Retain isolated artifacts under .tmp/ after cleanup.
 Exit codes: 0 pass, 1 assertion, 2 infrastructure error.
@@ -1204,7 +1206,8 @@ function readFollow(arrived) {
  * a reader half a screen up, one the list grew away from with no scroll, one
  * sending their own comment from up there, and one the page was moved off the
  * end of with no input all stay where they are, while one at the end, typing
- * a reply, is followed. Someone else's comment arrives
+ * a reply, is followed: to the end for a short comment, to the top of one
+ * longer than the screen. Someone else's comment arrives
  * the way it does from the server, sent without an Origin header.
  */
 async function followCases(context, fixture, viewport, label, dir) {
@@ -1392,6 +1395,54 @@ async function followCases(context, fixture, viewport, label, dir) {
     const after = await read(id);
     return {
       ok: Math.abs(after.scrollY - before.scrollY) <= 1 && after.pill,
+      detail: { before, after },
+    };
+  });
+
+  // A comment longer than the screen, followed from the end, is shown from
+  // its top, where New messages would put it, and held there: what comes
+  // next is announced rather than followed off it.
+  await run("long", async (page, io, read) => {
+    await touchAtEnd(io);
+    // Read before the landing: a phone's header slides away once the page
+    // moves, taking its share of the padding with it.
+    const before = await read();
+    const id = await arrive(
+      page,
+      Array.from(
+        { length: Math.ceil((3 * h) / 40) },
+        (_, i) => `Long arrival, paragraph ${i + 1}.`,
+      ).join("\n\n"),
+    );
+    const landed = await read(id);
+    const next = await arrive(page, `Arrives after the long ${label} one`);
+    const after = await read(next);
+    return {
+      ok:
+        atEndNow(before) &&
+        landed.arrivedBottom - landed.arrivedTop > 2 * h &&
+        // A half pixel either way at a device pixel ratio of 2.
+        landed.arrivedTop >= before.paddingTop - 1 &&
+        landed.arrivedTop <= before.paddingTop + 2 &&
+        Math.abs(after.scrollY - landed.scrollY) <= 1 &&
+        after.pill,
+      detail: { before, landed, after },
+    };
+  });
+
+  // A short one is followed to the end, in view above the comment box.
+  await run("short", async (page, io, read) => {
+    await touchAtEnd(io);
+    const before = await read();
+    const id = await arrive(page, `Arrives short at the ${label} end`);
+    const after = await read(id);
+    return {
+      ok:
+        atEndNow(before) &&
+        atEndNow(after) &&
+        after.arrivedTop >= 0 &&
+        after.arrivedBottom <= after.dockTop + 1 &&
+        !after.pill,
       detail: { before, after },
     };
   });
