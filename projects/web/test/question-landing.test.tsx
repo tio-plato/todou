@@ -153,6 +153,11 @@ const comment = (id: number, body = `comment body ${id}`): TimelineComment => ({
   hidden_at: null,
   agent_context: null,
 });
+/** Someone else's comment: the reader's own is never news to them. */
+const theirs = (id: number): TimelineComment => ({
+  ...comment(id),
+  author: { ...user, id: 2, login: "alice", display_name: "Alice" },
+});
 
 function questionComment(item: IssueQuestionsItem, hidden = false) {
   return {
@@ -667,7 +672,7 @@ function scrolling({ below = 0 }: { below?: number } = {}): Scrolling {
 function newMessagesShown(view: View) {
   return (
     view
-      .queryByRole("button", { name: "New messages" })
+      .queryByRole("button", { name: /^(New messages|\d+ new messages?)$/ })
       ?.closest("[data-scroll-to-bottom]")
       ?.getAttribute("data-state") === "shown"
   );
@@ -988,7 +993,7 @@ describe("question landing through the real issue route", () => {
     await waitFor(() => expect(scroll.bottoms()).toBe(1));
 
     scroll.userAt(0);
-    model.items.push(comment(4));
+    model.items.push(theirs(4));
     await refetchTail(view);
     await view.findByText("comment body 4");
     expect(scroll.bottoms()).toBe(1);
@@ -1585,7 +1590,7 @@ describe("question landing through the real issue route", () => {
     await refetchTail(view);
     await waitFor(() => expect(scroll.bottoms()).toBe(2));
     scroll.userAt(0);
-    model.items = [...model.items, comment(4)];
+    model.items = [...model.items, theirs(4)];
     await refetchTail(view);
     await view.findByText("comment body 4");
     expect(scroll.bottoms()).toBe(2);
@@ -1608,7 +1613,7 @@ describe("question landing through the real issue route", () => {
     await waitFor(() => expect(scroll.bottoms()).toBe(2));
     // A whole screen down into the sidebar: left there, and told instead.
     scroll.userAt(10_000 - 800);
-    model.items = [...model.items, comment(4)];
+    model.items = [...model.items, theirs(4)];
     await refetchTail(view);
     await view.findByText("comment body 4");
     expect(scroll.bottoms()).toBe(2);
