@@ -387,6 +387,24 @@ describe("landings on the end of the timeline (T-527)", () => {
     expect(newMessagesShown(page.view)).toBe(true);
   });
 
+  it("follows a reader at the end through a resize that rewraps the list", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    const list = page.view.getByTestId("timeline-scroll");
+    resizeElement(list, 800);
+    page.readerAt(HEIGHT - VIEWPORT);
+    // A narrower window: the same items wrap taller, and nothing scrolls.
+    page.grow(600);
+    resizeElement(list, 600);
+    // Short, its top where the end has gone.
+    placeAt((el) => el.id === "comment-104", {
+      top: VIEWPORT + 600 - 100,
+      height: 80,
+    });
+    await page.arrive(104);
+    await waitFor(() => expect(page.bottoms()).toBe(2));
+  });
+
   it("leaves a reader half a screen above the end there when they send", async () => {
     const page = await open();
     await waitFor(() => expect(page.bottoms()).toBe(1));
