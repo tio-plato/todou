@@ -7,7 +7,7 @@
  * the New messages pill staying above whatever floats at the bottom,
  * clickable, however tall the composer grows, and landing on the first comment
  * that arrived, and for following a new comment only from the end of the
- * conversation (T-180).
+ * conversation.
  * Usage: node scripts/composer-dock-smoke.mjs [--keep] [--help]
  * Requires the same installed dependencies, Node 24+, flock and CHROMIUM
  * (default /usr/bin/chromium) as the other browser smokes.
@@ -966,8 +966,8 @@ async function shortCases(context, card) {
 }
 
 /**
- * Scroll up with real input, more than a screen from the end: well clear of
- * it, where new comments are followed.
+ * Scroll up with real input, more than a screen from the end, so that new
+ * comments are announced rather than followed.
  */
 async function scrollAway(page, io, viewport) {
   for (let i = 0; i < 8; i++) {
@@ -1202,7 +1202,7 @@ function readFollow(arrived) {
 }
 
 /**
- * New comments are followed only from the end of the conversation (T-180):
+ * New comments are followed only from the end of the conversation:
  * a reader half a screen up, one the list grew away from with no scroll, one
  * sending their own comment from up there, and one the page was moved off the
  * end of with no input all stay where they are, while one at the end, typing
