@@ -46,7 +46,8 @@ Cases:
                        it; from 640px up the 40px chip gutter stays.
   focus-ring-clip      Every control a keyboard reaches on a set of pages and
                        overlays keeps its whole focus ring inside every
-                       ancestor that clips or scrolls it.
+                       ancestor that clips or scrolls it, and focusing it
+                       does not scroll a box that only clips.
 
 Usage:
   node scripts/browser-layout-smoke.mjs

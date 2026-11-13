@@ -386,7 +386,8 @@ function rowsFor(fixture) {
 /**
  * Installed before the app loads. Measures a focused control's ring from its
  * computed style and compares it with the padding box of every ancestor that
- * clips it; with `fault`, strips the issue sidebar's allowance first.
+ * clips it, and notes any box that only clips yet moved when it took focus;
+ * with `fault`, strips the issue sidebar's allowance first.
  */
 function installProbe(fault, faultCss, epsilon) {
   const FOCUSABLE =
@@ -539,10 +540,20 @@ function installProbe(fault, faultCss, epsilon) {
         past.top = edges.top - box.top;
         past.bottom = box.bottom - edges.bottom;
       }
-      // A control partly out of view is where focus scrolling left it (a
-      // wide control may stay partly hidden in Chromium), not a ring that
-      // has no room: noted, and not measured against this ancestor.
-      const out = Object.entries(past).filter(([, amount]) => amount > epsilon);
+      // A control partly out of view of a container that scrolls is where
+      // focus scrolling left it (Chromium leaves a wide control partly
+      // hidden), not a ring with no room: noted, and not measured against
+      // this ancestor. A clip that cannot be scrolled is measured whatever
+      // it hides.
+      const scrollable = {
+        left: scrolls(style.overflowX),
+        right: scrolls(style.overflowX),
+        top: scrolls(style.overflowY),
+        bottom: scrolls(style.overflowY),
+      };
+      const out = Object.entries(past).filter(
+        ([side, amount]) => amount > epsilon && scrollable[side],
+      );
       if (out.length) {
         hidden.push({
           sides: Object.fromEntries(
@@ -655,6 +666,21 @@ function installProbe(fault, faultCss, epsilon) {
     async check(index) {
       const element = items[index];
       if (!element?.isConnected || !tabbable(element)) return null;
+      // Boxes that clip without scrolling: focus should never move them.
+      const clipOnly = [];
+      for (
+        let ancestor = element.parentElement;
+        ancestor && ancestor !== document.body;
+        ancestor = ancestor.parentElement
+      ) {
+        const style = getComputedStyle(ancestor);
+        if (
+          !scrolls(style.overflowX) &&
+          !scrolls(style.overflowY) &&
+          (clips(style.overflowX) || clips(style.overflowY))
+        )
+          clipOnly.push([ancestor, ancestor.scrollLeft, ancestor.scrollTop]);
+      }
       element.focus({ focusVisible: true });
       if (document.activeElement !== element)
         return {
@@ -684,7 +710,17 @@ function installProbe(fault, faultCss, epsilon) {
           regionMoved,
           Math.abs(region.scrollTop - regionStart),
         );
-      return measure(element);
+      const shifted = clipOnly
+        .filter(
+          ([ancestor, left, top]) =>
+            ancestor.scrollLeft !== left || ancestor.scrollTop !== top,
+        )
+        .map(([ancestor, left, top]) => ({
+          ...describe(ancestor),
+          left: round(ancestor.scrollLeft - left),
+          top: round(ancestor.scrollTop - top),
+        }));
+      return { ...measure(element), shifted };
     },
     faulted() {
       const aside = document
@@ -890,6 +926,14 @@ async function walkRow({ context, stack, fixture, fault, row }) {
     }
     result.controls = controls;
     for (const control of controls) {
+      for (const box of control.shifted ?? [])
+        failures.push(
+          failure(
+            "focus-ring-box-scrolled",
+            `focusing ${control.tag} "${control.text}" scrolled ${box.tag}.${box.className}, which clips without scrolling, by ${box.left}px left and ${box.top}px down`,
+            row.id,
+          ),
+        );
       for (const cut of control.cut ?? [])
         failures.push(
           failure(
@@ -904,11 +948,11 @@ async function walkRow({ context, stack, fixture, fault, row }) {
       const reached = controls.find(
         (control) => control.must === descriptor.label,
       );
-      if (!reached?.focusVisible || !reached.drawn)
+      if (!reached?.focusVisible || !reached.drawn || reached.hidden?.length)
         failures.push(
           failure(
             "focus-ring-target-missing",
-            `${descriptor.label}: ${reached ? `focusVisible=${reached.focusVisible} drawn=${reached.drawn}${reached.skipped ? ` (${reached.skipped})` : ""}` : "never focused"}`,
+            `${descriptor.label}: ${reached ? `focusVisible=${reached.focusVisible} drawn=${reached.drawn}${reached.hidden?.length ? ` partly scrolled out of ${reached.hidden.map((item) => item.clipper.tag).join(", ")}` : ""}${reached.skipped ? ` (${reached.skipped})` : ""}` : "never focused"}`,
             row.id,
           ),
         );
