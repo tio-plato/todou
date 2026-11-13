@@ -504,14 +504,18 @@ export function Timeline({
         // To the first new item, under the header as New messages puts it,
         // and no further down than the end: a long one is read from its top,
         // a short one lands at the end. Never up, to a unit an event was
-        // folded into that starts above where the reader was: where a hold
-        // on the end last put them, which no scroll may have reported yet,
-        // or else where they were last read. Compared in page coordinates,
+        // folded into that starts above where the reader was: the further
+        // down of where a hold on the end last put them, which no scroll may
+        // have reported yet, and where they were last read, which the hold
+        // may have yet to catch up with. Compared in page coordinates,
         // since a phone's scroll anchoring has already moved the page past
         // the new item by now. Never the reader's own pending row: it is
         // replaced by the comment it became, and held on its top, that
         // replacement would be announced as new.
-        const before = heldAt ?? atEndRef.current.y;
+        const before = Math.max(
+          heldAt ?? Number.NEGATIVE_INFINITY,
+          atEndRef.current.y,
+        );
         const el = lastKey?.startsWith("pending-")
           ? null
           : firstAfter(prevLastKey.current);

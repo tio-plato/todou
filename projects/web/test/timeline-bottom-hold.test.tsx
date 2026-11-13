@@ -456,6 +456,27 @@ describe("landings on the end of the timeline (T-527)", () => {
     await waitFor(() => expect(page.bottoms()).toBe(bottoms + 1));
   });
 
+  it("goes to the end, not up, from below where the hold last put the reader", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.items.push(labelAdded(200), labelAdded(201));
+    await page.refetch();
+    await page.view.findByTestId("event-group");
+    // Something above grows, and scroll anchoring moves the page down with
+    // the end before the hold has put it there itself.
+    page.grow(300);
+    page.revealedAt(HEIGHT + 300 - VIEWPORT);
+    const bottoms = page.bottoms();
+    // The group starts between where the hold put the page and where it is.
+    placeAt((el) => el.getAttribute("data-unit") === "group-200", {
+      top: -150,
+      height: 600,
+    });
+    page.items.push(labelAdded(202));
+    await page.refetch();
+    await waitFor(() => expect(page.bottoms()).toBe(bottoms + 1));
+  });
+
   it("leaves a reader half a screen above the end there when they send", async () => {
     const page = await open();
     await waitFor(() => expect(page.bottoms()).toBe(1));
