@@ -177,20 +177,33 @@ async function open(hash = "") {
   };
 }
 
+/** happy-dom's own measure, all zeros, for what no test has placed. */
+const unplaced = Element.prototype.getBoundingClientRect;
+const placed: Array<{
+  match: (el: Element) => boolean;
+  top: number;
+  height: number;
+}> = [];
+
 /**
  * A box of their own for the elements `match` picks, in client coordinates;
- * the rest keep happy-dom's, all zero.
+ * the rest keep what they had.
  */
 function placeAt(
   match: (el: Element) => boolean,
   { top, height }: { top: number; height: number },
 ) {
-  const measure = Element.prototype.getBoundingClientRect;
+  placed.push({ match, top, height });
   vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
     function (this: Element) {
-      return match(this)
-        ? ({ top, bottom: top + height, height } as DOMRect)
-        : measure.call(this);
+      const box = placed.findLast((p) => p.match(this));
+      return box === undefined
+        ? unplaced.call(this)
+        : ({
+            top: box.top,
+            bottom: box.top + box.height,
+            height: box.height,
+          } as DOMRect);
     },
   );
 }
@@ -263,6 +276,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   FakeResizeObserver.instances = [];
+  placed.length = 0;
 });
 
 describe("landings on the end of the timeline (T-527)", () => {
