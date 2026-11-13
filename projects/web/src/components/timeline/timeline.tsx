@@ -51,7 +51,7 @@ import { aboveDock } from "@/lib/dock-cover.ts";
 import { isQuestionLandingHash } from "@/lib/question-landing.ts";
 import {
   atConversationEnd,
-  isHoldingEnd,
+  endHeldAt,
   isHoldingTarget,
   landAtBottom,
   revealAboveEnd,
@@ -499,19 +499,23 @@ export function Timeline({
       // An anchor, a question or New messages' own landing still held is
       // where the untouched reader was sent, and following would yank them
       // off it (T-520): like a reader away from the end, they are told.
-      if ((atEndRef.current.atEnd || isHoldingEnd()) && !isHoldingTarget()) {
+      const heldAt = endHeldAt();
+      if ((atEndRef.current.atEnd || heldAt !== null) && !isHoldingTarget()) {
         // To the first new item, under the header as New messages puts it,
         // and no further down than the end: a long one is read from its top,
         // a short one lands at the end. Never up, to a unit an event was
-        // folded into that starts above where the reader was: compared in
-        // page coordinates, since a phone's scroll anchoring has already
-        // moved the page past the new item by now. Never the reader's own
-        // pending row: it is replaced by the comment it became, and held on
-        // its top, that replacement would be announced as new.
+        // folded into that starts above where the reader was: where a hold
+        // on the end last put them, which no scroll may have reported yet,
+        // or else where they were last read. Compared in page coordinates,
+        // since a phone's scroll anchoring has already moved the page past
+        // the new item by now. Never the reader's own pending row: it is
+        // replaced by the comment it became, and held on its top, that
+        // replacement would be announced as new.
+        const before = heldAt ?? atEndRef.current.y;
         const el = lastKey?.startsWith("pending-")
           ? null
           : firstAfter(prevLastKey.current);
-        if (el !== null && startTarget(el) >= atEndRef.current.y - 1) {
+        if (el !== null && startTarget(el) >= before - 1) {
           forgetScroll();
           keepHold(revealAboveEnd(el, { flash: false }));
         } else {
