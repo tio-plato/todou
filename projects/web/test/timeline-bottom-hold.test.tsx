@@ -8,7 +8,11 @@ import type {
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Timeline } from "../src/components/timeline/timeline.tsx";
-import { FakeResizeObserver, resizePage } from "./fake-resize-observer.ts";
+import {
+  FakeResizeObserver,
+  resizeElement,
+  resizePage,
+} from "./fake-resize-observer.ts";
 import { renderWithProviders, testQueryClient } from "./render.tsx";
 
 /**
@@ -74,7 +78,8 @@ function TimelineWithPending() {
 /**
  * The card's timeline, with a page geometry to scroll in. `bottoms` counts the
  * scrolls to the end of the document; `readerAt` is the reader's own scroll,
- * gesture first, the way a browser delivers it.
+ * gesture first, the way a browser delivers it; `grow` makes the page taller
+ * with no scroll, for whichever observer the test then fires.
  */
 async function open(hash = "") {
   const items: TimelineItem[] = [comment(101), comment(102), comment(103)];
@@ -99,11 +104,11 @@ async function open(hash = "") {
     });
   }) as typeof fetch);
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
-  const state = { y: 0 };
+  const state = { y: 0, height: HEIGHT };
   vi.spyOn(window, "innerHeight", "get").mockReturnValue(VIEWPORT);
   vi.spyOn(window, "scrollY", "get").mockImplementation(() => state.y);
-  vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
-    HEIGHT,
+  vi.spyOn(document.documentElement, "scrollHeight", "get").mockImplementation(
+    () => state.height,
   );
   vi.spyOn(document.documentElement, "clientHeight", "get").mockReturnValue(
     VIEWPORT,
@@ -114,9 +119,9 @@ async function open(hash = "") {
     scrolls += 1;
     // The largest offset there is, never `scrollHeight` itself: iOS takes
     // the overshoot literally for a frame and shows a blank screen (T-585).
-    if (args[1] === HEIGHT - VIEWPORT) {
+    if (args[1] === state.height - VIEWPORT) {
       bottoms += 1;
-      state.y = HEIGHT - VIEWPORT;
+      state.y = state.height - VIEWPORT;
     }
   });
   const reveals: string[] = [];
@@ -151,6 +156,9 @@ async function open(hash = "") {
     /** What a landing flashed, the way an anchor's is. */
     flashed: () => [...view.container.querySelectorAll(".anchor-flash")],
     at: () => state.y,
+    grow: (by: number) => {
+      state.height += by;
+    },
     /** Where a reveal put the viewport, which is no gesture of the reader's. */
     revealedAt: (y: number) => {
       state.y = y;
@@ -278,6 +286,48 @@ describe("landings on the end of the timeline (T-527)", () => {
     expect(page.bottoms()).toBe(3);
   });
 
+  it("leaves a reader half a screen above the end where they are", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    // Reading the last comment, its end still below the viewport.
+    page.readerAt(HEIGHT - VIEWPORT - 400);
+    await page.arrive(104);
+    expect(page.bottoms()).toBe(1);
+    expect(newMessagesShown(page.view)).toBe(true);
+  });
+
+  it("leaves a reader the list grew away from, with no scroll, where they are", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(HEIGHT - VIEWPORT);
+    // An image loading in the last comment: the end moves down a screen and a
+    // half, and nothing scrolls.
+    page.grow(1200);
+    resizeElement(page.view.getByTestId("timeline-scroll"));
+    await page.arrive(104);
+    expect(page.bottoms()).toBe(1);
+    expect(newMessagesShown(page.view)).toBe(true);
+  });
+
+  it("leaves a reader half a screen above the end there when they send", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(HEIGHT - VIEWPORT - 400);
+    await page.pending([{ key: 1, comment: comment(104) }]);
+    expect(page.bottoms()).toBe(1);
+  });
+
+  it("follows a reader at the end whose draft pushed the end down", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(HEIGHT - VIEWPORT);
+    // The composer grows with the draft: the page does, the list does not.
+    page.grow(300);
+    resizePage();
+    await page.arrive(104);
+    await waitFor(() => expect(page.bottoms()).toBe(2));
+  });
+
   it("New messages holds the first new item it jumps to", async () => {
     const page = await open();
     await waitFor(() => expect(page.bottoms()).toBe(1));
@@ -341,8 +391,8 @@ describe("landings on the end of the timeline (T-527)", () => {
     page.readerAt(0);
     await page.arrive(104);
     clickNewMessages(page.view);
-    // Where the landing put the page, within a screen of the end.
-    page.revealedAt(HEIGHT - VIEWPORT - 300);
+    // Where the landing put the page, at the end.
+    page.revealedAt(HEIGHT - VIEWPORT);
     expect(newMessagesShown(page.view)).toBe(false);
     await page.arrive(105);
     // Not followed off the item the reader was sent to, but told.
@@ -361,8 +411,8 @@ describe("landings on the end of the timeline (T-527)", () => {
   it("a held #comment- landing is not traded for the end when an item arrives", async () => {
     const page = await open("#comment-102");
     await waitFor(() => expect(page.reveals).toContain("comment-102"));
-    // The anchor sits within a screen of the end: follow-bottom's own test.
-    page.revealedAt(HEIGHT - VIEWPORT - 300);
+    // The anchor sits at the end: follow-bottom's own test.
+    page.revealedAt(HEIGHT - VIEWPORT);
     await page.arrive(104);
     resizePage();
     expect(page.bottoms()).toBe(0);
@@ -484,8 +534,8 @@ describe("the scroll-to-bottom button", () => {
 
   it("takes no direction from following a new item", async () => {
     const page = await openAway();
-    // Within a screen of the end, and turning the wheel there.
-    page.readerAt(HEIGHT - VIEWPORT - 300);
+    // At the end, a little short of it, and turning the wheel there.
+    page.readerAt(HEIGHT - VIEWPORT - 30);
     fireEvent.wheel(window, { deltaY: 100 });
     await page.arrive(104);
     await waitFor(() => expect(page.bottoms()).toBe(2));
@@ -495,7 +545,8 @@ describe("the scroll-to-bottom button", () => {
 
   it("takes no direction from a landing after a drag that sent no release", async () => {
     const page = await openAway();
-    page.readerAt(HEIGHT - VIEWPORT - 300);
+    // At the end, a little short of it.
+    page.readerAt(HEIGHT - VIEWPORT - 30);
     // A scrollbar press that never sent its pointerup, and no move since.
     fireEvent.pointerDown(document.documentElement);
     await page.arrive(104);

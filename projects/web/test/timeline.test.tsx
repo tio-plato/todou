@@ -22,7 +22,6 @@ import {
   mergeFolded,
   needsHead,
   remainingCount,
-  shouldFollowBottom,
 } from "../src/api/timeline.ts";
 import { CommentItem } from "../src/components/timeline/comment-item.tsx";
 import {
@@ -414,23 +413,6 @@ describe("event entity resolution", () => {
     expect(
       resolveUser({ id: bot.id, login: bot.login }, new Map([[bot.id, bot]])),
     ).toEqual({ user: bot, text: "Worker Bot" });
-  });
-});
-
-describe("shouldFollowBottom", () => {
-  it("follows within one viewport of the bottom", () => {
-    expect(shouldFollowBottom(1800, 3000, 800)).toBe(true);
-  });
-  it("does not follow when scrolled far up", () => {
-    expect(shouldFollowBottom(100, 3000, 800)).toBe(false);
-  });
-  // What follows the conversation, the sidebar on a phone, can be taller than
-  // a screen: a reader reading it is not pulled back up.
-  it("does not follow a reader a whole screen past the end", () => {
-    expect(shouldFollowBottom(3000, 2500, 800)).toBe(false);
-  });
-  it("follows while the end is on screen", () => {
-    expect(shouldFollowBottom(2000, 2500, 800)).toBe(true);
   });
 });
 

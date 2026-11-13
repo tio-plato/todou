@@ -2,6 +2,7 @@ import { fireEvent, render } from "@testing-library/react";
 import { createElement, useRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  atConversationEnd,
   blockFor,
   holdRevealed,
   isHoldingTarget,
@@ -337,7 +338,10 @@ describe("landing on the end of the conversation", () => {
     document.documentElement.style.removeProperty("scroll-padding-top");
   });
 
-  /** A page whose declared end sits at `end.y`; returns every scroll target. */
+  /**
+   * A page whose declared end sits at `end.y`; returns every scroll target,
+   * and `moveTo` for a scroll no landing made.
+   */
   function page(end: { y: number }) {
     vi.stubGlobal("ResizeObserver", FakeResizeObserver);
     const scroll = { y: 0 };
@@ -364,7 +368,12 @@ describe("landing on the end of the conversation", () => {
       },
     );
     render(createElement(EndHarness));
-    return { targets };
+    return {
+      targets,
+      moveTo: (y: number) => {
+        scroll.y = y;
+      },
+    };
   }
 
   it("puts the declared end on the viewport's bottom, again as the page grows", () => {
@@ -486,5 +495,21 @@ describe("landing on the end of the conversation", () => {
     resizePage();
     expect(targets).toEqual([2000 - VIEWPORT, 1500 - usableViewport().top]);
     expect(isHoldingTarget()).toBe(true);
+  });
+
+  describe("atConversationEnd", () => {
+    // The end at 2000 lands the page at 2000 - VIEWPORT.
+    it.each([
+      [true, "where a landing on the bottom puts them", 2000 - VIEWPORT],
+      [true, "a line or two above that", 2000 - VIEWPORT - 30],
+      [false, "reading the last screen", 2000 - VIEWPORT - 300],
+      [true, "past it, the end still on screen", 1500],
+      [false, "past it, the end under the top overlays", 1950],
+    ])("answers %s for a reader %s", (expected, _, y) => {
+      const { moveTo } = page({ y: 2000 });
+      document.documentElement.style.scrollPaddingTop = "100px";
+      moveTo(y);
+      expect(atConversationEnd()).toBe(expected);
+    });
   });
 });

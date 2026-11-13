@@ -17,7 +17,6 @@ import {
   mergeFolded,
   needsHead,
   remainingCount,
-  shouldFollowBottom,
   useTimelineHead,
   useTimelineTail,
 } from "@/api/timeline.ts";
@@ -51,7 +50,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { aboveDock } from "@/lib/dock-cover.ts";
 import { isQuestionLandingHash } from "@/lib/question-landing.ts";
 import {
-  conversationEnd,
+  atConversationEnd,
+  isHoldingEnd,
   isHoldingTarget,
   landAtBottom,
   revealAboveEnd,
@@ -130,7 +130,10 @@ export function Timeline({
     }
   };
   const anchorHash = useRouterState({ select: (s) => s.location.hash });
-  const atBottomRef = useRef(true);
+  // Whether the reader is at the end of the conversation, and where the page
+  // was when that was last read: before what has just arrived, by the time
+  // the follow below reads it.
+  const atEndRef = useRef({ atEnd: true, y: 0 });
   // While New messages is up, the last item the reader had seen when new ones
   // arrived below it.
   const [lastSeen, setLastSeen] = useState<string | null>(null);
@@ -341,11 +344,7 @@ export function Timeline({
   const finishQuestionLanding = (error?: "unavailable" | "stalled") => {
     // revealBlock has already moved the viewport. Do not wait for a native
     // scroll event before restoring the ordinary follow-bottom policy.
-    atBottomRef.current = shouldFollowBottom(
-      window.scrollY,
-      conversationEnd(),
-      window.innerHeight,
-    );
+    atEndRef.current = { atEnd: atConversationEnd(), y: window.scrollY };
     questionLanding.finish(error);
   };
 
@@ -462,9 +461,13 @@ export function Timeline({
     lastScrollHeight.current = doc.scrollHeight;
   });
 
-  // New items at the END while following the bottom → keep following.
+  // New items at the END while the reader is at the end → keep following.
   // Keyed off the last item's identity, not the count: expanding the fold
-  // also grows the count, and that must not announce "new below".
+  // also grows the count, and that must not announce "new below". A layout
+  // effect: it runs in the commit that renders the arrival, ahead of the
+  // layout that grows the list and of the observer below reading that, so
+  // `atEndRef` still says where the reader was before it came. The reader's
+  // own comment follows the same rule as anyone else's.
   const lastPending = pendingComments[pendingComments.length - 1];
   const lastItem = items[items.length - 1];
   const lastKey = lastPending
@@ -473,7 +476,7 @@ export function Timeline({
       ? itemKey(lastItem)
       : null;
   const prevLastKey = useRef(lastKey);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (
       !questionLanding.ownsScroll &&
       lastKey !== prevLastKey.current &&
@@ -482,7 +485,7 @@ export function Timeline({
       // An anchor, a question or New messages' own landing still held is
       // where the untouched reader was sent, and following would yank them
       // off it (T-520): like a reader away from the end, they are told.
-      if (atBottomRef.current && !isHoldingTarget()) {
+      if ((atEndRef.current.atEnd || isHoldingEnd()) && !isHoldingTarget()) {
         scrollToBottom();
       } else {
         // The end the reader left, kept through later arrivals.
@@ -496,18 +499,31 @@ export function Timeline({
   // The page itself scrolls, so follow-bottom hangs off the window scroll
   // position. (Scroll-to-top no longer loads anything: the head is present
   // from the start, and the fold block is the only gap-filling affordance.)
+  // Read again as the list grows, which moves the end away from a reader who
+  // has not scrolled: an image loading, a fold opened, an item arriving. Not
+  // as anything else grows: a reader at the end whose draft or keyboard
+  // pushes the end down is still where they were, and is followed.
+  // biome-ignore lint/correctness/useExhaustiveDependencies(hasContent): the list mounts with the content, and only then is there one to observe
   useEffect(() => {
+    const record = () => {
+      atEndRef.current = { atEnd: atConversationEnd(), y: window.scrollY };
+    };
     const onScroll = () => {
-      atBottomRef.current = shouldFollowBottom(
-        window.scrollY,
-        conversationEnd(),
-        window.innerHeight,
-      );
-      if (atBottomRef.current) setLastSeen(null);
+      record();
+      if (atEndRef.current.atEnd) setLastSeen(null);
     };
     window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
+    const list = listRef.current;
+    const observer =
+      list === null || typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(record);
+    if (list !== null) observer?.observe(list);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      observer?.disconnect();
+    };
+  }, [hasContent]);
 
   // The list's end moves with a scroll, a resize or a rotation, and with
   // content loading or arriving on either side of it.
