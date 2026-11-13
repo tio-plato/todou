@@ -391,9 +391,13 @@ describe("landings on the end of the timeline (T-527)", () => {
     const page = await open();
     await waitFor(() => expect(page.bottoms()).toBe(1));
     const list = page.view.getByTestId("timeline-scroll");
+    const windowWidth = vi
+      .spyOn(window, "innerWidth", "get")
+      .mockReturnValue(1000);
     resizeElement(list, 800);
     page.readerAt(HEIGHT - VIEWPORT);
     // A narrower window: the same items wrap taller, and nothing scrolls.
+    windowWidth.mockReturnValue(800);
     page.grow(600);
     resizeElement(list, 600);
     // Short, its top where the end has gone.
@@ -403,6 +407,22 @@ describe("landings on the end of the timeline (T-527)", () => {
     });
     await page.arrive(104);
     await waitFor(() => expect(page.bottoms()).toBe(2));
+  });
+
+  it("reads where the reader is as the list grows a scrollbar narrower", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    const list = page.view.getByTestId("timeline-scroll");
+    vi.spyOn(window, "innerWidth", "get").mockReturnValue(1000);
+    resizeElement(list, 800);
+    page.readerAt(HEIGHT - VIEWPORT);
+    // An image loading in a page that did not scroll before: the scrollbar
+    // it brings takes from the list, not the window.
+    page.grow(1200);
+    resizeElement(list, 785);
+    await page.arrive(104);
+    expect(page.bottoms()).toBe(1);
+    expect(newMessagesShown(page.view)).toBe(true);
   });
 
   it("follows a reader the opening still holds, though the list grew before it put them back", async () => {

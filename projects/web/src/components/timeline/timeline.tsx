@@ -543,8 +543,9 @@ export function Timeline({
   // has not scrolled: an image loading, a fold opened, an item arriving. Not
   // as anything else grows: a reader at the end whose draft or keyboard
   // pushes the end down is still where they were, and is followed. Nor as
-  // the list takes a new width, which is the window's doing, a resize or a
-  // rotation, and leaves them reading what they were as well.
+  // the list takes a new width with the window, in a resize or a rotation,
+  // which leaves them reading what they were as well; a scrollbar coming
+  // with what grew narrows the list alone.
   useEffect(() => {
     const record = () => {
       atEndRef.current = whereReaderIs();
@@ -554,13 +555,19 @@ export function Timeline({
       if (atEndRef.current.atEnd) setLastSeen(null);
     };
     window.addEventListener("scroll", onScroll, { passive: true });
-    let width: number | undefined;
+    let width: { list?: number; window: number } | undefined;
     const observer =
       list === null || typeof ResizeObserver === "undefined"
         ? null
         : new ResizeObserver(([entry]) => {
-            const now = entry?.contentRect.width;
-            const resized = width !== undefined && now !== width;
+            const now = {
+              list: entry?.contentRect.width,
+              window: window.innerWidth,
+            };
+            const resized =
+              width !== undefined &&
+              now.list !== width.list &&
+              now.window !== width.window;
             width = now;
             if (!resized) record();
           });
