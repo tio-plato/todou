@@ -173,8 +173,10 @@ export function EntryActionsMenu({
     // about 100ms, and its items still answer the mouse meanwhile: moving
     // onto one focuses it, leaving one focuses the menu, and the focus they
     // take from the comment box ends on the body once the menu unmounts. So
-    // this close also makes the menu inert, in the same commit and before the
-    // comment box is focused: it fades as usual and can take no focus.
+    // this close also makes the menu inert: it fades as usual and can take no
+    // focus. In the commit that closes it, because a menu with no exit
+    // animation unmounts in that commit and hands the focus on with what its
+    // last render saw.
     selected.current = null;
     flushSync(() => {
       setOpen(false);
