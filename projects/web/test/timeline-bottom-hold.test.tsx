@@ -835,6 +835,22 @@ describe("landings on the end of the timeline (T-527)", () => {
     expect(shownAs(page.view)).toBe("30 new messages");
   });
 
+  it("takes an item of a kind it does not know for someone else's, with no number", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(0);
+    // From a newer server: neither an author nor an actor.
+    page.items.push({
+      type: "poll",
+      id: 300,
+      created_at: "2026-09-08T10:00:00Z",
+    } as unknown as TimelineItem);
+    await page.refetch();
+    await page.view.findByText("Unknown timeline item: poll");
+    expect(shownAs(page.view)).toBe("New messages");
+    expect(newMessagesShown(page.view)).toBe(true);
+  });
+
   it("writes no number once the arrivals outgrow what is loaded", async () => {
     const page = await open("", { paged: true });
     await waitFor(() => expect(page.bottoms()).toBe(1));
