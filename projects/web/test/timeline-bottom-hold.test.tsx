@@ -816,7 +816,9 @@ describe("landings on the end of the timeline (T-527)", () => {
     // 120 in all: the first 50 in the head, the newest 50 in the tail.
     const page = await open("", { paged: true, initial: 120 });
     await waitFor(() => expect(page.bottoms()).toBe(1));
-    await page.view.findByText("body 150");
+    // The head in, and the fold with it: not its comments, which the first
+    // load fills in from the bottom a few at a time, later under load.
+    await page.view.findByTestId("fold-block");
     page.readerAt(0);
     await page.arrive(221);
     await page.arrive(222);
