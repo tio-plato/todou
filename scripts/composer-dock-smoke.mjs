@@ -39,11 +39,13 @@ scrolling up and an anchor jump, show centred above the floating layer on a
 scroll down, hide on a scroll up, land on the box when clicked, take no room
 in the column, drop its slide under reduced motion, and stay hidden in the
 sidebar of a short phone, where a comment arriving shows New messages
-pointing up at it instead. With the reader scrolled away and a comment
-arriving, the New messages pill must stay above the folded dock or Comment
-button, the opened box, a tall draft and a simulated keyboard, and take the
-click at its centre; with two arriving, it lands on the first of them, or on
-the comment box when they are too short to bring the first any higher.
+pointing up at it instead. Arriving comments are posted by another account,
+since the reader's own never raise New messages. With the reader scrolled
+away and a comment arriving, the New messages pill must stay above the
+folded dock or Comment button, the opened box, a tall draft and a simulated
+keyboard, and take the click at its centre; with two arriving, it lands on
+the first of them, or on the comment box when they are too short to bring
+the first any higher.
 A comment arriving is followed only from the end of the conversation: a
 reader half a screen up, one the page grew away from with no scroll, one
 sending their own comment from up there, and one moved off the end with no
@@ -62,18 +64,22 @@ const SHORT = { width: 390, height: 400, deviceScaleFactor: 2, mobile: true };
 
 async function seed(stack) {
   let cookie = "";
-  const call = async (method, path, body) => {
+  const call = async (method, path, body, token = null) => {
     const response = await fetch(`${stack.serverUrl}/api${path}`, {
       method,
       headers: {
         "content-type": "application/json",
-        ...(cookie ? { cookie } : {}),
+        ...(token === null
+          ? cookie
+            ? { cookie }
+            : {}
+          : { authorization: `Bearer ${token}` }),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(15_000),
     });
     const setCookie = response.headers.get("set-cookie");
-    if (setCookie) cookie = setCookie.split(";", 1)[0];
+    if (setCookie && token === null) cookie = setCookie.split(";", 1)[0];
     if (!response.ok) throw new Error(`${method} ${path}: ${response.status}`);
     const text = await response.text();
     return text ? JSON.parse(text) : null;
@@ -81,6 +87,19 @@ async function seed(stack) {
   await call("POST", "/auth/login");
   const slug = "composer-dock-smoke";
   await call("POST", "/projects", { slug, name: "Dock", description: "" });
+  // Someone else, for the comments that arrive while a page is open: the
+  // reader's own never raise New messages, and the stack has one user.
+  const other = await call("POST", "/agents", {
+    login: "bot-one",
+    display_name: "Bot One",
+  });
+  const { token } = await call("POST", `/agents/${other.id}/tokens`, {
+    name: "composer-dock-smoke",
+  });
+  await call("POST", `/projects/${slug}/members`, {
+    login: "bot-one",
+    role: "writer",
+  });
   const issue = await call("POST", `/projects/${slug}/issues`, {
     title: "Long thread",
     body: "",
@@ -135,16 +154,20 @@ async function seed(stack) {
       issueUrl: `${stack.webUrl}/projects/${slug}/issues/${long.number}`,
       ids: longIds,
       comment: (body) =>
-        call("POST", `/projects/${slug}/issues/${long.number}/comments`, {
-          body,
-        }),
+        call(
+          "POST",
+          `/projects/${slug}/issues/${long.number}/comments`,
+          { body },
+          token,
+        ),
     },
-    // Sent without an Origin header, so the open page takes it for someone
-    // else's comment rather than the echo of its own.
     comment: (body) =>
-      call("POST", `/projects/${slug}/issues/${issue.number}/comments`, {
-        body,
-      }),
+      call(
+        "POST",
+        `/projects/${slug}/issues/${issue.number}/comments`,
+        { body },
+        token,
+      ),
   };
 }
 
@@ -196,11 +219,13 @@ function readState() {
 /**
  * The New messages pill against the layer that floats at the bottom: the dock
  * while it floats, the phone's Comment button while the folded dock waits at
- * the page end.
+ * the page end. Found by its name, which carries the count when it has one.
  */
 function readPill() {
-  const pill = [...document.querySelectorAll("button")].find(
-    (button) => button.textContent.trim() === "New messages",
+  const pill = [...document.querySelectorAll("button")].find((button) =>
+    /^(New messages|\d+ new messages?)$/.test(
+      button.getAttribute("aria-label") ?? button.textContent.trim(),
+    ),
   );
   const dock = document
     .querySelector('[aria-label="Write a comment"]')
@@ -924,7 +949,7 @@ async function shortCases(context, card) {
       before.dockBottom < 0 &&
         above.listEnd < 0 &&
         above.state === "shown" &&
-        above.name === "New messages" &&
+        above.name === "1 new message" &&
         above.arrow === "up" &&
         above.hits &&
         Math.abs(above.floatingTop - 12 - above.bottom) <= 1 &&
@@ -1179,6 +1204,11 @@ function readFollow(arrived) {
     .querySelector('[aria-label="Write a comment"]')
     .closest(".sticky");
   const layer = document.querySelector("[data-scroll-to-bottom]");
+  const button = layer?.querySelector("button");
+  // Its name carries the count when it has one.
+  const name = button
+    ? (button.getAttribute("aria-label") ?? button.textContent.trim())
+    : null;
   const rect =
     arrived === undefined
       ? undefined
@@ -1195,7 +1225,7 @@ function readFollow(arrived) {
     dockHeight: dock.getBoundingClientRect().height,
     pill:
       layer?.dataset.state === "shown" &&
-      layer.querySelector("button")?.textContent.trim() === "New messages",
+      /^(New messages|\d+ new messages?)$/.test(name ?? ""),
     arrivedTop: rect?.top ?? null,
     arrivedBottom: rect?.bottom ?? null,
   };
@@ -1207,8 +1237,8 @@ function readFollow(arrived) {
  * sending their own comment from up there, and one the page was moved off the
  * end of with no input all stay where they are, while one at the end, typing
  * a reply, is followed: to the end for a short comment, to the top of one
- * longer than the screen. Someone else's comment arrives
- * the way it does from the server, sent without an Origin header.
+ * longer than the screen. Someone else's comment arrives from another
+ * account.
  */
 async function followCases(context, fixture, viewport, label, dir) {
   const out = [];
