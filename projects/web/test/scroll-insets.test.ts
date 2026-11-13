@@ -638,13 +638,27 @@ describe("landing on the end of the conversation", () => {
     end.y = 2600;
     setHeight(HEIGHT + 600);
     resizePage();
-    // Grown by 300 more, the page moving down with the comment box.
-    end.y = 2900;
-    setHeight(HEIGHT + 900);
-    moveTo(placed + 300);
+    // Shrunk by 300 below the item, the page moving up with the comment box.
+    end.y = 2300;
+    setHeight(HEIGHT + 300);
+    moveTo(placed - 300);
     fireEvent.scroll(window);
     resizePage();
     expect(targets).toEqual([placed, placed, placed]);
+  });
+
+  it("keeps holding through anchoring on what grew above, as more grows below", () => {
+    const end = { y: 2000 };
+    const { targets, moveTo, setHeight } = page(end);
+    landAtBottom();
+    // 300 above what is on screen, which anchoring moves the page by, and
+    // 200 below it, before the end.
+    end.y = 2500;
+    setHeight(HEIGHT + 500);
+    moveTo(2000 - VIEWPORT + 300);
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([2000 - VIEWPORT, 2500 - VIEWPORT]);
   });
 
   // iOS scrolling to the top at a tap on the status bar while an image is
