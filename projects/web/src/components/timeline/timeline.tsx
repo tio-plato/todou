@@ -39,6 +39,10 @@ import {
 import { HiddenBlock } from "@/components/timeline/hidden-block.tsx";
 import { useRevealedRuns } from "@/components/timeline/revealed-runs.tsx";
 import { SpecVersionCard } from "@/components/timeline/spec-version-card.tsx";
+import {
+  readingFromTail,
+  TailSlideAnchor,
+} from "@/components/timeline/tail-slide-anchor.tsx";
 import { TimelineSettlementsProvider } from "@/components/timeline/timeline-answers.tsx";
 import { useBelowViewport } from "@/components/timeline/use-below-viewport.ts";
 import { useKeepReading } from "@/components/timeline/use-keep-reading.ts";
@@ -179,10 +183,8 @@ export function Timeline({
   const didInitialScroll = useRef(false);
   const blockRef = useRef<HTMLDivElement>(null);
   // Chunk-insert compensation, captured at click time (T-30): the document
-  // height baseline plus the adaptive verdict — block in the upper half of
-  // the viewport means the reader came up from the tail, so the tail side
-  // stays glued; lower half means the head side is being read, and content
-  // above the seam is naturally stable without adjustment.
+  // height baseline, and whether the tail side stays glued, which the block's
+  // place in the viewport says (`readingFromTail`).
   const chunkAdjust = useRef<{ base: number; compensate: boolean } | null>(
     null,
   );
@@ -767,7 +769,7 @@ export function Timeline({
       blockRef.current?.getBoundingClientRect().top ?? Number.POSITIVE_INFINITY;
     chunkAdjust.current = {
       base: document.documentElement.scrollHeight,
-      compensate: blockTop < window.innerHeight / 2,
+      compensate: readingFromTail(blockTop),
     };
     // Successive clicks can outrun the isFetchingNextPage flip; without
     // this the second call cancels and re-issues the in-flight request
@@ -941,6 +943,12 @@ export function Timeline({
         {/* The list's end, after the comments still being sent. */}
         <div ref={setListEnd} />
       </div>
+      <TailSlideAnchor
+        list={listRef}
+        tailUnits={unitsBelow.map(unitKey)}
+        tailItems={below.map(itemKey)}
+        present={new Set(items.map(itemKey))}
+      />
       {/* A sibling of the list, not its last child: a sticky box moves only
           within its parent, and the page's column is what lets this one
           float over the whole card, title and body included. It holds no
