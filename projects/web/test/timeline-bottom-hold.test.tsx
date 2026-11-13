@@ -67,6 +67,7 @@ const labelAddedBy =
     agent_context: null,
   });
 const labelAdded = labelAddedBy(alice);
+const ownLabelAdded = labelAddedBy(viewer);
 
 const HEIGHT = 10_000;
 const VIEWPORT = 800;
@@ -91,9 +92,11 @@ function TimelineWithPending() {
  * The card's timeline, with a page geometry to scroll in. `bottoms` counts the
  * scrolls to the end of the document; `readerAt` is the reader's own scroll,
  * gesture first, the way a browser delivers it; `grow` makes the page taller
- * with no scroll, for whichever observer the test then fires.
+ * with no scroll, for whichever observer the test then fires. `paged` serves
+ * the timeline the way the server does past a page: the newest 50 items to the
+ * tail, the first 50 to the head, and what lies between them unloaded.
  */
-async function open(hash = "") {
+async function open(hash = "", { paged = false } = {}) {
   const items: TimelineItem[] = [comment(101), comment(102), comment(103)];
   const reads = { refused: false };
   vi.stubGlobal("fetch", (async (input: unknown) => {
@@ -103,12 +106,20 @@ async function open(hash = "") {
         status: 403,
         headers: { "content-type": "application/json" },
       });
-    const page: TimelinePage = {
-      items: [...items],
-      prev_cursor: null,
-      next_cursor: "c1",
-      total_count: items.length,
-    };
+    const tail = !paged || url.includes("last=1");
+    const page: TimelinePage = !paged
+      ? {
+          items: [...items],
+          prev_cursor: null,
+          next_cursor: "c1",
+          total_count: items.length,
+        }
+      : {
+          items: tail ? items.slice(-50) : items.slice(0, 50),
+          prev_cursor: tail && items.length > 50 ? "p1" : null,
+          next_cursor: "c1",
+          total_count: items.length,
+        };
     const reply = url.includes("/timeline")
       ? page
       : url.includes("/references/config")
@@ -294,6 +305,15 @@ function clickNewMessages(view: ReturnType<typeof renderWithProviders>) {
   const button = view.getByRole("button", { name: NEW_MESSAGES });
   fireEvent.pointerDown(button);
   fireEvent.click(button);
+}
+
+/** The number New messages shows beside its name, or null with none. */
+function countShown(view: ReturnType<typeof renderWithProviders>) {
+  return (
+    view
+      .getByRole("button", { name: NEW_MESSAGES })
+      .querySelector("span[aria-hidden]")?.textContent ?? null
+  );
 }
 
 afterEach(() => {
@@ -596,23 +616,222 @@ describe("landings on the end of the timeline (T-527)", () => {
     page.items.push(labelAdded(200), labelAdded(201));
     await page.refetch();
     const group = await page.view.findByTestId("event-group");
+    // Events alone are announced with no number: only comments are counted.
+    expect(
+      page.view.queryByRole("button", { name: "New messages" }),
+    ).not.toBeNull();
+    expect(countShown(page.view)).toBeNull();
     clickNewMessages(page.view);
     expect(page.flashed()).toEqual([group.parentElement]);
     expect(page.bottoms()).toBe(1);
   });
 
-  it("New messages finds the reader's own comment under its new name", async () => {
+  it("raises nothing for the reader's own comment sent while away", async () => {
     const page = await open();
     await waitFor(() => expect(page.bottoms()).toBe(1));
     page.readerAt(0);
     // Sent while away: first a pending row, then the comment it became.
-    await page.pending([{ key: 1, comment: comment(104) }]);
-    page.items.push(comment(104));
+    await page.pending([{ key: 1, comment: own(104) }]);
+    expect(newMessagesShown(page.view)).toBe(false);
+    page.items.push(own(104));
+    await page.refetch();
+    expect(newMessagesShown(page.view)).toBe(false);
+    await page.pending([]);
+    expect(newMessagesShown(page.view)).toBe(false);
+  });
+
+  it("raises nothing when the reader's own comment fails to send", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(HEIGHT - VIEWPORT - 400);
+    await page.pending([{ key: 1, comment: own(104) }]);
+    // The send fails: the row leaves the timeline for the composer's retry.
+    await page.pending([]);
+    expect(newMessagesShown(page.view)).toBe(false);
+  });
+
+  it("raises nothing for the reader's own events", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(0);
+    page.items.push(ownLabelAdded(200), ownLabelAdded(201));
+    await page.refetch();
+    await page.view.findByTestId("event-group");
+    expect(newMessagesShown(page.view)).toBe(false);
+  });
+
+  it("counts the comments others sent since the reader left, not their /me actions", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(0);
+    page.items.push(comment(104), comment(105), {
+      ...comment(106),
+      kind: "action",
+    });
+    await page.refetch();
+    await page.view.findByText("body 105");
+    expect(
+      page.view.queryByRole("button", { name: "2 new messages" }),
+    ).not.toBeNull();
+    expect(countShown(page.view)).toBe("2");
+    await page.arrive(107);
+    expect(
+      page.view.queryByRole("button", { name: "3 new messages" }),
+    ).not.toBeNull();
+    expect(countShown(page.view)).toBe("3");
+  });
+
+  it("leaves the reader's own items out of the count and the landing", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(0);
+    await page.pending([{ key: 1, comment: own(104) }]);
+    page.items.push(own(104));
     await page.refetch();
     await page.pending([]);
+    await page.arrive(105);
+    expect(
+      page.view.queryByRole("button", { name: "1 new message" }),
+    ).not.toBeNull();
+    clickNewMessages(page.view);
+    expect(page.flashed().map((el) => el.id)).toEqual(["comment-105"]);
+  });
+
+  it("counts a comment that arrived while the reader's own was still sending", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(HEIGHT - VIEWPORT);
+    await page.pending([{ key: 1, comment: own(106) }]);
+    page.readerAt(0);
+    // Someone else's arrives above the row still sending; the row then
+    // becomes the comment created after it.
+    await page.arrive(105);
+    page.items.push(own(106));
+    await page.refetch();
+    await page.pending([]);
+    expect(
+      page.view.queryByRole("button", { name: "1 new message" }),
+    ).not.toBeNull();
+    clickNewMessages(page.view);
+    expect(page.flashed().map((el) => el.id)).toEqual(["comment-105"]);
+  });
+
+  it("shows someone else's long comment from its top when it arrives above the reader's own still sending", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(HEIGHT - VIEWPORT);
+    await page.pending([{ key: 1, comment: own(104) }]);
+    expect(page.bottoms()).toBe(2);
+    // The refresh after the send, with the row still at the end: the
+    // reader's own comment, then someone else's three screens long.
+    placeAt((el) => el.id === "comment-105", { top: 300, height: 3000 });
+    page.grow(3000);
+    page.items.push(own(104), comment(105));
+    await page.refetch();
+    await page.view.findByText("body 105");
+    const top = HEIGHT - VIEWPORT + 300 - usableViewport().top;
+    expect(page.scrolledTo()).toBe(top);
+    await page.pending([]);
+    expect(page.scrolledTo()).toBe(top);
+    expect(newMessagesShown(page.view)).toBe(false);
+  });
+
+  it("shows 99+ past 99", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(0);
+    for (let id = 104; id < 204; id++) page.items.push(comment(id));
+    await page.refetch();
+    await page.view.findByText("body 203");
+    expect(
+      page.view.queryByRole("button", { name: "100 new messages" }),
+    ).not.toBeNull();
+    expect(countShown(page.view)).toBe("99+");
+  });
+
+  it("keeps its number while it fades out", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(0);
+    await page.arrive(104);
+    await page.arrive(105);
+    clickNewMessages(page.view);
+    const button = page.view.getByRole("button", { name: "2 new messages" });
+    expect(
+      button.closest("[data-scroll-to-bottom]")?.getAttribute("data-state"),
+    ).toBe("hidden");
+    expect(countShown(page.view)).toBe("2");
+  });
+
+  it("counts down as the reader scrolls the new comments into view", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(0);
+    await page.arrive(104);
+    await page.arrive(105);
+    expect(
+      page.view.queryByRole("button", { name: "2 new messages" }),
+    ).not.toBeNull();
+    // The start of the first comes into view, between header and composer.
+    placeAt((el) => el.id === "comment-104", { top: 300, height: 100 });
+    page.readerAt(100);
+    expect(
+      page.view.queryByRole("button", { name: "1 new message" }),
+    ).not.toBeNull();
+    placeAt((el) => el.id === "comment-105", { top: 400, height: 100 });
+    page.readerAt(200);
+    expect(newMessagesShown(page.view)).toBe(false);
+  });
+
+  it("does not count an arrival whose start is already on screen", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(0);
+    await page.arrive(104);
+    expect(
+      page.view.queryByRole("button", { name: "1 new message" }),
+    ).not.toBeNull();
+    // On screen as it arrives, and no scroll after it.
+    placeAt((el) => el.id === "comment-105", { top: 300, height: 100 });
+    await page.arrive(105);
+    expect(
+      page.view.queryByRole("button", { name: "1 new message" }),
+    ).not.toBeNull();
+  });
+
+  it("lands on the first new comment not yet seen", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(0);
+    await page.arrive(104);
+    await page.arrive(105);
+    placeAt((el) => el.id === "comment-104", { top: 300, height: 100 });
+    page.readerAt(100);
+    clickNewMessages(page.view);
+    expect(page.flashed().map((el) => el.id)).toEqual(["comment-105"]);
+  });
+
+  it("writes no number once the arrivals outgrow what is loaded", async () => {
+    const page = await open("", { paged: true });
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(0);
+    await page.arrive(104);
+    await page.arrive(105);
+    expect(
+      page.view.queryByRole("button", { name: "2 new messages" }),
+    ).not.toBeNull();
+    // 123 in all: the tail holds the newest 50, the head the first 50, and
+    // the 23 between them, after the last item seen, are not loaded.
+    for (let id = 106; id < 224; id++) page.items.push(comment(id));
+    await page.refetch();
+    await page.view.findByText("body 223");
+    await page.view.findByText("body 150");
+    expect(
+      page.view.queryByRole("button", { name: "New messages" }),
+    ).not.toBeNull();
+    expect(countShown(page.view)).toBeNull();
     clickNewMessages(page.view);
     expect(page.flashed().map((el) => el.id)).toEqual(["comment-104"]);
-    expect(page.bottoms()).toBe(1);
   });
 
   it("New messages goes to the end when the last item seen is gone", async () => {
@@ -626,6 +845,10 @@ describe("landings on the end of the timeline (T-527)", () => {
     );
     await page.refetch();
     await waitFor(() => expect(page.view.queryByText("body 103")).toBeNull());
+    // With nothing to count from, no number.
+    expect(
+      page.view.queryByRole("button", { name: "New messages" }),
+    ).not.toBeNull();
     clickNewMessages(page.view);
     expect(page.bottoms()).toBe(2);
   });
@@ -891,9 +1114,13 @@ describe("the scroll-to-bottom button", () => {
     const measure = Element.prototype.getBoundingClientRect;
     vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
       function (this: Element) {
+        // The new comment above the viewport with the rest: never in view,
+        // so not seen.
         return this === list
           ? ({ top: -900, bottom: -100, height: 800 } as DOMRect)
-          : measure.call(this);
+          : this.id === "comment-104"
+            ? ({ top: -500, bottom: -400, height: 100 } as DOMRect)
+            : measure.call(this);
       },
     );
     await page.arrive(104);
@@ -950,8 +1177,8 @@ describe("the scroll-to-bottom button", () => {
     expect(
       within(layer)
         .getAllByRole("button")
-        .map((b) => b.textContent?.trim()),
-    ).toEqual(["New messages"]);
+        .map((b) => b.getAttribute("aria-label") ?? b.textContent?.trim()),
+    ).toEqual(["1 new message"]);
     page.reader(page.wheel(-100), -100);
     expect(page.shown()).toBe(true);
   });
