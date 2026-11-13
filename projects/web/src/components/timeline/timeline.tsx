@@ -512,10 +512,10 @@ export function Timeline({
         // the new item by now. Never the reader's own pending row: it is
         // replaced by the comment it became, and held on its top, that
         // replacement would be announced as new.
-        const before = Math.max(
-          heldAt ?? Number.NEGATIVE_INFINITY,
-          atEndRef.current.y,
-        );
+        const before =
+          heldAt === null
+            ? atEndRef.current.y
+            : Math.max(heldAt, atEndRef.current.y);
         const el = lastKey?.startsWith("pending-")
           ? null
           : firstAfter(prevLastKey.current);
