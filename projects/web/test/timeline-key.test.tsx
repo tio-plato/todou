@@ -311,7 +311,9 @@ describe("the issue page's timeline, keyed by card", () => {
 
     // Put the reader away from the bottom and let the component's own scroll
     // listener record it: at the bottom the same effect calls `scrollToBottom`
-    // instead, and the pill could not appear even on the broken path.
+    // instead, and the pill could not appear even on the broken path. Their
+    // own input first, the way a browser delivers a scroll: until then the
+    // landing holds the end, and an untouched reader is followed, not told.
     vi.spyOn(window, "scrollY", "get").mockReturnValue(0);
     vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
       10_000,
@@ -319,6 +321,7 @@ describe("the issue page's timeline, keyed by card", () => {
     vi.spyOn(window, "innerHeight", "get").mockReturnValue(800);
     vi.spyOn(window, "scrollTo").mockImplementation(() => {});
     vi.spyOn(window, "scrollBy").mockImplementation(() => {});
+    fireEvent.wheel(window);
     fireEvent.scroll(window);
     // Everything above is setup, and it left no pill for the case to inherit:
     // the moves so far landed on cards whose timeline was already in the cache.
