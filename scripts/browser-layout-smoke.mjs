@@ -2,8 +2,9 @@
 /**
  * Manual real-Chromium layout smoke for board overlay scrollbars, collapsed
  * assignee badge clipping, the spec comment composer staying above the
- * compare view's stacked file headers, and the rendered spec's annotation
- * gutter. It is intentionally independent of `pnpm test`/CI.
+ * compare view's stacked file headers, the rendered spec's annotation
+ * gutter, and keyboard focus rings cut off by a clipping or scrolling
+ * container. It is intentionally independent of `pnpm test`/CI.
  *
  * Usage: node scripts/browser-layout-smoke.mjs [--self-test|--self-test-cdp|--self-test-frames] [--keep] [--help]
  * Preconditions: the devshell's Node 24+, installed workspace dependencies,
@@ -24,6 +25,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runBadgeClip } from "./browser/badge-clip.mjs";
 import { runBoardScrollbars } from "./browser/board-scrollbars.mjs";
+import { runFocusRingClip } from "./browser/focus-ring-clip.mjs";
 import { runSpecChipGutter } from "./browser/spec-chip-gutter.mjs";
 import { runSpecComposerCover } from "./browser/spec-composer-cover.mjs";
 import {
@@ -42,6 +44,10 @@ Cases:
   spec-composer-cover  No stacked file header paints over the spec composer.
   spec-chip-gutter     Below 640px spec text reaches the card and chips stay off
                        it; from 640px up the 40px chip gutter stays.
+  focus-ring-clip      Every control a keyboard reaches on a set of pages and
+                       overlays keeps its whole focus ring inside every
+                       ancestor that clips or scrolls it, and focusing it
+                       does not scroll a box that only clips.
 
 Usage:
   node scripts/browser-layout-smoke.mjs
@@ -135,6 +141,10 @@ const COVERAGE_FAILURES = new Set([
   "card-missing",
   "chip-missing",
   "popover-missing",
+  "focus-ring-target-missing",
+  "focus-ring-root-missing",
+  "focus-ring-scroll-not-observed",
+  "focus-ring-sidebar-scrolls",
 ]);
 
 function isCoverageFailure(entry) {
@@ -227,6 +237,7 @@ async function main() {
       ["badge-clip", runBadgeClip],
       ["spec-composer-cover", runSpecComposerCover],
       ["spec-chip-gutter", runSpecChipGutter],
+      ["focus-ring-clip", runFocusRingClip],
     ]) {
       const stage = Date.now();
       try {

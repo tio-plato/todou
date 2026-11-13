@@ -142,7 +142,7 @@ function AgentStateSegment({
 }) {
   const seg = (selected: boolean) =>
     cn(
-      "flex h-8 cursor-pointer items-center gap-1.5 border-l px-2.5 text-sm first:border-l-0",
+      "flex h-8 cursor-pointer items-center gap-1.5 border-l px-2.5 text-sm first:border-l-0 focus-visible:-outline-offset-2",
       selected
         ? "bg-muted font-semibold text-foreground"
         : "text-muted-foreground hover:text-foreground",
