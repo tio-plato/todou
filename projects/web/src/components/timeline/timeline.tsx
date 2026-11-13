@@ -55,6 +55,7 @@ import {
   isHoldingTarget,
   landAtBottom,
   revealAboveEnd,
+  startTarget,
   usableViewport,
   useOwnHold,
 } from "@/lib/scroll-insets.ts";
@@ -476,6 +477,7 @@ export function Timeline({
       ? itemKey(lastItem)
       : null;
   const prevLastKey = useRef(lastKey);
+  // biome-ignore lint/correctness/useExhaustiveDependencies(firstAfter): read in the render an arrival came with, which `lastKey` changing is
   useLayoutEffect(() => {
     if (
       !questionLanding.ownsScroll &&
@@ -486,7 +488,23 @@ export function Timeline({
       // where the untouched reader was sent, and following would yank them
       // off it (T-520): like a reader away from the end, they are told.
       if ((atEndRef.current.atEnd || isHoldingEnd()) && !isHoldingTarget()) {
-        scrollToBottom();
+        // To the first new item, under the header as New messages puts it,
+        // and no further down than the end: a long one is read from its top,
+        // a short one lands at the end. Never up, to a unit an event was
+        // folded into that starts above where the reader was: compared in
+        // page coordinates, since a phone's scroll anchoring has already
+        // moved the page past the new item by now. Never the reader's own
+        // pending row: it is replaced by the comment it became, and held on
+        // its top, that replacement would be announced as new.
+        const el = lastKey?.startsWith("pending-")
+          ? null
+          : firstAfter(prevLastKey.current);
+        if (el !== null && startTarget(el) >= atEndRef.current.y - 1) {
+          forgetScroll();
+          keepHold(revealAboveEnd(el, { flash: false }));
+        } else {
+          scrollToBottom();
+        }
       } else {
         // The end the reader left, kept through later arrivals.
         const seen = prevLastKey.current;
@@ -494,7 +512,13 @@ export function Timeline({
       }
     }
     prevLastKey.current = lastKey;
-  }, [lastKey, scrollToBottom, questionLanding.ownsScroll]);
+  }, [
+    lastKey,
+    scrollToBottom,
+    forgetScroll,
+    keepHold,
+    questionLanding.ownsScroll,
+  ]);
 
   // The page itself scrolls, so follow-bottom hangs off the window scroll
   // position. (Scroll-to-top no longer loads anything: the head is present
@@ -592,18 +616,23 @@ export function Timeline({
     const unit = holder === undefined ? key : unitKey(holder);
     return list.querySelector<HTMLElement>(`[data-unit="${unit}"]`);
   };
+  // Where the item after `key` lands, in the order they render; null with
+  // nothing after it, or no `key` among them.
+  const firstAfter = (key: string | null): HTMLElement | null => {
+    const order = [
+      ...items.map(itemKey),
+      ...pendingComments.map((pending) => `pending-${pending.key}`),
+    ];
+    const at = key === null ? -1 : order.indexOf(key);
+    const first = at === -1 ? undefined : order[at + 1];
+    return first === undefined ? null : landingFor(first);
+  };
   // New messages goes to the first item the reader has not seen, under the
   // header rather than at the end, which would skip the ones above it. Found
   // now rather than on arrival: the reader's own comment arrives as a pending
   // row and is replaced by the comment it became.
   const toFirstNew = () => {
-    const order = [
-      ...items.map(itemKey),
-      ...pendingComments.map((pending) => `pending-${pending.key}`),
-    ];
-    const at = lastSeen === null ? -1 : order.indexOf(lastSeen);
-    const first = at === -1 ? undefined : order[at + 1];
-    const el = first === undefined ? null : landingFor(first);
+    const el = firstAfter(lastSeen);
     if (el === null) {
       toBottom();
       return;
