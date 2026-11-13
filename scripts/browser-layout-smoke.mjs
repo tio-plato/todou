@@ -32,7 +32,8 @@ const HELP = `browser-layout-smoke — manual real-browser layout assertions
 
 Cases: board overlay scrollbars; collapsed assignee badges; focus rings, where
 every control a keyboard reaches on a set of pages and overlays must keep its
-whole focus ring inside every ancestor that clips or scrolls it.
+whole focus ring inside every ancestor that clips or scrolls it, and focusing
+it must not scroll a box that only clips.
 
 Usage:
   node scripts/browser-layout-smoke.mjs
