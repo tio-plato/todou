@@ -84,13 +84,15 @@ function itemKey(item: TimelineItem): string {
 
 /**
  * Whether the viewer made `item`. Their own comments and events are never
- * news to them: judged by account, as the card list's unread count is.
+ * news to them: judged by account, as the card list's unread count is. A
+ * kind this client does not know is counted as someone else's.
  */
 function madeBy(item: TimelineItem, viewerId: number | undefined): boolean {
   if (viewerId === undefined) return false;
   if (item.type === "comment") return item.author.id === viewerId;
   if (item.type === "event") return item.actor.id === viewerId;
-  // Read as cast, not parsed: a kind a newer server sends has neither.
+  // Read as cast, not parsed: a kind a newer server sends reaches here, and
+  // whether it names its maker, and where, is not this client's to know.
   return false;
 }
 
