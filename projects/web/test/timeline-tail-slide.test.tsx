@@ -77,19 +77,31 @@ async function open() {
   vi.spyOn(document.documentElement, "clientHeight", "get").mockReturnValue(
     VIEWPORT,
   );
+  /** The vertical offset of a scroll called as `(x, y)` or `({ top })`. */
+  const offset = (args: unknown[]) =>
+    typeof args[0] === "object"
+      ? (args[0] as ScrollToOptions | null)?.top
+      : (args[1] as number | undefined);
   vi.spyOn(window, "scrollTo").mockImplementation((...args: unknown[]) => {
-    if (typeof args[1] === "number") state.y = args[1];
+    const y = offset(args);
+    if (y !== undefined) state.y = y;
   });
   vi.spyOn(window, "scrollBy").mockImplementation((...args: unknown[]) => {
-    if (typeof args[1] === "number") state.y += args[1];
+    const y = offset(args);
+    if (y !== undefined) state.y += y;
   });
+  // Each box in the list, and what it holds, at the box's own place.
   const unplaced = Element.prototype.getBoundingClientRect;
   vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
     function (this: Element) {
-      const list = this.parentElement;
-      if (list?.getAttribute("data-testid") !== "timeline-scroll")
-        return unplaced.call(this);
-      const top = [...list.children].indexOf(this) * ROW - state.y;
+      let box: Element | null = this;
+      while (
+        box !== null &&
+        box.parentElement?.getAttribute("data-testid") !== "timeline-scroll"
+      )
+        box = box.parentElement;
+      if (box?.parentElement == null) return unplaced.call(this);
+      const top = [...box.parentElement.children].indexOf(box) * ROW - state.y;
       return { top, bottom: top + ROW, height: ROW } as DOMRect;
     },
   );
