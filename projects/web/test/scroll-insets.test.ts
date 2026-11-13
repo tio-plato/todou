@@ -550,6 +550,36 @@ describe("landing on the end of the conversation", () => {
     expect(isHoldingTarget()).toBe(true);
   });
 
+  // iOS scrolling to the top at a tap on the status bar, find in page
+  // scrolling to a match: neither sends an input a hold hears.
+  it("lets go of New messages' landing once the page is moved off it with no input", () => {
+    const { targets, moveTo } = page({ y: 2000 });
+    revealAboveEnd(item(500));
+    moveTo(0);
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([500 - usableViewport().top]);
+  });
+
+  it("keeps holding through the scroll its own placement made", () => {
+    const { targets } = page({ y: 2000 });
+    landAtBottom();
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([2000 - VIEWPORT, 2000 - VIEWPORT]);
+  });
+
+  it("keeps holding through a scroll that comes after the page grew and before it is put back", () => {
+    const end = { y: 2000 };
+    const { targets } = page(end);
+    landAtBottom();
+    // The end has moved away, and the page has not: nothing moved it.
+    end.y = 2600;
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([2000 - VIEWPORT, 2600 - VIEWPORT]);
+  });
+
   describe("atConversationEnd", () => {
     // The end at 2000 lands the page at 2000 - VIEWPORT.
     it.each([
