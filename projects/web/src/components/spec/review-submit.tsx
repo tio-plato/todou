@@ -319,7 +319,7 @@ export function ReviewSubmitDialog({
           <Button
             size="sm"
             variant="outline"
-            className="h-9 border-red-500/60 px-2 text-xs text-red-700 sm:h-7 sm:px-2.5 sm:text-[0.8rem] dark:text-red-400"
+            className="h-9 border-red-500/60 px-2 text-xs text-red-700 sm:h-7 sm:px-2.5 sm:text-[0.8rem] dark:border-red-500/60 dark:text-red-400"
             disabled={verdictDisabled}
             title={verdictTitle}
             onClick={() => submit("request_changes")}
