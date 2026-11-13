@@ -340,16 +340,19 @@ describe("landing on the end of the conversation", () => {
 
   /**
    * A page whose declared end sits at `end.y`; returns every scroll target,
-   * and `moveTo` for a scroll no landing made.
+   * `moveTo` for a scroll no landing made, and `setHeight` for the page
+   * growing.
    */
   function page(end: { y: number }) {
     vi.stubGlobal("ResizeObserver", FakeResizeObserver);
-    const scroll = { y: 0 };
+    const scroll = { y: 0, height: HEIGHT };
     vi.spyOn(window, "innerHeight", "get").mockReturnValue(VIEWPORT);
     vi.spyOn(window, "scrollY", "get").mockImplementation(() => scroll.y);
-    vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
-      HEIGHT,
-    );
+    vi.spyOn(
+      document.documentElement,
+      "scrollHeight",
+      "get",
+    ).mockImplementation(() => scroll.height);
     vi.spyOn(document.documentElement, "clientHeight", "get").mockReturnValue(
       VIEWPORT,
     );
@@ -372,6 +375,9 @@ describe("landing on the end of the conversation", () => {
       targets,
       moveTo: (y: number) => {
         scroll.y = y;
+      },
+      setHeight: (height: number) => {
+        scroll.height = height;
       },
     };
   }
@@ -522,6 +528,63 @@ describe("landing on the end of the conversation", () => {
     landAtBottom();
     // The end has moved away, and the page has not: nothing moved it.
     end.y = 2600;
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([2000 - VIEWPORT, 2600 - VIEWPORT]);
+  });
+
+  it("keeps holding through the scroll of a placement after the page grew again", () => {
+    const end = { y: 2000 };
+    const { targets } = page(end);
+    landAtBottom();
+    end.y = 2600;
+    resizePage();
+    // Grown again before the scroll of that placement comes.
+    end.y = 3200;
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([
+      2000 - VIEWPORT,
+      2600 - VIEWPORT,
+      3200 - VIEWPORT,
+    ]);
+  });
+
+  it("keeps holding through scroll anchoring, which moves the page with its target", () => {
+    const end = { y: 2000 };
+    const { targets, moveTo } = page(end);
+    landAtBottom();
+    // Something above grows by 300, and the page moves with what is on screen.
+    end.y = 2300;
+    moveTo(2300 - VIEWPORT);
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([2000 - VIEWPORT, 2300 - VIEWPORT]);
+  });
+
+  it("keeps holding an item above what grew, while the page is taller than it was placed on", () => {
+    const end = { y: 2000 };
+    const { targets, moveTo, setHeight } = page(end);
+    revealAboveEnd(item(500));
+    const placed = 500 - usableViewport().top;
+    // An image below the item loads, and scroll anchoring on the comment
+    // box below moves the page down with the box, away from the item.
+    end.y = 2300;
+    setHeight(HEIGHT + 300);
+    moveTo(placed + 300);
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([placed, placed]);
+  });
+
+  it("lets go of a landing moved off with no input once it has put the page back on a taller one", () => {
+    const end = { y: 2000 };
+    const { targets, moveTo, setHeight } = page(end);
+    landAtBottom();
+    end.y = 2600;
+    setHeight(HEIGHT + 600);
+    resizePage();
+    moveTo(0);
     fireEvent.scroll(window);
     resizePage();
     expect(targets).toEqual([2000 - VIEWPORT, 2600 - VIEWPORT]);

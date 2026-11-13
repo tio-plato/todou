@@ -129,10 +129,15 @@ export function revealBlock(
 /**
  * The page's one hold. Two at once would each put the viewport back on its
  * own target at every resize, so a newer landing retires the older one.
- * `placedAt` is where it last put the page.
+ * `placedAt` is where it last put the page, `placedHeight` how tall the page
+ * was then.
  */
-let held: { release: () => void; onEnd: boolean; placedAt: number } | null =
-  null;
+let held: {
+  release: () => void;
+  onEnd: boolean;
+  placedAt: number;
+  placedHeight: number;
+} | null = null;
 
 /** How far short of a landing on the bottom still counts as at the end. */
 const END_SLACK = 40;
@@ -173,12 +178,14 @@ export function endHeldAt(): number | null {
  * once something else has moved the page off its landing: iOS scrolling to
  * the top at a tap on the status bar, or find in page scrolling to a match,
  * sends none of those inputs, and the next image or new item would put the
- * reader back at the end. Off means both away from where it last put the
- * page and more than `END_SLACK` from where it would put it now; either alone
- * lets go too soon. A page that grows before the hold has put it back can
- * still deliver the `scroll` of the last placement, the target gone and
- * nobody having moved the page. Scroll anchoring, and the timeline keeping
- * its place as its head mounts above, move the page, but the target with it.
+ * reader back at the end. Off means all of: away from where it last put the
+ * page, more than `END_SLACK` from where it would put it now, and on a page as
+ * tall as it was then. A page that grows before the hold has put it back can
+ * still deliver the `scroll` of the last placement, the target moved and
+ * nobody having moved the page. Scroll anchoring, and the timeline keeping its
+ * place as its head mounts above, move the page as it grows, usually with the
+ * target; a target above what grew stays behind, and only the page's new
+ * height says the hold has yet to put it back.
  */
 function hold(
   container: Element,
@@ -191,7 +198,9 @@ function hold(
   const controller = new AbortController();
   const observer = new ResizeObserver(() => {
     place(release);
-    if (held?.release === release) held.placedAt = window.scrollY;
+    if (held?.release !== release) return;
+    held.placedAt = window.scrollY;
+    held.placedHeight = document.documentElement.scrollHeight;
   });
   const release = () => {
     observer.disconnect();
@@ -214,14 +223,20 @@ function hold(
         const y = window.scrollY;
         if (
           Math.abs(y - held.placedAt) > 1 &&
-          Math.abs(y - target()) > END_SLACK
+          Math.abs(y - target()) > END_SLACK &&
+          document.documentElement.scrollHeight === held.placedHeight
         )
           release();
       },
       { passive: true, signal: controller.signal },
     );
   }
-  held = { release, onEnd, placedAt: window.scrollY };
+  held = {
+    release,
+    onEnd,
+    placedAt: window.scrollY,
+    placedHeight: document.documentElement.scrollHeight,
+  };
   return release;
 }
 
