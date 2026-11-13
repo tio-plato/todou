@@ -139,8 +139,18 @@ export function revealBlock(
 /**
  * The page's one hold. Two at once would each put the viewport back on its
  * own target at every resize, so a newer landing retires the older one.
+ * `placedAt` is where it last put the page, `placedHeight` how tall the page
+ * was then.
  */
-let held: { release: () => void; onEnd: boolean } | null = null;
+let held: {
+  release: () => void;
+  onEnd: boolean;
+  placedAt: number;
+  placedHeight: number;
+} | null = null;
+
+/** How far short of a landing on the bottom still counts as at the end. */
+const END_SLACK = 40;
 
 /**
  * Whether an untouched reader is being held on a particular element, as
@@ -148,6 +158,16 @@ let held: { release: () => void; onEnd: boolean } | null = null;
  */
 export function isHoldingTarget(): boolean {
   return held !== null && !held.onEnd;
+}
+
+/**
+ * Where a hold on the end last put the page, or null with no hold or one on a
+ * target. An untouched reader held there has not left the end since they
+ * landed on it, wherever the page has moved meanwhile: it is still to be put
+ * back, or scroll anchoring moved it along with the end.
+ */
+export function endHeldAt(): number | null {
+  return held?.onEnd ? held.placedAt : null;
 }
 
 /**
@@ -163,16 +183,36 @@ export function isHoldingTarget(): boolean {
  *
  * Dragging the scrollbar counts as input: Chromium and Firefox both deliver
  * its `pointerdown` to `<html>` (measured on T-527).
+ *
+ * Given `target`, where a placement would put the page now, it also lets go
+ * once something else has moved the page off its landing: iOS scrolling to
+ * the top at a tap on the status bar, or find in page scrolling to a match,
+ * sends none of those inputs, and the next image or new item would put the
+ * reader back at the end. Off means all of: away from where it last put the
+ * page, more than `END_SLACK` from where it would put it now, and further
+ * than the page has grown since, or the other way. A page that grows before
+ * the hold has put it back can still deliver the `scroll` of the last
+ * placement, the target moved and nobody having moved the page. Scroll
+ * anchoring, and the timeline keeping its place as its head mounts above,
+ * move the page by what grew above what is on screen, which is never more
+ * than all that grew, and usually move the target with it; a target above
+ * what grew stays behind, to be put back once the hold hears of the growth.
  */
 function hold(
   container: Element,
   place: (release: () => void) => void,
   onEnd = false,
+  target?: () => number,
 ) {
   held?.release();
   if (typeof ResizeObserver === "undefined") return () => {}; // happy-dom
   const controller = new AbortController();
-  const observer = new ResizeObserver(() => place(release));
+  const observer = new ResizeObserver(() => {
+    place(release);
+    if (held?.release !== release) return;
+    held.placedAt = window.scrollY;
+    held.placedHeight = document.documentElement.scrollHeight;
+  });
   const release = () => {
     observer.disconnect();
     controller.abort();
@@ -186,7 +226,30 @@ function hold(
       signal: controller.signal,
     });
   }
-  held = { release, onEnd };
+  if (target !== undefined) {
+    window.addEventListener(
+      "scroll",
+      () => {
+        if (held?.release !== release) return;
+        const y = window.scrollY;
+        const moved = y - held.placedAt;
+        const grown = document.documentElement.scrollHeight - held.placedHeight;
+        if (
+          Math.abs(moved) > 1 &&
+          Math.abs(y - target()) > END_SLACK &&
+          (moved < Math.min(0, grown) - 1 || moved > Math.max(0, grown) + 1)
+        )
+          release();
+      },
+      { passive: true, signal: controller.signal },
+    );
+  }
+  held = {
+    release,
+    onEnd,
+    placedAt: window.scrollY,
+    placedHeight: document.documentElement.scrollHeight,
+  };
   return release;
 }
 
@@ -273,14 +336,31 @@ function scrollToEnd() {
   window.scrollTo(0, endTarget());
 }
 
+/**
+ * Whether the reader is at the end of the conversation: no more than a line or
+ * two short of where a landing on the bottom puts the page, or past it with
+ * the end still below the top overlays. Past it is a phone's sidebar or a
+ * desktop's footer; a reader who has taken the end out of sight above is
+ * reading those instead.
+ */
+export function atConversationEnd(): boolean {
+  const y = window.scrollY;
+  return (
+    y >= endTarget() - END_SLACK && conversationEnd() - y > usableViewport().top
+  );
+}
+
 /** Go to the end of the conversation and stay there; see `hold`. */
 export function landAtBottom(): () => void {
   scrollToEnd();
-  return hold(document.body, scrollToEnd, true);
+  return hold(document.body, scrollToEnd, true, endTarget);
 }
 
-/** Where `revealBlock` in `"start"` mode puts the page for `el`. */
-function startTarget(el: HTMLElement): number {
+/**
+ * Where `revealBlock` in `"start"` mode puts the page for `el`, in page
+ * coordinates.
+ */
+export function startTarget(el: HTMLElement): number {
   const rect = el.getBoundingClientRect();
   return restingScrollY(
     { top: rect.top + window.scrollY, height: rect.height },
@@ -293,27 +373,44 @@ function startTarget(el: HTMLElement): number {
  * Bring `el`'s top under the top overlays, as `revealBlock` does in `"start"`
  * mode, but no further down than a landing on the bottom goes: what follows
  * `el` may be shorter than a screen, and the rest of the way down is the
- * footer or, on a phone, the sidebar below the comment box. Flash it, and
- * hold it there; see `hold`. Each placement measures both again, so `el` rises
- * as what follows it loads. While stopped short at the bottom it is a landing
- * on the bottom, and what arrives meanwhile is followed.
+ * footer or, on a phone, the sidebar below the comment box. Flash it unless
+ * told not to, and hold it there; see `hold`. Each placement measures both
+ * again, so `el` rises as what follows it loads. While stopped short at the
+ * bottom it is a landing on the bottom, and what arrives meanwhile is
+ * followed.
  */
-export function revealAboveEnd(el: HTMLElement): () => void {
+export function revealAboveEnd(
+  el: HTMLElement,
+  { flash: highlight = true }: { flash?: boolean } = {},
+): () => void {
   openEnclosingFolds(el);
-  flash(el);
-  const place = () => {
+  if (highlight) flash(el);
+  // Where it goes, and whether that stops it short at the bottom.
+  const spot = () => {
     const start = startTarget(el);
     const end = endTarget();
-    window.scrollTo(0, Math.max(0, Math.min(start, end)));
-    if (held?.release === release) held.onEnd = start >= end;
+    return { y: Math.max(0, Math.min(start, end)), onEnd: start >= end };
   };
-  const release = hold(document.body, (release) => {
-    // Gone with a route change nobody touched the page for.
-    if (!el.isConnected) release();
-    else place();
-  });
-  place();
-  return release;
+  const place = () => {
+    const { y, onEnd } = spot();
+    window.scrollTo(0, y);
+    return onEnd;
+  };
+  // Placed before it is held, so the hold starts from where it put the page.
+  const onEnd = place();
+  return hold(
+    document.body,
+    (release) => {
+      // Gone with a route change nobody touched the page for.
+      if (!el.isConnected) release();
+      else {
+        const nowOnEnd = place();
+        if (held?.release === release) held.onEnd = nowOnEnd;
+      }
+    },
+    onEnd,
+    () => spot().y,
+  );
 }
 
 /**

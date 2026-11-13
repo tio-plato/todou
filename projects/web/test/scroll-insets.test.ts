@@ -2,6 +2,7 @@ import { fireEvent, render } from "@testing-library/react";
 import { createElement, useRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  atConversationEnd,
   blockFor,
   holdRevealed,
   isHoldingTarget,
@@ -390,15 +391,21 @@ describe("landing on the end of the conversation", () => {
     document.documentElement.style.removeProperty("scroll-padding-top");
   });
 
-  /** A page whose declared end sits at `end.y`; returns every scroll target. */
+  /**
+   * A page whose declared end sits at `end.y`; returns every scroll target,
+   * `moveTo` for a scroll no landing made, and `setHeight` for the page
+   * growing.
+   */
   function page(end: { y: number }) {
     vi.stubGlobal("ResizeObserver", FakeResizeObserver);
-    const scroll = { y: 0 };
+    const scroll = { y: 0, height: HEIGHT };
     vi.spyOn(window, "innerHeight", "get").mockReturnValue(VIEWPORT);
     vi.spyOn(window, "scrollY", "get").mockImplementation(() => scroll.y);
-    vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
-      HEIGHT,
-    );
+    vi.spyOn(
+      document.documentElement,
+      "scrollHeight",
+      "get",
+    ).mockImplementation(() => scroll.height);
     vi.spyOn(document.documentElement, "clientHeight", "get").mockReturnValue(
       VIEWPORT,
     );
@@ -417,7 +424,15 @@ describe("landing on the end of the conversation", () => {
       },
     );
     render(createElement(EndHarness));
-    return { targets };
+    return {
+      targets,
+      moveTo: (y: number) => {
+        scroll.y = y;
+      },
+      setHeight: (height: number) => {
+        scroll.height = height;
+      },
+    };
   }
 
   it("puts the declared end on the viewport's bottom, again as the page grows", () => {
@@ -539,5 +554,153 @@ describe("landing on the end of the conversation", () => {
     resizePage();
     expect(targets).toEqual([2000 - VIEWPORT, 1500 - usableViewport().top]);
     expect(isHoldingTarget()).toBe(true);
+  });
+
+  // iOS scrolling to the top at a tap on the status bar, find in page
+  // scrolling to a match: neither sends an input a hold hears.
+  it("lets go of New messages' landing once the page is moved off it with no input", () => {
+    const { targets, moveTo } = page({ y: 2000 });
+    revealAboveEnd(item(500));
+    moveTo(0);
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([500 - usableViewport().top]);
+  });
+
+  it("keeps holding through the scroll its own placement made", () => {
+    const { targets } = page({ y: 2000 });
+    landAtBottom();
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([2000 - VIEWPORT, 2000 - VIEWPORT]);
+  });
+
+  it("keeps holding through a scroll that comes after the page grew and before it is put back", () => {
+    const end = { y: 2000 };
+    const { targets } = page(end);
+    landAtBottom();
+    // The end has moved away, and the page has not: nothing moved it.
+    end.y = 2600;
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([2000 - VIEWPORT, 2600 - VIEWPORT]);
+  });
+
+  it("keeps holding through the scroll of a placement after the page grew again", () => {
+    const end = { y: 2000 };
+    const { targets } = page(end);
+    landAtBottom();
+    end.y = 2600;
+    resizePage();
+    // Grown again before the scroll of that placement comes.
+    end.y = 3200;
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([
+      2000 - VIEWPORT,
+      2600 - VIEWPORT,
+      3200 - VIEWPORT,
+    ]);
+  });
+
+  it("keeps holding through scroll anchoring, which moves the page with its target", () => {
+    const end = { y: 2000 };
+    const { targets, moveTo } = page(end);
+    landAtBottom();
+    // Something above grows by 300, and the page moves with what is on screen.
+    end.y = 2300;
+    moveTo(2300 - VIEWPORT);
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([2000 - VIEWPORT, 2300 - VIEWPORT]);
+  });
+
+  it("keeps holding an item above what grew, as the page moves by just what it grew", () => {
+    const end = { y: 2000 };
+    const { targets, moveTo, setHeight } = page(end);
+    revealAboveEnd(item(500));
+    const placed = 500 - usableViewport().top;
+    // An image below the item loads, and scroll anchoring on the comment
+    // box below moves the page down with the box, away from the item.
+    end.y = 2300;
+    setHeight(HEIGHT + 300);
+    moveTo(placed + 300);
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([placed, placed]);
+  });
+
+  it("keeps holding through anchoring after it has put the page back on a taller one", () => {
+    const end = { y: 2000 };
+    const { targets, moveTo, setHeight } = page(end);
+    revealAboveEnd(item(500));
+    const placed = 500 - usableViewport().top;
+    end.y = 2600;
+    setHeight(HEIGHT + 600);
+    resizePage();
+    // Shrunk by 300 below the item, the page moving up with the comment box.
+    end.y = 2300;
+    setHeight(HEIGHT + 300);
+    moveTo(placed - 300);
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([placed, placed, placed]);
+  });
+
+  it("keeps holding through anchoring on what grew above, as more grows below", () => {
+    const end = { y: 2000 };
+    const { targets, moveTo, setHeight } = page(end);
+    landAtBottom();
+    // 300 above what is on screen, which anchoring moves the page by, and
+    // 200 below it, before the end.
+    end.y = 2500;
+    setHeight(HEIGHT + 500);
+    moveTo(2000 - VIEWPORT + 300);
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([2000 - VIEWPORT, 2500 - VIEWPORT]);
+  });
+
+  // iOS scrolling to the top at a tap on the status bar while an image is
+  // still loading.
+  it("lets go of a landing moved off with no input while the page grows", () => {
+    const end = { y: 2000 };
+    const { targets, moveTo, setHeight } = page(end);
+    landAtBottom();
+    end.y = 2300;
+    setHeight(HEIGHT + 300);
+    moveTo(0);
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([2000 - VIEWPORT]);
+  });
+
+  it("lets go of a landing moved off with no input once it has put the page back on a taller one", () => {
+    const end = { y: 2000 };
+    const { targets, moveTo, setHeight } = page(end);
+    landAtBottom();
+    end.y = 2600;
+    setHeight(HEIGHT + 600);
+    resizePage();
+    moveTo(0);
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([2000 - VIEWPORT, 2600 - VIEWPORT]);
+  });
+
+  describe("atConversationEnd", () => {
+    // The end at 2000 lands the page at 2000 - VIEWPORT.
+    it.each([
+      [true, "where a landing on the bottom puts them", 2000 - VIEWPORT],
+      [true, "a line or two above that", 2000 - VIEWPORT - 30],
+      [false, "reading the last screen", 2000 - VIEWPORT - 300],
+      [true, "past it, the end still on screen", 1500],
+      [false, "past it, the end under the top overlays", 1950],
+    ])("answers %s for a reader %s", (expected, _, y) => {
+      const { moveTo } = page({ y: 2000 });
+      document.documentElement.style.scrollPaddingTop = "100px";
+      moveTo(y);
+      expect(atConversationEnd()).toBe(expected);
+    });
   });
 });

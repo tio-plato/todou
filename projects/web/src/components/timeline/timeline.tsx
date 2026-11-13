@@ -17,7 +17,6 @@ import {
   mergeFolded,
   needsHead,
   remainingCount,
-  shouldFollowBottom,
   useTimelineHead,
   useTimelineTail,
 } from "@/api/timeline.ts";
@@ -51,10 +50,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { aboveDock } from "@/lib/dock-cover.ts";
 import { isQuestionLandingHash } from "@/lib/question-landing.ts";
 import {
-  conversationEnd,
+  atConversationEnd,
+  endHeldAt,
   isHoldingTarget,
   landAtBottom,
   revealAboveEnd,
+  startTarget,
   usableViewport,
   useOwnHold,
 } from "@/lib/scroll-insets.ts";
@@ -79,6 +80,11 @@ const PILL_GAP = 12;
 /** The key an item renders under, and its identity across fetches. */
 function itemKey(item: TimelineItem): string {
   return `${item.type}-${item.id}`;
+}
+
+/** Whether the reader is at the end of the conversation, and where they are. */
+function whereReaderIs(): { atEnd: boolean; y: number } {
+  return { atEnd: atConversationEnd(), y: window.scrollY };
 }
 
 /** The key a unit renders under, and its identity across fills. */
@@ -130,7 +136,10 @@ export function Timeline({
     }
   };
   const anchorHash = useRouterState({ select: (s) => s.location.hash });
-  const atBottomRef = useRef(true);
+  // Whether the reader is at the end of the conversation, and where the page
+  // was when that was last read: before what has just arrived, by the time
+  // the follow below reads it.
+  const atEndRef = useRef({ atEnd: true, y: 0 });
   // While New messages is up, the last item the reader had seen when new ones
   // arrived below it.
   const [lastSeen, setLastSeen] = useState<string | null>(null);
@@ -297,6 +306,13 @@ export function Timeline({
   const fill = useRef({ keys: unitKeys, index: fillIndex });
   fill.current = { keys: unitKeys, index: fillIndex };
   const listRef = useRef<HTMLDivElement>(null);
+  // The list itself, for what observes it: it mounts with the content, and
+  // again after a refused read has stood in for it.
+  const [list, setList] = useState<HTMLDivElement | null>(null);
+  const attachList = useCallback((el: HTMLDivElement | null) => {
+    listRef.current = el;
+    setList(el);
+  }, []);
   // Whether the reader is past the end of the list, in what follows it: a
   // phone's sidebar, or the comment box with the list's end gone under the
   // header. Only New messages asks, so only measured while it is up.
@@ -341,11 +357,7 @@ export function Timeline({
   const finishQuestionLanding = (error?: "unavailable" | "stalled") => {
     // revealBlock has already moved the viewport. Do not wait for a native
     // scroll event before restoring the ordinary follow-bottom policy.
-    atBottomRef.current = shouldFollowBottom(
-      window.scrollY,
-      conversationEnd(),
-      window.innerHeight,
-    );
+    atEndRef.current = whereReaderIs();
     questionLanding.finish(error);
   };
 
@@ -462,9 +474,13 @@ export function Timeline({
     lastScrollHeight.current = doc.scrollHeight;
   });
 
-  // New items at the END while following the bottom → keep following.
+  // New items at the END while the reader is at the end → keep following.
   // Keyed off the last item's identity, not the count: expanding the fold
-  // also grows the count, and that must not announce "new below".
+  // also grows the count, and that must not announce "new below". A layout
+  // effect: it runs in the commit that renders the arrival, ahead of the
+  // layout that grows the list and of the observer below reading that, so
+  // `atEndRef` still says where the reader was before it came. The reader's
+  // own comment follows the same rule as anyone else's.
   const lastPending = pendingComments[pendingComments.length - 1];
   const lastItem = items[items.length - 1];
   const lastKey = lastPending
@@ -473,7 +489,8 @@ export function Timeline({
       ? itemKey(lastItem)
       : null;
   const prevLastKey = useRef(lastKey);
-  useEffect(() => {
+  // biome-ignore lint/correctness/useExhaustiveDependencies(firstAfter): read in the render an arrival came with, which `lastKey` changing is
+  useLayoutEffect(() => {
     if (
       !questionLanding.ownsScroll &&
       lastKey !== prevLastKey.current &&
@@ -482,8 +499,32 @@ export function Timeline({
       // An anchor, a question or New messages' own landing still held is
       // where the untouched reader was sent, and following would yank them
       // off it (T-520): like a reader away from the end, they are told.
-      if (atBottomRef.current && !isHoldingTarget()) {
-        scrollToBottom();
+      const heldAt = endHeldAt();
+      if ((atEndRef.current.atEnd || heldAt !== null) && !isHoldingTarget()) {
+        // To the first new item, under the header as New messages puts it,
+        // and no further down than the end: a long one is read from its top,
+        // a short one lands at the end. Never up, to a unit an event was
+        // folded into that starts above where the reader was: the further
+        // down of where a hold on the end last put them, which no scroll may
+        // have reported yet, and where they were last read, which the hold
+        // may have yet to catch up with. Compared in page coordinates,
+        // since a phone's scroll anchoring has already moved the page past
+        // the new item by now. Never the reader's own pending row: it is
+        // replaced by the comment it became, and held on its top, that
+        // replacement would be announced as new.
+        const before =
+          heldAt === null
+            ? atEndRef.current.y
+            : Math.max(heldAt, atEndRef.current.y);
+        const el = lastKey?.startsWith("pending-")
+          ? null
+          : firstAfter(prevLastKey.current);
+        if (el !== null && startTarget(el) >= before - 1) {
+          forgetScroll();
+          keepHold(revealAboveEnd(el, { flash: false }));
+        } else {
+          scrollToBottom();
+        }
       } else {
         // The end the reader left, kept through later arrivals.
         const seen = prevLastKey.current;
@@ -491,23 +532,55 @@ export function Timeline({
       }
     }
     prevLastKey.current = lastKey;
-  }, [lastKey, scrollToBottom, questionLanding.ownsScroll]);
+  }, [
+    lastKey,
+    scrollToBottom,
+    forgetScroll,
+    keepHold,
+    questionLanding.ownsScroll,
+  ]);
 
   // The page itself scrolls, so follow-bottom hangs off the window scroll
   // position. (Scroll-to-top no longer loads anything: the head is present
   // from the start, and the fold block is the only gap-filling affordance.)
+  // Read again as the list grows, which moves the end away from a reader who
+  // has not scrolled: an image loading, a fold opened, an item arriving. Not
+  // as anything else grows: a reader at the end whose draft or keyboard
+  // pushes the end down is still where they were, and is followed. Nor as
+  // the list takes a new width with the window, in a resize or a rotation,
+  // which leaves them reading what they were as well; a scrollbar coming
+  // with what grew narrows the list alone.
   useEffect(() => {
+    const record = () => {
+      atEndRef.current = whereReaderIs();
+    };
     const onScroll = () => {
-      atBottomRef.current = shouldFollowBottom(
-        window.scrollY,
-        conversationEnd(),
-        window.innerHeight,
-      );
-      if (atBottomRef.current) setLastSeen(null);
+      record();
+      if (atEndRef.current.atEnd) setLastSeen(null);
     };
     window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
+    let width: { list?: number; window: number } | undefined;
+    const observer =
+      list === null || typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(([entry]) => {
+            const now = {
+              list: entry?.contentRect.width,
+              window: window.innerWidth,
+            };
+            const resized =
+              width !== undefined &&
+              now.list !== width.list &&
+              now.window !== width.window;
+            width = now;
+            if (!resized) record();
+          });
+    if (list !== null) observer?.observe(list);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      observer?.disconnect();
+    };
+  }, [list]);
 
   // The list's end moves with a scroll, a resize or a rotation, and with
   // content loading or arriving on either side of it.
@@ -576,18 +649,23 @@ export function Timeline({
     const unit = holder === undefined ? key : unitKey(holder);
     return list.querySelector<HTMLElement>(`[data-unit="${unit}"]`);
   };
+  // Where the item after `key` lands, in the order they render; null with
+  // nothing after it, or no `key` among them.
+  const firstAfter = (key: string | null): HTMLElement | null => {
+    const order = [
+      ...items.map(itemKey),
+      ...pendingComments.map((pending) => `pending-${pending.key}`),
+    ];
+    const at = key === null ? -1 : order.indexOf(key);
+    const first = at === -1 ? undefined : order[at + 1];
+    return first === undefined ? null : landingFor(first);
+  };
   // New messages goes to the first item the reader has not seen, under the
   // header rather than at the end, which would skip the ones above it. Found
   // now rather than on arrival: the reader's own comment arrives as a pending
   // row and is replaced by the comment it became.
   const toFirstNew = () => {
-    const order = [
-      ...items.map(itemKey),
-      ...pendingComments.map((pending) => `pending-${pending.key}`),
-    ];
-    const at = lastSeen === null ? -1 : order.indexOf(lastSeen);
-    const first = at === -1 ? undefined : order[at + 1];
-    const el = first === undefined ? null : landingFor(first);
+    const el = firstAfter(lastSeen);
     if (el === null) {
       toBottom();
       return;
@@ -717,7 +795,7 @@ export function Timeline({
     // above, adjusting the viewport a second time for the same insertion.
     <TimelineSettlementsProvider settlements={settlements}>
       <div
-        ref={listRef}
+        ref={attachList}
         className="[overflow-anchor:none]"
         data-testid="timeline-scroll"
       >
