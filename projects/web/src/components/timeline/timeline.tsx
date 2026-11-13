@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useRouter, useRouterState } from "@tanstack/react-router";
 import type { TimelineComment, TimelineItem } from "@todou/shared";
-import { enumValue, settlementsByComment } from "@todou/shared";
+import { enumValue, isAction, settlementsByComment } from "@todou/shared";
 import { ArrowDownIcon, ArrowUpIcon } from "lucide-react";
 import {
   useCallback,
@@ -82,6 +82,36 @@ function itemKey(item: TimelineItem): string {
   return `${item.type}-${item.id}`;
 }
 
+/**
+ * Whether the viewer made `item`. Their own comments and events are never
+ * news to them: judged by account, as the card list's unread count is. A
+ * kind this client does not know is counted as someone else's.
+ */
+function madeBy(item: TimelineItem, viewerId: number | undefined): boolean {
+  if (viewerId === undefined) return false;
+  if (item.type === "comment") return item.author.id === viewerId;
+  if (item.type === "event") return item.actor.id === viewerId;
+  // Read as cast, not parsed: a kind a newer server sends reaches here, and
+  // whether it names its maker, and where, is not this client's to know.
+  return false;
+}
+
+/**
+ * The items after the one rendered under `key` that someone other than the
+ * viewer made; none with no `key` among them.
+ */
+function theirsAfter(
+  items: TimelineItem[],
+  key: string | null,
+  viewerId: number | undefined,
+): TimelineItem[] {
+  const at =
+    key === null ? -1 : items.findIndex((item) => itemKey(item) === key);
+  return at === -1
+    ? []
+    : items.slice(at + 1).filter((item) => !madeBy(item, viewerId));
+}
+
 /** Whether the reader is at the end of the conversation, and where they are. */
 function whereReaderIs(): { atEnd: boolean; y: number } {
   return { atEnd: atConversationEnd(), y: window.scrollY };
@@ -141,9 +171,11 @@ export function Timeline({
   // the follow below reads it.
   const atEndRef = useRef({ atEnd: true, y: 0 });
   // While New messages is up, the last item the reader had seen when new ones
-  // arrived below it.
-  const [lastSeen, setLastSeen] = useState<string | null>(null);
-  const newBelow = lastSeen !== null;
+  // arrived below it, and those after it whose start they have seen since.
+  const [lastSeen, setLastSeen] = useState<{
+    key: string;
+    seen: ReadonlySet<string>;
+  } | null>(null);
   const didInitialScroll = useRef(false);
   const blockRef = useRef<HTMLDivElement>(null);
   // Chunk-insert compensation, captured at click time (T-30): the document
@@ -170,6 +202,25 @@ export function Timeline({
   // rendering answering that differently would merge a run across a gap the
   // reader can still see, or leave one split under nothing at all.
   const gap = remaining > 0;
+  // What New messages announces: the items after the last one the reader had
+  // seen that someone else made, less those whose start they have seen since.
+  // None of the reader's pending rows: they follow every item, and `lastSeen`
+  // is always an item. Counted only with all of them loaded, `lastSeen` in the
+  // tail or nothing folded away: past a page of arrivals some sit unloaded in
+  // the fold, and a number would be short. Comments only, as the card list's
+  // unread count has it: /me actions and events are announced with none.
+  const seenAt =
+    lastSeen === null
+      ? -1
+      : items.findIndex((item) => itemKey(item) === lastSeen.key);
+  const known = seenAt !== -1 && (seenAt >= above.length || !gap);
+  const unseen = theirsAfter(items, lastSeen?.key ?? null, viewerId).filter(
+    (item) => !lastSeen?.seen.has(itemKey(item)),
+  );
+  const count = known
+    ? unseen.filter((item) => item.type === "comment" && !isAction(item)).length
+    : 0;
+  const newBelow = lastSeen !== null && (!known || unseen.length > 0);
 
   const { isRevealed, reveal, reportHidden } = useRevealedRuns();
   // Block folds the reader has opened (T-598), by host event id. Local
@@ -475,25 +526,32 @@ export function Timeline({
   });
 
   // New items at the END while the reader is at the end → keep following.
-  // Keyed off the last item's identity, not the count: expanding the fold
-  // also grows the count, and that must not announce "new below". A layout
-  // effect: it runs in the commit that renders the arrival, ahead of the
-  // layout that grows the list and of the observer below reading that, so
-  // `atEndRef` still says where the reader was before it came. The reader's
-  // own comment follows the same rule as anyone else's.
+  // Keyed off identity, not the count: expanding the fold also grows the
+  // count, and that must not announce "new below". The last row's, the
+  // reader's own pending one included, and the last item's, which changes
+  // under a pending row still at the end: a send waits for the refetch before
+  // its row goes, and what someone else said meanwhile renders above the row.
+  // Taken as it comes, before a hold on the end carries the page past its
+  // start. A layout effect: it runs in the commit that renders the arrival,
+  // ahead of the layout that grows the list and of the observer below reading
+  // that, so `atEndRef` still says where the reader was before it came. The
+  // reader's own comment is followed, or not, by the same rule as anyone
+  // else's.
   const lastPending = pendingComments[pendingComments.length - 1];
   const lastItem = items[items.length - 1];
-  const lastKey = lastPending
-    ? `pending-${lastPending.key}`
-    : lastItem
-      ? itemKey(lastItem)
-      : null;
+  const lastItemKey = lastItem ? itemKey(lastItem) : null;
+  const lastKey = lastPending ? `pending-${lastPending.key}` : lastItemKey;
   const prevLastKey = useRef(lastKey);
-  // biome-ignore lint/correctness/useExhaustiveDependencies(firstAfter): read in the render an arrival came with, which `lastKey` changing is
+  // What was last when the effect last ran, of the items alone: what came
+  // after it is new. Never a pending row, which is gone once the comment it
+  // became, or a failed send, takes its place.
+  const prevLastItemKey = useRef(lastItemKey);
+  // biome-ignore lint/correctness/useExhaustiveDependencies(firstTheirsAfter): read in the render an arrival came with, which `lastKey` or `lastItemKey` changing is
   useLayoutEffect(() => {
     if (
       !questionLanding.ownsScroll &&
-      lastKey !== prevLastKey.current &&
+      (lastKey !== prevLastKey.current ||
+        lastItemKey !== prevLastItemKey.current) &&
       prevLastKey.current !== null
     ) {
       // An anchor, a question or New messages' own landing still held is
@@ -501,24 +559,22 @@ export function Timeline({
       // off it (T-520): like a reader away from the end, they are told.
       const heldAt = endHeldAt();
       if ((atEndRef.current.atEnd || heldAt !== null) && !isHoldingTarget()) {
-        // To the first new item, under the header as New messages puts it,
-        // and no further down than the end: a long one is read from its top,
-        // a short one lands at the end. Never up, to a unit an event was
-        // folded into that starts above where the reader was: the further
-        // down of where a hold on the end last put them, which no scroll may
-        // have reported yet, and where they were last read, which the hold
-        // may have yet to catch up with. Compared in page coordinates,
-        // since a phone's scroll anchoring has already moved the page past
-        // the new item by now. Never the reader's own pending row: it is
-        // replaced by the comment it became, and held on its top, that
-        // replacement would be announced as new.
+        // To the first new item someone else made, under the header as New
+        // messages puts it, and no further down than the end: a long one is
+        // read from its top, a short one lands at the end. Never up, to a
+        // unit an event was folded into that starts above where the reader
+        // was: the further down of where a hold on the end last put them,
+        // which no scroll may have reported yet, and where they were last
+        // read, which the hold may have yet to catch up with. Compared in
+        // page coordinates, since a phone's scroll anchoring has already
+        // moved the page past the new item by now. Never the reader's own:
+        // their pending row, the comment it became, what they did elsewhere
+        // is no news to them, and lands at the end.
         const before =
           heldAt === null
             ? atEndRef.current.y
             : Math.max(heldAt, atEndRef.current.y);
-        const el = lastKey?.startsWith("pending-")
-          ? null
-          : firstAfter(prevLastKey.current);
+        const el = firstTheirsAfter(prevLastItemKey.current);
         if (el !== null && startTarget(el) >= before - 1) {
           forgetScroll();
           keepHold(revealAboveEnd(el, { flash: false }));
@@ -527,13 +583,16 @@ export function Timeline({
         }
       } else {
         // The end the reader left, kept through later arrivals.
-        const seen = prevLastKey.current;
-        setLastSeen((kept) => kept ?? seen);
+        const end = prevLastItemKey.current;
+        if (end !== null)
+          setLastSeen((kept) => kept ?? { key: end, seen: new Set() });
       }
     }
     prevLastKey.current = lastKey;
+    prevLastItemKey.current = lastItemKey;
   }, [
     lastKey,
+    lastItemKey,
     scrollToBottom,
     forgetScroll,
     keepHold,
@@ -583,13 +642,41 @@ export function Timeline({
   }, [list]);
 
   // The list's end moves with a scroll, a resize or a rotation, and with
-  // content loading or arriving on either side of it.
-  useEffect(() => {
+  // content loading or arriving on either side of it. So does what the reader
+  // has seen of the new items: one whose start has come into view, between
+  // the header and the comment box. Not one above it, which the reader may
+  // have skipped: past the end, in a phone's sidebar, every new item is
+  // above them. Measured before paint whenever the unseen change, so one
+  // arriving with its start on screen never shows the button.
+  const unseenKeys = unseen.map(itemKey).join(" ");
+  // Where each lands, as of the last commit: the listeners below outlive the
+  // render that set them up, and a render thrown away is never committed.
+  const landing = useRef<(key: string) => HTMLElement | null>(() => null);
+  useLayoutEffect(() => {
+    landing.current = landingFor;
+  });
+  useLayoutEffect(() => {
     if (!newBelow) return;
+    const keys = unseenKeys === "" ? [] : unseenKeys.split(" ");
     const measure = () => {
       const list = listRef.current;
       if (list !== null)
         setPastEnd(list.getBoundingClientRect().bottom < usableViewport().top);
+      const { top, height } = usableViewport();
+      const inView = keys.filter((key) => {
+        const box = landing.current(key)?.getBoundingClientRect();
+        return (
+          box !== undefined &&
+          box.height > 0 &&
+          box.top >= top &&
+          box.top < top + height
+        );
+      });
+      setLastSeen((kept) =>
+        kept === null || inView.every((key) => kept.seen.has(key))
+          ? kept
+          : { key: kept.key, seen: new Set([...kept.seen, ...inView]) },
+      );
     };
     measure();
     const observer =
@@ -604,7 +691,7 @@ export function Timeline({
       window.removeEventListener("scroll", measure);
       window.removeEventListener("resize", measure);
     };
-  }, [newBelow]);
+  }, [newBelow, unseenKeys]);
 
   // Back at the end, or past it, the next showing waits for a scroll down.
   if (endBelow === false && revealed) setRevealed(false);
@@ -612,9 +699,14 @@ export function Timeline({
   // Past the end, the new items are above the reader, and the column the
   // layer is stuck in has gone out of sight above them too.
   const current = !newBelow ? "plain" : pastEnd ? "up" : "new";
-  // Kept while hidden, so what fades out is the button the reader just saw.
-  const [look, setLook] = useState<"new" | "up" | "plain">("plain");
-  if (shown && look !== current) setLook(current);
+  // Kept while hidden, so what fades out is the button the reader just saw,
+  // its number included.
+  const [look, setLook] = useState<{
+    kind: "new" | "up" | "plain";
+    count: number;
+  }>({ kind: "plain", count: 0 });
+  if (shown && (look.kind !== current || look.count !== count))
+    setLook({ kind: current, count });
   const motion = cn(
     "transition-[opacity,translate] duration-200 ease-out",
     shown ? "translate-y-0 opacity-100" : "opacity-0 motion-safe:translate-y-2",
@@ -649,23 +741,17 @@ export function Timeline({
     const unit = holder === undefined ? key : unitKey(holder);
     return list.querySelector<HTMLElement>(`[data-unit="${unit}"]`);
   };
-  // Where the item after `key` lands, in the order they render; null with
-  // nothing after it, or no `key` among them.
-  const firstAfter = (key: string | null): HTMLElement | null => {
-    const order = [
-      ...items.map(itemKey),
-      ...pendingComments.map((pending) => `pending-${pending.key}`),
-    ];
-    const at = key === null ? -1 : order.indexOf(key);
-    const first = at === -1 ? undefined : order[at + 1];
-    return first === undefined ? null : landingFor(first);
+  // Where the first item after `key` that someone else made lands; null with
+  // none, or no `key` among the items.
+  const firstTheirsAfter = (key: string | null): HTMLElement | null => {
+    const first = theirsAfter(items, key, viewerId)[0];
+    return first === undefined ? null : landingFor(itemKey(first));
   };
-  // New messages goes to the first item the reader has not seen, under the
-  // header rather than at the end, which would skip the ones above it. Found
-  // now rather than on arrival: the reader's own comment arrives as a pending
-  // row and is replaced by the comment it became.
+  // New messages goes to the first new item the reader has not seen, under
+  // the header rather than at the end, which would skip the ones above it.
   const toFirstNew = () => {
-    const el = firstAfter(lastSeen);
+    const first = unseen[0];
+    const el = first === undefined ? null : landingFor(itemKey(first));
     if (el === null) {
       toBottom();
       return;
@@ -867,18 +953,36 @@ export function Timeline({
         inert={!shown}
         className={cn(
           "z-10 mb-0 flex h-0 items-end justify-center",
-          look === "up" ? "fixed inset-x-0" : "sticky",
+          look.kind === "up" ? "fixed inset-x-0" : "sticky",
         )}
         style={{ bottom: aboveDock(PILL_GAP) }}
       >
-        {look !== "plain" ? (
-          <Button className={cn("shadow-lg", motion)} onClick={toFirstNew}>
-            {look === "up" ? (
+        {look.kind !== "plain" ? (
+          <Button
+            className={cn("shadow-lg", motion)}
+            onClick={toFirstNew}
+            // The exact number, where the chip beside the name stops at 99,
+            // as Finish review does with its own.
+            aria-label={
+              look.count > 0
+                ? `${look.count} new message${look.count === 1 ? "" : "s"}`
+                : undefined
+            }
+          >
+            {look.kind === "up" ? (
               <ArrowUpIcon className="size-4" />
             ) : (
               <ArrowDownIcon className="size-4" />
             )}{" "}
             New messages
+            {look.count > 0 && (
+              <span
+                aria-hidden
+                className="inline-flex min-w-6 justify-center rounded-full bg-primary-foreground/20 px-1 tabular-nums"
+              >
+                {look.count > 99 ? "99+" : look.count}
+              </span>
+            )}
           </Button>
         ) : (
           <Button
