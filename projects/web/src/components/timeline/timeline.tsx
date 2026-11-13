@@ -88,7 +88,10 @@ function itemKey(item: TimelineItem): string {
  */
 function madeBy(item: TimelineItem, viewerId: number | undefined): boolean {
   if (viewerId === undefined) return false;
-  return (item.type === "comment" ? item.author : item.actor).id === viewerId;
+  if (item.type === "comment") return item.author.id === viewerId;
+  if (item.type === "event") return item.actor.id === viewerId;
+  // Read as cast, not parsed: a kind a newer server sends has neither.
+  return false;
 }
 
 /**
