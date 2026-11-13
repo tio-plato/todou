@@ -188,8 +188,8 @@ export function EntryActionsMenu({
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
-        // Reopened before the last close finished: this one hands the focus
-        // back as usual.
+        // Reopened before the last close finished, Quote reply's fade
+        // included: this one takes the focus and hands it back as usual.
         if (next) setQuoted(false);
         else selected.current = null;
       }}
