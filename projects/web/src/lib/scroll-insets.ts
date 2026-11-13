@@ -365,9 +365,10 @@ export function startTarget(el: HTMLElement): number {
  * mode, but no further down than a landing on the bottom goes: what follows
  * `el` may be shorter than a screen, and the rest of the way down is the
  * footer or, on a phone, the sidebar below the comment box. Flash it unless
- * told not to, and hold it there; see `hold`. Each placement measures both again, so `el` rises
- * as what follows it loads. While stopped short at the bottom it is a landing
- * on the bottom, and what arrives meanwhile is followed.
+ * told not to, and hold it there; see `hold`. Each placement measures both
+ * again, so `el` rises as what follows it loads. While stopped short at the
+ * bottom it is a landing on the bottom, and what arrives meanwhile is
+ * followed.
  */
 export function revealAboveEnd(
   el: HTMLElement,
