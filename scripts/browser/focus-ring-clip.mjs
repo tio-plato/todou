@@ -580,7 +580,8 @@ function installProbe(fault, faultCss, epsilon) {
   const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
   let items = [];
   let region = null;
-  let regionTop = 0;
+  let regionStart = 0;
+  let regionMoved = 0;
   const probe = {
     /** Every control a descriptor names, as the pick narrows it. */
     find(descriptor, rootSelector) {
@@ -618,7 +619,9 @@ function installProbe(fault, faultCss, epsilon) {
           break;
         }
       }
-      regionTop = region?.scrollTop ?? 0;
+      // Only what the walk's focus moves counts, not where it started.
+      regionStart = region?.scrollTop ?? 0;
+      regionMoved = 0;
       return region
         ? {
             ...describe(region),
@@ -627,7 +630,7 @@ function installProbe(fault, faultCss, epsilon) {
           }
         : null;
     },
-    regionTop: () => regionTop,
+    regionMoved: () => regionMoved,
     /** Open the overlay a row walks, then name it as the walk's root. */
     root() {
       const roots = [
@@ -676,7 +679,11 @@ function installProbe(fault, faultCss, epsilon) {
       ]);
       await frame();
       await frame();
-      if (region) regionTop = Math.max(regionTop, region.scrollTop);
+      if (region)
+        regionMoved = Math.max(
+          regionMoved,
+          Math.abs(region.scrollTop - regionStart),
+        );
       return measure(element);
     },
     faulted() {
@@ -907,10 +914,10 @@ async function walkRow({ context, stack, fixture, fault, row }) {
         );
     }
     if (row.scrolls && result.region) {
-      result.regionTop = await evaluate(page, () =>
-        window.__focusRingClip.regionTop(),
+      result.regionMoved = await evaluate(page, () =>
+        window.__focusRingClip.regionMoved(),
       );
-      if (!(result.regionTop > 0))
+      if (!(result.regionMoved > 0))
         failures.push(
           failure(
             "focus-ring-scroll-not-observed",
