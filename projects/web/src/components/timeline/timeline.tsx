@@ -644,6 +644,12 @@ export function Timeline({
   // above them. Measured before paint whenever the unseen change, so one
   // arriving with its start on screen never shows the button.
   const unseenKeys = unseen.map(itemKey).join(" ");
+  // Where each lands, as of the last commit: the listeners below outlive the
+  // render that set them up, and a render thrown away is never committed.
+  const landing = useRef<(key: string) => HTMLElement | null>(() => null);
+  useLayoutEffect(() => {
+    landing.current = landingFor;
+  });
   useLayoutEffect(() => {
     if (!newBelow) return;
     const keys = unseenKeys === "" ? [] : unseenKeys.split(" ");
@@ -730,9 +736,6 @@ export function Timeline({
     const unit = holder === undefined ? key : unitKey(holder);
     return list.querySelector<HTMLElement>(`[data-unit="${unit}"]`);
   };
-  // The current one, for the listeners measuring what the reader has seen.
-  const landing = useRef(landingFor);
-  landing.current = landingFor;
   // Where the first item after `key` that someone else made lands; null with
   // none, or no `key` among the items.
   const firstTheirsAfter = (key: string | null): HTMLElement | null => {
