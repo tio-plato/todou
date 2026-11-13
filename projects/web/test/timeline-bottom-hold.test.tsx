@@ -275,6 +275,18 @@ describe("landings on the end of the timeline (T-527)", () => {
     expect(newMessagesShown(page.view)).toBe(true);
   });
 
+  it("leaves a reader the page was moved off the end of, with no input, where they are", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    // A tap on iOS's status bar, find in page: the opening's hold hears no
+    // input from either.
+    page.revealedAt(2_000);
+    await page.arrive(104);
+    resizePage();
+    expect(page.bottoms()).toBe(1);
+    expect(newMessagesShown(page.view)).toBe(true);
+  });
+
   it("following a new item at the end holds the end too", async () => {
     const page = await open();
     await waitFor(() => expect(page.bottoms()).toBe(1));

@@ -45,9 +45,9 @@ button, the opened box, a tall draft and a simulated keyboard, and take the
 click at its centre; with two arriving, it lands on the first of them, or on
 the comment box when they are too short to bring the first any higher.
 A comment arriving is followed only from the end of the conversation: a
-reader half a screen up, one the page grew away from with no scroll, and one
-sending their own comment from up there stay where they are, while one at the
-end typing a reply is followed.
+reader half a screen up, one the page grew away from with no scroll, one
+sending their own comment from up there, and one moved off the end with no
+input stay where they are, while one at the end typing a reply is followed.
 
 --keep  Retain isolated artifacts under .tmp/ after cleanup.
 Exit codes: 0 pass, 1 assertion, 2 infrastructure error.
@@ -1201,9 +1201,10 @@ function readFollow(arrived) {
 
 /**
  * New comments are followed only from the end of the conversation (T-180):
- * a reader half a screen up, one the list grew away from with no scroll, and
- * one sending their own comment from up there all stay where they are, while
- * one at the end, typing a reply, is followed. Someone else's comment arrives
+ * a reader half a screen up, one the list grew away from with no scroll, one
+ * sending their own comment from up there, and one the page was moved off the
+ * end of with no input all stay where they are, while one at the end, typing
+ * a reply, is followed. Someone else's comment arrives
  * the way it does from the server, sent without an Origin header.
  */
 async function followCases(context, fixture, viewport, label, dir) {
@@ -1379,6 +1380,20 @@ async function followCases(context, fixture, viewport, label, dir) {
     const after = await read();
     // Whether New messages shows for it is not this case's to say.
     return { ok: kept(before, after), detail: { before, after } };
+  });
+
+  // iOS scrolling to the top at a tap on the status bar, find in page
+  // scrolling to a match: the opening's landing hears no input from either.
+  await run("moved-no-input", async (page, _io, read) => {
+    await evaluate(page, (by) => window.scrollBy(0, -by), 2 * h);
+    await sleep(600);
+    const before = await read();
+    const id = await arrive(page, `Arrives after the ${label} page moved`);
+    const after = await read(id);
+    return {
+      ok: Math.abs(after.scrollY - before.scrollY) <= 1 && after.pill,
+      detail: { before, after },
+    };
   });
   return out;
 }
