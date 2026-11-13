@@ -12,11 +12,13 @@ import {
 } from "../src/db/project-schema.ts";
 import {
   issueAddresses,
+  issueBlocks,
   issueMoves,
   projects,
   users,
 } from "../src/db/system-schema.ts";
 import { routeInfoOf } from "../src/services/access.ts";
+import { announceBlockChanges, repairBlocks } from "../src/services/blocks.ts";
 import { startHousekeeping } from "../src/services/housekeeping.ts";
 import type { ActivityImportedMaxIds } from "../src/services/move/copy.ts";
 import { sweepMoves } from "../src/services/move/execute.ts";
@@ -938,6 +940,225 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
       );
       expect(targets.size).toBe(1);
       expect([...targets][0]).toBe(`${ids[A]}/${back.moved_to.number}`);
+    });
+
+    /** `blocked` waits for `blocker`, both in A; the edge as stored. */
+    const blockIn = async (
+      t: TestApp,
+      who: Who,
+      blocked: { number: number },
+      blocker: { number: number },
+    ) => {
+      const res = await req(
+        t,
+        `/projects/${A}/issues/${blocked.number}/blocked-by`,
+        who,
+        { method: "POST", body: JSON.stringify({ ref: `#${blocker.number}` }) },
+      );
+      expect(res.status).toBe(200);
+      const edgeId = (await json(res)).blocked_by[0].edge_id as number;
+      const [edge] = await t.ctx.router
+        .system()
+        .select()
+        .from(issueBlocks)
+        .where(eq(issueBlocks.id, edgeId));
+      if (edge === undefined) throw new Error("the edge was not stored");
+      return edge;
+    };
+
+    const eventsOn = async (
+      t: TestApp,
+      who: Who,
+      slug: string,
+      number: number,
+      type: string,
+    ) => {
+      const res = await req(
+        t,
+        `/projects/${slug}/issues/${number}/timeline?types=${type}&limit=100`,
+        who,
+      );
+      expect(res.status).toBe(200);
+      return (await json(res)).items as unknown[];
+    };
+
+    it("sends a clearing that came while the blocked card was frozen once the move is done", async () => {
+      const { t, admin } = await app();
+      const blocker = await createIssue(t, admin, A, "ships mid-move");
+      const blocked = await createIssue(t, admin, A, "frozen when it clears");
+      await blockIn(t, admin, blocked, blocker);
+      const statuses = await json(
+        await req(t, `/projects/${A}/statuses`, admin),
+      );
+      const done = statuses.find((s: { name: string }) => s.name === "Done");
+
+      const paused = pauseAfter(t, 3);
+      const moving = move(t, admin, A, blocked.number, B);
+      try {
+        await reach(paused.reached, moving);
+        const shipped = await req(
+          t,
+          `/projects/${A}/issues/${blocker.number}`,
+          admin,
+          { method: "PATCH", body: JSON.stringify({ status_id: done.id }) },
+        );
+        expect(shipped.status).toBe(200);
+        paused.release();
+        const moved = await moving;
+        expect(moved.status).toBe(200);
+        const landed = (await json(moved)).moved_to.number as number;
+
+        await repairBlocks(t.ctx);
+        expect(
+          await eventsOn(t, admin, B, landed, "block_cleared"),
+        ).toHaveLength(1);
+      } finally {
+        // The move ends before the app is closed, whatever failed.
+        paused.release();
+        await Promise.allSettled([moving]);
+      }
+    });
+
+    it("lands a clearing on the copy once the move has published it", async () => {
+      const { t, admin } = await app();
+      const blocker = await createIssue(t, admin, A, "ships mid-move");
+      const blocked = await createIssue(
+        t,
+        admin,
+        A,
+        "published when it clears",
+      );
+      // Read before the move, as `evaluateBlockerStatus` may have read it.
+      const edge = await blockIn(t, admin, blocked, blocker);
+      const me = await json(await req(t, "/me", admin));
+
+      const paused = pauseAfter(t, 4);
+      const moving = move(t, admin, A, blocked.number, B);
+      try {
+        await reach(paused.reached, moving);
+        await announceBlockChanges(t.ctx, [{ edge, cleared: true }], me.id);
+        paused.release();
+        const moved = await moving;
+        expect(moved.status).toBe(200);
+        const landed = (await json(moved)).moved_to.number as number;
+
+        expect(
+          await eventsOn(t, admin, B, landed, "block_cleared"),
+        ).toHaveLength(1);
+      } finally {
+        // The move ends before the app is closed, whatever failed.
+        paused.release();
+        await Promise.allSettled([moving]);
+      }
+    });
+
+    it("keeps a block event on the card when its move fails and is undone", async () => {
+      const { t, admin } = await app(2);
+      const blocker = await createIssue(t, admin, A, "drops its edge");
+      const blocked = await createIssue(t, admin, A, "frozen, then thawed");
+      const edge = await blockIn(t, admin, blocked, blocker);
+      expect((await move(t, admin, A, blocked.number, B)).status).toBe(500);
+
+      // Dropped from the blocker's end: the frozen card takes no write.
+      const dropped = await req(
+        t,
+        `/projects/${A}/issues/${blocker.number}/blocks/${edge.id}`,
+        admin,
+        { method: "DELETE" },
+      );
+      expect(dropped.status).toBe(204);
+      expect(await sweepMoves(t.ctx)).toBe(1);
+      expect(
+        await eventsOn(t, admin, A, blocked.number, "block_removed"),
+      ).toHaveLength(1);
+    });
+
+    /** Move `card` to the status called `name`. */
+    const setStatus = async (
+      t: TestApp,
+      who: Who,
+      card: { number: number },
+      name: string,
+    ) => {
+      const statuses = await json(await req(t, `/projects/${A}/statuses`, who));
+      const status = statuses.find((s: { name: string }) => s.name === name);
+      const res = await req(t, `/projects/${A}/issues/${card.number}`, who, {
+        method: "PATCH",
+        body: JSON.stringify({ status_id: status.id }),
+      });
+      expect(res.status).toBe(200);
+    };
+
+    it("lands a clearing that came while the blocked card was frozen on the copy, once", async () => {
+      const { t, admin } = await app();
+      const blocker = await createIssue(t, admin, A, "ships mid-move");
+      const blocked = await createIssue(t, admin, A, "frozen before the copy");
+      const edge = await blockIn(t, admin, blocked, blocker);
+
+      const paused = pauseAfter(t, 2);
+      const moving = move(t, admin, A, blocked.number, B);
+      try {
+        await Promise.race([paused.reached, moving]);
+        await setStatus(t, admin, blocker, "Done");
+        paused.release();
+        const moved = await moving;
+        expect(moved.status).toBe(200);
+        const landed = (await json(moved)).moved_to.number as number;
+
+        expect(
+          await eventsOn(t, admin, B, landed, "block_cleared"),
+        ).toHaveLength(1);
+        // The sweep finds it there, and only marks it as told.
+        await repairBlocks(t.ctx);
+        expect(
+          await eventsOn(t, admin, B, landed, "block_cleared"),
+        ).toHaveLength(1);
+        const [after] = await t.ctx.router
+          .system()
+          .select()
+          .from(issueBlocks)
+          .where(eq(issueBlocks.id, edge.id));
+        expect(after?.clearedNotifiedAt).not.toBeNull();
+      } finally {
+        paused.release();
+        await Promise.allSettled([moving]);
+      }
+    });
+
+    it("shows the clearing before a reblock that both came while the blocked card was frozen", async () => {
+      const { t, admin } = await app();
+      const blocker = await createIssue(t, admin, A, "ships, then reopens");
+      const blocked = await createIssue(t, admin, A, "frozen through both");
+      await blockIn(t, admin, blocked, blocker);
+
+      const paused = pauseAfter(t, 2);
+      const moving = move(t, admin, A, blocked.number, B);
+      try {
+        await Promise.race([paused.reached, moving]);
+        await setStatus(t, admin, blocker, "Done");
+        await setStatus(t, admin, blocker, "Todo");
+        paused.release();
+        const moved = await moving;
+        expect(moved.status).toBe(200);
+        const landed = (await json(moved)).moved_to.number as number;
+
+        await repairBlocks(t.ctx);
+        const events = (await eventsOn(
+          t,
+          admin,
+          B,
+          landed,
+          "block_added,block_cleared,block_reblocked",
+        )) as Array<{ event_type: string }>;
+        expect(events.map((e) => e.event_type)).toEqual([
+          "block_added",
+          "block_cleared",
+          "block_reblocked",
+        ]);
+      } finally {
+        paused.release();
+        await Promise.allSettled([moving]);
+      }
     });
   },
 );

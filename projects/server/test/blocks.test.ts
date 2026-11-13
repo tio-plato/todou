@@ -1,8 +1,13 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { issueEvents } from "../src/db/project-schema.ts";
 import { issueBlocks } from "../src/db/system-schema.ts";
-import { accessibleProjectRows, routeInfoOf } from "../src/services/access.ts";
-import { repairBlocks } from "../src/services/blocks.ts";
+import {
+  accessibleProjectRows,
+  getProjectByRef,
+  routeInfoOf,
+} from "../src/services/access.ts";
+import { announceBlockChanges, repairBlocks } from "../src/services/blocks.ts";
 import { visibleProjects } from "../src/services/cross-references.ts";
 import { inboxRowState } from "../src/services/inbox.ts";
 import { readPrefs } from "../src/services/prefs.ts";
@@ -775,19 +780,61 @@ describe("issue block edges T-377", () => {
     await setStatus(PA, blocker, "Shipped");
     const edgeId = (await issue(PA, blocked)).blocked_by[0].edge_id as number;
 
-    // The verdict stands; only the announcement was lost. This is the state
-    // the two columns exist to make findable.
+    // The verdict stands; only the announcement was lost: no stamp, and no
+    // entry on the card. This is the state the two columns exist to make
+    // findable.
+    await t.ctx.router
+      .system()
+      .update(issueBlocks)
+      .set({ clearedNotifiedAt: null })
+      .where(eq(issueBlocks.id, edgeId));
+    const project = await getProjectByRef(t.ctx, PA);
+    if (!project) throw new Error(`no project ${PA}`);
+    await (await t.ctx.router.forProject(routeInfoOf(project)))
+      .delete(issueEvents)
+      .where(
+        and(
+          eq(issueEvents.projectId, project.id),
+          eq(issueEvents.type, "block_cleared"),
+          sql`${issueEvents.payload} ->> 'edge_id' = ${String(edgeId)}`,
+        ),
+      );
+    expect(
+      (await timelineTypes(PA, blocked)).filter((t) => t === "block_cleared"),
+    ).toHaveLength(0);
+
+    const result = await repairBlocks(t.ctx);
+    expect(result.announced).toBeGreaterThan(0);
+    expect(
+      (await timelineTypes(PA, blocked)).filter((t) => t === "block_cleared"),
+    ).toHaveLength(1);
+  });
+
+  it("marks a clearing that landed without its stamp as told, and sends it once", async () => {
+    expect((await setClearLine(PA, "Shipped")).status).toBe(200);
+    const blocked = await createIssue(PA, "heard, not stamped");
+    const blocker = await createIssue(PA, "shipped once");
+    await block(PA, blocked, "blocked-by", `#${blocker}`);
+    await setStatus(PA, blocker, "Shipped");
+    const edgeId = (await issue(PA, blocked)).blocked_by[0].edge_id as number;
+
+    // The entry reached the card; only the stamp after it was lost.
     await t.ctx.router
       .system()
       .update(issueBlocks)
       .set({ clearedNotifiedAt: null })
       .where(eq(issueBlocks.id, edgeId));
 
-    const result = await repairBlocks(t.ctx);
-    expect(result.announced).toBeGreaterThan(0);
+    await repairBlocks(t.ctx);
     expect(
       (await timelineTypes(PA, blocked)).filter((t) => t === "block_cleared"),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
+    const [edge] = await t.ctx.router
+      .system()
+      .select()
+      .from(issueBlocks)
+      .where(eq(issueBlocks.id, edgeId));
+    expect(edge?.clearedNotifiedAt).not.toBeNull();
   });
 
   it("carries edges along when the card moves to another project", async () => {
@@ -814,6 +861,43 @@ describe("issue block edges T-377", () => {
       project: PB,
       number: landed,
     });
+  });
+
+  // `evaluateBlockerStatus` reads the edge, then `announceBlockChanges`
+  // lands the event at the address it read. The edge here is that read, and
+  // the move comes between the two.
+  it("lands a clearing on the card's new address when it moved after the verdict was read", async () => {
+    const blocked = await createIssue(PA, "moves before it hears");
+    const blocker = await createIssue(PA, "ships meanwhile");
+    expect((await block(PA, blocked, "blocked-by", `#${blocker}`)).status).toBe(
+      200,
+    );
+    const edgeId = (await issue(PA, blocked)).blocked_by[0].edge_id as number;
+    const [edge] = await t.ctx.router
+      .system()
+      .select()
+      .from(issueBlocks)
+      .where(eq(issueBlocks.id, edgeId));
+    if (edge === undefined) throw new Error("the edge was not stored");
+
+    const res = await t.app.request(
+      `/api/projects/${PA}/issues/${blocked}/move`,
+      {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ to_project: PB }),
+      },
+    );
+    expect(res.status).toBe(200);
+    const landed = (await json(res)).moved_to.number as number;
+
+    const me = await json(
+      await t.app.request("/api/me", { headers: { cookie } }),
+    );
+    await announceBlockChanges(t.ctx, [{ edge, cleared: true }], me.id);
+    expect(
+      (await timelineTypes(PB, landed)).filter((t) => t === "block_cleared"),
+    ).toHaveLength(1);
   });
 
   it("takes its edges with it when the project is deleted", async () => {

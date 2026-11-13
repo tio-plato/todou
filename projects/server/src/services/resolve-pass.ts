@@ -889,12 +889,13 @@ class Resolver {
  * order, and locks nothing else in the tombstone's project before it:
  * whatever else locks a tombstone is a write about to be refused by the
  * gate, which while it holds it waits only for other cards of the
- * tombstone's project, none of which the move holds, or a write attaching a
+ * tombstone's project, none of which the move holds, a write attaching a
  * draft that was on the card before it moved, which waits only on rows of
- * that project, and references skip tombstones. And a single autocommit
+ * that project, or a block event, which on a tombstone locks nothing else
+ * and ends at once; references skip tombstones. And a single autocommit
  * statement that writes one row under a card without the card's lock (a
- * read position, a mute, a block event, a cross-project reference, a
- * direct-upload request or its expiry) holds nothing to wait with.
+ * read position, a mute, a direct-upload request or its expiry) holds
+ * nothing to wait with.
  *
  * The one statement sorts the rows before it locks them: `ORDER BY` and the
  * locking clause belong to the same query, never a subquery. A card it
@@ -1040,6 +1041,11 @@ export async function recordIssueMentions(
  * that transaction. Best-effort by consequence: a target that fails costs one
  * timeline entry, never the content that mentioned it, and the next edit
  * replays the whole set.
+ *
+ * Each target project gets a transaction of its own that locks the cards
+ * through `lockIssueRows` before it writes, as a reference in the same
+ * project does, so a card that is being moved or has moved away by the time
+ * the lock is granted gets no event.
  */
 export async function recordCrossReferences(
   ctx: AppContext,
@@ -1067,21 +1073,11 @@ export async function recordCrossReferences(
       if (target === undefined) continue;
       // Held only while its events are written: a text can reference cards
       // in many projects.
-      const created = await ctx.router.withProject(
-        routeInfoOf(target),
-        async (db) => {
-          const cards = await db
-            .select({ id: issues.id, number: issues.number })
-            .from(issues)
-            .where(
-              and(
-                eq(issues.projectId, target.id),
-                inArray(issues.number, numbers),
-                referenceable,
-              ),
-            );
+      const created = await ctx.router.withProject(routeInfoOf(target), (db) =>
+        db.transaction(async (tx) => {
+          const cards = await lockIssueRows(tx, target, null, numbers, []);
           return insertReferenceEvents(
-            db,
+            tx,
             target,
             project,
             actor.id,
@@ -1089,7 +1085,7 @@ export async function recordCrossReferences(
             cards,
             agentContext,
           );
-        },
+        }),
       );
       for (const event of created) {
         ctx.bus.publish(target.id, {

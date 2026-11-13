@@ -373,6 +373,56 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
     }
   });
 
+  // The holder freezes Y the way a move to another database does: it holds
+  // the card, then marks it. The clearing for Y waits for the card and must
+  // then see the mark: it may land on the frozen card, but not be stamped as
+  // told, or the repair sweep would never send it again once the move's last
+  // step empties the card.
+  it("a clearing checks the card it lands on under that card's lock", async () => {
+    const p = await project();
+    const x = await card(p.slug, "X");
+    const y = await card(p.slug, "Y");
+    await block(p.slug, y, x);
+    const statuses = await json(
+      await send("GET", `/projects/${p.slug}/statuses`),
+    );
+    const done = statuses.find((s: { name: string }) => s.name === "Done");
+
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query("SELECT id FROM issues WHERE id = $1 FOR UPDATE", [
+        y.id,
+      ]);
+      pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
+        status_id: done.id,
+      });
+      await waitForLockWaiters(1);
+      await holder.query(
+        "UPDATE issues SET moving_since = now() WHERE id = $1",
+        [y.id],
+      );
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(200);
+      const cleared = await observer.query<{ count: string }>(
+        `SELECT count(*) FROM issue_events
+         WHERE issue_id = $1 AND type = 'block_cleared'`,
+        [y.id],
+      );
+      expect(Number(cleared.rows[0]?.count)).toBe(1);
+      const edge = await observer.query<{ told: Date | null }>(
+        `SELECT cleared_notified_at AS told FROM issue_blocks
+         WHERE blocked_project_id = $1 AND blocked_number = $2`,
+        [p.id, y.number],
+      );
+      expect(edge.rows).toHaveLength(1);
+      expect(edge.rows[0]?.told).toBeNull();
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
   it("the draft reaper skips drafts a write holds", async () => {
     const p = await project();
     const x = await card(p.slug, "X");
