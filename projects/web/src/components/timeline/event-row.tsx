@@ -865,12 +865,13 @@ export function EventRow({
           />{" "}
         </>
       )}
-      {/* The padding/negative-margin pair buys vertical room inside the
-          clipping box — a UserChip's bot badge is positioned outside its
-          line box, and truncate's overflow:hidden would shear it off —
-          while leaving the row exactly as tall as before. */}
+      {/* The padding/negative-margin pair buys room inside the clipping
+          box — a UserChip's bot badge is positioned outside its line box,
+          and a link that opens the summary has its focus ring outside its
+          own box, and truncate's overflow:hidden would shear both off —
+          while leaving the row exactly as tall and as wide as before. */}
       <span
-        className="min-w-0 flex-1 wrap-anywhere sm:-my-1 sm:truncate sm:py-1"
+        className="min-w-0 flex-1 wrap-anywhere sm:-mx-1 sm:-my-1 sm:truncate sm:px-1 sm:py-1"
         title={text}
       >
         {node}

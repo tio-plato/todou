@@ -731,8 +731,10 @@ export function Sidebar({
   return (
     // Sticky on large screens (T-63): the sidebar keeps Status and the
     // Latest spec section in view while the timeline scrolls; when taller
-    // than the viewport it scrolls internally.
-    <aside className="min-w-0 space-y-3 text-sm lg:sticky lg:top-20 lg:max-h-[calc(100vh-6rem)] lg:self-start lg:overflow-y-auto">
+    // than the viewport it scrolls internally. That scroll clips, so the
+    // padding/negative-margin pair gives the focus rings of controls on its
+    // sides and bottom 4px to draw in without moving the column.
+    <aside className="min-w-0 space-y-3 text-sm lg:sticky lg:top-20 lg:-mx-1 lg:max-h-[calc(100vh-6rem)] lg:self-start lg:overflow-y-auto lg:px-1 lg:pb-1">
       <SidebarSection name="status" title="Status">
         {trashed ? (
           <StatusPill status={issue.status} />

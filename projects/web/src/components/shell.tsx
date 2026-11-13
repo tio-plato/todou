@@ -177,8 +177,10 @@ export function AppShell({
               on the project name every time (T-454). `min-w-0` is still what
               lets that name truncate once the box has nothing left to give,
               and `overflow-hidden` makes what is left over clip rather than
-              lie on top of the box. */}
-              <div className="flex min-w-0 flex-auto shrink-[1000] items-center gap-2 overflow-hidden">
+              lie on top of the box. That clip would cut the focus rings of
+              the links and buttons inside too: `p-1` gives them 4px to draw
+              in, and `-m-1` takes it back out of the row. */}
+              <div className="-m-1 flex min-w-0 flex-auto shrink-[1000] items-center gap-2 overflow-hidden p-1">
                 <Link
                   to="/projects"
                   className="flex shrink-0 items-center gap-2 font-semibold"

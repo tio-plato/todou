@@ -1664,13 +1664,16 @@ function SpecViewBody({
           which is what T-190 §5 wanted from the rail. */}
       <div ref={layoutRef} className="grid gap-6 lg:grid-cols-[260px_1fr]">
         {/* self-start, or the grid would stretch the rail to the row's
-            height and leave sticky nothing to travel through. */}
+            height and leave sticky nothing to travel through. `p-1` is room
+            for the file links' focus rings inside the scroll's clip, and
+            `-m-1` takes it back out of the layout; `top` and `maxHeight`
+            count the border box, so they give back the 4px on each end. */}
         <aside
           style={{
-            top: stickyTop + 16,
-            maxHeight: `calc(100vh - ${stickyTop + 32}px)`,
+            top: stickyTop + 12,
+            maxHeight: `calc(100vh - ${stickyTop + 24}px)`,
           }}
-          className="hidden self-start space-y-1 overflow-y-auto overscroll-contain lg:sticky lg:block"
+          className="-m-1 hidden self-start space-y-1 overflow-y-auto overscroll-contain p-1 lg:sticky lg:block"
         >
           <SpecFileList
             entries={railEntries}
@@ -2410,7 +2413,7 @@ function SpecUnfoldableFile({
         type="button"
         aria-expanded={open}
         onClick={() => setOpen(!open)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-muted-foreground hover:bg-muted/40"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-muted-foreground hover:bg-muted/40 focus-visible:-outline-offset-2"
       >
         <ChevronRightIcon
           className={cn(

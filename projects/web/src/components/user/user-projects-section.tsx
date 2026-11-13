@@ -82,7 +82,7 @@ export function UserProjectsSection({ login }: { login: string }) {
               <Link
                 to="/projects/$slug"
                 params={{ slug: item.project.slug }}
-                className="flex items-center gap-2.5 px-3 py-2 transition-colors hover:bg-muted/50"
+                className="flex items-center gap-2.5 px-3 py-2 transition-colors hover:bg-muted/50 focus-visible:-outline-offset-2"
               >
                 <ProjectIcon
                   aria-hidden="true"

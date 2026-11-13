@@ -491,10 +491,12 @@ export function BoardCardContent({
            out of the parent's flow, so the card height is unchanged (T-361).
            The top edge does the same for the live dot and its ring, which
            reach 4px above a watching avatar (T-540): `pt-1` moves the clip
-           up and `mt-0.5` is the `mt-1.5` that was there, less those 4px. */
+           up and `mt-0.5` is the `mt-1.5` that was there, less those 4px.
+           `px-1` and `-mx-1` do the same on both sides, where the focus ring
+           of the first or last chip on a line would otherwise be cut. */
         <div
           data-card-meta=""
-          className="mt-0.5 flex flex-wrap items-center gap-1.5 overflow-hidden pt-1 pb-1 -mb-1"
+          className="-mx-1 mt-0.5 flex flex-wrap items-center gap-1.5 overflow-hidden px-1 pt-1 pb-1 -mb-1"
         >
           {placement === "after" && (
             <span className="text-xs text-muted-foreground">{ref}</span>
