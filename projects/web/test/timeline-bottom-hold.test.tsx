@@ -96,8 +96,10 @@ function TimelineWithPending() {
  * the timeline the way the server does past a page: the newest 50 items to the
  * tail, the first 50 to the head, and what lies between them unloaded.
  */
-async function open(hash = "", { paged = false } = {}) {
-  const items: TimelineItem[] = [comment(101), comment(102), comment(103)];
+async function open(hash = "", { paged = false, initial = 3 } = {}) {
+  const items: TimelineItem[] = Array.from({ length: initial }, (_, i) =>
+    comment(101 + i),
+  );
   const reads = { refused: false };
   vi.stubGlobal("fetch", (async (input: unknown) => {
     const url = String(input);
@@ -165,7 +167,7 @@ async function open(hash = "", { paged = false } = {}) {
   const view = renderWithProviders(<TimelineWithPending />, client, {
     initialEntry: `/${hash}`,
   });
-  await view.findByText("body 103");
+  await view.findByText(`body ${100 + initial}`);
   const refetch = () =>
     act(() =>
       client.refetchQueries({ queryKey: ["timeline", "p", 7, "tail"] }),
@@ -305,6 +307,20 @@ function clickNewMessages(view: ReturnType<typeof renderWithProviders>) {
   const button = view.getByRole("button", { name: NEW_MESSAGES });
   fireEvent.pointerDown(button);
   fireEvent.click(button);
+}
+
+/**
+ * What New messages is called while it shows, its count in its name; null
+ * while it does not. Its look stays on the hidden layer, so a name alone
+ * cannot tell a button up from one faded out.
+ */
+function shownAs(view: ReturnType<typeof renderWithProviders>) {
+  const button = view.queryByRole("button", { name: NEW_MESSAGES });
+  return button
+    ?.closest("[data-scroll-to-bottom]")
+    ?.getAttribute("data-state") === "shown"
+    ? (button.getAttribute("aria-label") ?? button.textContent?.trim() ?? null)
+    : null;
 }
 
 /** The number New messages shows beside its name, or null with none. */
@@ -617,9 +633,7 @@ describe("landings on the end of the timeline (T-527)", () => {
     await page.refetch();
     const group = await page.view.findByTestId("event-group");
     // Events alone are announced with no number: only comments are counted.
-    expect(
-      page.view.queryByRole("button", { name: "New messages" }),
-    ).not.toBeNull();
+    expect(shownAs(page.view)).toBe("New messages");
     expect(countShown(page.view)).toBeNull();
     clickNewMessages(page.view);
     expect(page.flashed()).toEqual([group.parentElement]);
@@ -670,14 +684,10 @@ describe("landings on the end of the timeline (T-527)", () => {
     });
     await page.refetch();
     await page.view.findByText("body 105");
-    expect(
-      page.view.queryByRole("button", { name: "2 new messages" }),
-    ).not.toBeNull();
+    expect(shownAs(page.view)).toBe("2 new messages");
     expect(countShown(page.view)).toBe("2");
     await page.arrive(107);
-    expect(
-      page.view.queryByRole("button", { name: "3 new messages" }),
-    ).not.toBeNull();
+    expect(shownAs(page.view)).toBe("3 new messages");
     expect(countShown(page.view)).toBe("3");
   });
 
@@ -690,9 +700,7 @@ describe("landings on the end of the timeline (T-527)", () => {
     await page.refetch();
     await page.pending([]);
     await page.arrive(105);
-    expect(
-      page.view.queryByRole("button", { name: "1 new message" }),
-    ).not.toBeNull();
+    expect(shownAs(page.view)).toBe("1 new message");
     clickNewMessages(page.view);
     expect(page.flashed().map((el) => el.id)).toEqual(["comment-105"]);
   });
@@ -709,9 +717,7 @@ describe("landings on the end of the timeline (T-527)", () => {
     page.items.push(own(106));
     await page.refetch();
     await page.pending([]);
-    expect(
-      page.view.queryByRole("button", { name: "1 new message" }),
-    ).not.toBeNull();
+    expect(shownAs(page.view)).toBe("1 new message");
     clickNewMessages(page.view);
     expect(page.flashed().map((el) => el.id)).toEqual(["comment-105"]);
   });
@@ -743,9 +749,7 @@ describe("landings on the end of the timeline (T-527)", () => {
     for (let id = 104; id < 204; id++) page.items.push(comment(id));
     await page.refetch();
     await page.view.findByText("body 203");
-    expect(
-      page.view.queryByRole("button", { name: "100 new messages" }),
-    ).not.toBeNull();
+    expect(shownAs(page.view)).toBe("100 new messages");
     expect(countShown(page.view)).toBe("99+");
   });
 
@@ -769,34 +773,31 @@ describe("landings on the end of the timeline (T-527)", () => {
     page.readerAt(0);
     await page.arrive(104);
     await page.arrive(105);
-    expect(
-      page.view.queryByRole("button", { name: "2 new messages" }),
-    ).not.toBeNull();
+    expect(shownAs(page.view)).toBe("2 new messages");
     // The start of the first comes into view, between header and composer.
     placeAt((el) => el.id === "comment-104", { top: 300, height: 100 });
     page.readerAt(100);
-    expect(
-      page.view.queryByRole("button", { name: "1 new message" }),
-    ).not.toBeNull();
+    expect(shownAs(page.view)).toBe("1 new message");
     placeAt((el) => el.id === "comment-105", { top: 400, height: 100 });
     page.readerAt(200);
     expect(newMessagesShown(page.view)).toBe(false);
   });
 
-  it("does not count an arrival whose start is already on screen", async () => {
+  it("counts an arrival below the screen, not one whose start is already on it", async () => {
     const page = await open();
     await waitFor(() => expect(page.bottoms()).toBe(1));
     page.readerAt(0);
+    // Below the composer: not in view yet.
+    placeAt((el) => el.id === "comment-104", {
+      top: VIEWPORT + 100,
+      height: 100,
+    });
     await page.arrive(104);
-    expect(
-      page.view.queryByRole("button", { name: "1 new message" }),
-    ).not.toBeNull();
+    expect(shownAs(page.view)).toBe("1 new message");
     // On screen as it arrives, and no scroll after it.
     placeAt((el) => el.id === "comment-105", { top: 300, height: 100 });
     await page.arrive(105);
-    expect(
-      page.view.queryByRole("button", { name: "1 new message" }),
-    ).not.toBeNull();
+    expect(shownAs(page.view)).toBe("1 new message");
   });
 
   it("lands on the first new comment not yet seen", async () => {
@@ -811,24 +812,43 @@ describe("landings on the end of the timeline (T-527)", () => {
     expect(page.flashed().map((el) => el.id)).toEqual(["comment-105"]);
   });
 
+  it("counts what arrives behind a fold while the item last seen is in the tail", async () => {
+    // 120 in all: the first 50 in the head, the newest 50 in the tail.
+    const page = await open("", { paged: true, initial: 120 });
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    await page.view.findByText("body 150");
+    page.readerAt(0);
+    await page.arrive(221);
+    await page.arrive(222);
+    expect(shownAs(page.view)).toBe("2 new messages");
+  });
+
+  it("counts what arrives once the head and the tail meet, with no fold", async () => {
+    const page = await open("", { paged: true, initial: 40 });
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(0);
+    // 70 in all: the item last seen is in the head, and nothing is folded.
+    for (let id = 141; id < 171; id++) page.items.push(comment(id));
+    await page.refetch();
+    await page.view.findByText("body 170");
+    await page.view.findByText("body 101");
+    expect(shownAs(page.view)).toBe("30 new messages");
+  });
+
   it("writes no number once the arrivals outgrow what is loaded", async () => {
     const page = await open("", { paged: true });
     await waitFor(() => expect(page.bottoms()).toBe(1));
     page.readerAt(0);
     await page.arrive(104);
     await page.arrive(105);
-    expect(
-      page.view.queryByRole("button", { name: "2 new messages" }),
-    ).not.toBeNull();
+    expect(shownAs(page.view)).toBe("2 new messages");
     // 123 in all: the tail holds the newest 50, the head the first 50, and
     // the 23 between them, after the last item seen, are not loaded.
     for (let id = 106; id < 224; id++) page.items.push(comment(id));
     await page.refetch();
     await page.view.findByText("body 223");
     await page.view.findByText("body 150");
-    expect(
-      page.view.queryByRole("button", { name: "New messages" }),
-    ).not.toBeNull();
+    expect(shownAs(page.view)).toBe("New messages");
     expect(countShown(page.view)).toBeNull();
     clickNewMessages(page.view);
     expect(page.flashed().map((el) => el.id)).toEqual(["comment-104"]);
@@ -846,9 +866,7 @@ describe("landings on the end of the timeline (T-527)", () => {
     await page.refetch();
     await waitFor(() => expect(page.view.queryByText("body 103")).toBeNull());
     // With nothing to count from, no number.
-    expect(
-      page.view.queryByRole("button", { name: "New messages" }),
-    ).not.toBeNull();
+    expect(shownAs(page.view)).toBe("New messages");
     clickNewMessages(page.view);
     expect(page.bottoms()).toBe(2);
   });
