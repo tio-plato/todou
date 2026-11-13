@@ -24,38 +24,49 @@ import { renderWithProviders, testQueryClient } from "./render.tsx";
  * is measured in a browser.
  */
 
-const author = {
+/** The reader, whose own comments and events are never news to them. */
+const viewer = {
   id: 1,
-  login: "alice",
-  display_name: "Alice",
+  login: "user",
+  display_name: "User",
   kind: "human" as const,
   avatar_url: null,
   owner: null,
 };
+const alice = { ...viewer, id: 2, login: "alice", display_name: "Alice" };
 
-const comment = (id: number): TimelineComment => ({
-  type: "comment",
-  id,
-  author,
-  body: `body ${id}`,
-  component: null,
-  created_at: "2026-09-08T10:00:00Z",
-  edited_at: null,
-  resolved_at: null,
-  hidden_at: null,
-  agent_context: null,
-});
+const commentBy =
+  (author: typeof viewer) =>
+  (id: number): TimelineComment => ({
+    type: "comment",
+    id,
+    author,
+    body: `body ${id}`,
+    component: null,
+    created_at: "2026-09-08T10:00:00Z",
+    edited_at: null,
+    resolved_at: null,
+    hidden_at: null,
+    agent_context: null,
+  });
+/** Someone else's comment. */
+const comment = commentBy(alice);
+/** The reader's own. */
+const own = commentBy(viewer);
 
 /** One of two labels added in a burst, which the timeline folds into a group. */
-const labelAdded = (id: number): TimelineEvent => ({
-  type: "event",
-  id,
-  event_type: "label_added",
-  actor: author,
-  payload: { label: { id, name: `label-${id}`, color: "#0f0" } },
-  created_at: "2026-09-08T10:00:00Z",
-  agent_context: null,
-});
+const labelAddedBy =
+  (actor: typeof viewer) =>
+  (id: number): TimelineEvent => ({
+    type: "event",
+    id,
+    event_type: "label_added",
+    actor,
+    payload: { label: { id, name: `label-${id}`, color: "#0f0" } },
+    created_at: "2026-09-08T10:00:00Z",
+    agent_context: null,
+  });
+const labelAdded = labelAddedBy(alice);
 
 const HEIGHT = 10_000;
 const VIEWPORT = 800;
@@ -71,7 +82,7 @@ function TimelineWithPending() {
       slug="p"
       issueNumber={7}
       pendingComments={pending}
-      viewer={{ id: 1, isAdmin: false, role: "writer" }}
+      viewer={{ id: viewer.id, isAdmin: false, role: "writer" }}
     />
   );
 }
@@ -218,6 +229,9 @@ function placeAt(
   );
 }
 
+/** New messages, named by its count when it shows one. */
+const NEW_MESSAGES = /^(New messages|\d+ new messages?)$/;
+
 /**
  * New messages is up: the button, in a layer that is showing. The layer stays
  * mounted, and the button in it keeps its look while it fades out.
@@ -225,7 +239,7 @@ function placeAt(
 function newMessagesShown(view: ReturnType<typeof renderWithProviders>) {
   return (
     view
-      .queryByRole("button", { name: "New messages" })
+      .queryByRole("button", { name: NEW_MESSAGES })
       ?.closest("[data-scroll-to-bottom]")
       ?.getAttribute("data-state") === "shown"
   );
@@ -277,7 +291,7 @@ function trackWindowListeners() {
 
 /** A click as a browser delivers it: the press first, which ends a hold. */
 function clickNewMessages(view: ReturnType<typeof renderWithProviders>) {
-  const button = view.getByRole("button", { name: "New messages" });
+  const button = view.getByRole("button", { name: NEW_MESSAGES });
   fireEvent.pointerDown(button);
   fireEvent.click(button);
 }
@@ -481,7 +495,7 @@ describe("landings on the end of the timeline (T-527)", () => {
     const page = await open();
     await waitFor(() => expect(page.bottoms()).toBe(1));
     page.readerAt(HEIGHT - VIEWPORT - 400);
-    await page.pending([{ key: 1, comment: comment(104) }]);
+    await page.pending([{ key: 1, comment: own(104) }]);
     expect(page.bottoms()).toBe(1);
   });
 
@@ -531,9 +545,9 @@ describe("landings on the end of the timeline (T-527)", () => {
       height: 3000,
     });
     page.grow(3000);
-    await page.pending([{ key: 1, comment: comment(104) }]);
+    await page.pending([{ key: 1, comment: own(104) }]);
     expect(page.bottoms()).toBe(2);
-    page.items.push(comment(104));
+    page.items.push(own(104));
     await page.refetch();
     await page.pending([]);
     expect(newMessagesShown(page.view)).toBe(false);
@@ -884,7 +898,7 @@ describe("the scroll-to-bottom button", () => {
     );
     await page.arrive(104);
     expect(newMessagesShown(page.view)).toBe(true);
-    const button = page.view.getByRole("button", { name: "New messages" });
+    const button = page.view.getByRole("button", { name: NEW_MESSAGES });
     expect(button.querySelector(".lucide-arrow-up")).not.toBeNull();
     clickNewMessages(page.view);
     expect(page.flashed().map((el) => el.id)).toEqual(["comment-104"]);
@@ -907,7 +921,7 @@ describe("the scroll-to-bottom button", () => {
     await page.arrive(104);
     const arrow = () =>
       page.view
-        .getByRole("button", { name: "New messages" })
+        .getByRole("button", { name: NEW_MESSAGES })
         .querySelector(".lucide-arrow-up, .lucide-arrow-down")
         ?.getAttribute("class");
     expect(arrow()).toContain("lucide-arrow-up");
