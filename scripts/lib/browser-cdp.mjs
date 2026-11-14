@@ -490,10 +490,12 @@ async function defaultStopChild(child) {
   }
 }
 
+/** `args` are extra Chromium switches, appended after the fixed ones. */
 export async function startBrowser({
   dir,
   chromium = process.env.CHROMIUM ?? "/usr/bin/chromium",
   registerChild,
+  args = [],
 } = {}) {
   if (!dir) throw new Error("startBrowser requires dir");
   const child = spawn(
@@ -506,6 +508,7 @@ export async function startBrowser({
       "--disable-gpu",
       "--hide-scrollbars",
       `--user-data-dir=${join(dir, "chrome")}`,
+      ...args,
       "about:blank",
     ],
     {
