@@ -271,6 +271,7 @@ const COMMENT_CASES = [
     prepare: (page) => evaluate(page, blurAll),
     presses: 2,
     settle: 250,
+    given: (s) => !s.focused && s.folded,
     expect: (s) => !s.focused,
   },
   {
@@ -279,6 +280,7 @@ const COMMENT_CASES = [
     prepare: (page) => evaluate(page, blurAll),
     presses: 2,
     settle: 250,
+    given: (s) => !s.focused,
     expect: (s) => !s.focused,
   },
   {
@@ -294,6 +296,7 @@ const COMMENT_CASES = [
     },
     presses: 2,
     settle: 250,
+    given: (s) => !s.focused && s.selection === DRAFT,
     expect: (s) => !s.focused,
   },
   {
@@ -303,6 +306,7 @@ const COMMENT_CASES = [
     prepare: (page) => evaluate(page, focusEditor, COMMENT),
     presses: 1,
     settle: 500,
+    given: (s) => s.focused && !s.folded,
     expect: (s) => !s.focused && s.folded,
   },
 ];
@@ -391,7 +395,9 @@ async function main() {
     stack.addCleanup(() => browser.close());
     const context = await browser.newContext();
     try {
-      for (const { name, expect, ...spec } of COMMENT_CASES) {
+      // `given` is the state the preparation must leave before the first
+      // press; without it a case could pass on a box it never set up.
+      for (const { name, given, expect, ...spec } of COMMENT_CASES) {
         const detail = await run(
           context,
           fixture,
@@ -402,7 +408,7 @@ async function main() {
         );
         record(
           name,
-          detail.every((d) => d.after.every(expect)),
+          detail.every((d) => given(d.before) && d.after.every(expect)),
           detail,
         );
       }
