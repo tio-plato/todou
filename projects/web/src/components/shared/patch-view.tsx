@@ -173,7 +173,7 @@ function FileList({
                 onClick={() => onJump(index)}
                 className={cn(
                   rowClass,
-                  "cursor-pointer text-left hover:bg-muted",
+                  "cursor-pointer text-left hover:bg-muted focus-visible:-outline-offset-2",
                 )}
               >
                 {row}

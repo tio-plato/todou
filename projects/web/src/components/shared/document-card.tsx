@@ -309,10 +309,13 @@ export function DocumentCard({
           />
         </div>
         {overflowing && (
+          // Its focus ring is drawn inside it, so it needs none of the
+          // scroll room focus otherwise keeps: the clipped preview above
+          // would scroll 4px and lift the fade off its bottom edge.
           <button
             type="button"
             onClick={() => setExpanded(true)}
-            className="absolute inset-x-0 bottom-0 flex h-16 cursor-pointer items-end justify-center bg-gradient-to-t from-background to-transparent pb-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+            className="absolute inset-x-0 bottom-0 flex h-16 scroll-m-0 cursor-pointer items-end justify-center bg-gradient-to-t from-background to-transparent pb-1.5 text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:-outline-offset-2"
           >
             Show full document
           </button>
@@ -357,8 +360,8 @@ export function DocumentCard({
           </div>
           <div
             className={cn(
-              "min-h-0 overflow-auto",
-              maximized ? "flex-1" : "max-h-[75vh]",
+              "-m-1 min-h-0 overflow-auto p-1",
+              maximized ? "flex-1" : "max-h-[calc(75vh+0.5rem)]",
             )}
           >
             <DocumentView
