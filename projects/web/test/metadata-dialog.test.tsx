@@ -877,6 +877,18 @@ describe("the metadata dialog shell", () => {
     );
     expect(toast.success).not.toHaveBeenCalled();
   });
+
+  it("leaves every tab panel out of the Tab order", async () => {
+    // X6. Falsifies by: keeping Radix's tabIndex=0 on a panel, a Tab stop
+    // that draws nothing between the tabs and the controls inside the panel.
+    mount([entry("orch", "phase", "plan")]);
+    await openDialog();
+    expect(screen.getByRole("tabpanel").tabIndex).toBeLessThan(0);
+    for (const name of ["Bulk", "JSON"] as const) {
+      await openTab(name);
+      expect(screen.getByRole("tabpanel").tabIndex).toBeLessThan(0);
+    }
+  });
 });
 
 describe("the metadata dialog when /metadata fails (T-376)", () => {
