@@ -96,8 +96,13 @@ function readEditor(label) {
  * the far edge of `<main>` (under the card page's side column). On a phone
  * `<main>` is the content, so the margins beside the box are used instead,
  * a quarter of the way in from the window edge: a tap nearer the box is moved
- * onto it by touch adjustment and is a tap on the box. `line` aims at the first line of text rather than the
- * editor's middle, where a tall empty description has nothing level with it.
+ * onto it by touch adjustment and is a tap on the box. `line` aims at the
+ * first line of text rather than the editor's middle, where a tall empty
+ * description has nothing level with it.
+ *
+ * Each point reports whether it is blank and whether the browser would put a
+ * caret pressed there inside the editor; a point that is not both says
+ * nothing about a press beside the editor.
  */
 function besidePoints(label, line, phone) {
   const content = document.querySelector(`[aria-label="${label}"]`);
@@ -121,6 +126,7 @@ function besidePoints(label, line, phone) {
       ];
   return points.map(([side, x]) => {
     const under = document.elementFromPoint(Math.round(x), y);
+    const caret = document.caretPositionFromPoint(Math.round(x), y);
     return {
       side,
       x: Math.round(x),
@@ -128,6 +134,7 @@ function besidePoints(label, line, phone) {
       blank:
         under !== null &&
         !content.closest('[data-slot="markdown-editor"]').contains(under),
+      aims: caret !== null && editor.contains(caret.offsetNode),
     };
   });
 }
@@ -227,14 +234,25 @@ const cardReady = () =>
 const newIssueReady = () =>
   document.querySelector('[aria-label="Description"]') !== null;
 
-async function measure(page, label, { line = false, phone = false } = {}) {
+async function measure(
+  page,
+  label,
+  { line = false, phone = false, sides = SIDES } = {},
+) {
   await evaluate(page, () => window.scrollTo(0, 1e7));
   await sleep(300);
-  const points = await evaluate(page, besidePoints, label, line, phone);
+  const points = (
+    await evaluate(page, besidePoints, label, line, phone)
+  ).filter((p) => sides.includes(p.side));
   const covered = points.filter((p) => !p.blank);
   if (covered.length > 0)
     throw new Error(
       `no blank page at ${JSON.stringify(covered)} beside ${label}`,
+    );
+  const astray = points.filter((p) => !p.aims);
+  if (astray.length > 0)
+    throw new Error(
+      `a caret at ${JSON.stringify(astray)} would not land in ${label}`,
     );
   return points;
 }
@@ -316,16 +334,21 @@ async function newIssueCase(page) {
   await io.type(DESCRIPTION, DRAFT);
   await evaluate(page, blurAll);
   await sleep(500);
-  const point = (await measure(page, DESCRIPTION, { line: true })).find(
-    (p) => p.side === "left",
-  );
+  const [point] = await measure(page, DESCRIPTION, {
+    line: true,
+    sides: ["left"],
+  });
+  const before = await evaluate(page, readEditor, DESCRIPTION);
   const after = [];
   for (let i = 0; i < 2; i++) {
     await io.click(point);
     await sleep(250);
     after.push(await evaluate(page, readEditor, DESCRIPTION));
   }
-  return { ok: after.every((s) => !s.focused), detail: [{ ...point, after }] };
+  return {
+    ok: !before.focused && after.every((s) => !s.focused),
+    detail: [{ ...point, before, after }],
+  };
 }
 
 async function phoneCase(page) {
@@ -347,7 +370,12 @@ async function phoneCase(page) {
     });
   }
   return {
-    ok: detail.every((d) => d.after.every((s) => !s.focused)),
+    ok: detail.every(
+      (d) =>
+        !d.before.focused &&
+        d.before.folded &&
+        d.after.every((s) => !s.focused),
+    ),
     detail,
   };
 }
