@@ -318,11 +318,17 @@ export async function installRoles(page, config, bases) {
           "review-action-approve",
           exact(document, "Approve", 'button,[role="menuitem"]').filter(shown),
         );
-        unchanged(
+        // Every theme keeps the red outline the light themes show.
+        add(
           "review-action-request-changes",
           exact(document, "Request changes", 'button,[role="menuitem"]').filter(
             shown,
           ),
+          {
+            color: null,
+            "background-color": null,
+            "border-top-color": mix("var(--color-red-500)", 60),
+          },
         );
       }
       window.__diffRoles = roles;
