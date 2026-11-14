@@ -103,7 +103,7 @@ export function SpecCommentAnchorCard({
       {!fileLevel && anchor.line_start !== null && anchor.line_end !== null && (
         <button
           type="button"
-          className="block w-full cursor-pointer text-left"
+          className="block w-full cursor-pointer text-left focus-visible:-outline-offset-2"
           title={expanded ? "collapse context" : "expand surrounding context"}
           onClick={() => setExpanded(!expanded)}
         >

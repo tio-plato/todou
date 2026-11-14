@@ -502,7 +502,7 @@ export function ActivityCalendar({
           ref={calendar}
           aria-label={`Activity dates ${from} to ${dates.at(-1) ?? from}`}
           aria-describedby={`${id}-instructions`}
-          className="m-0 grid w-full min-w-0 gap-1 border-0 p-1"
+          className="m-0 grid w-full min-w-fit gap-1 border-0 p-1"
           style={{
             // Fluid columns with a floor, not a fixed 1rem: 52 weeks of fixed
             // cells are wider than any container this sits in, so the grid
