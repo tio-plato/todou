@@ -56,8 +56,8 @@ export function SettingsLayout({
           ref={navRef}
           aria-label={label}
           className={cn(
-            "-mx-4 flex shrink-0 gap-1 overflow-x-auto border-b px-4 pb-2 whitespace-nowrap",
-            "@3xl:mx-0 @3xl:w-52 @3xl:flex-col @3xl:gap-4 @3xl:self-start @3xl:overflow-visible @3xl:border-b-0 @3xl:px-0 @3xl:pb-0",
+            "-mx-4 -mt-1 flex shrink-0 gap-1 overflow-x-auto border-b px-4 pt-1 pb-2 whitespace-nowrap",
+            "@3xl:mx-0 @3xl:mt-0 @3xl:w-52 @3xl:flex-col @3xl:gap-4 @3xl:self-start @3xl:overflow-visible @3xl:border-b-0 @3xl:px-0 @3xl:pt-0 @3xl:pb-0",
           )}
         >
           {nav}
