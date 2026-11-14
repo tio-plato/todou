@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * Manual real-Chromium layout smoke for board overlay scrollbars and collapsed
- * assignee badge clipping. It is intentionally independent of `pnpm test`/CI.
+ * Manual real-Chromium layout smoke for board overlay scrollbars, collapsed
+ * assignee badge clipping, and keyboard focus rings cut off by a clipping or
+ * scrolling container. It is intentionally independent of `pnpm test`/CI.
  *
  * Usage: node scripts/browser-layout-smoke.mjs [--self-test|--self-test-cdp] [--keep] [--help]
  * Preconditions: the devshell's Node 24+, installed workspace dependencies,
@@ -22,11 +23,17 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runBadgeClip } from "./browser/badge-clip.mjs";
 import { runBoardScrollbars } from "./browser/board-scrollbars.mjs";
+import { runFocusRingClip } from "./browser/focus-ring-clip.mjs";
 import { selfCheckCdpPipe, startBrowser } from "./lib/browser-cdp.mjs";
 import { createBrowserStack } from "./lib/browser-stack.mjs";
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const HELP = `browser-layout-smoke — manual real-browser layout assertions
+
+Cases: board overlay scrollbars; collapsed assignee badges; focus rings, where
+every control a keyboard reaches on a set of pages and overlays must keep its
+whole focus ring inside every ancestor that clips or scrolls it, and focusing
+it must not scroll a box that only clips.
 
 Usage:
   node scripts/browser-layout-smoke.mjs
@@ -103,6 +110,10 @@ const COVERAGE_FAILURES = new Set([
   "clipping-ancestor-missing",
   "641-horizontal-overflow-missing",
   "641-truncation-contract",
+  "focus-ring-target-missing",
+  "focus-ring-root-missing",
+  "focus-ring-scroll-not-observed",
+  "focus-ring-sidebar-scrolls",
 ]);
 
 function isCoverageFailure(entry) {
@@ -181,6 +192,7 @@ async function main() {
     for (const [name, run] of [
       ["board-scrollbars", runBoardScrollbars],
       ["badge-clip", runBadgeClip],
+      ["focus-ring-clip", runFocusRingClip],
     ]) {
       const stage = Date.now();
       try {

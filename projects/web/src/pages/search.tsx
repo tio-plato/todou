@@ -268,7 +268,7 @@ export function SearchResults({
                     to="/projects/$slug/issues/$number"
                     params={{ slug, number: String(group.issue.number) }}
                     state={linkState}
-                    className="flex items-center gap-2 border-b bg-muted/40 px-4 py-2 hover:bg-accent"
+                    className="flex items-center gap-2 border-b bg-muted/40 px-4 py-2 hover:bg-accent focus-visible:-outline-offset-2"
                   >
                     <span className="shrink-0 font-mono text-xs text-muted-foreground">
                       {formatRef(prefix, group.issue.number)}
@@ -561,7 +561,7 @@ function HitRow({ slug, hit }: { slug: string; hit: SearchItem }) {
     </>
   );
   const className =
-    "flex items-start gap-3 px-4 py-2 hover:bg-accent border-t first:border-t-0";
+    "flex items-start gap-3 px-4 py-2 hover:bg-accent border-t first:border-t-0 focus-visible:-outline-offset-2";
 
   if (hit.kind === "spec") {
     return (
