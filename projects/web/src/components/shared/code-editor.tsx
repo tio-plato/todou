@@ -12,6 +12,7 @@ import {
 import { useEffect, useImperativeHandle, useRef } from "react";
 
 import { compositionSafeMeasure } from "@/lib/editor/composition-safe-measure.ts";
+import { ignoreOutsidePress } from "@/lib/editor/outside-press.ts";
 import { parkedTooltip } from "@/lib/editor/parked-tooltip.ts";
 import { tooltipSpace } from "@/lib/editor/tooltip-space.ts";
 import { useDirtySource } from "@/lib/unsaved-guard.ts";
@@ -277,6 +278,7 @@ export function CodeEditor({
           editorTheme,
           parkedTooltip,
           tooltipSpace,
+          ignoreOutsidePress,
           EditorView.contentAttributes.of({
             // CodeMirror's contenteditable opts out of the niceties a
             // <textarea> gets for free.
