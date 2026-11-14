@@ -4,7 +4,7 @@
 @import "@fontsource-variable/geist";
 @import "overlayscrollbars/overlayscrollbars.css";
 
-@custom-variant dark (&:is(.dark *));
+@custom-variant dark (&:where(.dark, .dark *));
 @custom-variant touch (@media (hover: none) and (pointer: coarse));
 /* Not `not-touch`: a fine pointer without hover (some styluses, headless
    Chromium) never brings a hover-only control up either. */
