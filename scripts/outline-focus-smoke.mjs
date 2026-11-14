@@ -9,9 +9,9 @@
  * pointer on its outline trigger, which has to take the theme's --muted in
  * every theme: in dark ones `dark:hover:bg-input/50` used to win over
  * `aria-expanded:bg-muted`, at the same specificity and later in the
- * stylesheet. Chromium starts with a hover-capable mouse as its primary
- * pointer: headless, it matches no (hover: hover), which every `hover:` rule
- * sits inside.
+ * stylesheet. The smoke starts Chromium with a hover-capable mouse as its
+ * primary pointer: headless Chromium otherwise matches no (hover: hover),
+ * which every `hover:` rule sits inside.
  * Usage: node scripts/outline-focus-smoke.mjs [--keep] [--help]
  * Requires the same installed dependencies, Node 24+, flock and CHROMIUM
  * (default /usr/bin/chromium) as the other browser smokes.
@@ -39,7 +39,7 @@ the keyboard way cannot pass.
 Then it opens the card's spec page 900 wide, opens the Files popover with a
 mouse click and leaves the pointer on its trigger (an outline button). For
 every theme the trigger's background must equal the theme's --muted while the
-theme is applied and the trigger matches :hover. Chromium is started with
+theme is applied and the trigger is still open and matches :hover. Chromium is started with
 Blink settings that make its primary pointer a hover-capable mouse; without
 them no hover: rule applies, so the run stops as an infrastructure error if
 (hover: hover) does not match.
@@ -303,12 +303,13 @@ async function main() {
       );
       cases.push({
         name: `open-hover-bg:${theme}`,
-        // A pointer that left the trigger reads --muted in a dark theme too,
-        // so :hover is checked each time; a popover that closed reads the
-        // resting or hover colour, never --muted, in a dark theme.
+        // An open trigger the pointer left reads --muted in a dark theme too,
+        // and a closed one under the pointer reads it in a light theme, so
+        // both :hover and aria-expanded are checked each time.
         ok:
           reading.dataTheme === theme &&
           reading.dark === (kind === "dark") &&
+          reading.expanded === "true" &&
           reading.hover &&
           reading.background === reading.muted,
         detail: reading,
