@@ -1245,6 +1245,10 @@ export async function openDiffPage(browser, base, fixture, options = {}) {
           body: document.body.innerText.slice(-2500),
         };
       });
+      // The dialog focuses its first focusable control; on phones Cancel is hidden
+      // and Comment waits for a summary, so Request changes would show its focus
+      // ring. The samples want the resting colours.
+      await evaluate(page, () => document.activeElement?.blur());
     }
     if (surface === "files") {
       await waitFor(page, "open mobile Files", () => {
