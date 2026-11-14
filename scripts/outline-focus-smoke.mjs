@@ -5,6 +5,13 @@
  * there the variant's own `dark:border-input` used to outrank the base
  * `focus-visible:border-ring`, because the `dark` variant added a class of
  * specificity and comes later in the stylesheet.
+ * It also opens the spec page's Files popover with the mouse and leaves the
+ * pointer on its outline trigger, which has to take the theme's --muted in
+ * every theme: in dark ones `dark:hover:bg-input/50` used to win over
+ * `aria-expanded:bg-muted`, at the same specificity and later in the
+ * stylesheet. The smoke starts Chromium with a hover-capable mouse as its
+ * primary pointer: headless Chromium otherwise matches no (hover: hover),
+ * which every `hover:` rule sits inside.
  * Usage: node scripts/outline-focus-smoke.mjs [--keep] [--help]
  * Requires the same installed dependencies, Node 24+, flock and CHROMIUM
  * (default /usr/bin/chromium) as the other browser smokes.
@@ -29,11 +36,25 @@ the one applied, with .dark set exactly for the dark ones, and that the button
 matches :focus-visible, so a run that never switched themes or never focused
 the keyboard way cannot pass.
 
+Then it opens the card's spec page 900 wide, opens the Files popover with a
+mouse click and leaves the pointer on its trigger (an outline button). For
+every theme the trigger's background must equal the theme's --muted while the
+theme is applied and the trigger is still open and matches :hover. Chromium is started with
+Blink settings that make its primary pointer a hover-capable mouse; without
+them no hover: rule applies, so the run stops as an infrastructure error if
+(hover: hover) does not match.
+
 --keep  Retain isolated artifacts under .tmp/ after cleanup.
 Exit codes: 0 pass, 1 assertion, 2 infrastructure error.
 `;
 
 const VIEWPORT = { width: 1280, height: 900, deviceScaleFactor: 1 };
+// Below lg the spec toolbar moves the file list into the Files popover.
+const SPEC_VIEWPORT = { width: 900, height: 900, deviceScaleFactor: 1 };
+// Headless Chromium matches no (hover: hover), so no `hover:` rule would
+// apply; these make its primary pointer a mouse that can hover.
+const HOVER_MOUSE =
+  "--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4";
 
 async function seed(stack) {
   let cookie = "";
@@ -60,12 +81,14 @@ async function seed(stack) {
     title: "Keyboard focus on an outline button",
     body: "",
   });
+  await call("POST", `/projects/${slug}/issues/${issue.number}/spec/push`, {
+    message: "Outline popover fixture",
+    files: [{ path: "plan.md", body: "# Plan\n\nA popover trigger to hover." }],
+  });
   if (!cookie.includes("="))
     throw new Error("seed did not receive an auth cookie");
-  return {
-    cookie,
-    issueUrl: `${stack.webUrl}/projects/${slug}/issues/${issue.number}`,
-  };
+  const issueUrl = `${stack.webUrl}/projects/${slug}/issues/${issue.number}`;
+  return { cookie, issueUrl, specUrl: `${issueUrl}/spec` };
 }
 
 /**
@@ -77,6 +100,11 @@ function notifying() {
   return [...document.querySelectorAll('button[data-variant="outline"]')].find(
     (b) => b.textContent.trim() === "Notifying",
   );
+}
+
+/** Installed in the page as `window.__files`: the Files popover's trigger. */
+function filesTrigger() {
+  return document.querySelector('[data-toolbar-slot="files"]');
 }
 
 async function pressShift(page) {
@@ -116,6 +144,7 @@ async function main() {
       dir: stack.dir,
       chromium: stack.chromium,
       registerChild: stack.registerChild,
+      args: [HOVER_MOUSE],
     });
     stack.addCleanup(() => browser.close());
     const context = await browser.newContext();
@@ -192,6 +221,97 @@ async function main() {
           reading.dark === (kind === "dark") &&
           reading.focusVisible &&
           reading.border === reading.ring,
+        detail: reading,
+      });
+    }
+
+    const specPage = await context.newPage({
+      viewport: SPEC_VIEWPORT,
+      cookie: {
+        name: fixture.cookie.slice(0, equals),
+        value: fixture.cookie.slice(equals + 1),
+        url: fixture.specUrl,
+      },
+      scripts: [`window.__files = ${filesTrigger.toString()};`],
+    });
+    await specPage.navigate(fixture.specUrl);
+    const filesDeadline = Date.now() + 30_000;
+    const filesShown = () =>
+      evaluate(specPage, () => window.__files() !== null).catch(() => false);
+    while (!(await filesShown())) {
+      if (Date.now() > filesDeadline)
+        throw new Error("the Files button never showed");
+      await sleep(200);
+    }
+    // Without it every `hover:` rule is off, and an open dark trigger is
+    // --muted anyway: the cases below would pass on the unfixed code.
+    if (!(await evaluate(specPage, () => matchMedia("(hover: hover)").matches)))
+      throw new Error("(hover: hover) does not match; no hover: rule applies");
+    // Opened once and left open, the pointer resting on the trigger: the
+    // popover is not modal, so switching themes neither closes it nor moves
+    // the pointer.
+    const centre = await evaluate(specPage, () => {
+      const box = window.__files().getBoundingClientRect();
+      return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+    });
+    for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
+      await specPage.send("Input.dispatchMouseEvent", {
+        type,
+        ...centre,
+        button: type === "mouseMoved" ? "none" : "left",
+        buttons: type === "mousePressed" ? 1 : 0,
+        clickCount: type === "mouseMoved" ? 0 : 1,
+      });
+    }
+    const openDeadline = Date.now() + 5_000;
+    while (
+      (await evaluate(specPage, () =>
+        window.__files().getAttribute("aria-expanded"),
+      )) !== "true"
+    ) {
+      if (Date.now() > openDeadline)
+        throw new Error("the Files popover never opened");
+      await sleep(100);
+    }
+
+    for (const { value: theme, kind } of themes) {
+      const reading = await evaluate(
+        specPage,
+        async (theme) => {
+          const { setThemePref } = await import("/src/lib/theme.ts");
+          setThemePref(theme);
+          const button = window.__files();
+          for (let left = button.getAnimations(); left.length; ) {
+            await Promise.allSettled(left.map((a) => a.finished));
+            left = button.getAnimations();
+          }
+          const probe = document.createElement("div");
+          probe.style.background = "var(--muted)";
+          document.body.append(probe);
+          const muted = getComputedStyle(probe).backgroundColor;
+          probe.remove();
+          return {
+            dataTheme: document.documentElement.dataset.theme,
+            dark: document.documentElement.classList.contains("dark"),
+            expanded: button.getAttribute("aria-expanded"),
+            hover: button.matches(":hover"),
+            background: getComputedStyle(button).backgroundColor,
+            muted,
+          };
+        },
+        theme,
+      );
+      cases.push({
+        name: `open-hover-bg:${theme}`,
+        // An open trigger the pointer left reads --muted in a dark theme too,
+        // and a closed one under the pointer reads it in a light theme, so
+        // both :hover and aria-expanded are checked each time.
+        ok:
+          reading.dataTheme === theme &&
+          reading.dark === (kind === "dark") &&
+          reading.expanded === "true" &&
+          reading.hover &&
+          reading.background === reading.muted,
         detail: reading,
       });
     }
