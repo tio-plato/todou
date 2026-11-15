@@ -568,11 +568,12 @@ describe("chips on code rows", () => {
 
   it("joins a row's chip to the one kept above it within a chip's height", async () => {
     layOutRows();
-    // Rows 2, 3 and 4: the third is two rows below the chip it would join.
+    // Rows 4, 3 and 2, listed bottom up as no order promises otherwise: the
+    // chip is kept at the top one, and the bottom one is two rows below it.
     const { view, wrappers } = await renderDocument(SIX_FENCE, [
-      wholeLines("comment", 5, 5),
-      wholeLines("draft", 6, 6),
       wholeLines("comment", 7, 7),
+      wholeLines("draft", 6, 6),
+      wholeLines("comment", 5, 5),
     ]);
     const [wrapper] = wrappers;
     if (wrapper === undefined) throw new Error("no fence");
