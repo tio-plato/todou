@@ -4,7 +4,7 @@ import {
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query";
-import { useParams } from "@tanstack/react-router";
+import { useParams, useRouterState } from "@tanstack/react-router";
 import {
   can,
   formatRef,
@@ -13,7 +13,7 @@ import {
   type Status,
 } from "@todou/shared";
 import { CheckIcon, PencilIcon, Trash2Icon, XIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   issueQuery,
@@ -36,6 +36,7 @@ import {
   AttachmentList,
   AttachmentSidebarSection,
 } from "@/components/issue/attachment-list.tsx";
+import { QuestionBadge } from "@/components/issue/attention-badge.tsx";
 import { BlocksSection } from "@/components/issue/blocks-section.tsx";
 import {
   EntryActionsMenu,
@@ -103,7 +104,12 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDockCover } from "@/lib/dock-cover.ts";
 import { useRefCompletion } from "@/lib/editor/ref-completion.ts";
+import {
+  isQuestionLandingHash,
+  questionLandingHash,
+} from "@/lib/question-landing.ts";
 import { useScrollInsets } from "@/lib/scroll-insets.ts";
+import { parseTimelineAnchor } from "@/lib/timeline-anchors.ts";
 import { useDirtySource } from "@/lib/unsaved-guard.ts";
 import { SM_UP, useMediaQuery, XL_UP } from "@/lib/use-media-query.ts";
 import { cn } from "@/lib/utils";
@@ -167,6 +173,14 @@ export function IssueDetailPage() {
   // permalink changes the location, and opening the run it names is exactly
   // what the reveal state is for (T-327).
   const cardKey = `${slug}/${issueNumber}`;
+  // One element for the heading and its mirror alike.
+  const questionBadge = !trashed && issue.data.open_questions > 0 && (
+    <CardQuestionBadge
+      slug={slug}
+      issueNumber={issueNumber}
+      count={issue.data.open_questions}
+    />
+  );
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_240px]">
@@ -188,7 +202,12 @@ export function IssueDetailPage() {
               issue={issue.data}
               watchTarget={titleRef}
               rowRef={rowRef}
-              mirror={<RevealAllEye />}
+              mirror={
+                <span className="flex items-center gap-2">
+                  {questionBadge}
+                  <RevealAllEye />
+                </span>
+              }
             />
             <div ref={contentRef} className="relative space-y-4">
               {trashed && <TrashBanner slug={slug} issue={issue.data} />}
@@ -215,6 +234,7 @@ export function IssueDetailPage() {
                     slug={slug}
                     issue={issue.data}
                     readOnly={trashed}
+                    badge={questionBadge}
                   />
                 </div>
               </div>
@@ -317,6 +337,46 @@ export function IssueDetailPage() {
   );
 }
 
+/**
+ * The question badge on the card's own page. A press goes on from the comment
+ * the address names, else from the earliest; an entry still being read keeps
+ * its own start, so a second press before it lands does not lose it. It reads
+ * the address itself, so a landing re-renders the badge and not the card.
+ */
+function CardQuestionBadge({
+  slug,
+  issueNumber,
+  count,
+}: {
+  slug: string;
+  issueNumber: number;
+  count: number;
+}) {
+  const hash = useRouterState({ select: (s) => s.location.hash });
+  const anchor = parseTimelineAnchor(hash);
+  return (
+    <QuestionBadge
+      slug={slug}
+      issueNumber={issueNumber}
+      count={count}
+      hash={
+        isQuestionLandingHash(hash)
+          ? hash
+          : questionLandingHash(anchor?.kind === "comment" ? anchor.id : null)
+      }
+      // Moving within the card: a pushed entry would make Back's last step
+      // the top of the card, and nothing being edited here is left behind.
+      replace
+      ignoreBlocker
+      // Its target is this page: matched without the hash, it would always
+      // be marked as the current one.
+      activeOptions={{ includeHash: true }}
+      // The title mirror reads a click on itself as "back to the top".
+      onClick={(event) => event.stopPropagation()}
+    />
+  );
+}
+
 /** Whether any of `el` is on screen. Engines without the observer say no. */
 function useInView(el: Element | null): boolean {
   const [inView, setInView] = useState(false);
@@ -375,10 +435,13 @@ export function TitleBlock({
   slug,
   issue,
   readOnly = false,
+  badge,
 }: {
   slug: string;
   issue: Issue;
   readOnly?: boolean;
+  /** Follows the heading, outside it, so it adds nothing to its name. */
+  badge?: ReactNode;
 }) {
   const refPrefix = useRefPrefix(slug);
   const refLeads = useRefPlacement("detail") === "before";
@@ -449,7 +512,7 @@ export function TitleBlock({
           unbroken token stretches the box past the viewport and the whole page
           scrolls sideways. `anywhere` is the variant that also folds the
           soft-wrap opportunities into the min-content width. */}
-      <h1 className="text-2xl font-semibold wrap-anywhere">
+      <h1 className="min-w-0 text-2xl font-semibold wrap-anywhere">
         {refLeads ? (
           <>
             <span className="font-normal text-muted-foreground">
@@ -466,6 +529,11 @@ export function TitleBlock({
           </>
         )}
       </h1>
+      {/* As tall as the heading's first line, so the pill centres on it, and
+          taking the free space, so it follows the title rather than the edge. */}
+      {badge && (
+        <span className="mr-auto flex h-8 shrink-0 items-center">{badge}</span>
+      )}
       {!readOnly && (
         <Button
           size="icon-sm"

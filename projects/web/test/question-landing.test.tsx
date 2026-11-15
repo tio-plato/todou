@@ -35,6 +35,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { questionsQuery } from "../src/api/questions.ts";
 import { UnsavedChangesGuard } from "../src/components/shared/unsaved-guard.tsx";
 import { QUESTION_LANDING_ROUTE_ID } from "../src/components/timeline/use-question-landing.ts";
+import { selectNextQuestionLanding } from "../src/lib/question-landing.ts";
 import { registerDirtySource } from "../src/lib/unsaved-guard.ts";
 import { IssueDetailPage } from "../src/pages/issue-detail.tsx";
 import { IssueRouteError } from "../src/pages/issue-route-error.tsx";
@@ -1822,5 +1823,221 @@ describe("question landing through the real issue route", () => {
     expect(view.router.state.location.hash).toBe("comment-20");
     expect(scroll.reveals("comment-10")).toBe(0);
     expect(scroll.bottoms()).toBe(0);
+  });
+});
+
+describe("the card's own question badge", () => {
+  /** Two questions in one comment, so a count of comments would read 2. */
+  function twoQuestions(id: number): IssueQuestionsItem {
+    const item = question(id);
+    return {
+      ...item,
+      questions: [
+        ...item.questions,
+        {
+          key: "q2",
+          multiple: false,
+          question: `Follow-up ${id}?`,
+          options: [{ label: "Yes" }, { label: "No" }],
+        },
+      ],
+    };
+  }
+
+  const openCard = () =>
+    card([twoQuestions(10), answered(question(12), 13), question(14)]);
+
+  const label = (model: Card) =>
+    `${model.questions.open} unanswered question(s)`;
+
+  const inTitle = (view: View, model: Card) =>
+    within(view.getByTestId("issue-title-block")).queryByRole("link", {
+      name: label(model),
+    });
+
+  // The mirror is `aria-hidden`: the heading's badge is the one assistive
+  // tech reaches.
+  const inMirror = (view: View, model: Card) =>
+    within(view.getByTestId("floating-title-bar")).queryByRole("link", {
+      name: label(model),
+      hidden: true,
+    });
+
+  async function click(link: HTMLElement | null) {
+    expect(link).not.toBeNull();
+    await act(async () => {
+      fireEvent.click(link as HTMLElement);
+    });
+  }
+
+  it("counts open questions, not comments, in the heading and its mirror", async () => {
+    const model = openCard();
+    expect(model.questions.open).toBe(3);
+    serve({ "p/7": model });
+    scrolling();
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText("Decision 14?");
+
+    expect(
+      view.getAllByRole("link", { name: label(model), hidden: true }),
+    ).toHaveLength(2);
+    expect(inTitle(view, model)?.getAttribute("href")).toMatch(
+      /#unanswered-questions$/,
+    );
+    expect(inMirror(view, model)?.getAttribute("href")).toMatch(
+      /#unanswered-questions$/,
+    );
+  });
+
+  it("is not worn once every question is answered", async () => {
+    const model = card([answered(question(10), 11)]);
+    serve({ "p/7": model });
+    scrolling();
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText("Decision 10?");
+
+    expect(
+      view.queryAllByRole("link", {
+        name: /unanswered question/,
+        hidden: true,
+      }),
+    ).toHaveLength(0);
+  });
+
+  it("is not worn in the trash, where no answer can be given", async () => {
+    const model = openCard();
+    model.issueReply = () =>
+      json({
+        ...issue(7, model),
+        deleted_at: timestamp(200),
+        deleted_by: user,
+      } satisfies Issue);
+    serve({ "p/7": model });
+    scrolling();
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText(/In the trash/);
+    await view.findByText("Decision 14?");
+
+    expect(
+      view.queryAllByRole("link", {
+        name: /unanswered question/,
+        hidden: true,
+      }),
+    ).toHaveLength(0);
+  });
+
+  it("goes on to the next open question with each press, wrapping round, without adding history", async () => {
+    const model = openCard();
+    serve({ "p/7": model });
+    const scroll = scrolling();
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText("Decision 14?");
+    const entries = view.router.history.length;
+
+    await click(inTitle(view, model));
+    await landed(view, scroll, 10);
+    await waitFor(() =>
+      expect(inTitle(view, model)?.getAttribute("href")).toMatch(
+        /#unanswered-questions-after-10$/,
+      ),
+    );
+
+    await click(inTitle(view, model));
+    await landed(view, scroll, 14);
+
+    await click(inTitle(view, model));
+    await landed(view, scroll, 10, 2);
+    expect(scroll.reveals("comment-12")).toBe(0);
+    expect(view.router.history.length).toBe(entries);
+  });
+
+  it("in the title mirror lands without the mirror's scroll to the top", async () => {
+    const model = openCard();
+    serve({ "p/7": model });
+    const scroll = scrolling();
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText("Decision 14?");
+    // Arriving at an address without a hash scrolls to the top on its own.
+    const before = scroll.events.length;
+
+    await click(inMirror(view, model));
+    await landed(view, scroll, 10);
+    expect(scroll.events.slice(before)).not.toContain("scroll:0");
+  });
+
+  it("moves past a chosen but unsent answer without asking, and keeps it", async () => {
+    const model = openCard();
+    serve({ "p/7": model });
+    const scroll = scrolling();
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText("Decision 14?");
+
+    await click(inTitle(view, model));
+    await landed(view, scroll, 10);
+    const row = view.container.querySelector("#comment-10");
+    const first = within(row as HTMLElement);
+    fireEvent.click(first.getByRole("button", { name: "Proceed" }));
+    expect(
+      first
+        .getByRole("button", { name: "Proceed" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+
+    await click(inTitle(view, model));
+    await landed(view, scroll, 14);
+    expect(
+      view.queryByRole("dialog", { name: "Leave with unsaved changes?" }),
+    ).toBeNull();
+    // The same row, not a remount that happens to be unanswered as well.
+    expect(view.container.querySelector("#comment-10")).toBe(row);
+    expect(
+      first
+        .getByRole("button", { name: "Proceed" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+  });
+
+  it("keeps the start while a landing is still reading, so a second press does not lose it", async () => {
+    const model = openCard();
+    const pending = deferred<Response>();
+    model.questionReply = () => pending.promise;
+    const server = serve({ "p/7": model });
+    const scroll = scrolling();
+    const view = renderAt("/projects/p/issues/7#unanswered-questions-after-10");
+    await waitFor(() => expect(server.questions()).toHaveLength(1));
+    await view.findByText("Decision 14?");
+
+    expect(inTitle(view, model)?.getAttribute("href")).toMatch(
+      /#unanswered-questions-after-10$/,
+    );
+    await release(pending, json(model.questions));
+    await landed(view, scroll, 14);
+  });
+
+  it("starts from the earliest when the address names a comment that asks nothing", () => {
+    const open = questions([
+      question(10),
+      answered(question(12), 13),
+      question(14),
+    ]);
+    expect(selectNextQuestionLanding(open, 11)).toBe(10);
+  });
+
+  it("stays on the comment it starts from once nothing is open", () => {
+    const settled = questions([
+      answered(question(10), 11),
+      answered(question(12), 13),
+      answered(question(14), 15),
+    ]);
+    expect(selectNextQuestionLanding(settled, 12)).toBe(12);
+  });
+
+  it("comes back round to the only open question", () => {
+    const one = questions([
+      answered(question(10), 11),
+      question(12),
+      answered(question(14), 15),
+    ]);
+    expect(selectNextQuestionLanding(one, 12)).toBe(12);
   });
 });

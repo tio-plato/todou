@@ -426,6 +426,20 @@ export function useOwnHold(): (release: () => void) => void {
   }, []);
 }
 
+/**
+ * The focused element, if it is a field: an input, a textarea or an editable
+ * region. Only a caret needs the overlay T-519 leaves out of the padding. A
+ * link or a button keeps focus after a click too, and the bar it sits in still
+ * covers whatever its landing brings up under it.
+ */
+function caretHolder(): Element | null {
+  const focused = document.activeElement;
+  return focused instanceof HTMLElement &&
+    (focused.isContentEditable || focused.matches("input, textarea"))
+    ? focused
+    : null;
+}
+
 export type ScrollInsetSources = {
   /** Overlays pinned to the viewport's top edge, beneath the shell header. */
   top?: ReadonlyArray<RefObject<HTMLElement | null>>;
@@ -480,8 +494,8 @@ export function useScrollInsets({
       // autoscroll honours it too: a drag begun on an overlay's own text keeps
       // the pointer in that inset, and the page ran to one end of the
       // document. Nothing inside an overlay can be hidden behind it, so the
-      // one holding focus or the press under way stops counting.
-      const focused = document.activeElement;
+      // one holding the caret or the press under way stops counting.
+      const focused = caretHolder();
       const extent = (el: HTMLElement) =>
         (focused !== null && el.contains(focused)) ||
         (pressed !== null && el.contains(pressed))

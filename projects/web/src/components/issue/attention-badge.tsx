@@ -1,4 +1,4 @@
-import { Link } from "@tanstack/react-router";
+import { type ActiveOptions, Link } from "@tanstack/react-router";
 import type { BlockRef } from "@todou/shared";
 import {
   AtSignIcon,
@@ -6,7 +6,7 @@ import {
   CirclePauseIcon,
   MessageCircleQuestionIcon,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import type { MouseEvent, ReactNode } from "react";
 import { BlockedHoverCard } from "@/components/shared/blocked-hover-card.tsx";
 import { useReturnLinkState } from "@/components/shared/return-context.tsx";
 import { UNANSWERED_QUESTIONS_HASH } from "@/lib/question-landing.ts";
@@ -44,16 +44,30 @@ function AttentionBadge({
   );
 }
 
+/**
+ * Rows, the board and the inbox take the defaults; the options are for the
+ * card's own page.
+ */
 export function QuestionBadge({
   slug,
   issueNumber,
   count,
   className,
+  hash = UNANSWERED_QUESTIONS_HASH,
+  replace,
+  ignoreBlocker,
+  activeOptions,
+  onClick,
 }: {
   slug: string;
   issueNumber: number;
   count: number;
   className?: string;
+  hash?: string;
+  replace?: boolean;
+  ignoreBlocker?: boolean;
+  activeOptions?: ActiveOptions;
+  onClick?: (event: MouseEvent) => void;
 }) {
   const returnState = useReturnLinkState();
   const label = `${count} unanswered question(s)`;
@@ -61,9 +75,13 @@ export function QuestionBadge({
     <Link
       to="/projects/$slug/issues/$number"
       params={{ slug, number: String(issueNumber) }}
-      hash={UNANSWERED_QUESTIONS_HASH}
+      hash={hash}
       hashScrollIntoView={false}
       state={returnState}
+      replace={replace}
+      ignoreBlocker={ignoreBlocker}
+      activeOptions={activeOptions}
+      onClick={onClick}
       aria-label={label}
       className={cn(
         "inline-flex rounded-full hover:brightness-95 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring",
