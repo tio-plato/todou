@@ -157,24 +157,12 @@ export function IssueDetailPage() {
   // permalink changes the location, and opening the run it names is exactly
   // what the reveal state is for (T-327).
   const cardKey = `${slug}/${issueNumber}`;
-  // One element for the heading and its mirror alike. A press goes on from
-  // the comment the address names, so pressing again moves to the next.
-  const hash = useRouterState({ select: (s) => s.location.hash });
+  // One element for the heading and its mirror alike.
   const questionBadge = !trashed && issue.data.open_questions > 0 && (
-    <QuestionBadge
+    <CardQuestionBadge
       slug={slug}
       issueNumber={issueNumber}
       count={issue.data.open_questions}
-      hash={nextQuestionHash(hash)}
-      // Moving within the card: a pushed entry would make Back's last step
-      // the top of the card, and nothing being edited here is left behind.
-      replace
-      ignoreBlocker
-      // Its target is this page: matched without the hash, it would always
-      // be marked as the current one.
-      activeOptions={{ includeHash: true }}
-      // The title mirror reads a click on itself as "back to the top".
-      onClick={(event) => event.stopPropagation()}
     />
   );
 
@@ -333,14 +321,43 @@ export function IssueDetailPage() {
 }
 
 /**
- * Where the question badge goes from here: on from the comment the address
- * names, else the earliest. An entry still being read keeps its own start, so
- * a second press before it lands does not lose it.
+ * The question badge on the card's own page. A press goes on from the comment
+ * the address names, else from the earliest; an entry still being read keeps
+ * its own start, so a second press before it lands does not lose it. It reads
+ * the address itself, so a landing re-renders the badge and not the card.
  */
-function nextQuestionHash(hash: string): string {
-  if (isQuestionLandingHash(hash)) return hash;
+function CardQuestionBadge({
+  slug,
+  issueNumber,
+  count,
+}: {
+  slug: string;
+  issueNumber: number;
+  count: number;
+}) {
+  const hash = useRouterState({ select: (s) => s.location.hash });
   const anchor = parseTimelineAnchor(hash);
-  return questionLandingHash(anchor?.kind === "comment" ? anchor.id : null);
+  return (
+    <QuestionBadge
+      slug={slug}
+      issueNumber={issueNumber}
+      count={count}
+      hash={
+        isQuestionLandingHash(hash)
+          ? hash
+          : questionLandingHash(anchor?.kind === "comment" ? anchor.id : null)
+      }
+      // Moving within the card: a pushed entry would make Back's last step
+      // the top of the card, and nothing being edited here is left behind.
+      replace
+      ignoreBlocker
+      // Its target is this page: matched without the hash, it would always
+      // be marked as the current one.
+      activeOptions={{ includeHash: true }}
+      // The title mirror reads a click on itself as "back to the top".
+      onClick={(event) => event.stopPropagation()}
+    />
+  );
 }
 
 /** Whether any of `el` is on screen. Engines without the observer say no. */
