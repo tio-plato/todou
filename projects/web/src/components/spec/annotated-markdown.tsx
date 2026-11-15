@@ -1152,7 +1152,16 @@ const AnnotationChip = memo(function AnnotationChip({
         // pins it to the viewport edge over unrelated text; "partial" still
         // pushes it back while part of the chip shows, then lets it follow.
         sticky="partial"
-        className="max-h-96 w-96 max-w-[calc(100vw-2rem)] space-y-3 overflow-y-auto"
+        // One `min()` for the cap: `cn()` keeps a single `max-h-*`, so a
+        // second one here would drop the popover layer's viewport cap. The
+        // Radix variable is the room Floating UI leaves the popover, never
+        // more than the viewport: all of its height beside a wide layout's
+        // chip, where the popover may shift up and down, only what is above
+        // or below the chip in the narrow one. With that chip mid-screen on
+        // an upright phone, neither side has 24rem. `transition-none`: the
+        // layer's `duration-100` also eases `max-height`, which then trails
+        // that room as the page scrolls.
+        className="max-h-[min(24rem,var(--radix-popover-content-available-height,calc(100dvh-1rem)))] w-96 max-w-[calc(100vw-2rem)] space-y-3 overflow-y-auto transition-none"
       >
         {chip.items.map((item) =>
           item.kind === "draft" ? (
