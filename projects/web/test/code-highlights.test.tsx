@@ -493,6 +493,45 @@ function layOutRows(shift: () => number = () => 0) {
   );
 }
 
+/** Whether each chip's popover is open, top to bottom. */
+function expanded(view: Pick<RenderResult, "getAllByRole">) {
+  return view
+    .getAllByRole("button", { name: /comment\(s\) on this block/ })
+    .map((el) => el.getAttribute("aria-expanded"));
+}
+
+/**
+ * The document with annotations a test can change, as staging a draft or a
+ * comment arriving would, its code wrappers drawn with `SIX_ROWS`.
+ */
+async function renderLive(body: string, initial: DisplayedAnnotation[]) {
+  let annotate: (next: DisplayedAnnotation[]) => void = () => {};
+  function Live() {
+    const [annotations, setAnnotations] = useState(initial);
+    annotate = setAnnotations;
+    return (
+      <AnnotatedMarkdown
+        slug="p"
+        issueNumber={1}
+        body={body}
+        annotations={annotations}
+        onStage={() => {}}
+        onEditDraft={() => {}}
+        onRemoveDraft={() => {}}
+        onResolve={() => {}}
+      />
+    );
+  }
+  const view = renderWithProviders(<Live />);
+  const wrapper = await waitFor(() => {
+    const el = view.container.querySelector("[data-loc-content-start]");
+    if (el === null) throw new Error("not rendered");
+    return el;
+  });
+  await drawRows(wrapper, SIX_ROWS);
+  return { view, annotate: (next: DisplayedAnnotation[]) => annotate(next) };
+}
+
 /** The open popover, once it is. */
 async function openPopover(chip: HTMLElement): Promise<HTMLElement> {
   fireEvent.click(chip);
@@ -641,53 +680,77 @@ describe("chips on code rows", () => {
   it("keeps an open popover through its chip moving and hanging anew", async () => {
     let shift = 0;
     layOutRows(() => shift);
-    let annotate: (next: DisplayedAnnotation[]) => void = () => {};
-    function Live() {
-      const [annotations, setAnnotations] = useState([
-        wholeLines("draft", 5, 5),
-        wholeLines("draft", 6, 6),
-      ]);
-      annotate = setAnnotations;
-      return (
-        <AnnotatedMarkdown
-          slug="p"
-          issueNumber={1}
-          body={SIX_FENCE}
-          annotations={annotations}
-          onStage={() => {}}
-          onEditDraft={() => {}}
-          onRemoveDraft={() => {}}
-          onResolve={() => {}}
-        />
-      );
-    }
-    const view = renderWithProviders(<Live />);
-    const wrapper = await waitFor(() => {
-      const el = view.container.querySelector("[data-loc-content-start]");
-      if (el === null) throw new Error("not rendered");
-      return el;
-    });
-    await drawRows(wrapper, SIX_ROWS);
+    const { view, annotate } = await renderLive(SIX_FENCE, [
+      wholeLines("draft", 5, 5),
+      wholeLines("draft", 6, 6),
+    ]);
     // Rows 2 and 3 share the chip at row 2.
     const chip = await view.findByRole("button", {
       name: "2 comment(s) on this block",
     });
     const popover = await openPopover(chip);
-    const expanded = () =>
-      view
-        .getAllByRole("button", { name: /comment\(s\) on this block/ })
-        .map((el) => el.getAttribute("aria-expanded"));
     // Content arriving above moves the rows down.
     shift = 40;
     act(() => {
       window.dispatchEvent(new Event("resize"));
     });
     expect(chipsOf(view)).toEqual([["260px", 2]]);
-    expect(expanded()).toEqual(["true"]);
+    expect(expanded(view)).toEqual(["true"]);
     // The draft on row 2 goes; row 3's hangs at its own row.
     act(() => annotate([wholeLines("draft", 6, 6)]));
     expect(chipsOf(view)).toEqual([["280px", 1]]);
-    expect(expanded()).toEqual(["true"]);
+    expect(expanded(view)).toEqual(["true"]);
+    await closePopover(popover);
+  });
+
+  it("never hands an open popover to an annotation new to the page", async () => {
+    layOutRows();
+    const drafts = [wholeLines("draft", 5, 5), wholeLines("draft", 6, 6)];
+    const { view, annotate } = await renderLive(SIX_FENCE, drafts);
+    const chip = await view.findByRole("button", {
+      name: "2 comment(s) on this block",
+    });
+    const popover = await openPopover(chip);
+    // A comment arrives on the opening fence, which no row shows: it hangs
+    // at the code block's top, where the open chip hung before pierre drew.
+    act(() => annotate([onLine("comment", 3, 1, 3), ...drafts]));
+    expect(chipsOf(view)).toEqual([
+      ["192px", 1],
+      ["220px", 2],
+    ]);
+    expect(expanded(view)).toEqual(["false", "true"]);
+    await closePopover(popover);
+  });
+
+  it("keeps the open popover of a row's chip joining its block's under a shut fold", async () => {
+    layOutRows();
+    // Columns on line 4, the opening fence, hang by the code block, which
+    // shows no row for them; line 9 is its fifth row.
+    const body = `<details>\n<summary>More</summary>\n\n${SIX_FENCE.slice("Intro.\n\n".length)}\n</details>\n`;
+    const { view } = await renderLive(body, [
+      onLine("comment", 4, 1, 3),
+      wholeLines("draft", 9, 9),
+    ]);
+    await waitFor(() =>
+      expect(chipsOf(view)).toEqual([
+        ["192px", 1],
+        ["280px", 1],
+      ]),
+    );
+    const [, rowChip] = view.getAllByRole("button", {
+      name: /comment\(s\) on this block/,
+    });
+    if (rowChip === undefined) throw new Error("no chip");
+    const popover = await openPopover(rowChip);
+    const fold = view.container.querySelector("details");
+    if (fold === null) throw new Error("no fold");
+    // Shut, both hang by the fold, in one chip: the one being read.
+    act(() => {
+      fold.removeAttribute("open");
+      fold.dispatchEvent(new Event("toggle"));
+    });
+    expect(chipsOf(view)).toEqual([["0px", 2]]);
+    expect(expanded(view)).toEqual(["true"]);
     await closePopover(popover);
   });
 
