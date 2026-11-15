@@ -179,6 +179,17 @@ const OLD_HOLDER = `[${OLD_LINE_ATTR}], .spec-del-block, .${DEL_ROW_CLASS}`;
 /** The wrappers of the code blocks pierre draws rows in, old ones included. */
 const CODE_WRAPPERS = `[${CODE_CONTENT_START_ATTR}], ${OLD_CODE_BLOCK}`;
 
+/**
+ * Whether a shut `<details>` hides `node`: it is inside one, and not in the
+ * summary a shut fold still shows. What its box measures there is no place
+ * on the page: nothing in one browser, where it would be if open in another.
+ */
+function shutAway(node: Node): boolean {
+  const el = node instanceof Element ? node : node.parentElement;
+  const fold = el?.closest("details:not([open])");
+  return fold != null && el?.closest("summary")?.parentElement !== fold;
+}
+
 /** One of pierre's rows, and where it sits in the source. */
 type PlacedRow = { row: HTMLElement; source: CodeRowSource };
 
@@ -771,18 +782,19 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       { at: (source: number) => Range | null; first: DOMRect } | null
     >();
     /**
-     * The line of the text block `block` a character drawn at `rect` sits
-     * on, as a place: as far below the block's top as the character is below
-     * the block's first one, so that a chip keeps from its line what the
-     * first line's keeps from it. Null on the first line, which the block's
-     * own place stands for, and wherever nothing measures. Less than half a
-     * line below the first character is still the first line: inline code,
-     * a fallback font or an atom's box start a few pixels off the text's.
+     * The line of the text block `block` that what `drawn` picks sits on, as
+     * a place: as far below the block's top as it is below the block's first
+     * character, so that a chip keeps from its line what the first line's
+     * keeps from it. Null on the first line, which the block's own place
+     * stands for, and wherever nothing measures, a shut fold's hidden body
+     * included. Less than half a line below the first character is still the
+     * first line: inline code, a fallback font or an atom's box start a few
+     * pixels off the text's.
      */
     const textLine = (
       block: { el: HTMLElement; start: number },
       key: string,
-      rect: (at: (source: number) => Range | null) => DOMRect | null,
+      drawn: (at: (source: number) => Range | null) => Range | Element | null,
     ): Line | null => {
       if (
         block.el.matches(CODE_WRAPPERS) ||
@@ -804,9 +816,15 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
             : { at, first };
         texts.set(block.el, text);
       }
-      const drawn = text === null ? null : rect(text.at);
-      if (text === null || drawn === null) return null;
-      const below = drawn.top - text.first.top;
+      const at = text === null ? null : drawn(text.at);
+      if (
+        text === null ||
+        at === null ||
+        shutAway(at instanceof Range ? at.startContainer : at)
+      ) {
+        return null;
+      }
+      const below = at.getBoundingClientRect().top - text.first.top;
       return below < text.first.height / 2
         ? null
         : { key, top: chipTop(containerRect, block.el) + below };
@@ -861,11 +879,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
           ? rowLine(`${key}:L`, block.el, row)
           : from === null
             ? null
-            : textLine(
-                block,
-                `${key}:@${from}`,
-                (on) => on(from)?.getBoundingClientRect() ?? null,
-              ),
+            : textLine(block, `${key}:@${from}`, (on) => on(from)),
         row?.row ?? null,
       );
     }
@@ -937,9 +951,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
             ? rowLine(`${key}:old-L`, holder, row)
             : current === undefined || run === null
               ? null
-              : textLine(current, `${key}:old@${run}`, () =>
-                  put.getBoundingClientRect(),
-                ),
+              : textLine(current, `${key}:old@${run}`, () => put),
           row?.row ?? null,
         );
       }
