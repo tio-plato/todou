@@ -1833,7 +1833,8 @@ describe("whole-line annotations wash every block they cover", () => {
 /**
  * Lay a document out one source line to a line of text on the page, as far
  * as chips care: a character `k` line breaks into its block sits at
- * 100 + 22k, 18px tall, and so does a run of removed text; a block sits at
+ * 100 + 22k, 18px tall, and so does a run of removed text, but 3px lower in
+ * inline code, as its smaller font and padding put it; a block sits at
  * `blockTop(block)`, 2px above its first line of text, unless told
  * otherwise; everything else, the container included, at 0.
  */
@@ -1851,7 +1852,12 @@ function placeLines(blockTop: (el: HTMLElement) => number = () => 98) {
   vi.spyOn(Range.prototype, "getBoundingClientRect").mockImplementation(
     function (this: Range) {
       const k = breaksBefore(this.startContainer, this.startOffset);
-      return DOMRect.fromRect({ y: 100 + 22 * k, width: 8, height: 18 });
+      const near =
+        this.startContainer instanceof Element
+          ? this.startContainer
+          : this.startContainer.parentElement;
+      const code = near?.closest("code") != null ? 3 : 0;
+      return DOMRect.fromRect({ y: 100 + 22 * k + code, width: 8, height: 18 });
     },
   );
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
@@ -1955,6 +1961,41 @@ describe("chips on a block's later lines", () => {
       [onBaseline("comment", before, 4, "doomed")],
     );
     expect(await chipTops(container)).toEqual(["120px"]);
+  });
+
+  it("hangs the chip of a line an image opens by that line", async () => {
+    placeLines();
+    const body = [
+      "Intro.",
+      "",
+      "The first line of a paragraph,",
+      "![pic](pic.png) opens its second line,",
+      "and a third.",
+      "",
+    ].join("\n");
+    const { container } = await renderDiff(body, body, [
+      wholeLines("comment", 4, 4),
+    ]);
+    expect(await chipTops(container)).toEqual(["120px"]);
+  });
+
+  it("keeps the block's chip for its first line, inline code and all", async () => {
+    placeLines();
+    // "code" sits a few pixels lower than the text around it, on line 3.
+    const body = "Intro.\n\nSee `code` here,\nand a second line.\n";
+    const at = "See `".length + 1;
+    const { container } = await renderDiff(body, body, [
+      {
+        key: "c3",
+        kind: "comment",
+        item: comment(3, { line_start: 3, line_end: 3 }),
+        start: 3,
+        end: 3,
+        colStart: at,
+        colEnd: at + 3,
+      },
+    ]);
+    expect(await chipTops(container)).toEqual(["98px"]);
   });
 
   it("hangs a chip by its block when the fold it is in shuts", async () => {
