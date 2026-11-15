@@ -1902,6 +1902,23 @@ describe("the card's own question badge", () => {
     ).toBe("true");
   });
 
+  it("keeps the start while a landing is still reading, so a second press does not lose it", async () => {
+    const model = openCard();
+    const pending = deferred<Response>();
+    model.questionReply = () => pending.promise;
+    const server = serve({ "p/7": model });
+    const scroll = scrolling();
+    const view = renderAt("/projects/p/issues/7#unanswered-questions-after-10");
+    await waitFor(() => expect(server.questions()).toHaveLength(1));
+    await view.findByText("Decision 14?");
+
+    expect(inTitle(view, model)?.getAttribute("href")).toMatch(
+      /#unanswered-questions-after-10$/,
+    );
+    await release(pending, json(model.questions));
+    await landed(view, scroll, 14);
+  });
+
   it("starts from the earliest when the address names a comment that asks nothing", () => {
     const open = questions([
       question(10),
