@@ -1,4 +1,10 @@
-import { act, cleanup, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  type RenderResult,
+  waitFor,
+} from "@testing-library/react";
 import type { SpecCommentItem } from "@todou/shared";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -449,6 +455,163 @@ describe("code highlights in the rendered view", () => {
     await drawRows(wrapper, TS_ROWS);
     expect(wrapper.classList.contains("spec-mark-comment-block")).toBe(true);
     expect(wrapper.classList.contains("spec-code-painted")).toBe(false);
+  });
+});
+
+/** A block of six rows of code: source lines 4–9 are its rows 1–6. */
+const SIX_FENCE = `Intro.\n\n\`\`\`ts\n${[1, 2, 3, 4, 5, 6]
+  .map((k) => `const a${k} = ${k};`)
+  .join("\n")}\n\`\`\`\n`;
+const SIX_ROWS = [1, 2, 3, 4, 5, 6]
+  .map((k) => `<div data-line="${k}"><span>const a${k} = ${k};</span></div>`)
+  .join("\n");
+
+/**
+ * Lay the page out as a browser would, as far as chips care: each of
+ * pierre's rows 20px below the last, counted by its place among its shadow
+ * root's rows rather than by `data-line`, which a deleted row and the row
+ * replacing it share; a code block's wrapper 8px above its first row, and
+ * everything else, the container included, at 0.
+ */
+function layOutRows() {
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: HTMLElement) {
+      let top = 0;
+      if (this.hasAttribute("data-line")) {
+        const root = this.getRootNode() as ParentNode;
+        top =
+          200 + 20 * [...root.querySelectorAll("[data-line]")].indexOf(this);
+      } else if (this.matches(".markdown-fence")) {
+        top = 192;
+      }
+      return new DOMRect(0, top, 600, 20);
+    },
+  );
+}
+
+/** Each chip's top and how many annotations it holds, top to bottom. */
+function chipsOf(view: Pick<RenderResult, "queryAllByRole">) {
+  return view
+    .queryAllByRole("button", { name: /comment\(s\) on this block/ })
+    .map((chip) => [
+      chip.style.top,
+      Number.parseInt(chip.getAttribute("aria-label") ?? "", 10),
+    ]);
+}
+
+describe("chips on code rows", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("hangs each annotation's chip by the row it is on", async () => {
+    layOutRows();
+    // Line 5 is the block's second row; line 8, columns 7–8, its fifth.
+    const { view, wrappers } = await renderDocument(SIX_FENCE, [
+      wholeLines("comment", 5, 5),
+      onLine("comment", 8, 7, 8),
+    ]);
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    await drawRows(wrapper, SIX_ROWS);
+    await waitFor(() =>
+      expect(chipsOf(view)).toEqual([
+        ["220px", 1],
+        ["280px", 1],
+      ]),
+    );
+  });
+
+  it("joins a row's chip to the one kept above it within a chip's height", async () => {
+    layOutRows();
+    // Rows 2, 3 and 4: the third is two rows below the chip it would join.
+    const { view, wrappers } = await renderDocument(SIX_FENCE, [
+      wholeLines("comment", 5, 5),
+      wholeLines("draft", 6, 6),
+      wholeLines("comment", 7, 7),
+    ]);
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    await drawRows(wrapper, SIX_ROWS);
+    await waitFor(() =>
+      expect(chipsOf(view)).toEqual([
+        ["220px", 2],
+        ["260px", 1],
+      ]),
+    );
+  });
+
+  it("hangs a baseline annotation by the deleted row it is on", async () => {
+    layOutRows();
+    // v1's line 7 is the deleted "const b = 2;", the block's second row.
+    const { view, wrappers } = await renderDocument(EDITED_AFTER, [], {
+      baselineBody: EDITED_BEFORE,
+      baselineAnnotations: [wholeLines("comment", 7, 7)],
+    });
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    await drawRows(wrapper, EDITED_ROWS);
+    await waitFor(() => expect(chipsOf(view)).toEqual([["220px", 1]]));
+  });
+
+  it("hangs a baseline annotation by its row of a restored block", async () => {
+    layOutRows();
+    // v1's line 5 is "more();", the second row of the block v2 removed.
+    const { view, wrappers } = await renderDocument("Intro.\n\nOutro.\n", [], {
+      baselineBody: "Intro.\n\n```ts\nold();\nmore();\n```\n\nOutro.\n",
+      baselineAnnotations: [wholeLines("comment", 5, 5)],
+      wrappers: "[data-old-loc].markdown-fence",
+    });
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    await drawRows(
+      wrapper,
+      `<div data-line="1"><span>old();</span></div>
+       <div data-line="2"><span>more();</span></div>`,
+    );
+    await waitFor(() => expect(chipsOf(view)).toEqual([["220px", 1]]));
+  });
+
+  it("scrolls to an annotation's own row from the chip it joined", async () => {
+    layOutRows();
+    // Rows 2 and 3, one chip between them.
+    const { view, wrappers } = await renderDocument(SIX_FENCE, [
+      wholeLines("comment", 5, 5),
+      wholeLines("draft", 6, 6),
+    ]);
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    const shadow = await drawRows(wrapper, SIX_ROWS);
+    const [chip] = await view.findAllByRole("button", {
+      name: /comment\(s\) on this block/,
+    });
+    if (chip === undefined) throw new Error("no chip");
+    fireEvent.click(chip);
+    const popover = await waitFor(() => {
+      const el = document.querySelector("[data-slot='popover-content']");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    const locate = [
+      ...popover.querySelectorAll<HTMLElement>(
+        "button[title='Scroll to what this points at']",
+      ),
+    ].find((button) => button.textContent === "L6");
+    if (locate === undefined) throw new Error("no locate control");
+    const reveals: Element[] = [];
+    vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+      this: Element,
+    ) {
+      reveals.push(this);
+    });
+    fireEvent.click(locate);
+    expect(reveals).toEqual([shadow.querySelector("[data-line='3']")]);
+    fireEvent.keyDown(popover, { key: "Escape" });
+    await waitFor(() =>
+      expect(
+        document.querySelector("[data-slot='popover-content']"),
+      ).toBeNull(),
+    );
   });
 });
 
