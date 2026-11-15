@@ -35,6 +35,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { questionsQuery } from "../src/api/questions.ts";
 import { UnsavedChangesGuard } from "../src/components/shared/unsaved-guard.tsx";
 import { QUESTION_LANDING_ROUTE_ID } from "../src/components/timeline/use-question-landing.ts";
+import { selectNextQuestionLanding } from "../src/lib/question-landing.ts";
 import { registerDirtySource } from "../src/lib/unsaved-guard.ts";
 import { IssueDetailPage } from "../src/pages/issue-detail.tsx";
 import { IssueRouteError } from "../src/pages/issue-route-error.tsx";
@@ -1878,9 +1879,8 @@ describe("the card's own question badge", () => {
 
     await click(inTitle(view, model));
     await landed(view, scroll, 10);
-    const first = within(
-      view.container.querySelector("#comment-10") as HTMLElement,
-    );
+    const row = view.container.querySelector("#comment-10");
+    const first = within(row as HTMLElement);
     fireEvent.click(first.getByRole("button", { name: "Proceed" }));
     expect(
       first
@@ -1893,10 +1893,39 @@ describe("the card's own question badge", () => {
     expect(
       view.queryByRole("dialog", { name: "Leave with unsaved changes?" }),
     ).toBeNull();
+    // The same row, not a remount that happens to be unanswered as well.
+    expect(view.container.querySelector("#comment-10")).toBe(row);
     expect(
       first
         .getByRole("button", { name: "Proceed" })
         .getAttribute("aria-pressed"),
     ).toBe("true");
+  });
+
+  it("starts from the earliest when the address names a comment that asks nothing", () => {
+    const open = questions([
+      question(10),
+      answered(question(12), 13),
+      question(14),
+    ]);
+    expect(selectNextQuestionLanding(open, 11)).toBe(10);
+  });
+
+  it("stays on the comment it starts from once nothing is open", () => {
+    const settled = questions([
+      answered(question(10), 11),
+      answered(question(12), 13),
+      answered(question(14), 15),
+    ]);
+    expect(selectNextQuestionLanding(settled, 12)).toBe(12);
+  });
+
+  it("comes back round to the only open question", () => {
+    const one = questions([
+      answered(question(10), 11),
+      question(12),
+      answered(question(14), 15),
+    ]);
+    expect(selectNextQuestionLanding(one, 12)).toBe(12);
   });
 });
