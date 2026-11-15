@@ -7,20 +7,32 @@ import { evaluate } from "../lib/browser-cdp.mjs";
 // Below 640px (Tailwind `sm`) the rendered spec gives up its right gutter and
 // the annotation chips ride on the card's border; from 640px up the gutter,
 // the chips in it and the popover opening to their left stay as they were.
+// At every width a chip's popover stays on screen, `EDGE` clear of the top
+// and bottom, even when its thread is taller than the room beside the chip.
+// The cramped viewports, a phone held either way, have less room beside a
+// chip in the middle of the screen than the popover's 24rem cap.
 const VIEWPORTS = [
   { width: 320, height: 844 },
   { width: 390, height: 844 },
+  { width: 402, height: 714, cramped: true },
   { width: 639, height: 844 },
   { width: 640, height: 800 },
+  { width: 750, height: 338, cramped: true },
   { width: 1280, height: 800 },
 ];
 const SM = 640;
 const GUTTER = 40;
 const EPSILON = 0.5;
+/** The popover layer's collision padding. */
+const EDGE = 8;
 const CHIPS = 2;
+/** Comments on the second chip: together far taller than 24rem. */
+const THREAD = 6;
 const PATH = "design.md";
-const FAULT_CSS =
-  '[aria-label$="on this block"] { right: 0 !important; translate: none !important; }';
+const FAULT_CSS = [
+  '[aria-label$="on this block"] { right: 0 !important; translate: none !important; }',
+  '[data-slot="popover-content"] { max-height: 24rem !important; }',
+].join(" ");
 
 const narrow = (width) => width < SM;
 
@@ -36,10 +48,15 @@ function documentBody() {
     "",
     "A second annotated paragraph puts another chip at a different height, and like the first it runs on well past a single line, so that its right edge is also set by the width of the column it sits in.",
     "",
+    // Short lines, so the page can scroll the second chip to mid-screen.
+    ...Array.from({ length: 16 }, (_, i) => [`Filler ${i + 1}.`, ""]).flat(),
   ].join("\n");
 }
 
-/** One project, one card, one spec file with two annotated paragraphs. */
+/**
+ * One project, one card, one spec file with two annotated paragraphs: one
+ * comment on the first, a `THREAD` of long ones on the second.
+ */
 export async function seedSpecChipFixture(serverPort) {
   const base = `http://127.0.0.1:${serverPort}/api`;
   let cookie = "";
@@ -87,15 +104,20 @@ export async function seedSpecChipFixture(serverPort) {
   await call("POST", `${spec}/reviews`, {
     version: pushed.version,
     verdict: "comment",
-    comments: paragraphs.map((line, i) => ({
-      anchor: {
-        path: PATH,
-        version: pushed.version,
-        line_start: line,
-        line_end: line,
-      },
-      body: `Annotation ${i + 1} on the gutter fixture.`,
-    })),
+    comments: paragraphs.flatMap((line, i) =>
+      Array.from({ length: i === 0 ? 1 : THREAD }, (_, j) => ({
+        anchor: {
+          path: PATH,
+          version: pushed.version,
+          line_start: line,
+          line_end: line,
+        },
+        body:
+          i === 0
+            ? "Annotation 1 on the gutter fixture."
+            : `Annotation 2.${j + 1} on the gutter fixture, long enough to wrap over a few lines in the popover, so that the whole thread runs well past the popover's height cap.`,
+      })),
+    ),
   });
   return {
     slug,
@@ -137,6 +159,7 @@ function probeSource(fault) {
       return {
         found: true,
         clientWidth: document.documentElement.clientWidth,
+        clientHeight: document.documentElement.clientHeight,
         scrollWidth: document.documentElement.scrollWidth,
         card: card ? {
           ...box(card),
@@ -154,19 +177,22 @@ function probeSource(fault) {
     const chipCenter = index => {
       const chip = parts().chips[index];
       if (!chip) return null;
-      chip.scrollIntoView({ block: 'center', behavior: 'instant' });
+      // Not scrollIntoView: it honours the html element's scroll-padding,
+      // which leaves a chip short of mid-screen and room to spare beside it.
+      const at = chip.getBoundingClientRect();
+      window.scrollBy({ top: at.top + at.height / 2 - document.documentElement.clientHeight / 2, behavior: 'instant' });
       const rect = chip.getBoundingClientRect();
       return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, chip: box(chip) };
     };
     const popover = () => {
       const content = document.querySelector('[data-radix-popper-content-wrapper] > *');
-      return content && sized(content) ? box(content) : null;
+      return content && sized(content) ? { ...box(content), maxHeight: getComputedStyle(content).maxHeight } : null;
     };
     const open = () => !!document.querySelector('[data-radix-popper-content-wrapper]');
     const inject = () => {
       if (!fault || !document.head || document.querySelector('style[data-spec-chip-gutter-fault]')) return;
       const style = document.createElement('style');
-      style.dataset.specChipGutterFault = 'chip-back-over-text';
+      style.dataset.specChipGutterFault = 'chip-back-over-text popover-fixed-cap';
       style.textContent = ${JSON.stringify(FAULT_CSS)};
       document.head.append(style);
     };
@@ -286,8 +312,26 @@ function inspectLayout(measurement, width) {
   return failures;
 }
 
-function inspectPopover(popover, chip, clientWidth, width, index) {
+function inspectPopover(
+  popover,
+  chip,
+  clientWidth,
+  clientHeight,
+  width,
+  index,
+) {
   const failures = [];
+  if (
+    popover.top < EDGE - EPSILON ||
+    popover.bottom > clientHeight - EDGE + EPSILON
+  )
+    failures.push(
+      failure(
+        "popover-off-screen-vertical",
+        `chip ${index} popover spans ${popover.top}..${popover.bottom}, allowed ${EDGE}..${clientHeight - EDGE}`,
+        width,
+      ),
+    );
   if (popover.left < -EPSILON || popover.right > clientWidth + EPSILON)
     failures.push(
       failure(
@@ -348,6 +392,7 @@ async function measureViewport({ context, stack, fixture, fault, viewport }) {
             popover,
             target.chip,
             measurement.clientWidth,
+            measurement.clientHeight,
             viewport.width,
             index,
           ),
@@ -409,6 +454,9 @@ async function runPass({ browser, stack, fixture, fault, label }) {
           m.chips.every(
             (chip) => chip.css.right === "0px" && chip.css.translate === "none",
           ),
+      ) &&
+      measurements.every((m) =>
+        m.popovers.every(({ popover }) => popover.maxHeight === "384px"),
       );
     const result = {
       name: `spec-chip-gutter:${label}`,
@@ -462,13 +510,23 @@ export async function runSpecChipGutter(options) {
         (item) => item.name === "chip-over-text" && item.width === width,
       ),
   );
+  const missedCramped = VIEWPORTS.filter(
+    ({ cramped, width }) =>
+      cramped &&
+      !fault.failures.some(
+        (item) =>
+          item.name === "popover-off-screen-vertical" && item.width === width,
+      ),
+  ).map(({ width }) => width);
   const problems = [
     baseline.failures.length &&
       `baseline not clean: ${baseline.failures.map((item) => `${item.name}:${item.width ?? "all"}`).join(", ")}`,
     !fault.injectionConfirmed &&
-      "the fault stylesheet did not take effect at every narrow width",
+      "the fault stylesheet did not take effect at every narrow width and on every popover",
     !caught &&
       "the fault was not reported as chip-over-text at every narrow width",
+    missedCramped.length &&
+      `the fault was not reported as popover-off-screen-vertical at ${missedCramped.join(", ")}px`,
     restored.failures.length &&
       `restored not clean: ${restored.failures.map((item) => `${item.name}:${item.width ?? "all"}`).join(", ")}`,
   ].filter(Boolean);
