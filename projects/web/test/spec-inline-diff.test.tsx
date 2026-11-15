@@ -1956,6 +1956,25 @@ describe("chips on a block's later lines", () => {
     );
     expect(await chipTops(container)).toEqual(["120px"]);
   });
+
+  it("hangs a chip by its block when the fold it is in shuts", async () => {
+    placeLines();
+    // One block of HTML: line 5 is the fold's body, hidden once it shuts.
+    const body =
+      "Intro.\n\n<details>\n<summary>More</summary>\nHidden body text here.\n</details>\n";
+    const { container } = await renderDiff(body, body, [
+      wholeLines("comment", 5, 5),
+    ]);
+    const fold = container.querySelector("details");
+    if (fold === null) throw new Error("no fold");
+    // Open, the body hangs one line below the summary.
+    expect(await chipTops(container)).toEqual(["120px"]);
+    act(() => {
+      fold.removeAttribute("open");
+      fold.dispatchEvent(new Event("toggle"));
+    });
+    expect(await chipTops(container)).toEqual(["98px"]);
+  });
 });
 
 /**
