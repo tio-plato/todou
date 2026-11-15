@@ -85,7 +85,11 @@ import {
   SOURCE_LINE_ATTR,
 } from "@/lib/rehype-source-lines.ts";
 import { holdRevealed, revealBlock, useOwnHold } from "@/lib/scroll-insets.ts";
-import { anchorForSelection, OLD_CODE_BLOCK } from "@/lib/selection-anchor.ts";
+import {
+  anchorForSelection,
+  OLD_CODE_BLOCK,
+  rangeAtSource,
+} from "@/lib/selection-anchor.ts";
 import type { SelectionEndpoints } from "@/lib/selection-endpoints.ts";
 import { buildBaselineTree } from "@/lib/spec-baseline-tree.ts";
 import { type LineRange, rangesIntersect } from "@/lib/spec-changes.ts";
@@ -675,10 +679,11 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     const shows = lineVisibility(index);
     const washedBy = new Map<HTMLElement, Set<DisplayedAnnotation["kind"]>>();
     // Inside its block, a chip hangs by the row of code the annotation's
-    // first line shows on, where pierre has drawn one; else by the block's
-    // top. Each place is kept under its block's key, and a row's under that
-    // key and where in the source it starts, never where on the page, so
-    // that a layout moving it keeps its key.
+    // first line shows on, where pierre has drawn one, or by the line of text
+    // on the page its first character is drawn on; else by the block's top.
+    // Each place is kept under its block's key, and a row's or a line's
+    // under that key and where in the source it starts, never where on the
+    // page, so that a layout moving it keeps its key.
     type Place = {
       key: string;
       /** The key of the block it is in, whose places join one another. */
@@ -741,6 +746,54 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
             ({ source: { line } }) =>
               line !== null && line >= lines.start && line <= lines.end,
           ) ?? null);
+    // Each text block lined up once a layout, and only where asked, with
+    // the box of its first character, which its later lines are measured
+    // from. Null where it does not line up, or nothing has a box.
+    const texts = new Map<
+      Element,
+      { at: (source: number) => Range | null; first: DOMRect } | null
+    >();
+    /**
+     * The line of the text block `block` a character drawn at `rect` sits
+     * on, as a place: as far below the block's top as the character is below
+     * the block's first one, so that a chip keeps from its line what the
+     * first line's keeps from it. Null on the first line, which the block's
+     * own place stands for, and wherever nothing measures. Less than half a
+     * line below the first character is still the first line: inline code,
+     * a fallback font or an atom's box start a few pixels off the text's.
+     */
+    const textLine = (
+      block: { el: HTMLElement; start: number },
+      key: string,
+      rect: (at: (source: number) => Range | null) => DOMRect | null,
+    ): Line | null => {
+      if (
+        block.el.matches(CODE_WRAPPERS) ||
+        visibleAnchor(block.el) !== block.el
+      ) {
+        return null;
+      }
+      let text = texts.get(block.el);
+      if (text === undefined) {
+        const at = rangeAtSource(index, block.el);
+        const start = index.lineStarts[block.start - 1];
+        const first =
+          at === null || start === undefined
+            ? null
+            : (at(start)?.getBoundingClientRect() ?? null);
+        text =
+          at === null || first === null || first.height === 0
+            ? null
+            : { at, first };
+        texts.set(block.el, text);
+      }
+      const drawn = text === null ? null : rect(text.at);
+      if (text === null || drawn === null) return null;
+      const below = drawn.top - text.first.top;
+      return below < text.first.height / 2
+        ? null
+        : { key, top: chipTop(containerRect, block.el) + below, row: null };
+    };
     // Each wrapper's rows placed once a layout, and only where asked.
     const currentRows = new Map<Element, PlacedRow[]>();
     const rowsOf = (wrapper: Element) => () => {
@@ -776,10 +829,26 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       if (block === undefined) continue;
       const key = `${block.start}-${block.end}`;
       const row = rowIn(block.el, rowsOf(block.el), annotation);
+      // Its first character; for whole lines, the first line's start, unless
+      // that is the block's own first line or above it.
+      const from =
+        annotation.colStart != null
+          ? offsetAt(index, annotation.start, annotation.colStart)
+          : annotation.start > block.start
+            ? (index.lineStarts[annotation.start - 1] ?? null)
+            : null;
       hang(
         annotation,
         { key, el: block.el, old: false },
-        row === null ? null : rowLine(`${key}:L`, row),
+        row !== null
+          ? rowLine(`${key}:L`, row)
+          : from === null
+            ? null
+            : textLine(
+                block,
+                `${key}:@${from}`,
+                (on) => on(from)?.getBoundingClientRect() ?? null,
+              ),
       );
     }
     // An annotation on the baseline hangs where its text was put back: on
@@ -834,10 +903,25 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
                 annotation,
               )
             : null;
+        // A run of removed text in a current block is measured where it is
+        // drawn; in a block put back whole it would take the baseline's
+        // source to line its text up, and it hangs by that block's top.
+        const run =
+          current !== undefined && put.matches(OLD_RUNS)
+            ? put.hasAttribute(OLD_FLAT_ATTR)
+              ? `f${put.getAttribute(OLD_FLAT_ATTR)}`
+              : `s${put.getAttribute(OLD_SOURCE_ATTR)}`
+            : null;
         hang(
           annotation,
           { key, el: holder, old: current === undefined },
-          row === null ? null : rowLine(`${key}:old-L`, row),
+          row !== null
+            ? rowLine(`${key}:old-L`, row)
+            : current === undefined || run === null
+              ? null
+              : textLine(current, `${key}:old@${run}`, () =>
+                  put.getBoundingClientRect(),
+                ),
         );
       }
     }
