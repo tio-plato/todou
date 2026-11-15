@@ -6,6 +6,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import type { SpecCommentItem } from "@todou/shared";
+import { useState } from "react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   AnnotatedMarkdown,
@@ -471,21 +472,42 @@ const SIX_ROWS = [1, 2, 3, 4, 5, 6]
  * pierre's rows 20px below the last, counted by its place among its shadow
  * root's rows rather than by `data-line`, which a deleted row and the row
  * replacing it share; a code block's wrapper 8px above its first row, and
- * everything else, the container included, at 0.
+ * everything else, the container included, at 0. `shift` moves the rows
+ * and the wrappers down, as content arriving above them would.
  */
-function layOutRows() {
+function layOutRows(shift: () => number = () => 0) {
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
     function (this: HTMLElement) {
       let top = 0;
       if (this.hasAttribute("data-line")) {
         const root = this.getRootNode() as ParentNode;
         top =
-          200 + 20 * [...root.querySelectorAll("[data-line]")].indexOf(this);
+          shift() +
+          200 +
+          20 * [...root.querySelectorAll("[data-line]")].indexOf(this);
       } else if (this.matches(".markdown-fence")) {
-        top = 192;
+        top = shift() + 192;
       }
       return new DOMRect(0, top, 600, 20);
     },
+  );
+}
+
+/** The open popover, once it is. */
+async function openPopover(chip: HTMLElement): Promise<HTMLElement> {
+  fireEvent.click(chip);
+  return await waitFor(() => {
+    const el = document.querySelector("[data-slot='popover-content']");
+    expect(el).not.toBeNull();
+    return el as HTMLElement;
+  });
+}
+
+/** Close `popover` with the reader's own key, before the test ends. */
+async function closePopover(popover: HTMLElement): Promise<void> {
+  fireEvent.keyDown(popover, { key: "Escape" });
+  await waitFor(() =>
+    expect(document.querySelector("[data-slot='popover-content']")).toBeNull(),
   );
 }
 
@@ -612,6 +634,58 @@ describe("chips on code rows", () => {
         document.querySelector("[data-slot='popover-content']"),
       ).toBeNull(),
     );
+  });
+  it("keeps an open popover through its chip moving and hanging anew", async () => {
+    let shift = 0;
+    layOutRows(() => shift);
+    let annotate: (next: DisplayedAnnotation[]) => void = () => {};
+    function Live() {
+      const [annotations, setAnnotations] = useState([
+        wholeLines("draft", 5, 5),
+        wholeLines("draft", 6, 6),
+      ]);
+      annotate = setAnnotations;
+      return (
+        <AnnotatedMarkdown
+          slug="p"
+          issueNumber={1}
+          body={SIX_FENCE}
+          annotations={annotations}
+          onStage={() => {}}
+          onEditDraft={() => {}}
+          onRemoveDraft={() => {}}
+          onResolve={() => {}}
+        />
+      );
+    }
+    const view = renderWithProviders(<Live />);
+    const wrapper = await waitFor(() => {
+      const el = view.container.querySelector("[data-loc-content-start]");
+      if (el === null) throw new Error("not rendered");
+      return el;
+    });
+    await drawRows(wrapper, SIX_ROWS);
+    // Rows 2 and 3 share the chip at row 2.
+    const chip = await view.findByRole("button", {
+      name: "2 comment(s) on this block",
+    });
+    const popover = await openPopover(chip);
+    const expanded = () =>
+      view
+        .getAllByRole("button", { name: /comment\(s\) on this block/ })
+        .map((el) => el.getAttribute("aria-expanded"));
+    // Content arriving above moves the rows down.
+    shift = 40;
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
+    expect(chipsOf(view)).toEqual([["260px", 2]]);
+    expect(expanded()).toEqual(["true"]);
+    // The draft on row 2 goes; row 3's hangs at its own row.
+    act(() => annotate([wholeLines("draft", 6, 6)]));
+    expect(chipsOf(view)).toEqual([["280px", 1]]);
+    expect(expanded()).toEqual(["true"]);
+    await closePopover(popover);
   });
 });
 
