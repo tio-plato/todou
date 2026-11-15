@@ -145,12 +145,13 @@ type Chip = {
   /**
    * The chip's identity across layouts, so never a position: a layout that
    * moves the chip keeps it mounted, and its popover open. It is the key of
-   * the chip one of its annotations was in the layout before, else of the
-   * place it hangs at: its block's key (`start-end`, or `old-i` for a block
-   * put back of the baseline), followed for a row of code by `:L` or
+   * the chip one of its annotations was in the layout before, else one made
+   * from the place it hangs at: its block's key (`start-end`, or `old-i` for
+   * a block put back of the baseline), followed for a row of code by `:L` or
    * `:old-L` and the source line the row shows, for a line of text by `:@`
    * and the source offset its first character is drawn from, and for a run
-   * of removed text by `:old@` and where the run starts in the baseline.
+   * of removed text by `:old@` and where the run starts in the baseline;
+   * with a `+` for each chip already going on under that key.
    */
   blockKey: string;
   top: number;
@@ -538,6 +539,12 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [chips, setChips] = useState<Chip[]>([]);
+  /** The key of the chip whose popover is open, if one is. */
+  const openChip = useRef<string | null>(null);
+  const trackOpen = useCallback((key: string, open: boolean) => {
+    if (open) openChip.current = key;
+    else if (openChip.current === key) openChip.current = null;
+  }, []);
   /**
    * Where each annotation's locate control scrolls to, by its key: the row
    * of code its first line shows on, where pierre drew one, else its block.
@@ -1019,29 +1026,35 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     // Chip by chip, so that one chip moving re-renders that chip alone.
     setChips((prev) => {
       const before = new Map(prev.map((chip) => [chip.blockKey, chip]));
-      // A chip goes on under the key of the chip one of its annotations was
-      // in, so that its popover stays open when the place it hangs at
-      // changes under it: the annotation that place was kept for discarded,
-      // one joining from above. Never a key another chip hangs at, nor one
-      // a chip above took first.
+      // A chip goes on as the chip one of its annotations was in, under its
+      // key, so that it stays mounted and its popover open however the place
+      // it hangs at changed under it: the annotation that place was kept for
+      // discarded, one joining from above, a fold shut over it. Of two that
+      // join, it goes on as the one being read. A chip new to the page gets
+      // a key of its own, never one a chip on the page goes on under.
       const heldIn = new Map(
         prev.flatMap((chip) =>
           chip.items.map((item) => [item.key, chip.blockKey] as const),
         ),
       );
-      const own = new Set(next.map((chip) => chip.blockKey));
+      const reading = openChip.current;
       const taken = new Set<string>();
-      const kept = next.map((fresh) => {
+      const goesOn = next.map((fresh) => {
+        const was = fresh.items.flatMap((item) => heldIn.get(item.key) ?? []);
         const key =
-          fresh.items
-            .map((item) => heldIn.get(item.key))
-            .find(
-              (was) =>
-                was !== undefined &&
-                !taken.has(was) &&
-                (was === fresh.blockKey || !own.has(was)),
-            ) ?? fresh.blockKey;
-        taken.add(key);
+          reading !== null && was.includes(reading) && !taken.has(reading)
+            ? reading
+            : was.find((key) => !taken.has(key));
+        if (key !== undefined) taken.add(key);
+        return key;
+      });
+      const kept = next.map((fresh, i) => {
+        let key = goesOn[i];
+        if (key === undefined) {
+          key = fresh.blockKey;
+          while (taken.has(key)) key = `${key}+`;
+          taken.add(key);
+        }
         const chip =
           key === fresh.blockKey ? fresh : { ...fresh, blockKey: key };
         const old = before.get(chip.blockKey);
@@ -1355,6 +1368,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
           slug={slug}
           issueNumber={issueNumber}
           chip={chip}
+          onOpen={trackOpen}
           onFlash={flashAnnotation}
           onEditDraft={onEditDraft}
           onRemoveDraft={onRemoveDraft}
@@ -1375,6 +1389,7 @@ const AnnotationChip = memo(function AnnotationChip({
   slug,
   issueNumber,
   chip,
+  onOpen,
   onFlash,
   onEditDraft,
   onRemoveDraft,
@@ -1391,6 +1406,8 @@ const AnnotationChip = memo(function AnnotationChip({
   slug: string;
   issueNumber: number;
   chip: Chip;
+  /** Told when the chip's popover opens or closes, by the chip's key. */
+  onOpen: (key: string, open: boolean) => void;
   onFlash: (annotation: DisplayedAnnotation) => void;
   onEditDraft: (draft: SpecReviewDraft) => void;
   onRemoveDraft: (id: string) => void;
@@ -1411,7 +1428,7 @@ const AnnotationChip = memo(function AnnotationChip({
     </button>
   );
   return (
-    <Popover>
+    <Popover onOpenChange={(open) => onOpen(chip.blockKey, open)}>
       {/* Below `sm` the chip is a count badge centred on the card's right
           border, `--spec-card-inset` past the text's edge (0 where nothing
           sets it), and opaque, so the border does not run through it: the
