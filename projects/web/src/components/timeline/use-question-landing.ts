@@ -8,7 +8,8 @@ import { useEffect, useRef, useState } from "react";
 import { questionsQuery } from "@/api/questions.ts";
 import {
   isQuestionLandingHash,
-  selectQuestionLanding,
+  questionLandingAfter,
+  selectNextQuestionLanding,
   UNANSWERED_QUESTIONS_HASH,
 } from "@/lib/question-landing.ts";
 
@@ -79,6 +80,9 @@ export function useQuestionLanding(slug: string, issueNumber: number) {
     };
     active.current = intent;
     setLanding(intent);
+    // Read from the address, never from the last landing: the plain entry
+    // always means the earliest, however often it is reentered.
+    const after = questionLandingAfter(location.hash);
     const isCurrent = () =>
       active.current === intent &&
       router.state.location.pathname === intent.pathname &&
@@ -87,7 +91,7 @@ export function useQuestionLanding(slug: string, issueNumber: number) {
       .fetchQuery({ ...questionsQuery(slug, issueNumber), staleTime: 0 })
       .then(async (data) => {
         if (!isCurrent()) return;
-        const id = selectQuestionLanding(data);
+        const id = selectNextQuestionLanding(data, after);
         const next: Landing = {
           ...intent,
           phase: id === null ? "latest" : "anchor",
