@@ -84,7 +84,12 @@ import {
   rehypeSourceLines,
   SOURCE_LINE_ATTR,
 } from "@/lib/rehype-source-lines.ts";
-import { holdRevealed, revealBlock, useOwnHold } from "@/lib/scroll-insets.ts";
+import {
+  holdRevealed,
+  openEnclosingFolds,
+  revealBlock,
+  useOwnHold,
+} from "@/lib/scroll-insets.ts";
 import {
   anchorForSelection,
   OLD_CODE_BLOCK,
@@ -524,10 +529,12 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
   const [chips, setChips] = useState<Chip[]>([]);
   /**
    * Where each annotation's locate control scrolls to, by its key: the row
-   * of code its chip would hang by, else its block. Its own, even when its
-   * chip joined another's.
+   * of code its first line shows on, where pierre drew one, else its block.
+   * Its own, even when its chip joined another's.
    */
-  const placeOf = useRef(new Map<string, { el: HTMLElement; row: boolean }>());
+  const placeOf = useRef(
+    new Map<string, { block: HTMLElement; row: HTMLElement | null }>(),
+  );
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(NO_FOLDS);
   const wide = useMediaQuery(SM_UP);
   const remarkPlugins = useMarkdownRemarkPlugins(slug);
@@ -698,13 +705,17 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       items: DisplayedAnnotation[];
     };
     const places = new Map<string, Place>();
-    const jumps = new Map<string, { el: HTMLElement; row: boolean }>();
-    /** A place inside a block, and the row of code it is, if one. */
-    type Line = { key: string; top: number; row: HTMLElement | null };
+    const jumps = new Map<
+      string,
+      { block: HTMLElement; row: HTMLElement | null }
+    >();
+    /** A place inside a block: a row of code, or a line of text. */
+    type Line = { key: string; top: number };
     const hang = (
       annotation: DisplayedAnnotation,
       block: { key: string; el: HTMLElement; old: boolean },
       line: Line | null,
+      row: HTMLElement | null,
     ) => {
       const key = line?.key ?? block.key;
       const place = places.get(key);
@@ -720,31 +731,33 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
           items: [annotation],
         });
       }
-      jumps.set(
-        annotation.key,
-        line?.row ? { el: line.row, row: true } : { el: block.el, row: false },
-      );
+      jumps.set(annotation.key, { block: block.el, row });
     };
-    /** A row of code as a place, keyed `prefix` and its source line. */
-    const rowLine = (prefix: string, { row, source }: PlacedRow): Line => ({
-      key: `${prefix}${source.line}`,
-      top: chipTop(containerRect, row),
-      row,
-    });
+    /**
+     * A row of code as a place, keyed `prefix` and its source line; none
+     * under a shut fold, where every row measures 0 and the chip follows the
+     * fold up to its header, as its block's would.
+     */
+    const rowLine = (
+      prefix: string,
+      wrapper: HTMLElement,
+      { row, source }: PlacedRow,
+    ): Line | null =>
+      visibleAnchor(wrapper) !== wrapper
+        ? null
+        : { key: `${prefix}${source.line}`, top: chipTop(containerRect, row) };
     /**
      * The first row, in document order, that shows one of an annotation's
      * `lines` in the code block `wrapper`, placed by `rows`. None in a patch
      * fence, whose files scroll in a box of their own that no layout hears
-     * of, nor under a shut fold, where every row measures 0.
+     * of.
      */
     const rowIn = (
       wrapper: HTMLElement,
       rows: () => PlacedRow[],
       lines: LineRange,
     ): PlacedRow | null =>
-      !wrapper.matches(CODE_WRAPPERS) ||
-      wrapper.hasAttribute(FENCE_PATCH_ATTR) ||
-      visibleAnchor(wrapper) !== wrapper
+      !wrapper.matches(CODE_WRAPPERS) || wrapper.hasAttribute(FENCE_PATCH_ATTR)
         ? null
         : (rows().find(
             ({ source: { line } }) =>
@@ -796,7 +809,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       const below = drawn.top - text.first.top;
       return below < text.first.height / 2
         ? null
-        : { key, top: chipTop(containerRect, block.el) + below, row: null };
+        : { key, top: chipTop(containerRect, block.el) + below };
     };
     // Each wrapper's rows placed once a layout, and only where asked.
     const currentRows = new Map<Element, PlacedRow[]>();
@@ -845,7 +858,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         annotation,
         { key, el: block.el, old: false },
         row !== null
-          ? rowLine(`${key}:L`, row)
+          ? rowLine(`${key}:L`, block.el, row)
           : from === null
             ? null
             : textLine(
@@ -853,6 +866,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
                 `${key}:@${from}`,
                 (on) => on(from)?.getBoundingClientRect() ?? null,
               ),
+        row?.row ?? null,
       );
     }
     // An annotation on the baseline hangs where its text was put back: on
@@ -920,12 +934,13 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
           annotation,
           { key, el: holder, old: current === undefined },
           row !== null
-            ? rowLine(`${key}:old-L`, row)
+            ? rowLine(`${key}:old-L`, holder, row)
             : current === undefined || run === null
               ? null
               : textLine(current, `${key}:old@${run}`, () =>
                   put.getBoundingClientRect(),
                 ),
+          row?.row ?? null,
         );
       }
     }
@@ -1248,6 +1263,13 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     return () => container.removeEventListener("toggle", layout, true);
   }, [layout]);
 
+  // The latest layout, for a jump that finds its row drawn again since the
+  // last one ran; a ref, so that the jump stays one stable callback.
+  const layoutRef = useRef(layout);
+  useLayoutEffect(() => {
+    layoutRef.current = layout;
+  }, [layout]);
+
   const keepHold = useOwnHold();
   /**
    * Jump to what a popover entry points at — its own mark, else its row of
@@ -1261,13 +1283,19 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       const mark = container.querySelector<HTMLElement>(
         `[${MARK_KEY_ATTR}="${annotation.key}"]`,
       );
-      const place = placeOf.current.get(annotation.key);
-      const target = mark ?? (place?.el.isConnected ? place.el : null);
+      let place = placeOf.current.get(annotation.key);
+      if (mark === null && place?.row != null && !place.row.isConnected) {
+        layoutRef.current();
+        place = placeOf.current.get(annotation.key);
+      }
+      const row = mark === null && place?.row?.isConnected ? place.row : null;
+      // The walk up to a shut fold that `revealBlock` takes stops at pierre's
+      // shadow root, so a row's folds are opened from its block.
+      if (row !== null && place !== undefined) openEnclosingFolds(place.block);
+      const target =
+        mark ?? row ?? (place?.block.isConnected ? place.block : null);
       if (target === null) return;
-      revealBlock(target, {
-        behavior: "smooth",
-        flash: mark !== null || place?.row !== true,
-      });
+      revealBlock(target, { behavior: "smooth", flash: target !== row });
       keepHold(holdRevealed(target, document.body, "auto", "smooth"));
     },
     [keepHold],

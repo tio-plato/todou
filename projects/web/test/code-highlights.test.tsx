@@ -511,6 +511,28 @@ async function closePopover(popover: HTMLElement): Promise<void> {
   );
 }
 
+/** Every element `scrollIntoView` is called on from now. */
+function revealsSpy(): Element[] {
+  const reveals: Element[] = [];
+  vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element,
+  ) {
+    reveals.push(this);
+  });
+  return reveals;
+}
+
+/** The locate control labelled `label` in `popover`. */
+function locateIn(popover: HTMLElement, label: string): HTMLElement {
+  const locate = [
+    ...popover.querySelectorAll<HTMLElement>(
+      "button[title='Scroll to what this points at']",
+    ),
+  ].find((button) => button.textContent === label);
+  if (locate === undefined) throw new Error(`no ${label} control`);
+  return locate;
+}
+
 /** Each chip's top and how many annotations it holds, top to bottom. */
 function chipsOf(view: Pick<RenderResult, "queryAllByRole">) {
   return view
@@ -608,33 +630,13 @@ describe("chips on code rows", () => {
       name: /comment\(s\) on this block/,
     });
     if (chip === undefined) throw new Error("no chip");
-    fireEvent.click(chip);
-    const popover = await waitFor(() => {
-      const el = document.querySelector("[data-slot='popover-content']");
-      expect(el).not.toBeNull();
-      return el as HTMLElement;
-    });
-    const locate = [
-      ...popover.querySelectorAll<HTMLElement>(
-        "button[title='Scroll to what this points at']",
-      ),
-    ].find((button) => button.textContent === "L6");
-    if (locate === undefined) throw new Error("no locate control");
-    const reveals: Element[] = [];
-    vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
-      this: Element,
-    ) {
-      reveals.push(this);
-    });
-    fireEvent.click(locate);
+    const popover = await openPopover(chip);
+    const reveals = revealsSpy();
+    fireEvent.click(locateIn(popover, "L6"));
     expect(reveals).toEqual([shadow.querySelector("[data-line='3']")]);
-    fireEvent.keyDown(popover, { key: "Escape" });
-    await waitFor(() =>
-      expect(
-        document.querySelector("[data-slot='popover-content']"),
-      ).toBeNull(),
-    );
+    await closePopover(popover);
   });
+
   it("keeps an open popover through its chip moving and hanging anew", async () => {
     let shift = 0;
     layOutRows(() => shift);
@@ -685,6 +687,59 @@ describe("chips on code rows", () => {
     act(() => annotate([wholeLines("draft", 6, 6)]));
     expect(chipsOf(view)).toEqual([["280px", 1]]);
     expect(expanded()).toEqual(["true"]);
+    await closePopover(popover);
+  });
+
+  it("scrolls to an annotation's row that pierre drew again since the last layout", async () => {
+    layOutRows();
+    const { view, wrappers } = await renderDocument(SIX_FENCE, [
+      wholeLines("comment", 5, 5),
+    ]);
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    const shadow = await drawRows(wrapper, SIX_ROWS);
+    const [chip] = await view.findAllByRole("button", {
+      name: /comment\(s\) on this block/,
+    });
+    if (chip === undefined) throw new Error("no chip");
+    const popover = await openPopover(chip);
+    // pierre draws the rows again, and no frame has passed since.
+    shadow.innerHTML = SIX_ROWS;
+    const reveals = revealsSpy();
+    fireEvent.click(locateIn(popover, "L5"));
+    expect(reveals).toEqual([shadow.querySelector("[data-line='2']")]);
+    await closePopover(popover);
+  });
+
+  it("hangs a row's chip by the fold shut over it, and opens it to scroll to the row", async () => {
+    layOutRows();
+    // Line 6 is the block's second row, inside the fold.
+    const body = `<details>\n<summary>More</summary>\n\n${SIX_FENCE.slice("Intro.\n\n".length)}\n</details>\n`;
+    const { view, wrappers } = await renderDocument(body, [
+      wholeLines("comment", 6, 6),
+    ]);
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    const shadow = await drawRows(wrapper, SIX_ROWS);
+    await waitFor(() => expect(chipsOf(view)).toEqual([["220px", 1]]));
+    const fold = wrapper.closest("details");
+    if (fold === null) throw new Error("no fold");
+    // The reader shuts it: every row in it measures 0 in a browser, and the
+    // chip goes up to the fold, at 0 here.
+    act(() => {
+      fold.removeAttribute("open");
+      fold.dispatchEvent(new Event("toggle"));
+    });
+    expect(chipsOf(view)).toEqual([["0px", 1]]);
+    const [chip] = view.getAllByRole("button", {
+      name: /comment\(s\) on this block/,
+    });
+    if (chip === undefined) throw new Error("no chip");
+    const popover = await openPopover(chip);
+    const reveals = revealsSpy();
+    fireEvent.click(locateIn(popover, "L6"));
+    expect(fold.hasAttribute("open")).toBe(true);
+    expect(reveals).toEqual([shadow.querySelector("[data-line='2']")]);
     await closePopover(popover);
   });
 });
