@@ -246,6 +246,15 @@ export function ReviewSubmitDialog({
     >
       <DialogContent
         className="grid-cols-1 max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg"
+        onOpenAutoFocus={(event) => {
+          // Radix would focus the first enabled control, and below sm Cancel is
+          // hidden, so on an empty review that is Request changes: Enter right
+          // after opening would submit it. Focused from here rather than with
+          // autoFocus, which runs before the focus trap is listening and leaves
+          // it nothing to bring focus back to.
+          event.preventDefault();
+          editor.current?.focus();
+        }}
         onEscapeKeyDown={(event) => {
           if (editor.current?.dismissCompletion() === true) {
             event.preventDefault();
