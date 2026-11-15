@@ -138,10 +138,14 @@ export type DisplayedAnnotation = {
 
 type Chip = {
   /**
-   * The place the chip hangs at: its block's key (`start-end`, or `old-i`
-   * for a block put back of the baseline), followed for a row of code by the
-   * source line the row shows. Never a position, so that a layout moving the
-   * chip keeps it mounted, and its popover open.
+   * The chip's identity across layouts, so never a position: a layout that
+   * moves the chip keeps it mounted, and its popover open. It is the key of
+   * the chip one of its annotations was in the layout before, else of the
+   * place it hangs at: its block's key (`start-end`, or `old-i` for a block
+   * put back of the baseline), followed for a row of code by `:L` or
+   * `:old-L` and the source line the row shows, for a line of text by `:@`
+   * and the source offset its first character is drawn from, and for a run
+   * of removed text by `:old@` and where the run starts in the baseline.
    */
   blockKey: string;
   top: number;
@@ -988,7 +992,31 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     // Chip by chip, so that one chip moving re-renders that chip alone.
     setChips((prev) => {
       const before = new Map(prev.map((chip) => [chip.blockKey, chip]));
-      const kept = next.map((chip) => {
+      // A chip goes on under the key of the chip one of its annotations was
+      // in, so that its popover stays open when the place it hangs at
+      // changes under it: the annotation that place was kept for discarded,
+      // one joining from above. Never a key another chip hangs at, nor one
+      // a chip above took first.
+      const heldIn = new Map(
+        prev.flatMap((chip) =>
+          chip.items.map((item) => [item.key, chip.blockKey] as const),
+        ),
+      );
+      const own = new Set(next.map((chip) => chip.blockKey));
+      const taken = new Set<string>();
+      const kept = next.map((fresh) => {
+        const key =
+          fresh.items
+            .map((item) => heldIn.get(item.key))
+            .find(
+              (was) =>
+                was !== undefined &&
+                !taken.has(was) &&
+                (was === fresh.blockKey || !own.has(was)),
+            ) ?? fresh.blockKey;
+        taken.add(key);
+        const chip =
+          key === fresh.blockKey ? fresh : { ...fresh, blockKey: key };
         const old = before.get(chip.blockKey);
         return old !== undefined &&
           old.top === chip.top &&
