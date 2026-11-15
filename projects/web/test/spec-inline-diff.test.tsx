@@ -1831,6 +1831,134 @@ describe("whole-line annotations wash every block they cover", () => {
 });
 
 /**
+ * Lay a document out one source line to a line of text on the page, as far
+ * as chips care: a character `k` line breaks into its block sits at
+ * 100 + 22k, 18px tall, and so does a run of removed text; a block sits at
+ * `blockTop(block)`, 2px above its first line of text, unless told
+ * otherwise; everything else, the container included, at 0.
+ */
+function placeLines(blockTop: (el: HTMLElement) => number = () => 98) {
+  /** Line breaks from the start of `el`'s block to `node`, `offset`. */
+  const breaksBefore = (node: Node, offset: number) => {
+    const near = node instanceof Element ? node : node.parentElement;
+    const block = near?.closest("[data-loc]");
+    if (block == null) return 0;
+    const before = document.createRange();
+    before.setStart(block, 0);
+    before.setEnd(node, offset);
+    return before.toString().split("\n").length - 1;
+  };
+  vi.spyOn(Range.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: Range) {
+      const k = breaksBefore(this.startContainer, this.startOffset);
+      return DOMRect.fromRect({ y: 100 + 22 * k, width: 8, height: 18 });
+    },
+  );
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: HTMLElement) {
+      if (this.matches("[data-old-at], [data-old-src]")) {
+        const parent = this.parentNode;
+        const at = parent === null ? 0 : [...parent.childNodes].indexOf(this);
+        const k = parent === null ? 0 : breaksBefore(parent, at);
+        return DOMRect.fromRect({ y: 100 + 22 * k, height: 18 });
+      }
+      if (this.hasAttribute("data-loc")) {
+        return DOMRect.fromRect({ y: blockTop(this), height: 120 });
+      }
+      return DOMRect.fromRect({ y: 0 });
+    },
+  );
+}
+
+/** Each chip's top, top to bottom, once a frame has let them settle. */
+async function chipTops(container: HTMLElement) {
+  await settleChips();
+  return [
+    ...container.querySelectorAll<HTMLElement>(
+      "[aria-label$='comment(s) on this block']",
+    ),
+  ].map((chip) => chip.style.top);
+}
+
+describe("chips on a block's later lines", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("hangs a paragraph's chips by the lines their annotations start on", async () => {
+    placeLines();
+    // Line 5 opens inside the bold that line 4 starts; "which" is in the
+    // middle of line 7, the paragraph's fifth.
+    const body = [
+      "Intro.",
+      "",
+      "The first line of a paragraph,",
+      "its second line, ending in **bold",
+      "text** carried over, its third line,",
+      "its fourth line,",
+      "and its fifth line, which ends here.",
+      "",
+    ].join("\n");
+    const which = "and its fifth line, ".length + 1;
+    const { container } = await renderDiff(body, body, [
+      wholeLines("comment", 5, 5),
+      {
+        key: "c7",
+        kind: "comment",
+        item: comment(7, { line_start: 7, line_end: 7 }),
+        start: 7,
+        end: 7,
+        colStart: which,
+        colEnd: which + 4,
+      },
+    ]);
+    expect(await chipTops(container)).toEqual(["142px", "186px"]);
+  });
+
+  it("hangs the chip of a list item's or a quote's last line by that line", async () => {
+    placeLines((el) =>
+      el.tagName === "P" && el.textContent?.startsWith("A quote") ? 198 : 98,
+    );
+    const body = [
+      "- A list item whose text runs over",
+      "  a second line and then",
+      "  a third line here.",
+      "",
+      "> A quote whose text runs over",
+      "> a second line and then",
+      "> a third line here.",
+      "",
+    ].join("\n");
+    const { container } = await renderDiff(body, body, [
+      wholeLines("comment", 3, 3),
+      wholeLines("comment", 7, 7),
+    ]);
+    expect(await chipTops(container)).toEqual(["142px", "242px"]);
+  });
+
+  it("hangs a baseline annotation by the line its removed word is put back on", async () => {
+    placeLines();
+    const before = [
+      "Intro.",
+      "",
+      "The first line of a paragraph,",
+      "its second line holds a doomed word,",
+      "its third line,",
+      "and its fourth line.",
+      "",
+    ].join("\n");
+    const after = before.replace("a doomed word", "a word");
+    const { container } = await renderDiff(
+      before,
+      after,
+      [],
+      [onBaseline("comment", before, 4, "doomed")],
+    );
+    expect(await chipTops(container)).toEqual(["120px"]);
+  });
+});
+
+/**
  * happy-dom has no ResizeObserver; this one is driven by hand, as the size
  * change a mermaid diagram or a late-drawn code block makes would drive it.
  */

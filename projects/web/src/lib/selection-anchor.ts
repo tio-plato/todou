@@ -461,6 +461,66 @@ export function sourceOffsetInBlock(
 }
 
 /**
+ * The way back from `sourceOffsetInBlock`: where on the page a source offset
+ * in `el`, a stamped block of the document shown, is drawn. `el` is lined up
+ * once, and what comes back answers for any number of offsets; null when it
+ * does not line up.
+ *
+ * The answer is a range over the one character the offset is drawn as,
+ * found in the first of the block's own segments that ends past it: the
+ * character there in an exact segment, and the segment's first one in an
+ * indivisible segment or when the offset lies before the segment, in what
+ * its container shows nowhere (a quote's `> `, a list item's indent). One
+ * that lands on an atom gets a range around the whole atom. Null past the
+ * last segment, and where no text node holds the character.
+ */
+export function rangeAtSource(
+  index: SegmentIndex,
+  el: Element,
+): ((source: number) => Range | null) | null {
+  const loc = parseSourceLoc(el.getAttribute(SOURCE_LINE_ATTR));
+  const aligned =
+    loc === null
+      ? null
+      : alignBlock(index, { el, loc, stamp: SOURCE_LINE_ATTR });
+  if (aligned === null) return null;
+  const { segments, offsets, inserted, atoms } = aligned;
+  // Where each segment starts in the segments' joined text.
+  const starts: number[] = [];
+  let joined = 0;
+  for (const segment of segments) {
+    starts.push(joined);
+    joined += segment.text.length;
+  }
+  const texts = [...offsets].filter(([node]) => !inserted.has(node));
+  return (source) => {
+    const i = segments.findIndex((segment) => segment.end > source);
+    const segment = segments[i];
+    if (segment === undefined) return null;
+    const range = document.createRange();
+    // An atom's placeholder is the only segment spanning exactly its span.
+    const atom = atoms.find(
+      (a) => a.start === segment.start && a.end === segment.end,
+    );
+    if (atom !== undefined) {
+      range.selectNode(atom.el);
+      return range;
+    }
+    const at =
+      (starts[i] ?? 0) +
+      (segment.exact && source > segment.start ? source - segment.start : 0);
+    const hit = texts.find(
+      ([node, from]) => from <= at && at < from + (node.nodeValue ?? "").length,
+    );
+    if (hit === undefined) return null;
+    const [node, from] = hit;
+    range.setStart(node, at - from);
+    range.setEnd(node, at - from + 1);
+    return range;
+  };
+}
+
+/**
  * A start on the newline that ends a line of a quote or a list item begins,
  * on the page, where the next line's text does: the `> ` or the indent in
  * between is the container's, shown nowhere, and no column may name it.
