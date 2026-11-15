@@ -1285,11 +1285,16 @@ html[data-header-settling] [data-header-follow] {
   /* A fence drawn as a diff says which of its lines moved, in red and green
      per line, so the wash over the whole of it only muddies that (T-343). The
      class stays for the ↑/↓ nav; `padding-left` stays so the lines don't
-     shift. Written to miss an annotated block on purpose: both amber signals
-     above lose to a flat `transparent` — the first on specificity, the second
-     on order — and a block both changed and commented on is the commonest
-     one in this view. */
-  .spec-changed.spec-fence-diff:not(.spec-annotated) {
+     shift. Written to miss every annotated block on purpose, whether its note
+     covers whole lines (.spec-annotated) or some characters
+     (.spec-mark-*-block, below): a flat `transparent` here outranks the
+     colours of either note, and a block both changed and commented on is the
+     commonest one in this view. */
+  .spec-changed.spec-fence-diff:not(
+      .spec-annotated,
+      .spec-mark-comment-block,
+      .spec-mark-draft-block
+    ) {
     background-color: transparent;
     border-left-color: transparent;
   }
@@ -1489,11 +1494,6 @@ html[data-header-settling] [data-header-follow] {
       var(--color-amber-500) 60%,
       transparent
     );
-    background-color: color-mix(
-      in oklab,
-      var(--color-amber-500) 12%,
-      transparent
-    );
   }
   .markdown-body .spec-mark-draft-block {
     border-left-color: color-mix(
@@ -1501,6 +1501,18 @@ html[data-header-settling] [data-header-follow] {
       var(--color-indigo-500) 60%,
       transparent
     );
+  }
+  /* The wash is for a block whose characters could not be painted (below);
+     a painted one shows the background its own state gives it. `:where()`
+     keeps these exactly as specific as the bars above. */
+  .markdown-body .spec-mark-comment-block:not(:where(.spec-code-painted)) {
+    background-color: color-mix(
+      in oklab,
+      var(--color-amber-500) 12%,
+      transparent
+    );
+  }
+  .markdown-body .spec-mark-draft-block:not(:where(.spec-code-painted)) {
     background-color: color-mix(
       in oklab,
       var(--color-indigo-500) 12%,
@@ -1517,12 +1529,42 @@ html[data-header-settling] [data-header-follow] {
   /* Where the annotated characters themselves are painted inside the block
      (CSS Custom Highlight API, lib/code-highlights.ts), or the annotated
      rows marked, the bar alone says the block carries one, and a wash would
-     only blur which characters or rows. */
-  .markdown-body .spec-code-painted.spec-mark-comment-block,
-  .markdown-body .spec-code-painted.spec-mark-draft-block,
+     only blur which characters or rows. A new or changed block keeps the
+     green its own state paints in that strip, as it does with no note on it;
+     a removed block put back stays clear rather than fill with red a strip
+     only the note gave it. */
   .markdown-body
-    .spec-code-painted.spec-annotated:not(.spec-ins-block, .spec-changed) {
+    .spec-code-painted:is(
+      .spec-mark-comment-block,
+      .spec-mark-draft-block,
+      .spec-annotated
+    ):not(.spec-ins-block, .spec-changed) {
     background-color: transparent;
+  }
+  /* Painted on a new or changed block, a note on some characters takes the
+     bar a whole-line note takes there: its colour mixed with the green. A
+     block that carries a whole-line note as well keeps the bar it had. */
+  .markdown-body
+    .spec-code-painted.spec-mark-comment-block:is(
+      .spec-ins-block,
+      .spec-changed
+    ):not(.spec-annotated) {
+    border-left-color: color-mix(
+      in oklab,
+      var(--color-amber-500) 60%,
+      var(--diff-addition)
+    );
+  }
+  .markdown-body
+    .spec-code-painted.spec-mark-draft-block:is(
+      .spec-ins-block,
+      .spec-changed
+    ):not(.spec-annotated) {
+    border-left-color: color-mix(
+      in oklab,
+      var(--color-indigo-500) 60%,
+      var(--diff-addition)
+    );
   }
 
   /* The stand-in for a folded run of blocks (T-222). Both colours are the
