@@ -1,7 +1,7 @@
-import { type QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import {
   createMemoryHistory,
-  createRootRouteWithContext,
+  createRootRoute,
   createRoute,
   createRouter,
   RouterProvider,
@@ -11,7 +11,6 @@ import type { Project, SpecInfo } from "@todou/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../src/api/queries.ts";
 import { parseSpecSearch } from "../src/lib/spec-search.ts";
-import { pinSpecVersion } from "../src/lib/spec-version-pin.ts";
 import { SpecRouteError } from "../src/pages/issue-route-error.tsx";
 import {
   ProjectLayout,
@@ -117,15 +116,11 @@ const specServed = (slug: string, number: number): Record<string, Reply> => ({
 
 /**
  * The real project layer and both real error boundaries over the real spec
- * page, behind the app's own version pin. The pathless "authed" id has to be
- * here: `ProjectLayout` reads its params from "/authed/projects/$slug" and
- * throws without it.
+ * page. The pathless "authed" id has to be here: `ProjectLayout` reads its
+ * params from "/authed/projects/$slug" and throws without it.
  */
 function renderAt(url: string) {
-  const client = testQueryClient();
-  const rootRoute = createRootRouteWithContext<{
-    queryClient: QueryClient;
-  }>()();
+  const rootRoute = createRootRoute();
   const authedRoute = createRoute({
     getParentRoute: () => rootRoute,
     id: "authed",
@@ -147,7 +142,6 @@ function renderAt(url: string) {
     path: "issues/$number/spec",
     component: SpecViewPage,
     validateSearch: parseSpecSearch,
-    beforeLoad: pinSpecVersion,
     errorComponent: SpecRouteError,
   });
   const router = createRouter({
@@ -158,10 +152,9 @@ function renderAt(url: string) {
     ]),
     history: createMemoryHistory({ initialEntries: [url] }),
     defaultPendingMs: 0,
-    context: { queryClient: client },
   });
   render(
-    <QueryClientProvider client={client}>
+    <QueryClientProvider client={testQueryClient()}>
       <RouterProvider router={router} />
     </QueryClientProvider>,
   );
@@ -183,7 +176,7 @@ describe("an old spec deep link (T-245)", () => {
         { moved_to: { slug: "b", number: 7 } },
       ],
     });
-    const router = renderAt("/projects/a/issues/1/spec?v=1");
+    const router = renderAt("/projects/a/issues/1/spec");
 
     await waitFor(() =>
       expect(router.state.location.pathname).toBe("/projects/b/issues/7/spec"),
@@ -198,6 +191,10 @@ describe("an old spec deep link (T-245)", () => {
     stubFetch({
       ...specServed("b", 7),
       "/api/projects/b/issues/7/spec": [200, { ...SPEC, current_version: 2 }],
+      "/api/projects/b/issues/7/spec/files?version=2": [
+        200,
+        { ...FILES, version: 2 },
+      ],
       "/api/projects/a": [200, project("a")],
       "/api/projects/a/issues/1/spec": [
         301,
@@ -248,7 +245,7 @@ describe("an old spec deep link (T-245)", () => {
         { moved: true, title: "A spec that went out of reach" },
       ],
     });
-    const router = renderAt("/projects/a/issues/1/spec?v=1");
+    const router = renderAt("/projects/a/issues/1/spec");
 
     expect(
       await screen.findByText(
@@ -266,7 +263,7 @@ describe("an old spec deep link (T-245)", () => {
       ...specServed("a", 1),
       "/api/projects/a/issues/1/spec/files": NOT_FOUND,
     });
-    const router = renderAt("/projects/a/issues/1/spec?v=1");
+    const router = renderAt("/projects/a/issues/1/spec");
 
     expect(await screen.findByText(SPEC_MISS)).toBeTruthy();
     expect(screen.queryByText(ABOVE)).toBeNull();
@@ -288,7 +285,7 @@ describe("an old spec deep link (T-245)", () => {
         { moved_to: { slug: "b", number: 7 } },
       ],
     });
-    const router = renderAt("/projects/a/issues/1/spec?v=1");
+    const router = renderAt("/projects/a/issues/1/spec");
 
     await waitFor(() =>
       expect(router.state.location.pathname).toBe("/projects/b/issues/7/spec"),
@@ -308,7 +305,7 @@ describe("an old spec deep link (T-245)", () => {
         { error: { code: "internal", message: "x" } },
       ],
     });
-    renderAt("/projects/a/issues/1/spec?v=1");
+    renderAt("/projects/a/issues/1/spec");
 
     // Same rule as ProjectRouteError: an error this boundary has no answer
     // for is not ours to dress up as an empty state.
@@ -321,7 +318,7 @@ describe("an old spec deep link (T-245)", () => {
     vi.spyOn(api, "getSpecFiles").mockRejectedValue(
       new TypeError("Cannot read properties of undefined (reading 'version')"),
     );
-    renderAt("/projects/a/issues/1/spec?v=1");
+    renderAt("/projects/a/issues/1/spec");
 
     expect(await screen.findByText(ABOVE)).toBeTruthy();
     expect(screen.queryByText("Couldn't load this spec.")).toBeNull();

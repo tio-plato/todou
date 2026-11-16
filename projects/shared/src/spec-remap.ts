@@ -5,9 +5,6 @@ import { diffLines } from "diff";
  * survives only when it sits wholly inside one unchanged region: anything
  * else — deletion overlap, insertion or deletion splitting it — means the
  * anchored text no longer reads the same, i.e. outdated (GitHub semantics).
- * The server decides by it whether a comment is outdated, and the web
- * whether an annotation on a comparison's baseline can move onto the version
- * being viewed: the two must follow one rule.
  */
 export function remapLineRange(
   oldBody: string,

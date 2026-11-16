@@ -320,7 +320,10 @@ describe("spec toolbar fixed slots (T-190)", () => {
 
   it("has no baseline slot at v1 either, and disables the toggle there", async () => {
     const view = await toolbar("?v=1");
-    expect(slotNames(view)).toEqual(SLOTS_PLAIN);
+    // v1 is also an older version here, and the status is the current one's.
+    expect(slotNames(view)).toEqual(
+      SLOTS_PLAIN.filter((name) => name !== "review-status"),
+    );
     const toggle = compareToggle(view);
     expect(toggle.hasAttribute("disabled")).toBe(true);
     expect(toggle.getAttribute("aria-label")).toContain("no earlier version");
@@ -775,18 +778,16 @@ describe("spec toolbar fixed slots (T-190)", () => {
     );
   });
 
-  it("pins the old-version notice in the toolbar", async () => {
-    // Inside the measured toolbar, or `stickyTop` misses it and the rail,
-    // the file headers and every jump land underneath it.
+  it("gives an old version no row of its own in the toolbar", async () => {
+    // A toast says it instead, so the sticky toolbar is as tall as on the
+    // current version.
     const old = await toolbar("?v=1&file=design.md");
-    const notice = old.container.querySelector("[data-old-version-notice]");
-    expect(notice).not.toBeNull();
-    expect(slot(old, "title")?.closest(".sticky")?.contains(notice)).toBe(true);
-    old.unmount();
-
-    const current = await toolbar("?v=2&file=design.md");
+    const bar = slot(old, "title")?.closest(".sticky");
+    expect(bar).toBeTruthy();
     expect(
-      current.container.querySelector("[data-old-version-notice]"),
+      within(bar as HTMLElement).queryByRole("link", {
+        name: /newer version/i,
+      }),
     ).toBeNull();
   });
 });
@@ -1046,16 +1047,6 @@ describe("the toolbar below lg (T-593)", () => {
       "display-toggle",
     ]);
     expect(controls.className).not.toMatch(/(^|\s)sticky\b/);
-  });
-
-  it("keeps the old-version notice in the sticky row below lg", async () => {
-    // Still needed once the controls have scrolled away: the reader is
-    // reading on, and still on an old version.
-    const { bar, controls } = await narrowToolbar("?v=1&file=design.md");
-    const notice = document.querySelector("[data-old-version-notice]");
-    expect(notice).not.toBeNull();
-    expect(bar.contains(notice)).toBe(true);
-    expect(controls.contains(notice)).toBe(false);
   });
 
   it("offers the controls back only once they have slid under the row", async () => {

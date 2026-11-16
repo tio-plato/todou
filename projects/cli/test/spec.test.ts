@@ -1031,32 +1031,19 @@ describe("spec review", () => {
     expect(neither.stderr).toContain("--comment");
   });
 
-  it("requires the version that was read, before any request", async () => {
-    const { fetchImpl, calls } = fakeFetch([]);
-    const run = await runCli(["spec", "review", "23", "--approve"], {
-      fetchImpl,
-      env: ENV,
-    });
-    expect(run.exitCode).toBe(1);
-    expect(run.stderr).toContain("--version");
-    expect(calls).toHaveLength(0);
-  });
-
-  it("refuses a --version that is not a version number, before any request", async () => {
-    const { fetchImpl, calls } = fakeFetch([]);
-    const run = await runCli(
-      ["spec", "review", "23", "--version", "v3", "--approve"],
-      { fetchImpl, env: ENV },
-    );
-    expect(run.exitCode).toBe(1);
-    expect(run.stderr).toContain(
-      '--version must be a positive integer, got "v3"',
-    );
-    expect(calls).toHaveLength(0);
-  });
-
-  it("submits the verdict on the version given", async () => {
+  it("fetches the current version and submits the verdict", async () => {
     const { fetchImpl, calls } = fakeFetch([
+      [
+        "GET",
+        "/api/projects/proj/issues/23/spec",
+        {
+          current_version: 3,
+          review_status: "unreviewed",
+          unresolved_comments: 0,
+          files: [],
+          versions: [],
+        },
+      ],
       [
         "POST",
         "/api/projects/proj/issues/23/spec/reviews",
@@ -1070,21 +1057,12 @@ describe("spec review", () => {
       ],
     ]);
     const run = await runCli(
-      [
-        "spec",
-        "review",
-        "23",
-        "--version",
-        "3",
-        "--request-changes",
-        "--body",
-        "rework §2",
-      ],
+      ["spec", "review", "23", "--request-changes", "--body", "rework §2"],
       { fetchImpl, env: ENV },
     );
     expect(run.exitCode).toBe(0);
     expect(run.stdout).toContain("requested changes on spec v3");
-    const posted = JSON.parse(String(calls[0]?.init.body));
+    const posted = JSON.parse(String(calls[1]?.init.body));
     expect(posted).toMatchObject({
       version: 3,
       verdict: "request_changes",
@@ -1095,6 +1073,11 @@ describe("spec review", () => {
 
   it("allows a comment on a withdrawn version without claiming a new verdict", async () => {
     const { fetchImpl, calls } = fakeFetch([
+      [
+        "GET",
+        "/api/projects/proj/issues/23/spec",
+        { current_version: 3, review_status: "withdrawn" },
+      ],
       [
         "POST",
         "/api/projects/proj/issues/23/spec/reviews",
@@ -1108,21 +1091,12 @@ describe("spec review", () => {
       ],
     ]);
     const run = await runCli(
-      [
-        "spec",
-        "review",
-        "23",
-        "--version",
-        "3",
-        "--comment",
-        "--body",
-        "reworking scope",
-      ],
+      ["spec", "review", "23", "--comment", "--body", "reworking scope"],
       { fetchImpl, env: ENV },
     );
     expect(run.exitCode).toBe(0);
     expect(run.stdout).toBe("commented on spec v3\n");
-    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({
+    expect(JSON.parse(String(calls[1]?.init.body))).toEqual({
       version: 3,
       verdict: "comment",
       body: "reworking scope",
@@ -1212,6 +1186,86 @@ describe("spec review", () => {
   );
 });
 
+describe("spec review --approve --version", () => {
+  const REVIEWED = {
+    event_id: 99,
+    version: 3,
+    verdict: "approve",
+    summary_comment_id: null,
+    comment_ids: [],
+  };
+
+  it("refuses an approval that names no version, before any request", async () => {
+    const { fetchImpl, calls } = fakeFetch([]);
+    const run = await runCli(
+      ["spec", "review", "23", "-p", "proj", "--approve"],
+      { fetchImpl, env: ENV },
+    );
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toContain("--approve needs --version");
+    expect(run.stderr).toContain(
+      "todou spec review 23 -p proj --approve --version <N>",
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it("approves the current version for latest", async () => {
+    const { fetchImpl, calls } = fakeFetch([
+      [
+        "GET",
+        "/api/projects/proj/issues/23/spec",
+        { current_version: 3, review_status: "unreviewed" },
+      ],
+      ["POST", "/api/projects/proj/issues/23/spec/reviews", REVIEWED],
+    ]);
+    const run = await runCli(
+      ["spec", "review", "23", "--approve", "--version", "latest"],
+      { fetchImpl, env: ENV },
+    );
+    expect(run.exitCode).toBe(0);
+    expect(calls.map((call) => call.init.method ?? "GET")).toEqual([
+      "GET",
+      "POST",
+    ]);
+    expect(JSON.parse(String(calls[1]?.init.body))).toMatchObject({
+      version: 3,
+      verdict: "approve",
+    });
+  });
+
+  it("approves the named version without asking which is current", async () => {
+    const { fetchImpl, calls } = fakeFetch([
+      ["POST", "/api/projects/proj/issues/23/spec/reviews", REVIEWED],
+    ]);
+    const run = await runCli(
+      ["spec", "review", "23", "--approve", "--version", "3"],
+      { fetchImpl, env: ENV },
+    );
+    expect(run.exitCode).toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(String(calls[0]?.init.body))).toMatchObject({
+      version: 3,
+      verdict: "approve",
+    });
+  });
+
+  it.each(["v3", "0", "3.5", "03"])(
+    "refuses --version %s before any request",
+    async (version) => {
+      const { fetchImpl, calls } = fakeFetch([]);
+      const run = await runCli(
+        ["spec", "review", "23", "--approve", "--version", version],
+        { fetchImpl, env: ENV },
+      );
+      expect(run.exitCode).toBe(1);
+      expect(run.stderr).toContain(
+        "--version takes a positive integer or latest",
+      );
+      expect(calls).toHaveLength(0);
+    },
+  );
+});
+
 // T-277: the CLI half of inline review. Everything a local check can catch
 // has to fail before the POST, so each failing case asserts on `calls` and
 // not merely on the exit code.
@@ -1220,6 +1274,18 @@ describe("spec review --annotations", () => {
     "# Design\n\nThe counter has three writers.\nResolve is one-way.\nThe counter has three writers, restated.\n";
 
   const reviewRoutes = (version = 2, verdict = "comment"): Route[] => [
+    [
+      "GET",
+      "/api/projects/proj/issues/23/spec",
+      {
+        current_version: version,
+        review_status: "unreviewed",
+        unresolved_comments: 0,
+        unresolved_carried_comments: 0,
+        files: [{ path: "design.md", size: DESIGN.length }],
+        versions: [],
+      },
+    ],
     [
       "GET",
       "/api/projects/proj/issues/23/spec/files",
@@ -1252,17 +1318,7 @@ describe("spec review --annotations", () => {
   const review = async (annotations: unknown, extra: string[] = []) => {
     const { fetchImpl, calls } = fakeFetch(reviewRoutes());
     const run = await runCli(
-      [
-        "spec",
-        "review",
-        "23",
-        "--version",
-        "2",
-        "--comment",
-        "--annotations",
-        "-",
-        ...extra,
-      ],
+      ["spec", "review", "23", "--comment", "--annotations", "-", ...extra],
       { fetchImpl, env: ENV, stdinText: JSON.stringify(annotations) },
     );
     return { run, calls };
@@ -1369,16 +1425,7 @@ describe("spec review --annotations", () => {
   it("reports malformed JSON as such", async () => {
     const { fetchImpl, calls } = fakeFetch(reviewRoutes());
     const run = await runCli(
-      [
-        "spec",
-        "review",
-        "23",
-        "--version",
-        "2",
-        "--comment",
-        "--annotations",
-        "-",
-      ],
+      ["spec", "review", "23", "--comment", "--annotations", "-"],
       { fetchImpl, env: ENV, stdinText: "{not json" },
     );
     expect(run.exitCode).toBe(1);
@@ -1388,10 +1435,10 @@ describe("spec review --annotations", () => {
 
   it("refuses a --comment that carries neither summary nor annotation", async () => {
     const { fetchImpl, calls } = fakeFetch(reviewRoutes());
-    const run = await runCli(
-      ["spec", "review", "23", "--version", "2", "--comment"],
-      { fetchImpl, env: ENV },
-    );
+    const run = await runCli(["spec", "review", "23", "--comment"], {
+      fetchImpl,
+      env: ENV,
+    });
     expect(run.exitCode).toBe(1);
     expect(run.stderr).toContain("--comment says nothing");
     expect(reviewed(calls)).toHaveLength(0);
@@ -1404,8 +1451,6 @@ describe("spec review --annotations", () => {
         "spec",
         "review",
         "23",
-        "--version",
-        "2",
         "--comment",
         "--annotations",
         "-",
@@ -1426,8 +1471,6 @@ describe("spec review --annotations", () => {
         "spec",
         "review",
         "23",
-        "--version",
-        "2",
         "--request-changes",
         "--annotations",
         "-",

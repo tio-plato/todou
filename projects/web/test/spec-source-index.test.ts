@@ -226,6 +226,20 @@ describe("buildSegmentIndex", () => {
     );
   });
 
+  it("maps a range inside inline code onto its content (T-695)", () => {
+    const at = index.text.indexOf("code");
+    const ranges = sourceRangesOfText(index, at + 1, at + 2);
+    expect(source.slice(ranges[0]?.start ?? 0, ranges[0]?.end ?? 0)).toBe("o");
+  });
+
+  it("finds the content behind double backticks and their padding", () => {
+    const padded = "写入 `` a`b `` 头。\n";
+    const own = buildSegmentIndex(padded);
+    const at = own.text.indexOf("`b");
+    const ranges = sourceRangesOfText(own, at, at + 2);
+    expect(ranges.map((r) => padded.slice(r.start, r.end))).toEqual(["`b"]);
+  });
+
   it("never bridges two table cells with one range", () => {
     const at = index.text.indexOf("甲");
     const ranges = sourceRangesOfText(index, at, at + 3);

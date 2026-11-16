@@ -57,7 +57,7 @@ export function startAtDraftPage() {
 export function renderOnTheAppRouter(client: QueryClient) {
   return render(
     <QueryClientProvider client={client}>
-      <RouterProvider router={router} context={{ queryClient: client }} />
+      <RouterProvider router={router} />
     </QueryClientProvider>,
   );
 }
