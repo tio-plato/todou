@@ -3079,6 +3079,7 @@ describe("baseline annotations on deleted text", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     setViewportWidth(1024);
+    document.documentElement.style.fontSize = "";
   });
 
   it("paints a baseline draft on the removed word it covers", async () => {
@@ -3342,6 +3343,46 @@ describe("baseline annotations on deleted text", () => {
           .map((chip) => chip.getAttribute("aria-label")),
       ).toEqual(["1 comment(s) on this block", "1 comment(s) on this block"]),
     );
+  });
+
+  it("joins chips that overlap at the root font size the reader has set", async () => {
+    // A chip is drawn in rem: with a 20px root font a phone badge is 30px
+    // tall and a desktop chip 27px, so blocks 25px apart overlap at both.
+    document.documentElement.style.fontSize = "20px";
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (!this.classList.contains("spec-del-structure")) {
+          return DOMRect.fromRect({ y: 0 });
+        }
+        return DOMRect.fromRect({
+          y: (this.textContent ?? "").startsWith("Old A") ? 300 : 325,
+        });
+      },
+    );
+    setViewportWidth(390);
+    const before = "Para one.\n\nOld A here.\n\nOld B here.\n\nPara two.\n";
+    const { view } = await renderDiff(
+      before,
+      "Para one.\n\nPara two.\n",
+      [],
+      [
+        onBaseline("comment", before, 3, "A"),
+        onBaseline("comment", before, 5, "B"),
+      ],
+    );
+    const chips = await view.findAllByRole("button", {
+      name: /comment\(s\) on this block/,
+    });
+    expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
+      "2 comment(s) on this block",
+    ]);
+
+    act(() => setViewportWidth(1024));
+    expect(
+      view
+        .getAllByRole("button", { name: /comment\(s\) on this block/ })
+        .map((chip) => chip.getAttribute("aria-label")),
+    ).toEqual(["2 comment(s) on this block"]);
   });
 
   it("keeps apart phone badges that only touch", async () => {
