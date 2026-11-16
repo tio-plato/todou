@@ -18,7 +18,11 @@ import {
 } from "../../db/project-schema.ts";
 import { microIso } from "../timeline.ts";
 
-/** Rows per read; a card's spec files are the reason this is not unbounded. */
+/**
+ * Rows per paged read (versions, for spec files) and per insert of spec
+ * files and events. What is read still accumulates in memory: the whole
+ * card is read before its first row is written.
+ */
 const BATCH = 500;
 
 /** Destination-local ids, captured before this move's `moved_in` event. */
@@ -217,8 +221,91 @@ const atMicro = (text: string | null) =>
 
 type Payload = Record<string, unknown>;
 
+/** What the copy needs to know of a move's plan. */
+export type CopyPlan = {
+  row: typeof issues.$inferSelect;
+  source: { project: { id: number } };
+  target: { project: { id: number } };
+  status: { to: { id: number } };
+  labelIds: number[];
+  assigneeIds: number[];
+  movedAt: Date;
+  sameProjectDb: boolean;
+};
+
+/** Microsecond text as `micro` reads it, null where the column is. */
+type Micro = string | null;
+
+type CommentRow = Pick<
+  typeof comments.$inferSelect,
+  | "id"
+  | "authorId"
+  | "body"
+  | "kind"
+  | "component"
+  | "agentContext"
+  | "resolvedBy"
+  | "hiddenBy"
+> & { createdAt: Micro; editedAt: Micro; resolvedAt: Micro; hiddenAt: Micro };
+
+type SpecVersionRow = Pick<
+  typeof specVersions.$inferSelect,
+  "id" | "number" | "authorId" | "message" | "agentContext"
+> & { createdAt: Micro };
+
+type SpecFileRow = Pick<
+  typeof specVersionFiles.$inferSelect,
+  "versionId" | "path" | "body" | "size"
+>;
+
+type AttachmentRow = Pick<
+  typeof attachments.$inferSelect,
+  | "id"
+  | "uploaderId"
+  | "filename"
+  | "contentType"
+  | "size"
+  | "storageKey"
+  | "draft"
+> & { createdAt: Micro };
+
+/** The edits of one subject: the issue body, or one of its comments. */
+type RevisionGroup = {
+  type: "issue_body" | "comment";
+  oldId: number;
+  rows: Array<
+    Pick<typeof revisions.$inferSelect, "body" | "actorId" | "agentContext"> & {
+      createdAt: Micro;
+    }
+  >;
+};
+
+type EventRow = Pick<
+  typeof issueEvents.$inferSelect,
+  "id" | "actorId" | "type" | "payload" | "agentContext"
+> & { createdAt: Micro };
+
+type MetadataRow = Pick<
+  typeof issueMetadata.$inferSelect,
+  "namespace" | "key" | "value" | "updatedBy"
+> & { updatedAt: Micro };
+
+/** Everything a move copies of one card, as read from its source. */
+export type IssueTree = {
+  stamps: { createdAt: Micro; bodyEditedAt: Micro };
+  comments: CommentRow[];
+  specVersions: SpecVersionRow[];
+  specFiles: SpecFileRow[];
+  attachments: AttachmentRow[];
+  /** Only the subjects that have any. */
+  revisions: RevisionGroup[];
+  events: EventRow[];
+  metadata: MetadataRow[];
+};
+
 /**
- * Copy an issue and everything under it into the destination database.
+ * Copy an issue and everything under it into the destination database. The
+ * whole card is read before the first row is written.
  *
  * Returns the id map, which the caller also writes into the `moved_in`
  * payload: across databases that event is the only durable record of which
@@ -227,20 +314,17 @@ type Payload = Record<string, unknown>;
 export async function copyIssueTree(
   src: Db,
   dst: Db,
-  plan: {
-    row: typeof issues.$inferSelect;
-    source: { project: { id: number } };
-    target: { project: { id: number } };
-    status: { to: { id: number } };
-    labelIds: number[];
-    assigneeIds: number[];
-    movedAt: Date;
-    sameProjectDb: boolean;
-  },
+  plan: CopyPlan,
   opts: { number: number; reinhabit: boolean },
 ): Promise<IdMap> {
-  const sourceId = plan.source.project.id;
-  const targetId = plan.target.project.id;
+  return writeIssueTree(dst, await readIssueTree(src, plan), plan, opts);
+}
+
+/** Read everything `writeIssueTree` writes. Writes nothing. */
+export async function readIssueTree(
+  src: Db,
+  plan: CopyPlan,
+): Promise<IssueTree> {
   const oldIssueId = plan.row.id;
 
   const [stamps] = await src
@@ -252,6 +336,45 @@ export async function copyIssueTree(
     .where(eq(issues.id, oldIssueId));
   if (stamps === undefined) throw new Error("issue row vanished mid-copy");
 
+  const commentRows = await readComments(src, oldIssueId);
+  const versionRows = await readSpecVersions(src, oldIssueId);
+  const specFiles = await readSpecFiles(
+    src,
+    versionRows.map((row) => row.id),
+  );
+  const attachmentRows = await readAttachments(src, oldIssueId);
+  const revisionGroups = await readRevisions(src, {
+    sourceId: plan.source.project.id,
+    oldIssueId,
+    commentIds: commentRows.map((row) => row.id),
+  });
+  const events = await readEvents(src, oldIssueId);
+  const metadata = await readMetadata(src, oldIssueId);
+  return {
+    stamps,
+    comments: commentRows,
+    specVersions: versionRows,
+    specFiles,
+    attachments: attachmentRows,
+    revisions: revisionGroups,
+    events,
+    metadata,
+  };
+}
+
+/**
+ * Write a card `readIssueTree` read into the destination. Comments and
+ * attachments go in before the events, whose payloads are rewritten
+ * through the ids they get.
+ */
+export async function writeIssueTree(
+  dst: Db,
+  tree: IssueTree,
+  plan: CopyPlan,
+  opts: { number: number; reinhabit: boolean },
+): Promise<IdMap> {
+  const targetId = plan.target.project.id;
+
   const fields = {
     projectId: targetId,
     number: opts.number,
@@ -259,10 +382,10 @@ export async function copyIssueTree(
     body: plan.row.body,
     statusId: plan.status.to.id,
     authorId: plan.row.authorId,
-    createdAt: atMicro(stamps.createdAt),
+    createdAt: atMicro(tree.stamps.createdAt),
     // A move is activity: the card belongs at the top of its new list.
     updatedAt: plan.movedAt,
-    bodyEditedAt: atMicro(stamps.bodyEditedAt),
+    bodyEditedAt: atMicro(tree.stamps.bodyEditedAt),
     openQuestions: plan.row.openQuestions,
     specVersion: plan.row.specVersion,
     specReviewStatus: plan.row.specReviewStatus,
@@ -309,42 +432,29 @@ export async function copyIssueTree(
       .values(plan.labelIds.map((labelId) => ({ issueId, labelId })));
   }
 
-  const commentMap = await copyComments(src, dst, {
-    sourceId,
+  const commentMap = await writeComments(dst, tree.comments, {
     targetId,
-    oldIssueId,
     issueId,
   });
-  const specMap = await copySpecVersions(src, dst, {
-    sourceId,
+  const specMap = await writeSpecVersions(dst, tree.specVersions, {
     targetId,
-    oldIssueId,
     issueId,
   });
-  await copySpecFiles(src, dst, { sourceId, targetId, specMap });
-  const attachmentMap = await copyAttachments(src, dst, {
-    sourceId,
+  await writeSpecFiles(dst, tree.specFiles, { targetId, specMap });
+  const attachmentMap = await writeAttachments(dst, tree.attachments, {
     targetId,
-    oldIssueId,
+    oldIssueId: plan.row.id,
     issueId,
     deleteSourceFirst: plan.sameProjectDb,
   });
-  await copyRevisions(src, dst, {
-    sourceId,
+  await writeRevisions(dst, tree.revisions, { targetId, issueId, commentMap });
+  await writeEvents(dst, tree.events, {
     targetId,
-    oldIssueId,
-    issueId,
-    commentMap,
-  });
-  await copyEvents(src, dst, {
-    sourceId,
-    targetId,
-    oldIssueId,
     issueId,
     commentMap,
     attachmentMap,
   });
-  await copyMetadata(src, dst, { targetId, oldIssueId, issueId });
+  await writeMetadata(dst, tree.metadata, { targetId, issueId });
 
   // Revisions have polymorphic subjects rather than an issue foreign key.
   // All maxima describe this destination issue only, including no-row nulls.
@@ -400,12 +510,11 @@ export async function copyIssueTree(
  * this file. It is not part of any cursor; two precisions inside one copy
  * routine is just the next bug waiting to be written.
  */
-async function copyMetadata(
+async function readMetadata(
   src: Db,
-  dst: Db,
-  ids: { targetId: number; oldIssueId: number; issueId: number },
-): Promise<void> {
-  const rows = await src
+  oldIssueId: number,
+): Promise<MetadataRow[]> {
+  return src
     .select({
       namespace: issueMetadata.namespace,
       key: issueMetadata.key,
@@ -414,7 +523,14 @@ async function copyMetadata(
       updatedBy: issueMetadata.updatedBy,
     })
     .from(issueMetadata)
-    .where(eq(issueMetadata.issueId, ids.oldIssueId));
+    .where(eq(issueMetadata.issueId, oldIssueId));
+}
+
+async function writeMetadata(
+  dst: Db,
+  rows: MetadataRow[],
+  ids: { targetId: number; issueId: number },
+): Promise<void> {
   if (rows.length === 0) return;
 
   await dst.insert(issueMetadata).values(
@@ -431,25 +547,11 @@ async function copyMetadata(
   );
 }
 
-/**
- * Rows are inserted one at a time on purpose. A multi-row insert would have
- * to pair the ids it gets back by position, and `RETURNING` is under no
- * obligation to preserve the order rows were supplied in — a mispairing here
- * produces no error at all, just permalinks that quietly land on the wrong
- * comment.
- */
-async function copyComments(
+async function readComments(
   src: Db,
-  dst: Db,
-  ids: {
-    sourceId: number;
-    targetId: number;
-    oldIssueId: number;
-    issueId: number;
-  },
-): Promise<Map<number, number>> {
-  const map = new Map<number, number>();
-  for await (const batch of readBatches(src, comments, ids.oldIssueId, {
+  oldIssueId: number,
+): Promise<CommentRow[]> {
+  return readBatches<CommentRow>(src, comments, oldIssueId, {
     id: comments.id,
     authorId: comments.authorId,
     body: comments.body,
@@ -462,58 +564,54 @@ async function copyComments(
     editedAt: micro(comments.editedAt),
     resolvedAt: micro(comments.resolvedAt),
     hiddenAt: micro(comments.hiddenAt),
-  })) {
-    for (const row of batch) {
-      const inserted = await dst
-        .insert(comments)
-        .values({
-          projectId: ids.targetId,
-          issueId: ids.issueId,
-          authorId: row.authorId,
-          body: row.body,
-          kind: row.kind,
-          component: row.component,
-          agentContext: row.agentContext,
-          resolvedBy: row.resolvedBy,
-          hiddenBy: row.hiddenBy,
-          createdAt: atMicro(row.createdAt),
-          editedAt: atMicro(row.editedAt),
-          resolvedAt: atMicro(row.resolvedAt),
-          hiddenAt: atMicro(row.hiddenAt),
-          // biome-ignore lint/suspicious/noExplicitAny: SQL expressions for µs
-        } as any)
-        .returning({ id: comments.id });
-      const id = inserted[0]?.id;
-      if (id === undefined) throw new Error("comment copy returned no row");
-      map.set(row.id, id);
-    }
+  });
+}
+
+/**
+ * Rows are inserted one at a time on purpose. A multi-row insert would have
+ * to pair the ids it gets back by position, and `RETURNING` is under no
+ * obligation to preserve the order rows were supplied in — a mispairing here
+ * produces no error at all, just permalinks that quietly land on the wrong
+ * comment.
+ */
+async function writeComments(
+  dst: Db,
+  rows: CommentRow[],
+  ids: { targetId: number; issueId: number },
+): Promise<Map<number, number>> {
+  const map = new Map<number, number>();
+  for (const row of rows) {
+    const inserted = await dst
+      .insert(comments)
+      .values({
+        projectId: ids.targetId,
+        issueId: ids.issueId,
+        authorId: row.authorId,
+        body: row.body,
+        kind: row.kind,
+        component: row.component,
+        agentContext: row.agentContext,
+        resolvedBy: row.resolvedBy,
+        hiddenBy: row.hiddenBy,
+        createdAt: atMicro(row.createdAt),
+        editedAt: atMicro(row.editedAt),
+        resolvedAt: atMicro(row.resolvedAt),
+        hiddenAt: atMicro(row.hiddenAt),
+        // biome-ignore lint/suspicious/noExplicitAny: SQL expressions for µs
+      } as any)
+      .returning({ id: comments.id });
+    const id = inserted[0]?.id;
+    if (id === undefined) throw new Error("comment copy returned no row");
+    map.set(row.id, id);
   }
   return map;
 }
 
-async function copyAttachments(
+async function readAttachments(
   src: Db,
-  dst: Db,
-  ids: {
-    sourceId: number;
-    targetId: number;
-    oldIssueId: number;
-    issueId: number;
-    deleteSourceFirst: boolean;
-  },
-): Promise<Map<number, number>> {
-  const map = new Map<number, number>();
-  const rows: Array<{
-    id: number;
-    uploaderId: number;
-    filename: string;
-    contentType: string;
-    size: number;
-    storageKey: string;
-    draft: boolean;
-    createdAt: string | null;
-  }> = [];
-  for await (const batch of readBatches(src, attachments, ids.oldIssueId, {
+  oldIssueId: number,
+): Promise<AttachmentRow[]> {
+  return readBatches<AttachmentRow>(src, attachments, oldIssueId, {
     id: attachments.id,
     uploaderId: attachments.uploaderId,
     filename: attachments.filename,
@@ -522,17 +620,29 @@ async function copyAttachments(
     storageKey: attachments.storageKey,
     draft: attachments.draft,
     createdAt: micro(attachments.createdAt),
-  })) {
-    rows.push(...batch);
-  }
+  });
+}
+
+async function writeAttachments(
+  dst: Db,
+  rows: AttachmentRow[],
+  ids: {
+    targetId: number;
+    oldIssueId: number;
+    issueId: number;
+    deleteSourceFirst: boolean;
+  },
+): Promise<Map<number, number>> {
+  const map = new Map<number, number>();
   if (rows.length === 0) return map;
 
   // The blob is not copied, so the copy keeps the same storage key — and
   // `attachments_storage_key_idx` is unique per DATABASE, not per project.
   // Where both projects live in one database the source rows have to go
-  // first, or the copy collides with the rows it is copying.
+  // first, or the copy collides with the rows it is copying. That one
+  // database is the destination, so they go through it.
   if (ids.deleteSourceFirst) {
-    await src
+    await dst
       .delete(attachments)
       .where(eq(attachments.issueId, ids.oldIssueId));
   }
@@ -560,64 +670,77 @@ async function copyAttachments(
   return map;
 }
 
-async function copySpecVersions(
+async function readSpecVersions(
   src: Db,
-  dst: Db,
-  ids: {
-    sourceId: number;
-    targetId: number;
-    oldIssueId: number;
-    issueId: number;
-  },
-): Promise<Map<number, number>> {
-  const map = new Map<number, number>();
-  for await (const batch of readBatches(src, specVersions, ids.oldIssueId, {
+  oldIssueId: number,
+): Promise<SpecVersionRow[]> {
+  return readBatches<SpecVersionRow>(src, specVersions, oldIssueId, {
     id: specVersions.id,
     number: specVersions.number,
     authorId: specVersions.authorId,
     message: specVersions.message,
     agentContext: specVersions.agentContext,
     createdAt: micro(specVersions.createdAt),
-  })) {
-    for (const row of batch) {
-      const inserted = await dst
-        .insert(specVersions)
-        .values({
-          projectId: ids.targetId,
-          issueId: ids.issueId,
-          number: row.number,
-          authorId: row.authorId,
-          message: row.message,
-          agentContext: row.agentContext,
-          createdAt: atMicro(row.createdAt),
-          // biome-ignore lint/suspicious/noExplicitAny: SQL expressions for µs
-        } as any)
-        .returning({ id: specVersions.id });
-      const id = inserted[0]?.id;
-      if (id === undefined)
-        throw new Error("spec version copy returned no row");
-      map.set(row.id, id);
-    }
+  });
+}
+
+async function writeSpecVersions(
+  dst: Db,
+  rows: SpecVersionRow[],
+  ids: { targetId: number; issueId: number },
+): Promise<Map<number, number>> {
+  const map = new Map<number, number>();
+  for (const row of rows) {
+    const inserted = await dst
+      .insert(specVersions)
+      .values({
+        projectId: ids.targetId,
+        issueId: ids.issueId,
+        number: row.number,
+        authorId: row.authorId,
+        message: row.message,
+        agentContext: row.agentContext,
+        createdAt: atMicro(row.createdAt),
+        // biome-ignore lint/suspicious/noExplicitAny: SQL expressions for µs
+      } as any)
+      .returning({ id: specVersions.id });
+    const id = inserted[0]?.id;
+    if (id === undefined) throw new Error("spec version copy returned no row");
+    map.set(row.id, id);
   }
   return map;
 }
 
-async function copySpecFiles(
+/** Hangs off the version, so it is read `BATCH` versions at a time. */
+async function readSpecFiles(
   src: Db,
-  dst: Db,
-  ids: { sourceId: number; targetId: number; specMap: Map<number, number> },
-): Promise<void> {
-  if (ids.specMap.size === 0) return;
-  const oldVersionIds = [...ids.specMap.keys()];
+  oldVersionIds: number[],
+): Promise<SpecFileRow[]> {
+  const rows: SpecFileRow[] = [];
   for (let i = 0; i < oldVersionIds.length; i += BATCH) {
     const slice = oldVersionIds.slice(i, i + BATCH);
-    const rows = await src
+    const found = await src
       .select()
       .from(specVersionFiles)
       .where(inArray(specVersionFiles.versionId, slice));
-    if (rows.length === 0) continue;
+    for (const row of found) rows.push(row);
+  }
+  return rows;
+}
+
+/**
+ * `BATCH` rows per insert, not one insert per slice of versions read: a
+ * version holds up to 64 files, and that many rows of five columns each
+ * would pass the 65535 parameters one statement can carry.
+ */
+async function writeSpecFiles(
+  dst: Db,
+  rows: SpecFileRow[],
+  ids: { targetId: number; specMap: Map<number, number> },
+): Promise<void> {
+  for (let i = 0; i < rows.length; i += BATCH) {
     await dst.insert(specVersionFiles).values(
-      rows.map((row) => ({
+      rows.slice(i, i + BATCH).map((row) => ({
         projectId: ids.targetId,
         versionId: ids.specMap.get(row.versionId) as number,
         path: row.path,
@@ -628,23 +751,15 @@ async function copySpecFiles(
   }
 }
 
-async function copyRevisions(
+async function readRevisions(
   src: Db,
-  dst: Db,
-  ids: {
-    sourceId: number;
-    targetId: number;
-    oldIssueId: number;
-    issueId: number;
-    commentMap: Map<number, number>;
-  },
-): Promise<void> {
+  ids: { sourceId: number; oldIssueId: number; commentIds: number[] },
+): Promise<RevisionGroup[]> {
   const subjects: Array<{ type: "issue_body" | "comment"; oldId: number }> = [
     { type: "issue_body", oldId: ids.oldIssueId },
-    ...[...ids.commentMap.keys()].map(
-      (oldId) => ({ type: "comment", oldId }) as const,
-    ),
+    ...ids.commentIds.map((oldId) => ({ type: "comment", oldId }) as const),
   ];
+  const groups: RevisionGroup[] = [];
   for (const subject of subjects) {
     const rows = await src
       .select({
@@ -661,17 +776,31 @@ async function copyRevisions(
           eq(revisions.subjectId, subject.oldId),
         ),
       );
-    if (rows.length === 0) continue;
+    if (rows.length > 0) groups.push({ ...subject, rows });
+  }
+  return groups;
+}
+
+async function writeRevisions(
+  dst: Db,
+  groups: RevisionGroup[],
+  ids: {
+    targetId: number;
+    issueId: number;
+    commentMap: Map<number, number>;
+  },
+): Promise<void> {
+  for (const group of groups) {
     const newSubjectId =
-      subject.type === "issue_body"
+      group.type === "issue_body"
         ? ids.issueId
-        : (ids.commentMap.get(subject.oldId) as number);
+        : (ids.commentMap.get(group.oldId) as number);
     await dst.insert(revisions).values(
-      rows.map(
+      group.rows.map(
         (row) =>
           ({
             projectId: ids.targetId,
-            subjectType: subject.type,
+            subjectType: group.type,
             subjectId: newSubjectId,
             body: row.body,
             actorId: row.actorId,
@@ -684,27 +813,29 @@ async function copyRevisions(
   }
 }
 
-async function copyEvents(
-  src: Db,
-  dst: Db,
-  ids: {
-    sourceId: number;
-    targetId: number;
-    oldIssueId: number;
-    issueId: number;
-    commentMap: Map<number, number>;
-    attachmentMap: Map<number, number>;
-  },
-): Promise<void> {
-  for await (const batch of readBatches(src, issueEvents, ids.oldIssueId, {
+async function readEvents(src: Db, oldIssueId: number): Promise<EventRow[]> {
+  return readBatches<EventRow>(src, issueEvents, oldIssueId, {
     id: issueEvents.id,
     actorId: issueEvents.actorId,
     type: issueEvents.type,
     payload: issueEvents.payload,
     agentContext: issueEvents.agentContext,
     createdAt: micro(issueEvents.createdAt),
-  })) {
-    const values = batch.map((row) => ({
+  });
+}
+
+async function writeEvents(
+  dst: Db,
+  rows: EventRow[],
+  ids: {
+    targetId: number;
+    issueId: number;
+    commentMap: Map<number, number>;
+    attachmentMap: Map<number, number>;
+  },
+): Promise<void> {
+  for (let i = 0; i < rows.length; i += BATCH) {
+    const values = rows.slice(i, i + BATCH).map((row) => ({
       projectId: ids.targetId,
       issueId: ids.issueId,
       actorId: row.actorId,
@@ -713,10 +844,8 @@ async function copyEvents(
       agentContext: row.agentContext,
       createdAt: atMicro(row.createdAt),
     }));
-    if (values.length > 0) {
-      // biome-ignore lint/suspicious/noExplicitAny: SQL expressions for µs
-      await dst.insert(issueEvents).values(values as any);
-    }
+    // biome-ignore lint/suspicious/noExplicitAny: SQL expressions for µs
+    await dst.insert(issueEvents).values(values as any);
   }
 }
 
@@ -767,28 +896,31 @@ export function remapPayload(
   }
 }
 
-/** Read one issue's rows from a table in id order, `BATCH` at a time. */
-async function* readBatches(
+/**
+ * Read one issue's rows from a table in id order, `BATCH` per query, and
+ * return all of them.
+ */
+async function readBatches<Row>(
   db: Db,
   // biome-ignore lint/suspicious/noExplicitAny: any project-tier child table
   table: any,
   issueId: number,
   // biome-ignore lint/suspicious/noExplicitAny: a drizzle selection object
   selection: any,
-  // biome-ignore lint/suspicious/noExplicitAny: mirrors `selection`
-): AsyncGenerator<any[]> {
+): Promise<Row[]> {
+  const rows: Row[] = [];
   let after = 0;
   for (;;) {
-    const rows = await db
+    const batch = await db
       .select(selection)
       .from(table)
       .where(and(eq(table.issueId, issueId), sql`${table.id} > ${after}`))
       .orderBy(table.id)
       .limit(BATCH);
-    if (rows.length === 0) return;
-    yield rows;
-    const last = rows.at(-1) as { id?: number } | undefined;
-    if (last?.id === undefined) return;
+    if (batch.length === 0) return rows;
+    rows.push(...batch);
+    const last = batch.at(-1) as { id?: number } | undefined;
+    if (last?.id === undefined) return rows;
     after = last.id;
   }
 }
