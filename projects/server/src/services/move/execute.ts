@@ -221,7 +221,7 @@ async function moveWithinDb(
 /**
  * How long a lease on a registration row lasts unless renewed. A mover, or
  * a sweep recovering the row, renews its own every fifth of this for as
- * long as it runs.
+ * long as it runs, and housekeeping runs `sweepMoves` once every lease.
  */
 export const MOVE_LEASE_MS = 5 * 60 * 1000;
 
@@ -372,7 +372,7 @@ async function moveAcrossDbs(
       });
     } catch (err) {
       // Nothing was copied yet, so this is the sweep's rollback done now
-      // rather than an hour from now.
+      // rather than at its next run.
       await plan.source.db
         .update(issues)
         .set({ movingSince: null })
