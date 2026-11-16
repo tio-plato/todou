@@ -204,11 +204,13 @@ function shadowRows(wrapper: Element): HTMLElement[] {
 
 /**
  * How tall `AnnotationChip` draws a chip, so how close two can sit before
- * they overlap: from `sm` up a 16px line, 2px padding and a 1px border, top
- * and bottom; below it a 24px count badge (`max-sm:h-6`).
+ * they overlap, at a root font size of `rem` pixels: from `sm` up a 1rem
+ * line (`text-xs`), 0.125rem padding and a 1px border, top and bottom; below
+ * it a 1.5rem count badge (`max-sm:h-6`). The border stays 1px at any font
+ * size, so the chip does not scale with it as a whole.
  */
-function chipHeight(wide: boolean): number {
-  return wide ? 22 : 24;
+function chipHeight(wide: boolean, rem: number): number {
+  return wide ? 1.25 * rem + 2 : 1.5 * rem;
 }
 
 /** Runs of removed text, which say where in the baseline they start. */
@@ -995,13 +997,19 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     for (const place of places.values()) {
       byBlock.set(place.block, [...(byBlock.get(place.block) ?? []), place]);
     }
+    // A chip is drawn in rem, which the root element's font size sets, not
+    // this text's; the reader may have set it to other than 16px.
+    const tall = chipHeight(
+      wide,
+      Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
+    );
     const next: Chip[] = [];
     const oldChips: Chip[] = [];
     for (const group of byBlock.values()) {
       const kept: Chip[] = [];
       for (const place of group.sort((a, b) => a.top - b.top)) {
         const above = kept.at(-1);
-        if (above !== undefined && place.top - above.top < chipHeight(wide)) {
+        if (above !== undefined && place.top - above.top < tall) {
           above.items = [...above.items, ...place.items];
           continue;
         }
@@ -1013,9 +1021,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       // A block put back where another chip hangs — first in a current
       // block, inside another restored one, under the same closed fold —
       // would draw its chip over that one: it joins it instead.
-      const near = next.find(
-        (other) => Math.abs(other.top - chip.top) < chipHeight(wide),
-      );
+      const near = next.find((other) => Math.abs(other.top - chip.top) < tall);
       if (near !== undefined) {
         near.items = [...near.items, ...chip.items];
         continue;
@@ -1433,8 +1439,9 @@ const AnnotationChip = memo(function AnnotationChip({
       {/* Below `sm` the chip is a count badge centred on the card's right
           border, `--spec-card-inset` past the text's edge (0 where nothing
           sets it), and opaque, so the border does not run through it: the
-          same tint, laid over the page's background. Its 24px height is
-          also `chipHeight`'s: change one, change the other. */}
+          same tint, laid over the page's background. Its 1.5rem height, and
+          from `sm` up its line, padding and border, are also `chipHeight`'s:
+          change one, change the other. */}
       <PopoverTrigger
         data-annotation-ui=""
         className={cn(

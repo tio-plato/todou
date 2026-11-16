@@ -1889,6 +1889,7 @@ async function chipTops(container: HTMLElement) {
 describe("chips on a block's later lines", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    document.documentElement.style.fontSize = "";
   });
 
   it("hangs a paragraph's chips by the lines their annotations start on", async () => {
@@ -1940,6 +1941,33 @@ describe("chips on a block's later lines", () => {
       wholeLines("comment", 7, 7),
     ]);
     expect(await chipTops(container)).toEqual(["142px", "242px"]);
+  });
+
+  it("joins the chips of lines closer than a chip at the reader's root font size", async () => {
+    // Lines 22px apart: clear of a desktop chip at a 16px root font, inside
+    // the 23.25px one a 17px root draws, its 1px border no thicker.
+    document.documentElement.style.fontSize = "17px";
+    placeLines();
+    const body = [
+      "Intro.",
+      "",
+      "The first line of a paragraph,",
+      "its second line,",
+      "its third line.",
+      "",
+    ].join("\n");
+    const { container } = await renderDiff(body, body, [
+      wholeLines("comment", 4, 4),
+      wholeLines("comment", 5, 5),
+    ]);
+    await settleChips();
+    expect(
+      [
+        ...container.querySelectorAll(
+          "[aria-label$='comment(s) on this block']",
+        ),
+      ].map((chip) => chip.getAttribute("aria-label")),
+    ).toEqual(["2 comment(s) on this block"]);
   });
 
   it("hangs a baseline annotation by the line its removed word is put back on", async () => {
@@ -3079,6 +3107,7 @@ describe("baseline annotations on deleted text", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     setViewportWidth(1024);
+    document.documentElement.style.fontSize = "";
   });
 
   it("paints a baseline draft on the removed word it covers", async () => {
@@ -3316,6 +3345,49 @@ describe("baseline annotations on deleted text", () => {
     // Mounted narrow and widened, not the other way round: happy-dom seeds a
     // `change` listener as unmatched, so one registered while the query
     // already matches never hears it stop matching.
+    setViewportWidth(390);
+    const before = "Para one.\n\nOld A here.\n\nOld B here.\n\nPara two.\n";
+    const { view } = await renderDiff(
+      before,
+      "Para one.\n\nPara two.\n",
+      [],
+      [
+        onBaseline("comment", before, 3, "A"),
+        onBaseline("comment", before, 5, "B"),
+      ],
+    );
+    const chips = await view.findAllByRole("button", {
+      name: /comment\(s\) on this block/,
+    });
+    expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
+      "2 comment(s) on this block",
+    ]);
+
+    act(() => setViewportWidth(1024));
+    await waitFor(() =>
+      expect(
+        view
+          .getAllByRole("button", { name: /comment\(s\) on this block/ })
+          .map((chip) => chip.getAttribute("aria-label")),
+      ).toEqual(["1 comment(s) on this block", "1 comment(s) on this block"]),
+    );
+  });
+
+  it("joins a restored block's chip by its height at the reader's root font size", async () => {
+    // A chip is drawn in rem, its border in px: with a 20px root font a
+    // phone badge is 30px tall and a desktop chip 27px. Blocks 27.25px apart
+    // overlap as badges and just clear each other as chips.
+    document.documentElement.style.fontSize = "20px";
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (!this.classList.contains("spec-del-structure")) {
+          return DOMRect.fromRect({ y: 0 });
+        }
+        return DOMRect.fromRect({
+          y: (this.textContent ?? "").startsWith("Old A") ? 300 : 327.25,
+        });
+      },
+    );
     setViewportWidth(390);
     const before = "Para one.\n\nOld A here.\n\nOld B here.\n\nPara two.\n";
     const { view } = await renderDiff(
