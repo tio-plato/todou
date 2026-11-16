@@ -1005,6 +1005,12 @@ export async function resolveSpecComments(
   const resolved = await db.transaction(async (tx) => {
     // The card before the comments it resolves (see lockIssueRows).
     await lockWritableIssue(tx, { id: issue.id, actor, role });
+    // The card before the comments, as answering and deleting take them.
+    await tx
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.id, issue.id))
+      .for("no key update");
     const rows = await tx
       .select()
       .from(comments)

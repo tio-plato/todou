@@ -64,6 +64,7 @@ import {
 import {
   COMMENT_HEADER_ACTION,
   COMMENT_HEADER_ROW,
+  COMMENT_SURFACE,
   CommentHeaderIdentity,
   CommentHeaderLine,
   CommentHeaderMeta,
@@ -2283,6 +2284,7 @@ function UnplacedComment({
     <div
       className={cn(
         "rounded-md border p-2 text-sm",
+        COMMENT_SURFACE,
         item.resolved !== null && "opacity-70",
       )}
     >
@@ -2321,14 +2323,7 @@ function UnplacedComment({
               which is the whole of why the ternary is split across the line's
               edge (T-487). */}
           {item.resolved !== null && (
-            <span
-              className={cn(
-                "text-green-700 dark:text-green-400",
-                COMMENT_HEADER_ACTION,
-              )}
-            >
-              resolved
-            </span>
+            <span className="text-green-700 dark:text-green-400">resolved</span>
           )}
         </CommentHeaderLine>
         {item.resolved === null && (
@@ -3295,7 +3290,12 @@ function DiffAnnotation({
   item: SpecCommentItem;
 }) {
   return (
-    <div className="border-y bg-background px-3 py-2 text-sm">
+    <div
+      className={cn(
+        "border-y bg-background px-3 py-2 text-sm",
+        COMMENT_SURFACE,
+      )}
+    >
       <div
         className={cn(
           "mb-1 flex flex-wrap items-baseline gap-2 text-xs text-muted-foreground",

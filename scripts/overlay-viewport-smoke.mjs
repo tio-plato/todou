@@ -506,6 +506,25 @@ function pageHelpers() {
       const ACTS_ON_A_TAP =
         "a,button,input,textarea,select,summary,label,[role='button']," +
         "[role='link'],[role='menuitem'],[role='option'],[tabindex]";
+      // The comment box by its frame, not by points around the tap: a tap in
+      // the gap below the folded composer, past every 16px probe, was still
+      // snapped into its editor. The focus unfolded the composer, and the
+      // next tap's pointerdown refolded it — moving the sidebar 88px between
+      // that tap's pointerdown and its click, and a popover trigger opens on
+      // the click (T-677). Twice the probes' clearance, since the snap
+      // measured here reached past it.
+      const REACH = 32;
+      const editors = [
+        ...document.querySelectorAll("[data-slot='markdown-editor']"),
+      ].map((element) => element.getBoundingClientRect());
+      const nearAnEditor = (x, y) =>
+        editors.some(
+          (box) =>
+            x > box.left - REACH &&
+            x < box.right + REACH &&
+            y > box.top - REACH &&
+            y < box.bottom + REACH,
+        );
       // Off the viewport `elementFromPoint` returns null: nothing there to act.
       const actsOnATap = (x, y) => {
         const hit = document.elementFromPoint(x, y);
@@ -522,7 +541,7 @@ function pageHelpers() {
         );
       for (let y = 8; y < window.innerHeight; y += 24) {
         for (const x of [window.innerWidth / 2, 8, window.innerWidth - 8]) {
-          if (covered(x, y)) continue;
+          if (covered(x, y) || nearAnEditor(x, y)) continue;
           if (document.elementFromPoint(x, y) === null || !clear(x, y))
             continue;
           return { x, y };
@@ -678,9 +697,15 @@ async function closeOverlay(page, how) {
   if (how === "outside") {
     const point = await evaluate(page, () => window.__smoke.outsidePoint());
     if (point !== null) return await tap(page, point);
+    // Counted, because the header still says "closing by a tap outside": on a
+    // narrow viewport the 16px clearance can leave no point at all, and every
+    // close that lands here grades Escape's restore instead.
+    escapeFallbacks++;
   }
   return await pressEscape(page);
 }
+
+let escapeFallbacks = 0;
 
 async function pressEscape(page) {
   for (const type of ["rawKeyDown", "keyUp"]) {
@@ -1119,6 +1144,7 @@ async function runPass(page, target, opts, { stopWhen = null } = {}) {
       }
     }
   };
+  const fallbacksBefore = escapeFallbacks;
   /** Fault passes stop at the failure they were seeded to cause, not at any. */
   const done = () => stopWhen !== null && tally.failures.some(stopWhen);
 
@@ -1217,6 +1243,7 @@ async function runPass(page, target, opts, { stopWhen = null } = {}) {
     if (done()) return tally;
   }
 
+  tally.escapeFallbacks = escapeFallbacks - fallbacksBefore;
   return tally;
 }
 
@@ -1268,6 +1295,10 @@ function report(label, tally) {
   for (const known of tally.known)
     console.log(`  known ${known.key}: ${known.detail} — ${known.why}`);
   for (const inert of tally.inert) console.log(`  ? ${inert}`);
+  if (tally.escapeFallbacks > 0)
+    console.log(
+      `  ${tally.escapeFallbacks} closes found no clear point outside and pressed Escape`,
+    );
   return tally;
 }
 

@@ -121,6 +121,14 @@ function whereReaderIs(): { atEnd: boolean; y: number } {
   return { atEnd: atConversationEnd(), y: window.scrollY };
 }
 
+/**
+ * A filled unit still behind its placeholder: laid out at full width, so
+ * nothing inside it has to measure itself again when it is revealed, yet
+ * taking no height.
+ */
+const unitClass = (behind?: boolean) =>
+  behind ? "invisible h-0 overflow-clip" : "pb-2";
+
 /** The key a unit renders under, and its identity across fills. */
 function unitKey(unit: RenderUnit): string {
   if (unit.kind === "item") return itemKey(unit.item);
@@ -343,18 +351,32 @@ export function Timeline({
   const [fillFrom, setFillFrom] = useState<string | null | undefined>(
     undefined,
   );
+  const [firstPass, setFirstPass] = useState<string | null>(null);
   if (fillFrom === undefined && hasContent) {
-    setFillFrom(
+    const from =
       landsElsewhere || unitKeys.length <= FIRST_PASS_UNITS
         ? null
-        : unitKeys[unitKeys.length - FIRST_PASS_UNITS],
-    );
+        : unitKeys[unitKeys.length - FIRST_PASS_UNITS];
+    setFillFrom(from);
+    setFirstPass(from);
   } else if (fillFrom && landsElsewhere) {
     setFillFrom(null);
   }
   const fillIndex =
     fillFrom && !landsElsewhere ? Math.max(0, unitKeys.indexOf(fillFrom)) : 0;
   const unfilled = new Set(unitKeys.slice(0, fillIndex));
+  // Filled units stay behind their placeholders until the last one is in, so
+  // the part above the first pass changes height once, not once per fill
+  // (T-690). The page's hold puts the reader back after every change, but
+  // only to a whole scroll step — a CSS pixel in Chromium, a device pixel in
+  // Firefox — while a unit's height is anything, so each re-landing moved
+  // everything on screen by a fraction of a step, and at 175% zoom that
+  // shook the page until the fill was done.
+  const curtained = new Set(
+    fillIndex > 0 && firstPass !== null
+      ? unitKeys.slice(0, Math.max(0, unitKeys.indexOf(firstPass)))
+      : [],
+  );
   // Read back after each synchronous fill, which re-renders before returning.
   const fill = useRef({ keys: unitKeys, index: fillIndex });
   fill.current = { keys: unitKeys, index: fillIndex };
@@ -777,13 +799,13 @@ export function Timeline({
     head.fetchNextPage({ cancelRefetch: false });
   }, [head.fetchNextPage]);
 
-  const renderItem = (item: TimelineItem) => {
+  const renderItem = (item: TimelineItem, behind?: boolean) => {
     const type = enumValue(item.type, "timeline item type");
     return (
       <div
         key={`${type}-${item.id}`}
         data-unit={`${type}-${item.id}`}
-        className="pb-2"
+        className={unitClass(behind)}
       >
         {item.type === "comment" ? (
           <CommentItem
@@ -818,19 +840,23 @@ export function Timeline({
   const anchorTarget = parseTimelineAnchor(anchorHash ?? "");
   const anchorEventId =
     anchorTarget?.kind === "event" ? anchorTarget.id : undefined;
+  const placeholder = (key: string) => (
+    <div key={key} data-unit={key} className="pb-2" data-unfilled>
+      <Skeleton className="h-16 w-full" />
+    </div>
+  );
   const renderUnit = (unit: RenderUnit) => {
     const key = unitKey(unit);
-    if (unfilled.has(key)) {
-      return (
-        <div key={key} data-unit={key} className="pb-2" data-unfilled>
-          <Skeleton className="h-16 w-full" />
-        </div>
-      );
-    }
-    if (unit.kind === "item") return renderItem(unit.item);
+    if (unfilled.has(key)) return placeholder(key);
+    if (!curtained.has(key)) return renderContent(unit, key);
+    // The unit keeps its own key, so revealing it does not remount it.
+    return [placeholder(`${key}-placeholder`), renderContent(unit, key, true)];
+  };
+  const renderContent = (unit: RenderUnit, key: string, behind?: boolean) => {
+    if (unit.kind === "item") return renderItem(unit.item, behind);
     if (unit.kind === "hidden") {
       return (
-        <div key={key} data-unit={key} className="pb-2">
+        <div key={key} data-unit={key} className={unitClass(behind)}>
           <HiddenBlock
             count={unit.comments.length}
             onReveal={() => reveal(key)}
@@ -839,7 +865,7 @@ export function Timeline({
       );
     }
     return (
-      <div key={key} data-unit={key} className="pb-2">
+      <div key={key} data-unit={key} className={unitClass(behind)}>
         <EventGroup
           family={unit.family}
           events={unit.events}
@@ -915,7 +941,7 @@ export function Timeline({
             <Skeleton className="h-16 w-full" />
           </div>
         )}
-        {unitsAbove.map(renderUnit)}
+        {unitsAbove.flatMap(renderUnit)}
         {gap && (
           <div ref={blockRef} className="pb-2">
             <FoldBlock
@@ -925,7 +951,7 @@ export function Timeline({
             />
           </div>
         )}
-        {unitsBelow.map(renderUnit)}
+        {unitsBelow.flatMap(renderUnit)}
         {pendingComments.map((pending) => (
           <div
             key={`pending-${pending.key}`}

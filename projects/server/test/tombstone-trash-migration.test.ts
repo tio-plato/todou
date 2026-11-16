@@ -8,14 +8,14 @@ import { makeTestApp, type TestApp } from "./helpers.ts";
 const json = (res: Response): Promise<any> => res.json() as Promise<any>;
 
 const MIGRATION = new URL(
-  "../drizzle/project/0024_tombstones_out_of_trash.sql",
+  "../drizzle/project/0025_tombstones_out_of_trash.sql",
   import.meta.url,
 );
 
 // Migrations run on an empty database before a test can seed it, so the
 // state this one is for is made by hand: a tombstone marked deleted, which
 // only the code from before deletes refused a moved card could leave behind.
-describe("0024 tombstones out of the trash", () => {
+describe("0025 tombstones out of the trash", () => {
   let t: TestApp;
   let cookie: string;
   const A = "tomb-trash-a";

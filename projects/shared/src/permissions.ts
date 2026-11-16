@@ -156,7 +156,7 @@ export const CAPABILITIES = [
     id: "question.withdraw",
     minRole: "reporter",
     enforce: "gate",
-    ownerOnly: { until: "admin" },
+    ownerOnly: { until: "writer" },
   },
   { id: "question.withdraw_any", minRole: "writer", enforce: "gate" },
 

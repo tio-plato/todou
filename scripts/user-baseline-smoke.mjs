@@ -44,7 +44,6 @@ import {
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const FIXTURE_URL = "/test/browser/user-baseline.html";
 const EPSILON = 0.125;
-const round2 = (value) => Math.round(value * 100) / 100;
 const VIEWPORTS = [
   { name: "390-mobile", width: 390, height: 844 },
   { name: "639-mobile-boundary", width: 639, height: 844 },
@@ -85,25 +84,31 @@ const SPLIT_SURFACES = [
 ];
 // Stable names also work individually with --self-test-case=<name>.
 const SPLIT_FAULTS = [
+  // At 320 the stripped row draws the named comment's id again, and with it
+  // the id and time no longer fit beside the author, so the controls drop to
+  // a line of their own; the right-aligned row drops them for the agent
+  // comment, whose pill and time do not fit either.
   [1, "strip", 320, "timeline", false, "the header as it stood before"],
-  [1, "meta-auto", 430, "timeline", false, "right-alignment on the meta"],
-  [2, "nowrap", 320, "spec-rendered", true, "a meta that will not wrap"],
-  [3, "no-indent", 390, "timeline", false, "no indent on the second line"],
+  [1, "meta-auto", 320, "timeline", false, "right-alignment on the meta"],
   [
-    4,
-    "no-time-auto",
-    390,
+    1,
+    "actions-center",
+    320,
     "timeline",
     false,
-    "the time not claiming the space",
+    "controls centred once the time wraps",
   ],
+  [3, "meta-full", 430, "timeline", false, "a meta that always wraps"],
+  [9, "id-shown", 390, "timeline", false, "an id drawn below sm"],
+  [4, "meta-left", 430, "timeline", false, "no auto margin on the meta"],
+  // The stub lengthens the agent pill past what fits beside the author.
   [
-    4,
-    "justify-end",
-    320,
-    "spec-rendered",
+    8,
+    "identity-wrap",
+    360,
+    "timeline",
     true,
-    "the base justify-end once it wraps",
+    "the author's group allowed to break",
   ],
   // Here identity items still share a line, so their missing gap is measurable.
   [
@@ -155,6 +160,15 @@ const SPLIT_FAULTS = [
     "meta box gains unconditional w-full on both pages",
   ],
 ];
+
+/**
+ * Where the scope faults recreate a header that cannot wrap. 390 was narrow
+ * enough while every header carried its id; since T-696 a header below `sm`
+ * shows only the time, which fits on one line there, so a fault that forbids
+ * wrapping has nothing left to break. At 320 the same content still does not
+ * fit, which is the condition those faults need to prove anything.
+ */
+const SCOPE_NARROW = { name: "320-mobile", width: 320, height: 844 };
 
 const SCOPE_FAULTS = [
   "nowrap-diff-annotation",
@@ -341,8 +355,10 @@ const SOURCE_ONLY_GUARDS = [
   {
     id: "comment-header-meta-token",
     file: "projects/web/src/components/shared/comment-header-meta.tsx",
+    // The token alone in its span: never drawn below `sm`, and transparent
+    // above it while the address does not name its comment (T-696).
     pattern:
-      /<span className="select-all">\{`#\$\{commentAnchor\(commentId\)\}`\}<\/span>/,
+      /"select-all max-sm:hidden",\s*!named &&[\s\S]*?>\{`#\$\{anchor\}`\}<\/span>/,
   },
   {
     id: "optimistic-split",
@@ -884,7 +900,35 @@ async function measure(page, fault = null, cases = CASES) {
         const styles = [];
         let invalid = null;
         let perturbed = false;
+        // Below `sm` a header never draws its id, not even on the comment
+        // the address names (T-696). That role has no box and no baseline,
+        // so it is set aside by name rather than measured — a marker in a
+        // box that is not there reports y=0, which reads as a wrap and would
+        // pass silently. An id that *is* drawn there is a broken rule, and
+        // anywhere else a participant without a box is a broken sample.
+        const hidden = [];
+        const measuredRoles = [];
+        const narrowPage = window.innerWidth < 640;
         for (const [index, element] of participants.entries()) {
+          const drawn = element.getClientRects().length > 0;
+          if (roles[index] === "id" && narrowPage) {
+            if (drawn) {
+              invalid = "id drawn below sm";
+              break;
+            }
+            hidden.push(roles[index]);
+            continue;
+          }
+          if (drawn) {
+            measuredRoles.push(roles[index]);
+            continue;
+          }
+          invalid = `${roles[index]} participant has no layout box`;
+          break;
+        }
+        for (const [index, element] of participants.entries()) {
+          if (invalid) break;
+          if (hidden.includes(roles[index])) continue;
           const node = textLeaf(element, roles[index], expectedName);
           if (!node) {
             invalid =
@@ -955,7 +999,7 @@ async function measure(page, fault = null, cases = CASES) {
         const lineHeight = Math.max(
           ...styles.map((style) => Number.parseFloat(style.lineHeight) || 20),
         );
-        const pairs = roles.slice(1).map((role, index) => {
+        const pairs = measuredRoles.slice(1).map((role, index) => {
           const spread = Math.abs(baselines[0] - baselines[index + 1]);
           return {
             role,
@@ -983,6 +1027,7 @@ async function measure(page, fault = null, cases = CASES) {
           status,
           count: 1,
           roles,
+          hidden,
           baselines: baselines.map((value) => Number(value.toFixed(5))),
           pairs,
           wrapped: wrapped.map((pair) => pair.role),
@@ -1458,15 +1503,13 @@ async function specRouteRun(
             (element) =>
               element !== author && element.textContent.includes("v1"),
           );
-          // The header meta's two links, told apart the way a reader does:
-          // the id is the short suffix, the stamp is the `<time>`. Picking
-          // "the first anchor to #comment-N" would land on whichever of the
-          // two the markup happens to put first.
-          const metaLinks = [
-            ...candidate.querySelectorAll('a[href*="#comment-"]'),
-          ];
-          const idPart = metaLinks.find((link) => !link.querySelector("time"));
-          const timePart = metaLinks.find((link) => link.querySelector("time"));
+          // The header meta is one link since T-696; inside it the id is the
+          // selectable token and the stamp is the `<time>`.
+          const metaLink = candidate.querySelector(
+            '[data-testid="comment-header-meta"]',
+          );
+          const idPart = metaLink?.querySelector(".select-all") ?? null;
+          const timePart = metaLink?.querySelector("time") ?? null;
           if (!author || !peer || !idPart || !timePart)
             return { ready: false, text: candidate.outerHTML.slice(0, 600) };
           await document.fonts.ready;
@@ -1535,7 +1578,7 @@ async function specRouteRun(
             idPart,
             timePart,
             ...candidate.querySelectorAll("button"),
-          ];
+          ].filter((part) => part.getClientRects().length > 0);
           const strained = parts
             .map((part) => {
               const box = part.getBoundingClientRect();
@@ -1830,12 +1873,22 @@ async function scopeRun(
         // What each sample's reader may do, by the role it is rendered for.
         // Counting controls alone would let an edit button appear for a
         // reader who may not edit and still read as "actions present".
+        // Below `sm` the pencil folds into the menu (T-696), so the author's
+        // header shows the menu alone there.
+        const narrow = window.innerWidth < 640;
         const expected = {
           "comment-item": ["comment actions"],
-          "comment-item-author": ["comment actions", "edit comment"],
+          "comment-item-author": narrow
+            ? ["comment actions"]
+            : ["comment actions", "edit comment"],
           "comment-item-agent-session": ["comment actions"],
           "comment-item-agent-plain": ["comment actions"],
         };
+        // The fixture's address names the plain comment, which both of the
+        // first two samples draw (T-696). From `sm` up its id is shown
+        // outright and every other id waits for a pointer, transparent but
+        // laid out; below `sm` no id is drawn at all, named or not.
+        const named = new Set(["comment-item", "comment-item-author"]);
         for (const id of Object.keys(expected)) {
           const row = document
             .querySelector(`#fixture-${id}`)
@@ -1872,14 +1925,20 @@ async function scopeRun(
           const meta = row.querySelector('[data-testid="comment-header-meta"]');
           const token = meta?.querySelector(".select-all");
           const stamp = meta?.querySelector("time");
+          // Only what is drawn: the pencil below `sm` and an unnamed id there
+          // are `display: none` by design, and a box of zero width would
+          // otherwise read as "pushed off the row".
           const actions = [
             ...row.querySelectorAll("[aria-label='comment actions']"),
             ...row.querySelectorAll("[aria-label='edit comment']"),
-          ];
+          ].filter(visible);
+          const drawnToken = visible(token) ? token : null;
           const rowBox = row.getBoundingClientRect();
           out.push({
             id,
             idVisible: visible(token),
+            idOpacity: token ? Number(getComputedStyle(token).opacity) : null,
+            idNamed: named.has(id),
             idText: token?.textContent ?? null,
             timeVisible: visible(stamp),
             actions: actions.filter(visible).length,
@@ -1894,11 +1953,13 @@ async function scopeRun(
             idColor: token ? getComputedStyle(token).color : null,
             timeColor: stamp ? getComputedStyle(stamp).color : null,
             // Nothing pushed past the right edge of its own header.
-            withinRow: [token, stamp, ...actions].every((element) => {
-              if (!element) return false;
-              const box = element.getBoundingClientRect();
-              return box.right <= rowBox.right + 0.5 && box.width > 0;
-            }),
+            withinRow: [drawnToken, stamp, ...actions]
+              .filter((element) => element !== null || !token)
+              .every((element) => {
+                if (!element) return false;
+                const box = element.getBoundingClientRect();
+                return box.right <= rowBox.right + 0.5 && box.width > 0;
+              }),
             rowScrolls: row.scrollWidth > row.clientWidth + 1,
             geometry: {
               display: getComputedStyle(row).display,
@@ -1906,7 +1967,7 @@ async function scopeRun(
               right: rowBox.right,
               scrollWidth: row.scrollWidth,
               clientWidth: row.clientWidth,
-              parts: [token, stamp, ...actions].map((element) => {
+              parts: [drawnToken, stamp, ...actions].map((element) => {
                 if (!element) return { missing: true };
                 const box = element.getBoundingClientRect();
                 return {
@@ -2080,6 +2141,7 @@ function printRun(run) {
           (pair) =>
             `${pair.role}=${pair.spread}${pair.sameLine ? "" : " (wrapped)"}`,
         )
+        .concat((row.hidden ?? []).map((role) => `${role}=hidden below sm`))
         .join(" ") ?? "";
     console.log(
       `    ${row.id}: expected ≤${EPSILON}, actual ${row.spread ?? 0} CSS px [${perRole}]; ` +
@@ -2201,8 +2263,10 @@ try {
     run.fixtureErrors.push(...scope.fixtureErrors, ...scopeDark.fixtureErrors);
     cleanRuns.push(run);
     printRun(run);
-    // Desktop keeps every action it had; every width keeps the id, the time
-    // and a page that does not scroll sideways.
+    // Desktop keeps every action it had, narrow folds the pencil into the
+    // menu; every width keeps the time and a page that does not scroll
+    // sideways. The id is laid out from `sm` up and drawn only on the
+    // comment the address names; below `sm` no id takes any room.
     const scopeBad = [];
     if (scope.documentOverflows)
       scopeBad.push(
@@ -2210,18 +2274,22 @@ try {
       );
     for (const entry of scope.rows ?? []) {
       if (entry.status === "missing") scopeBad.push(`${entry.id} missing`);
-      else if (!entry.idVisible) scopeBad.push(`${entry.id} id not visible`);
+      else if (entry.idVisible !== viewport.width >= 640)
+        scopeBad.push(
+          `${entry.id} id ${entry.idVisible ? "takes room" : "has no box"} at ${viewport.width}px`,
+        );
+      else if (entry.idVisible && entry.idOpacity !== (entry.idNamed ? 1 : 0))
+        scopeBad.push(
+          `${entry.id} id opacity ${entry.idOpacity}, expected ${entry.idNamed ? 1 : 0}`,
+        );
       else if (!entry.timeVisible)
         scopeBad.push(`${entry.id} time not visible`);
       else if (!entry.withinRow)
         scopeBad.push(`${entry.id} pushed past its row`);
       else if (entry.rowScrolls) scopeBad.push(`${entry.id} header scrolls`);
-      else if (
-        viewport.width >= 1280 &&
-        entry.actionLabels.join("|") !== entry.expectedActions.join("|")
-      )
+      else if (entry.actionLabels.join("|") !== entry.expectedActions.join("|"))
         scopeBad.push(
-          `${entry.id} desktop actions are ${entry.actionLabels.join(",") || "none"}, expected ${entry.expectedActions.join(",")}`,
+          `${entry.id} actions are ${entry.actionLabels.join(",") || "none"}, expected ${entry.expectedActions.join(",")}`,
         );
       else if (entry.actions < 1)
         scopeBad.push(`${entry.id} has no reachable action`);
@@ -2281,19 +2349,26 @@ try {
 
   // T-445: the shape a comment header takes below `sm`, and the promise that
   // it takes none above it.
-  console.log("\nSPLIT HEADERS (T-445)");
+  console.log("\nSPLIT HEADERS (T-445, T-696)");
   for (const viewport of SPLIT_VIEWPORTS) {
     const desktop = viewport.width >= 640;
     for (const surface of SPLIT_SURFACES) {
       // Same-run strip geometry is diagnostic only. Criterion 5 checks the
       // DOM-side exported constants: unconditional tokens survive stripping
       // on both pages and must still fail.
-      const baseline = desktop
-        ? await splitHeaderRun(browser, base, seeded, viewport, surface, {
-            fault: "strip",
-          })
-        : null;
-      for (const stress of desktop ? [false] : [false, true]) {
+      // Narrow widths stress the agent pill; 640 stresses the id, the
+      // narrowest width that draws one (T-696).
+      for (const stress of desktop && viewport.width !== 640
+        ? [false]
+        : [false, true]) {
+        // Stripped under the same stub, so the diagnostic compares layouts
+        // rather than reporting the stub's own width as movement.
+        const baseline = desktop
+          ? await splitHeaderRun(browser, base, seeded, viewport, surface, {
+              fault: "strip",
+              stress,
+            })
+          : null;
         const measured = await splitHeaderRun(
           browser,
           base,
@@ -2308,14 +2383,15 @@ try {
           baseline,
         );
         const rows = measured.rows ?? [];
-        const label = `${viewport.width}/${surface.id}${stress ? " [stubbed #comment-99999]" : ""}`;
+        const label = `${viewport.width}/${surface.id}${stress ? " [stubbed id + pill]" : ""}`;
         console.log(
           `  ${label}: ${rows.length} header(s) ` +
             (desktop
               ? `criterion 5 class tokens: ${measured.status !== "ok" ? "unavailable" : failures.some((failure) => failure.criterion === 5) ? "FAIL" : "pass"}; stripped geometry diagnostic: ${diagnostics.length} difference(s)`
               : `inset ${rows.map((row) => row.actionInset ?? "—").join("/")} ` +
                 `overflow ${rows.map((row) => row.overflowRight).join("/")} ` +
-                `indent ${rows.map((row) => (row.nameLeft === null ? "—" : round2(row.metaLeft - row.nameLeft))).join("/")} ` +
+                `wrapped ${rows.map((row) => (row.wrapped === null ? "—" : row.wrapped ? "y" : "n")).join("/")} ` +
+                `id ${rows.map((row) => (row.idShown ? "shown" : "—")).join("/")} ` +
                 `identity gap ${rows.map((row) => (row.identityGaps.length === 0 ? "—" : Math.min(...row.identityGaps))).join("/")}`),
         );
         for (const failure of failures) {
@@ -2534,7 +2610,7 @@ try {
           options.selfTestCase === "scope" ||
           options.selfTestCase === `nowrap-${id}`,
       )) {
-        const narrow = VIEWPORTS[0];
+        const narrow = SCOPE_NARROW;
         const broken = await specRouteRun(browser, base, seeded, narrow, id, {
           id,
           kind: "nowrap",
@@ -2586,7 +2662,7 @@ try {
         ],
         [
           "unshrinkable-header",
-          VIEWPORTS[0],
+          SCOPE_NARROW,
           (scope) => scopeFailureCodes(scope),
         ],
       ].filter(
@@ -2605,11 +2681,10 @@ try {
           scope.rows.every(
             (row) =>
               row.status !== "missing" &&
-              row.idVisible &&
               row.timeVisible &&
-              row.geometry.parts
-                .slice(0, 2)
-                .every((part) => !part.missing && part.width > 0),
+              row.geometry.parts[1] &&
+              !row.geometry.parts[1].missing &&
+              row.geometry.parts[1].width > 0,
           );
         const detected = measured(broken) && brokenFailures.length > 0;
         const backOk =
@@ -2637,7 +2712,7 @@ try {
       options.selfTestCase === "split-copy-both-error" ||
       SPLIT_FAULTS.some((entry) => entry[1] === options.selfTestCase)
     ) {
-      console.log("\nSPLIT-HEADER FAULTS (T-445 / T-472)");
+      console.log("\nSPLIT-HEADER FAULTS (T-445 / T-472 / T-696)");
       for (const [
         criterion,
         kind,
@@ -2694,7 +2769,7 @@ try {
           restoredVerdict.failures.length === 0 &&
           !restored.fixtureErrors?.length;
         console.log(
-          `  ${kind} @${width}/${surfaceId}${stress ? " [stubbed id]" : ""} → criterion ${criterion}: ` +
+          `  ${kind} @${width}/${surfaceId}${stress ? " [stubbed id + pill]" : ""} → criterion ${criterion}: ` +
             `${detected && backOk ? "RED → restored GREEN" : "NOT PROVEN"} (${why}; ` +
             `${hit[0]?.detail ?? "no failure on that criterion"}; ` +
             `restore ${restoredVerdict.failures.map((f) => `${f.criterion}:${f.row}`).join(",") || "clean"})`,

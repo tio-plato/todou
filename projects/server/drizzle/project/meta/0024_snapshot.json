@@ -1,6 +1,6 @@
 {
-  "id": "4dda73a6-03b2-4301-93c2-6c54c0f405cb",
-  "prevId": "3e381b0c-b2fe-406c-98a7-9d44ab860f11",
+  "id": "9a233b7c-535d-4fae-887f-3ec72e1788a3",
+  "prevId": "b662ca70-9bf0-4ad6-9d41-310ed9b2f150",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -14,15 +14,15 @@
           "primaryKey": true,
           "notNull": true,
           "identity": {
+            "type": "always",
             "name": "attachments_id_seq",
+            "schema": "public",
             "increment": "1",
+            "startWith": "1",
             "minValue": "1",
             "maxValue": "9223372036854775807",
-            "startWith": "1",
             "cache": "1",
-            "cycle": false,
-            "schema": "public",
-            "type": "always"
+            "cycle": false
           }
         },
         "project_id": {
@@ -94,9 +94,9 @@
             }
           ],
           "isUnique": true,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "attachments_issue_idx": {
           "name": "attachments_issue_idx",
@@ -109,9 +109,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "attachments_draft_created_idx": {
           "name": "attachments_draft_created_idx",
@@ -124,10 +124,10 @@
             }
           ],
           "isUnique": false,
-          "with": {},
-          "method": "btree",
           "where": "\"attachments\".\"draft\"",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         },
         "attachments_issue_filename_idx": {
           "name": "attachments_issue_filename_idx",
@@ -140,26 +140,26 @@
             },
             {
               "expression": "lower(\"filename\")",
-              "isExpression": true,
               "asc": true,
+              "isExpression": true,
               "nulls": "last"
             }
           ],
           "isUnique": true,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "attachments_issue_id_issues_id_fk": {
           "name": "attachments_issue_id_issues_id_fk",
           "tableFrom": "attachments",
-          "columnsFrom": ["issue_id"],
           "tableTo": "issues",
+          "columnsFrom": ["issue_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -183,15 +183,15 @@
           "primaryKey": true,
           "notNull": true,
           "identity": {
+            "type": "always",
             "name": "autolinks_id_seq",
+            "schema": "public",
             "increment": "1",
+            "startWith": "1",
             "minValue": "1",
             "maxValue": "9223372036854775807",
-            "startWith": "1",
             "cache": "1",
-            "cycle": false,
-            "schema": "public",
-            "type": "always"
+            "cycle": false
           }
         },
         "project_id": {
@@ -238,9 +238,9 @@
             }
           ],
           "isUnique": true,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {},
@@ -260,15 +260,15 @@
           "primaryKey": true,
           "notNull": true,
           "identity": {
+            "type": "always",
             "name": "comments_id_seq",
+            "schema": "public",
             "increment": "1",
+            "startWith": "1",
             "minValue": "1",
             "maxValue": "9223372036854775807",
-            "startWith": "1",
             "cache": "1",
-            "cycle": false,
-            "schema": "public",
-            "type": "always"
+            "cycle": false
           }
         },
         "project_id": {
@@ -370,9 +370,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "comments_project_created_idx": {
           "name": "comments_project_created_idx",
@@ -397,65 +397,65 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "comments_body_trgm_idx": {
           "name": "comments_body_trgm_idx",
           "columns": [
             {
               "expression": "\"body\" gin_trgm_ops",
-              "isExpression": true,
               "asc": true,
+              "isExpression": true,
               "nulls": "last"
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "gin",
-          "concurrently": false
+          "with": {}
         },
         "comments_agent_idx": {
           "name": "comments_agent_idx",
           "columns": [
             {
               "expression": "(\"agent_context\" ->> 'agent')",
-              "isExpression": true,
               "asc": true,
+              "isExpression": true,
               "nulls": "last"
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "comments_session_idx": {
           "name": "comments_session_idx",
           "columns": [
             {
               "expression": "(\"agent_context\" ->> 'session_id')",
-              "isExpression": true,
               "asc": true,
+              "isExpression": true,
               "nulls": "last"
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "comments_issue_id_issues_id_fk": {
           "name": "comments_issue_id_issues_id_fk",
           "tableFrom": "comments",
-          "columnsFrom": ["issue_id"],
           "tableTo": "issues",
+          "columnsFrom": ["issue_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -524,11 +524,11 @@
         "issue_assignees_issue_id_issues_id_fk": {
           "name": "issue_assignees_issue_id_issues_id_fk",
           "tableFrom": "issue_assignees",
-          "columnsFrom": ["issue_id"],
           "tableTo": "issues",
+          "columnsFrom": ["issue_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -552,15 +552,15 @@
           "primaryKey": true,
           "notNull": true,
           "identity": {
+            "type": "always",
             "name": "issue_events_id_seq",
+            "schema": "public",
             "increment": "1",
+            "startWith": "1",
             "minValue": "1",
             "maxValue": "9223372036854775807",
-            "startWith": "1",
             "cache": "1",
-            "cycle": false,
-            "schema": "public",
-            "type": "always"
+            "cycle": false
           }
         },
         "project_id": {
@@ -626,9 +626,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "issue_events_project_created_idx": {
           "name": "issue_events_project_created_idx",
@@ -653,50 +653,50 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "issue_events_agent_idx": {
           "name": "issue_events_agent_idx",
           "columns": [
             {
               "expression": "(\"agent_context\" ->> 'agent')",
-              "isExpression": true,
               "asc": true,
+              "isExpression": true,
               "nulls": "last"
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "issue_events_session_idx": {
           "name": "issue_events_session_idx",
           "columns": [
             {
               "expression": "(\"agent_context\" ->> 'session_id')",
-              "isExpression": true,
               "asc": true,
+              "isExpression": true,
               "nulls": "last"
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "issue_events_issue_id_issues_id_fk": {
           "name": "issue_events_issue_id_issues_id_fk",
           "tableFrom": "issue_events",
-          "columnsFrom": ["issue_id"],
           "tableTo": "issues",
+          "columnsFrom": ["issue_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -727,20 +727,20 @@
         "issue_labels_issue_id_issues_id_fk": {
           "name": "issue_labels_issue_id_issues_id_fk",
           "tableFrom": "issue_labels",
-          "columnsFrom": ["issue_id"],
           "tableTo": "issues",
+          "columnsFrom": ["issue_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "issue_labels_label_id_labels_id_fk": {
           "name": "issue_labels_label_id_labels_id_fk",
           "tableFrom": "issue_labels",
-          "columnsFrom": ["label_id"],
           "tableTo": "labels",
+          "columnsFrom": ["label_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -764,15 +764,15 @@
           "primaryKey": true,
           "notNull": true,
           "identity": {
+            "type": "always",
             "name": "issue_mentions_id_seq",
+            "schema": "public",
             "increment": "1",
+            "startWith": "1",
             "minValue": "1",
             "maxValue": "9223372036854775807",
-            "startWith": "1",
             "cache": "1",
-            "cycle": false,
-            "schema": "public",
-            "type": "always"
+            "cycle": false
           }
         },
         "project_id": {
@@ -831,9 +831,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "issue_mentions_issue_idx": {
           "name": "issue_mentions_issue_idx",
@@ -846,29 +846,29 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "issue_mentions_issue_id_issues_id_fk": {
           "name": "issue_mentions_issue_id_issues_id_fk",
           "tableFrom": "issue_mentions",
-          "columnsFrom": ["issue_id"],
           "tableTo": "issues",
+          "columnsFrom": ["issue_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "issue_mentions_comment_id_comments_id_fk": {
           "name": "issue_mentions_comment_id_comments_id_fk",
           "tableFrom": "issue_mentions",
-          "columnsFrom": ["comment_id"],
           "tableTo": "comments",
+          "columnsFrom": ["comment_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -949,20 +949,20 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "issue_metadata_issue_id_issues_id_fk": {
           "name": "issue_metadata_issue_id_issues_id_fk",
           "tableFrom": "issue_metadata",
-          "columnsFrom": ["issue_id"],
           "tableTo": "issues",
+          "columnsFrom": ["issue_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -986,15 +986,15 @@
           "primaryKey": true,
           "notNull": true,
           "identity": {
+            "type": "always",
             "name": "issue_mutes_id_seq",
+            "schema": "public",
             "increment": "1",
+            "startWith": "1",
             "minValue": "1",
             "maxValue": "9223372036854775807",
-            "startWith": "1",
             "cache": "1",
-            "cycle": false,
-            "schema": "public",
-            "type": "always"
+            "cycle": false
           }
         },
         "project_id": {
@@ -1046,20 +1046,20 @@
             }
           ],
           "isUnique": true,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "issue_mutes_issue_id_issues_id_fk": {
           "name": "issue_mutes_issue_id_issues_id_fk",
           "tableFrom": "issue_mutes",
-          "columnsFrom": ["issue_id"],
           "tableTo": "issues",
+          "columnsFrom": ["issue_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1078,15 +1078,15 @@
           "primaryKey": true,
           "notNull": true,
           "identity": {
+            "type": "always",
             "name": "issue_reads_id_seq",
+            "schema": "public",
             "increment": "1",
+            "startWith": "1",
             "minValue": "1",
             "maxValue": "9223372036854775807",
-            "startWith": "1",
             "cache": "1",
-            "cycle": false,
-            "schema": "public",
-            "type": "always"
+            "cycle": false
           }
         },
         "project_id": {
@@ -1132,20 +1132,20 @@
             }
           ],
           "isUnique": true,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "issue_reads_issue_id_issues_id_fk": {
           "name": "issue_reads_issue_id_issues_id_fk",
           "tableFrom": "issue_reads",
-          "columnsFrom": ["issue_id"],
           "tableTo": "issues",
+          "columnsFrom": ["issue_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1164,15 +1164,15 @@
           "primaryKey": true,
           "notNull": true,
           "identity": {
+            "type": "always",
             "name": "issues_id_seq",
+            "schema": "public",
             "increment": "1",
+            "startWith": "1",
             "minValue": "1",
             "maxValue": "9223372036854775807",
-            "startWith": "1",
             "cache": "1",
-            "cycle": false,
-            "schema": "public",
-            "type": "always"
+            "cycle": false
           }
         },
         "project_id": {
@@ -1301,9 +1301,9 @@
             }
           ],
           "isUnique": true,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "issues_project_status_idx": {
           "name": "issues_project_status_idx",
@@ -1322,9 +1322,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "issues_project_updated_idx": {
           "name": "issues_project_updated_idx",
@@ -1343,50 +1343,50 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "issues_title_trgm_idx": {
           "name": "issues_title_trgm_idx",
           "columns": [
             {
               "expression": "\"title\" gin_trgm_ops",
-              "isExpression": true,
               "asc": true,
+              "isExpression": true,
               "nulls": "last"
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "gin",
-          "concurrently": false
+          "with": {}
         },
         "issues_body_trgm_idx": {
           "name": "issues_body_trgm_idx",
           "columns": [
             {
               "expression": "\"body\" gin_trgm_ops",
-              "isExpression": true,
               "asc": true,
+              "isExpression": true,
               "nulls": "last"
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "gin",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "issues_status_id_statuses_id_fk": {
           "name": "issues_status_id_statuses_id_fk",
           "tableFrom": "issues",
-          "columnsFrom": ["status_id"],
           "tableTo": "statuses",
+          "columnsFrom": ["status_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1405,15 +1405,15 @@
           "primaryKey": true,
           "notNull": true,
           "identity": {
+            "type": "always",
             "name": "labels_id_seq",
+            "schema": "public",
             "increment": "1",
+            "startWith": "1",
             "minValue": "1",
             "maxValue": "9223372036854775807",
-            "startWith": "1",
             "cache": "1",
-            "cycle": false,
-            "schema": "public",
-            "type": "always"
+            "cycle": false
           }
         },
         "project_id": {
@@ -1454,9 +1454,9 @@
             }
           ],
           "isUnique": true,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {},
@@ -1476,15 +1476,15 @@
           "primaryKey": true,
           "notNull": true,
           "identity": {
+            "type": "always",
             "name": "pending_uploads_id_seq",
+            "schema": "public",
             "increment": "1",
+            "startWith": "1",
             "minValue": "1",
             "maxValue": "9223372036854775807",
-            "startWith": "1",
             "cache": "1",
-            "cycle": false,
-            "schema": "public",
-            "type": "always"
+            "cycle": false
           }
         },
         "project_id": {
@@ -1535,6 +1535,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "attachment_key": {
+          "name": "attachment_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "draft": {
           "name": "draft",
           "type": "boolean",
@@ -1574,9 +1580,9 @@
             }
           ],
           "isUnique": true,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "pending_uploads_expires_idx": {
           "name": "pending_uploads_expires_idx",
@@ -1589,20 +1595,20 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "pending_uploads_issue_id_issues_id_fk": {
           "name": "pending_uploads_issue_id_issues_id_fk",
           "tableFrom": "pending_uploads",
-          "columnsFrom": ["issue_id"],
           "tableTo": "issues",
+          "columnsFrom": ["issue_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1665,15 +1671,15 @@
           "primaryKey": true,
           "notNull": true,
           "identity": {
+            "type": "always",
             "name": "read_frontiers_id_seq",
+            "schema": "public",
             "increment": "1",
+            "startWith": "1",
             "minValue": "1",
             "maxValue": "9223372036854775807",
-            "startWith": "1",
             "cache": "1",
-            "cycle": false,
-            "schema": "public",
-            "type": "always"
+            "cycle": false
           }
         },
         "project_id": {
@@ -1713,9 +1719,9 @@
             }
           ],
           "isUnique": true,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {},
@@ -1735,15 +1741,15 @@
           "primaryKey": true,
           "notNull": true,
           "identity": {
+            "type": "always",
             "name": "ref_formats_id_seq",
+            "schema": "public",
             "increment": "1",
+            "startWith": "1",
             "minValue": "1",
             "maxValue": "9223372036854775807",
-            "startWith": "1",
             "cache": "1",
-            "cycle": false,
-            "schema": "public",
-            "type": "always"
+            "cycle": false
           }
         },
         "project_id": {
@@ -1784,9 +1790,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {},
@@ -1806,15 +1812,15 @@
           "primaryKey": true,
           "notNull": true,
           "identity": {
+            "type": "always",
             "name": "revisions_id_seq",
+            "schema": "public",
             "increment": "1",
+            "startWith": "1",
             "minValue": "1",
             "maxValue": "9223372036854775807",
-            "startWith": "1",
             "cache": "1",
-            "cycle": false,
-            "schema": "public",
-            "type": "always"
+            "cycle": false
           }
         },
         "project_id": {
@@ -1891,9 +1897,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {},
@@ -1913,15 +1919,15 @@
           "primaryKey": true,
           "notNull": true,
           "identity": {
+            "type": "always",
             "name": "spec_version_files_id_seq",
+            "schema": "public",
             "increment": "1",
+            "startWith": "1",
             "minValue": "1",
             "maxValue": "9223372036854775807",
-            "startWith": "1",
             "cache": "1",
-            "cycle": false,
-            "schema": "public",
-            "type": "always"
+            "cycle": false
           }
         },
         "project_id": {
@@ -1973,35 +1979,35 @@
             }
           ],
           "isUnique": true,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "spec_version_files_body_trgm_idx": {
           "name": "spec_version_files_body_trgm_idx",
           "columns": [
             {
               "expression": "\"body\" gin_trgm_ops",
-              "isExpression": true,
               "asc": true,
+              "isExpression": true,
               "nulls": "last"
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "gin",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "spec_version_files_version_id_spec_versions_id_fk": {
           "name": "spec_version_files_version_id_spec_versions_id_fk",
           "tableFrom": "spec_version_files",
-          "columnsFrom": ["version_id"],
           "tableTo": "spec_versions",
+          "columnsFrom": ["version_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2020,15 +2026,15 @@
           "primaryKey": true,
           "notNull": true,
           "identity": {
+            "type": "always",
             "name": "spec_versions_id_seq",
+            "schema": "public",
             "increment": "1",
+            "startWith": "1",
             "minValue": "1",
             "maxValue": "9223372036854775807",
-            "startWith": "1",
             "cache": "1",
-            "cycle": false,
-            "schema": "public",
-            "type": "always"
+            "cycle": false
           }
         },
         "project_id": {
@@ -2099,50 +2105,50 @@
             }
           ],
           "isUnique": true,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "spec_versions_agent_idx": {
           "name": "spec_versions_agent_idx",
           "columns": [
             {
               "expression": "(\"agent_context\" ->> 'agent')",
-              "isExpression": true,
               "asc": true,
+              "isExpression": true,
               "nulls": "last"
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "spec_versions_session_idx": {
           "name": "spec_versions_session_idx",
           "columns": [
             {
               "expression": "(\"agent_context\" ->> 'session_id')",
-              "isExpression": true,
               "asc": true,
+              "isExpression": true,
               "nulls": "last"
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "spec_versions_issue_id_issues_id_fk": {
           "name": "spec_versions_issue_id_issues_id_fk",
           "tableFrom": "spec_versions",
-          "columnsFrom": ["issue_id"],
           "tableTo": "issues",
+          "columnsFrom": ["issue_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2161,15 +2167,15 @@
           "primaryKey": true,
           "notNull": true,
           "identity": {
+            "type": "always",
             "name": "statuses_id_seq",
+            "schema": "public",
             "increment": "1",
+            "startWith": "1",
             "minValue": "1",
             "maxValue": "9223372036854775807",
-            "startWith": "1",
             "cache": "1",
-            "cycle": false,
-            "schema": "public",
-            "type": "always"
+            "cycle": false
           }
         },
         "project_id": {
@@ -2229,9 +2235,9 @@
             }
           ],
           "isUnique": true,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {},
@@ -2244,10 +2250,10 @@
   },
   "enums": {},
   "schemas": {},
-  "views": {},
   "sequences": {},
   "roles": {},
   "policies": {},
+  "views": {},
   "_meta": {
     "columns": {},
     "schemas": {},

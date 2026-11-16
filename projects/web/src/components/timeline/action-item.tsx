@@ -32,10 +32,18 @@ import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { inlineActionSource } from "@/lib/action-text.ts";
 import { commentAnchor } from "@/lib/timeline-anchors.ts";
+import {
+  formatTimelineTime,
+  TIMELINE_ROW_NARROW,
+  TIMELINE_TIME_NARROW,
+} from "@/lib/timeline-time.ts";
 import { cn } from "@/lib/utils";
 
 /** EventRow's time, so the two cannot drift apart in size or colour. */
-const TIME = "shrink-0 text-xs whitespace-nowrap text-muted-foreground/70";
+const TIME = cn(
+  "shrink-0 text-xs whitespace-nowrap text-muted-foreground/70",
+  TIMELINE_TIME_NARROW,
+);
 
 /**
  * A `/me` line (T-575): one sentence that starts with its author's name, laid
@@ -86,7 +94,7 @@ export function ActionItem({
 
   const time = (
     <time dateTime={comment.created_at} title={comment.created_at}>
-      {new Date(comment.created_at).toLocaleString()}
+      {formatTimelineTime(comment.created_at)}
     </time>
   );
 
@@ -100,6 +108,7 @@ export function ActionItem({
       data-comment-kind="action"
       className={cn(
         "py-1.5 pl-1 text-sm text-muted-foreground sm:flex sm:items-baseline sm:gap-2",
+        TIMELINE_ROW_NARROW,
         pending && "opacity-60",
       )}
     >

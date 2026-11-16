@@ -1291,10 +1291,12 @@ async function followCases(context, fixture, viewport, label, dir) {
   /**
    * The reader's own input at the end, which lets go of the opening's hold
    * and leaves the page there: a touch too short to scroll, or a wheel notch
-   * up and back down.
+   * up and back down. The touch is a tap, so it goes in the page's left
+   * margin: mid-screen it opened a comment header's permalink once T-696
+   * reshaped the header, and that takes the reader off the end.
    */
   const touchAtEnd = async (io) => {
-    if (viewport.mobile) await io.swipe(x, h / 2, 1);
+    if (viewport.mobile) await io.swipe(4, h / 2, 1);
     else {
       await io.wheel(x, h / 2, -100);
       await sleep(400);

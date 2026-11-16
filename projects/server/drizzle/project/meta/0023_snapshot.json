@@ -1,5 +1,5 @@
 {
-  "id": "3e381b0c-b2fe-406c-98a7-9d44ab860f11",
+  "id": "b662ca70-9bf0-4ad6-9d41-310ed9b2f150",
   "prevId": "7eab1ad7-0161-40b3-b13b-d8cdf7487cf3",
   "version": "7",
   "dialect": "postgresql",
@@ -35,7 +35,7 @@
           "name": "issue_id",
           "type": "bigint",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "uploader_id": {
           "name": "uploader_id",
@@ -165,12 +165,7 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {
-        "attachments_card_or_draft": {
-          "name": "attachments_card_or_draft",
-          "value": "\"attachments\".\"issue_id\" IS NOT NULL OR \"attachments\".\"draft\""
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.autolinks": {
@@ -1497,7 +1492,7 @@
           "name": "issue_id",
           "type": "bigint",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "uploader_id": {
           "name": "uploader_id",
@@ -1534,6 +1529,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "attachment_key": {
+          "name": "attachment_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "draft": {
           "name": "draft",
@@ -1608,12 +1609,7 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {
-        "pending_uploads_card_or_draft": {
-          "name": "pending_uploads_card_or_draft",
-          "value": "\"pending_uploads\".\"issue_id\" IS NOT NULL OR \"pending_uploads\".\"draft\""
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.project_meta": {
