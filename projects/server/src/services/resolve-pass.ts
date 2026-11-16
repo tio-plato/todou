@@ -595,9 +595,17 @@ class Resolver {
     return may;
   }
 
-  private async dbOf(project: ProjectRow): Promise<Db> {
-    if (project.id === this.project.id) return this.db;
-    return this.ctx.router.forProject(routeInfoOf(project));
+  /**
+   * One lookup on a project's database. A text can reference cards in many
+   * projects, so another project's database is held only for its lookup,
+   * not until the request ends.
+   */
+  private async withDbOf<R>(
+    project: ProjectRow,
+    run: (db: Db) => Promise<R>,
+  ): Promise<R> {
+    if (project.id === this.project.id) return run(this.db);
+    return this.ctx.router.withProject(routeInfoOf(project), run);
   }
 
   /** Whether the card is there and willing to take a reference right now. */
@@ -608,17 +616,18 @@ class Resolver {
     const key = `${project.id}/${number}`;
     const cached = this.issueLive.get(key);
     if (cached !== undefined) return cached;
-    const db = await this.dbOf(project);
-    const rows = await db
-      .select({ id: issues.id })
-      .from(issues)
-      .where(
-        and(
-          eq(issues.projectId, project.id),
-          eq(issues.number, number),
-          this.world.gate === "referenceable" ? referenceable : live,
+    const rows = await this.withDbOf(project, (db) =>
+      db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.projectId, project.id),
+            eq(issues.number, number),
+            this.world.gate === "referenceable" ? referenceable : live,
+          ),
         ),
-      );
+    );
     const there = rows.length > 0;
     this.issueLive.set(key, there);
     return there;
@@ -643,20 +652,21 @@ class Resolver {
       this.commentTargets.set(key, true);
       return true;
     }
-    const db = await this.dbOf(project);
-    const rows = await db
-      .select({ id: comments.id })
-      .from(comments)
-      .innerJoin(issues, eq(comments.issueId, issues.id))
-      .where(
-        and(
-          eq(comments.projectId, project.id),
-          eq(issues.projectId, project.id),
-          eq(issues.number, number),
-          eq(comments.id, commentId),
-          this.world.gate === "referenceable" ? referenceable : live,
+    const rows = await this.withDbOf(project, (db) =>
+      db
+        .select({ id: comments.id })
+        .from(comments)
+        .innerJoin(issues, eq(comments.issueId, issues.id))
+        .where(
+          and(
+            eq(comments.projectId, project.id),
+            eq(issues.projectId, project.id),
+            eq(issues.number, number),
+            eq(comments.id, commentId),
+            this.world.gate === "referenceable" ? referenceable : live,
+          ),
         ),
-      );
+    );
     const there = rows.length > 0;
     this.commentTargets.set(key, there);
     return there;
@@ -750,19 +760,20 @@ class Resolver {
     if (alias === null) return null;
     const target = await this.projectById(alias.projectId);
     if (target === null || !(await this.mayRead(target))) return null;
-    const db = await this.dbOf(target);
-    const rows = await db
-      .select({ number: issues.number })
-      .from(comments)
-      .innerJoin(issues, eq(comments.issueId, issues.id))
-      .where(
-        and(
-          eq(comments.projectId, target.id),
-          eq(issues.projectId, target.id),
-          eq(comments.id, alias.id),
-          this.world.gate === "referenceable" ? referenceable : live,
+    const rows = await this.withDbOf(target, (db) =>
+      db
+        .select({ number: issues.number })
+        .from(comments)
+        .innerJoin(issues, eq(comments.issueId, issues.id))
+        .where(
+          and(
+            eq(comments.projectId, target.id),
+            eq(issues.projectId, target.id),
+            eq(comments.id, alias.id),
+            this.world.gate === "referenceable" ? referenceable : live,
+          ),
         ),
-      );
+    );
     const moved = rows[0]?.number;
     if (moved === undefined) return null;
     await this.commentTarget(target, moved, alias.id, true);
@@ -794,13 +805,17 @@ class Resolver {
         ? named
         : await this.projectById(address.projectId);
     if (home === null || !(await this.mayRead(home))) return null;
-    const db = await this.dbOf(home);
-    const rows = await db
-      .select({ id: attachments.id })
-      .from(attachments)
-      .where(
-        and(eq(attachments.projectId, home.id), eq(attachments.id, address.id)),
-      );
+    const rows = await this.withDbOf(home, (db) =>
+      db
+        .select({ id: attachments.id })
+        .from(attachments)
+        .where(
+          and(
+            eq(attachments.projectId, home.id),
+            eq(attachments.id, address.id),
+          ),
+        ),
+    );
     if (rows.length === 0) return null;
     return {
       target: {
@@ -1044,25 +1059,31 @@ export async function recordCrossReferences(
         .where(eq(projects.id, projectId));
       const target = rows[0];
       if (target === undefined) continue;
-      const db = await ctx.router.forProject(routeInfoOf(target));
-      const cards = await db
-        .select({ id: issues.id, number: issues.number })
-        .from(issues)
-        .where(
-          and(
-            eq(issues.projectId, target.id),
-            inArray(issues.number, numbers),
-            referenceable,
-          ),
-        );
-      const created = await insertReferenceEvents(
-        db,
-        target,
-        project,
-        actor.id,
-        source,
-        cards,
-        agentContext,
+      // Held only while its events are written: a text can reference cards
+      // in many projects.
+      const created = await ctx.router.withProject(
+        routeInfoOf(target),
+        async (db) => {
+          const cards = await db
+            .select({ id: issues.id, number: issues.number })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.projectId, target.id),
+                inArray(issues.number, numbers),
+                referenceable,
+              ),
+            );
+          return insertReferenceEvents(
+            db,
+            target,
+            project,
+            actor.id,
+            source,
+            cards,
+            agentContext,
+          );
+        },
       );
       for (const event of created) {
         ctx.bus.publish(target.id, {

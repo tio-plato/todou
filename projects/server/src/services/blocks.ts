@@ -793,27 +793,38 @@ async function landEvent(
     const project = (await findProjectByRef(ctx, String(card.projectId)))
       ?.project;
     if (project === undefined) return false;
-    const db = await ctx.router.forProject(routeInfoOf(project));
-    const rows = await db
-      .select({ id: issues.id })
-      .from(issues)
-      .where(
-        and(eq(issues.projectId, project.id), eq(issues.number, card.number)),
-      );
-    const issueId = rows[0]?.id;
-    if (issueId === undefined) return false;
-    const inserted = await db
-      .insert(issueEvents)
-      .values({
-        projectId: project.id,
-        issueId,
-        actorId,
-        type,
-        payload,
-        agentContext,
-      })
-      .returning({ id: issueEvents.id });
-    const eventId = inserted[0]?.id;
+    // Held only while the event is written: one status change can announce
+    // to blocked cards in many projects.
+    const landed = await ctx.router.withProject(
+      routeInfoOf(project),
+      async (db) => {
+        const rows = await db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.projectId, project.id),
+              eq(issues.number, card.number),
+            ),
+          );
+        const issueId = rows[0]?.id;
+        if (issueId === undefined) return null;
+        const inserted = await db
+          .insert(issueEvents)
+          .values({
+            projectId: project.id,
+            issueId,
+            actorId,
+            type,
+            payload,
+            agentContext,
+          })
+          .returning({ id: issueEvents.id });
+        return { issueId, eventId: inserted[0]?.id };
+      },
+    );
+    if (landed === null) return false;
+    const { issueId, eventId } = landed;
     const events: ChangeEvent[] = [];
     if (eventId !== undefined) {
       events.push({
