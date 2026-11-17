@@ -5,6 +5,7 @@ import { usableViewport, useScrollInsets } from "../src/lib/scroll-insets.ts";
 import {
   useAutoHideHeader,
   useVisualViewportInsets,
+  VIEWPORT_CHROME_EVENT,
   visualViewportInsets,
 } from "../src/lib/viewport-chrome.ts";
 import { stubVisualViewport } from "./visual-viewport.ts";
@@ -215,6 +216,21 @@ describe("auto-hiding header (T-585)", () => {
     expect(hidden()).not.toBe("");
     on.unmount();
     expect(hidden()).toBe("");
+  });
+
+  it("tells the page each time it moves, and only then", () => {
+    mount();
+    const heard = vi.fn();
+    window.addEventListener(VIEWPORT_CHROME_EVENT, heard);
+    touch("touchstart");
+    scrollTo(2060);
+    scrollTo(2200);
+    expect(heard).toHaveBeenCalledTimes(2);
+    // All the way out: scrolling on moves nothing.
+    scrollTo(2300);
+    scrollTo(2400);
+    expect(heard).toHaveBeenCalledTimes(2);
+    window.removeEventListener(VIEWPORT_CHROME_EVENT, heard);
   });
 
   describe("and the scroll insets", () => {
