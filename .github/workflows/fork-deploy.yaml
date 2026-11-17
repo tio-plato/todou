@@ -17,7 +17,8 @@ name: Fork deploy image
 # concurrency group: cancelling a run would leave a merged commit without an
 # image, and a rollout waiting for it would wait forever. No
 # workflow_dispatch: GitHub only dispatches workflows the default branch
-# carries, which this file never reaches; re-run a failed run instead.
+# carries, which this file never reaches; re-run a failed run instead, unless
+# the migration check failed on findings.
 #
 # One-time setup on the fork: enable Actions, then disable upstream's Docker
 # and Release workflows, which would push to upstream's image name and cut
@@ -45,6 +46,45 @@ jobs:
         run: |
           echo "REGISTRY_IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
           echo "TODOU_BUILD_VERSION=$(git describe --tags --always --abbrev=9 --dirty)" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      # The base is the newest first-parent commit that has an image, not the
+      # tip before this push (github.event.before): only a commit with an image
+      # can have run on the live databases, and after a blocked push the tip
+      # before the fix is a tree that never shipped, which would fail the fix.
+      # Only a 404 means "no image": counting any other failure as one would
+      # walk back to an older base, and the migrations the newest image ran
+      # would pass as new.
+      - name: Check migrations against the newest published image
+        run: |
+          set -euo pipefail
+          repo=${REGISTRY_IMAGE#ghcr.io/}
+          token=$(curl -fsS "https://ghcr.io/token?scope=repository:$repo:pull" | jq -r .token) || {
+            echo "image lookup failed: no registry token" >&2
+            exit 1
+          }
+          accept=application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json
+          base=
+          for rev in $(git rev-list --first-parent --max-count=50 HEAD^); do
+            code=$(curl -sS -o /dev/null -I -w '%{http_code}' \
+              -H "Authorization: Bearer $token" -H "Accept: $accept" \
+              "https://ghcr.io/v2/$repo/manifests/sha-${rev:0:7}") || code="curl exit $?"
+            if [ "$code" = 200 ]; then
+              base=$rev
+              break
+            fi
+            if [ "$code" != 404 ]; then
+              echo "image lookup failed: sha-${rev:0:7} answered $code" >&2
+              exit 1
+            fi
+          done
+          if [ -z "$base" ]; then
+            echo "image lookup failed: none of the last 50 first-parent commits has an image" >&2
+            exit 1
+          fi
+          echo "checking migrations against $base"
+          node scripts/check-deploy-migrations.ts --ran "$base"
       - id: meta
         uses: docker/metadata-action@v6
         with:
