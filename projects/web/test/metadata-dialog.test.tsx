@@ -477,8 +477,8 @@ describe("the metadata editor tabs", () => {
   });
 
   it("Discard drops an edited draft and returns to Browse", async () => {
-    // Falsifies by: a Discard that stays on the tab, or a next session that
-    // opens on the dropped draft instead of the server's values.
+    // Falsifies by: a Discard that stays on the tab. Reopening Bulk then shows
+    // what the reader sees next: the server's value, not the dropped draft.
     mount([entry("orch", "phase", "plan")]);
     await openDialog();
     await openTab("Bulk");
