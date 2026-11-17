@@ -62,18 +62,32 @@ function pixelsOf(value: string): number {
 }
 
 /**
+ * Every overlay's inset, the strip this module's own landings aim at whatever
+ * holds focus. `scroll-padding` lets go of the overlays on the edge holding
+ * focus, for the browser's own reveals (see `useScrollInsets`). One per page,
+ * like the `scroll-padding` beside it; null where no page declared overlays.
+ */
+let landingInsets: { top: number; bottom: number } | null = null;
+
+function insetsOnRoot(): { top: number; bottom: number } {
+  const style = getComputedStyle(document.documentElement);
+  return {
+    top: pixelsOf(style.scrollPaddingTop),
+    bottom: pixelsOf(style.scrollPaddingBottom),
+  };
+}
+
+/**
  * The part of the visual viewport no overlay covers, in client coordinates,
  * so that it pairs with `getBoundingClientRect()` plus `scrollY` as page
  * coordinates.
  *
- * Read back off `<html>` rather than passed down: the calls that land a target
- * sit deep inside components that know nothing about the page's overlays, and
- * `scroll-padding` is already the value the engine itself obeys.
+ * Read back off the module rather than passed down: the calls that land a
+ * target sit deep inside components that know nothing about the page's
+ * overlays. With none declared, `scroll-padding` on `<html>` is all there is.
  */
 export function usableViewport(): UsableViewport {
-  const style = getComputedStyle(document.documentElement);
-  const top = pixelsOf(style.scrollPaddingTop);
-  const bottom = pixelsOf(style.scrollPaddingBottom);
+  const { top, bottom } = landingInsets ?? insetsOnRoot();
   const edges = visualViewportInsets();
   return {
     top: visualViewportClientTop() + top,
@@ -132,8 +146,27 @@ export function revealBlock(
     usableViewport(),
     mode,
   );
-  el.scrollIntoView({ block, behavior });
+  clearingEveryOverlay(() => el.scrollIntoView({ block, behavior }));
   if (highlight) flash(el);
+}
+
+/**
+ * Run `reveal` against every overlay's inset, then hand `<html>` back the one
+ * the browser's own reveals use. Every engine fixes where `scrollIntoView`
+ * ends when it is called, a smooth one included.
+ */
+function clearingEveryOverlay(reveal: () => void) {
+  if (landingInsets === null) return reveal();
+  const style = document.documentElement.style;
+  const { scrollPaddingTop, scrollPaddingBottom } = style;
+  style.scrollPaddingTop = `${landingInsets.top}px`;
+  style.scrollPaddingBottom = `${landingInsets.bottom}px`;
+  try {
+    reveal();
+  } finally {
+    style.scrollPaddingTop = scrollPaddingTop;
+    style.scrollPaddingBottom = scrollPaddingBottom;
+  }
 }
 
 /**
@@ -426,20 +459,6 @@ export function useOwnHold(): (release: () => void) => void {
   }, []);
 }
 
-/**
- * The focused element, if it is a field: an input, a textarea or an editable
- * region. Only a caret needs the overlay T-519 leaves out of the padding. A
- * link or a button keeps focus after a click too, and the bar it sits in still
- * covers whatever its landing brings up under it.
- */
-function caretHolder(): Element | null {
-  const focused = document.activeElement;
-  return focused instanceof HTMLElement &&
-    (focused.isContentEditable || focused.matches("input, textarea"))
-    ? focused
-    : null;
-}
-
 export type ScrollInsetSources = {
   /** Overlays pinned to the viewport's top edge, beneath the shell header. */
   top?: ReadonlyArray<RefObject<HTMLElement | null>>;
@@ -483,24 +502,19 @@ export function useScrollInsets({
       observed.add(el);
       observer?.observe(el);
     };
+    const overlays = () => {
+      const declared = (refs: ReadonlyArray<RefObject<HTMLElement | null>>) =>
+        refs.flatMap((r) => (r.current === null ? [] : [r.current]));
+      return {
+        // The shell header covers every route; making each page declare it
+        // again would only give them a way to disagree.
+        shell: document.querySelector<HTMLElement>("header"),
+        top: declared(sources.current.top),
+        bottom: declared(sources.current.bottom),
+      };
+    };
     const measure = () => {
-      // The shell header covers every route; making each page declare it again
-      // would only give them a way to disagree.
-      const shell = document.querySelector<HTMLElement>("header");
-      // A caret inside a sticky overlay always sits within that overlay's own
-      // inset, and Chrome's caret reveal honours scroll-padding: it scrolled
-      // the page on every typed character, the overlay riding along, so the
-      // caret was never "revealed" (T-519). Every engine's drag-select
-      // autoscroll honours it too: a drag begun on an overlay's own text keeps
-      // the pointer in that inset, and the page ran to one end of the
-      // document. Nothing inside an overlay can be hidden behind it, so the
-      // one holding the caret or the press under way stops counting.
-      const focused = caretHolder();
-      const extent = (el: HTMLElement) =>
-        (focused !== null && el.contains(focused)) ||
-        (pressed !== null && el.contains(pressed))
-          ? 0
-          : el.getBoundingClientRect().height;
+      const { shell, top, bottom } = overlays();
       // Both engines resolve the root's scroll-padding against the visual
       // viewport, which already ends at an on-screen keyboard: WebKit grows
       // the target by it inside `visualViewportRect()`
@@ -515,21 +529,78 @@ export function useScrollInsets({
       // a frame in WebKit.
       let topInset =
         BREATHING_ROOM +
-        (shell === null ? 0 : Math.max(0, extent(shell) - headerHidden()));
+        (shell === null
+          ? 0
+          : Math.max(0, shell.getBoundingClientRect().height - headerHidden()));
       if (shell !== null) watch(shell);
       let bottomInset = 0;
-      for (const el of sources.current.top.map((r) => r.current)) {
-        if (el === null) continue;
-        topInset += extent(el);
+      for (const el of top) {
+        topInset += el.getBoundingClientRect().height;
         watch(el);
       }
-      for (const el of sources.current.bottom.map((r) => r.current)) {
-        if (el === null) continue;
-        bottomInset += extent(el);
+      for (const el of bottom) {
+        bottomInset += el.getBoundingClientRect().height;
         watch(el);
       }
-      root.style.scrollPaddingTop = `${topInset}px`;
-      root.style.scrollPaddingBottom = `${bottomInset}px`;
+      landingInsets = { top: topInset, bottom: bottomInset };
+      // The browser's own reveals honour scroll-padding as well, and an
+      // overlay is sticky: whatever of it the inset covers, no scroll ever
+      // uncovers. Chrome's caret reveal scrolled the page on every typed
+      // character, the overlay riding along (T-519); WebKit reveals the
+      // control Tab lands on after focusin, and Tab through the header ran
+      // the page up a screen at a time. Every engine's drag-select autoscroll
+      // honours it too: a drag begun on an overlay's own text kept the
+      // pointer in that inset, and the page ran to one end of the document.
+      // So the edge whose overlay holds focus or the press under way counts
+      // no overlay and no gap, nothing past the visual viewport's edge: the
+      // overlays stacked inside the holder would still cover it. Nor does it
+      // depend on where the holder stands, which no scroll re-measures: a
+      // composer focused while it sat in the page, short of the bottom, was
+      // covered again once scrolled up to pin. While focus stays inside, the
+      // browser reveals only what that overlay holds, and landings read
+      // every overlay off `landingInsets`.
+      const focused = document.activeElement;
+      const holds = (el: HTMLElement) =>
+        (focused !== null && el.contains(focused)) ||
+        (pressed !== null && el.contains(pressed));
+      const topHeld = (shell === null ? top : [shell, ...top]).some(holds);
+      const bottomHeld = bottom.some(holds);
+      root.style.scrollPaddingTop = `${topHeld ? 0 : topInset}px`;
+      root.style.scrollPaddingBottom = `${bottomHeld ? 0 : bottomInset}px`;
+    };
+    // Chromium reveals the element Tab moves focus onto before its focus
+    // event, against the inset of the moment the old one let go of focus:
+    // every overlay counted, since nothing held focus then. A pinned overlay
+    // does not move with the page, so the page goes back where the keystroke
+    // found it. Tab from no focus at all has no focusout to act on, but every
+    // focus move a key makes happens in that key's own task, so the position
+    // is kept for that task alone; a later focusin is no keystroke's.
+    let keyedAt: number | null = null;
+    const key = () => {
+      keyedAt = window.scrollY;
+      setTimeout(() => {
+        keyedAt = null;
+      }, 0);
+    };
+    const keepStill = (target: EventTarget | null) => {
+      const from = keyedAt;
+      const revealed = window.scrollY;
+      if (from === null || from === revealed || !(target instanceof Element))
+        return;
+      const { shell, top, bottom } = overlays();
+      if (![shell, ...top, ...bottom].some((el) => el?.contains(target)))
+        return;
+      window.scrollTo(window.scrollX, from);
+      // Not every overlay is pinned where it stands: the composer settles
+      // back into the page at its end, and a narrow screen slides the header
+      // away. A reveal that brought the control into sight was a real one.
+      const rect = target.getBoundingClientRect();
+      if (rect.top < visualViewportClientTop() || rect.bottom > visibleBottom())
+        window.scrollTo(window.scrollX, revealed);
+    };
+    const arrive = (event: FocusEvent) => {
+      keepStill(event.target);
+      measure();
     };
     // Not a finger: iOS drags a selection handle with one touch pointerdown
     // and sends no pointerup or pointercancel after it, which would leave the
@@ -554,8 +625,9 @@ export function useScrollInsets({
     measure();
     window.addEventListener("resize", measure);
     window.addEventListener(VIEWPORT_CHROME_EVENT, measure);
-    document.addEventListener("focusin", measure);
+    document.addEventListener("focusin", arrive);
     document.addEventListener("focusout", measure);
+    window.addEventListener("keydown", key, { capture: true, passive: true });
     const pointer = { capture: true, passive: true };
     window.addEventListener("pointerdown", press, pointer);
     window.addEventListener("pointerup", release, pointer);
@@ -567,13 +639,15 @@ export function useScrollInsets({
     return () => {
       window.removeEventListener("resize", measure);
       window.removeEventListener(VIEWPORT_CHROME_EVENT, measure);
-      document.removeEventListener("focusin", measure);
+      document.removeEventListener("focusin", arrive);
       document.removeEventListener("focusout", measure);
+      window.removeEventListener("keydown", key, true);
       window.removeEventListener("pointerdown", press, true);
       window.removeEventListener("pointerup", release, true);
       window.removeEventListener("pointercancel", release, true);
       window.removeEventListener("blur", release);
       observer?.disconnect();
+      landingInsets = null;
       root.style.removeProperty("scroll-padding-top");
       root.style.removeProperty("scroll-padding-bottom");
     };
