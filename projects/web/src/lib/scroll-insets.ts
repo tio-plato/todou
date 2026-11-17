@@ -6,6 +6,7 @@ import {
   useRef,
 } from "react";
 import {
+  pageLands,
   VIEWPORT_CHROME_EVENT,
   visualViewportInsets,
 } from "@/lib/viewport-chrome.ts";
@@ -127,6 +128,8 @@ export function revealBlock(
     flash?: boolean;
   } = {},
 ): void {
+  // Before anything is measured: the header settles first (see `pageLands`).
+  pageLands();
   openEnclosingFolds(el);
   const rect = el.getBoundingClientRect();
   const block = blockFor(
@@ -233,6 +236,8 @@ export function holdRevealed(
  * past the end — one blank white frame on every landing (T-585).
  */
 function scrollToEnd() {
+  // Before anything is measured: the header settles first (see `pageLands`).
+  pageLands();
   const root = document.documentElement;
   window.scrollTo(0, Math.max(0, root.scrollHeight - root.clientHeight));
 }
