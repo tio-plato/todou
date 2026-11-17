@@ -7,6 +7,7 @@ import {
 } from "react";
 import {
   headerHidden,
+  pageLands,
   VIEWPORT_CHROME_EVENT,
   visualViewportClientTop,
   visualViewportInsets,
@@ -139,6 +140,8 @@ export function revealBlock(
     flash?: boolean;
   } = {},
 ): void {
+  // Before anything is measured: the header settles first (see `pageLands`).
+  pageLands();
   openEnclosingFolds(el);
   const rect = el.getBoundingClientRect();
   const block = blockFor(
@@ -366,6 +369,8 @@ function endTarget(): number {
 }
 
 function scrollToEnd() {
+  // Before anything is measured: the header settles first (see `pageLands`).
+  pageLands();
   window.scrollTo(0, endTarget());
 }
 
@@ -425,6 +430,8 @@ export function revealAboveEnd(
     return { y: Math.max(0, Math.min(start, end)), onEnd: start >= end };
   };
   const place = () => {
+    // Before anything is measured: the header settles first (see `pageLands`).
+    pageLands();
     const { y, onEnd } = spot();
     window.scrollTo(0, y);
     return onEnd;
