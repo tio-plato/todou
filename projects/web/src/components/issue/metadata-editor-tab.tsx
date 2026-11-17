@@ -84,7 +84,7 @@ export function MetadataEditorTab({
   gate: { message: string; errors: ParseError[] } | null;
   /** A keystroke landed; the shell clears a stale gate rejection. */
   onDirty: () => void;
-  /** Drop the draft and reopen the session from the server's current values. */
+  /** Drop the draft, close the session and return to Browse. */
   onDiscard: () => void;
   /** The mounted EditorView, once it exists; null after unmount. */
   onView?: (view: EditorView | null) => void;

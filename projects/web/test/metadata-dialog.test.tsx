@@ -476,20 +476,14 @@ describe("the metadata editor tabs", () => {
     await waitFor(() => expect(save().disabled).toBe(true));
   });
 
-  it("Discard restores the server's current values and unlocks Browse", async () => {
-    // Falsifies by: not remounting the editor (key unchanged) — CodeEditor
-    // reads initialValue only at mount, so the text would stay "impl".
+  it("Discard drops an edited draft and returns to Browse", async () => {
+    // Falsifies by: a Discard that stays on the tab, or a next session that
+    // opens on the dropped draft instead of the server's values.
     mount([entry("orch", "phase", "plan")]);
     await openDialog();
     await openTab("Bulk");
     cmSetValue(await editorReady(), "orch/phase = impl");
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
-    await waitFor(async () => {
-      expect(await editorReady().then((h) => cmGetValue(h))).toBe(
-        "orch/phase = plan",
-      );
-    });
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "Browse" }));
     await waitFor(() =>
       expect(
         screen
@@ -497,22 +491,37 @@ describe("the metadata editor tabs", () => {
           .getAttribute("aria-selected"),
       ).toBe("true"),
     );
+    expect(screen.queryByTestId("metadata-editor-tab")).toBeNull();
+    await openTab("Bulk");
+    expect(cmGetValue(await editorReady())).toBe("orch/phase = plan");
   });
 
-  it("Discard on a clean document changes nothing", async () => {
-    // Falsifies by: a discard that clears the editor or errors.
+  it("Discard on an untouched document returns to Browse", async () => {
+    // Entered from a value and left untouched, Discard used to reopen the
+    // session in place: nothing changed on screen, and focus fell to the
+    // dialog. Falsifies by: staying on Bulk, or leaving focus where the
+    // unmounted Discard button drops it.
     mount([entry("orch", "phase", "plan")]);
     await openDialog();
-    await openTab("Bulk");
-    await editorReady();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Edit orch/phase in Bulk" }),
+    );
+    // The jump focuses the editor a frame later; until then focus may still
+    // sit on Browse, and the last assertion would pass for nothing.
+    await waitFor(() =>
+      expect(document.activeElement?.closest(".cm-content")).not.toBeNull(),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
-    await waitFor(async () => {
-      expect(await editorReady().then((h) => cmGetValue(h))).toBe(
-        "orch/phase = plan",
-      );
-    });
-    expect(screen.getByTestId("metadata-editor-tab").textContent).not.toContain(
-      "line 1",
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole("tab", { name: "Browse" })
+          .getAttribute("aria-selected"),
+      ).toBe("true"),
+    );
+    expect(screen.queryByTestId("metadata-editor-tab")).toBeNull();
+    expect(document.activeElement).toBe(
+      screen.getByRole("tab", { name: "Browse" }),
     );
   });
 
