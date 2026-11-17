@@ -3,8 +3,14 @@
 // schema. Like the script, this file lives only on deploy and never goes into
 // a patch sent upstream.
 import { spawnSync } from "node:child_process";
-import { cpSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  cpSync,
+  readdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { testTmpDir } from "./setup.ts";
@@ -53,8 +59,8 @@ const contents = (dir: string) =>
       }),
   );
 
-const refresh = (dir: string) => {
-  const r = spawnSync(process.execPath, [script, "--drizzle-dir", dir], {
+const refresh = (dir: string, path = script) => {
+  const r = spawnSync(process.execPath, [path, "--drizzle-dir", dir], {
     encoding: "utf8",
   });
   return { status: r.status, output: r.stdout + r.stderr };
@@ -132,6 +138,18 @@ describe("refresh-deploy-snapshots", () => {
       const run = refresh(dir);
       expect(run.status, run.output).not.toBe(0);
       expect(contents(dir)).toEqual(before);
+    },
+    timeout,
+  );
+
+  it(
+    "runs when started through a symlinked path",
+    () => {
+      const link = join(testTmpDir("todou-refresh-snapshots-link-"), "scripts");
+      symlinkSync(dirname(script), link);
+      const run = refresh(copyMigrations(), join(link, basename(script)));
+      expect(run.status, run.output).toBe(0);
+      expect(run.output).toMatch(/project: up to date/);
     },
     timeout,
   );
