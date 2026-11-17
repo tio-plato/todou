@@ -9,8 +9,11 @@ import { questionsQuery } from "@/api/questions.ts";
 import {
   isQuestionLandingHash,
   questionLandingAfter,
+  readQuestionStep,
   selectNextQuestionLanding,
   UNANSWERED_QUESTIONS_HASH,
+  withoutQuestionStep,
+  withQuestionStep,
 } from "@/lib/question-landing.ts";
 
 export const QUESTION_LANDING_ROUTE_ID =
@@ -24,6 +27,15 @@ type Landing = {
   error?: "read" | "unavailable" | "stalled";
   detail?: string;
 };
+
+/**
+ * A request for a question: the address's `#unanswered-questions…`, which a
+ * link from elsewhere follows, or the card's own badge's `todouQuestion` in
+ * the entry's state, which leaves the address alone.
+ */
+function asksForQuestion(hash: string, state: unknown): boolean {
+  return isQuestionLandingHash(hash) || readQuestionStep(state) !== null;
+}
 
 /** One entry consumes one fresh snapshot, then hands scrolling to the timeline. */
 export function useQuestionLanding(slug: string, issueNumber: number) {
@@ -40,7 +52,7 @@ export function useQuestionLanding(slug: string, issueNumber: number) {
   const active = useRef<Landing | null>(null);
   const [landing, setLanding] = useState<Landing | null>(null);
   const [retry, setRetry] = useState(0);
-  const semantic = isQuestionLandingHash(location.hash);
+  const semantic = asksForQuestion(location.hash, location.state);
 
   // History identity and Retry are explicit new intents, even at the same URL.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reentry must reread and reveal once
@@ -52,9 +64,10 @@ export function useQuestionLanding(slug: string, issueNumber: number) {
       setLanding(null);
       return;
     }
-    if (!isQuestionLandingHash(location.hash)) {
+    if (!semantic) {
       const current = active.current;
-      // Our own replace transfers the same intent to its concrete destination.
+      // Our own replace transfers the same intent to its concrete destination:
+      // it writes the destination's hash and takes the badge's key out.
       if (
         current &&
         current.pathname === location.pathname &&
@@ -80,13 +93,15 @@ export function useQuestionLanding(slug: string, issueNumber: number) {
     };
     active.current = intent;
     setLanding(intent);
-    // Read from the address, never from the last landing: the plain entry
+    // Read from the request, never from the last landing: the plain entry
     // always means the earliest, however often it is reentered.
-    const after = questionLandingAfter(location.hash);
+    const after = isQuestionLandingHash(location.hash)
+      ? questionLandingAfter(location.hash)
+      : (readQuestionStep(location.state)?.after ?? null);
     const isCurrent = () =>
       active.current === intent &&
       router.state.location.pathname === intent.pathname &&
-      isQuestionLandingHash(router.state.location.hash);
+      asksForQuestion(router.state.location.hash, router.state.location.state);
     void client
       .fetchQuery({ ...questionsQuery(slug, issueNumber), staleTime: 0 })
       .then(async (data) => {
@@ -109,7 +124,7 @@ export function useQuestionLanding(slug: string, issueNumber: number) {
             hashScrollIntoView: false,
             // This annotates the current page; it never discards an edit.
             ignoreBlocker: true,
-            state: (prev) => prev,
+            state: withoutQuestionStep,
           });
         } catch (error) {
           if (
@@ -147,6 +162,7 @@ export function useQuestionLanding(slug: string, issueNumber: number) {
     location.pathname,
     location.hash,
     location.state.__TSR_key,
+    semantic,
     retry,
   ]);
 
@@ -177,6 +193,8 @@ export function useQuestionLanding(slug: string, issueNumber: number) {
   };
 
   return {
+    /** A request is still being worked out; no anchor is the destination yet. */
+    intent: semantic,
     // Include the first render, before the reading effect has run.
     ownsScroll:
       (semantic && landing?.phase !== "failed") ||
@@ -197,14 +215,17 @@ export function useQuestionLanding(slug: string, issueNumber: number) {
       if (semantic) {
         setRetry((value) => value + 1);
       } else {
+        // From the earliest again, as the plain entry does, but asked for in
+        // the entry's state: the address stays the comment that went missing.
         void router
           .navigate({
-            hash: UNANSWERED_QUESTIONS_HASH,
+            hash: true,
+            search: true,
             replace: true,
             resetScroll: false,
             hashScrollIntoView: false,
             ignoreBlocker: true,
-            state: (prev) => prev,
+            state: withQuestionStep(null),
           })
           .catch(() => {
             // Keep the failure and its Retry if the annotation cannot be made.
