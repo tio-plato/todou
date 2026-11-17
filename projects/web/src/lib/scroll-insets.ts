@@ -545,10 +545,10 @@ export function useScrollInsets({
       landingInsets = { top: topInset, bottom: bottomInset };
       // The browser's own reveals honour scroll-padding as well, and an
       // overlay is sticky: whatever of it the inset covers, no scroll ever
-      // uncovers. Chrome's caret reveal scrolled the page on every typed
-      // character, the overlay riding along (T-519); WebKit reveals the
-      // control Tab lands on after focusin, and Tab through the header ran
-      // the page up a screen at a time. Every engine's drag-select autoscroll
+      // uncovers. The caret reveals of Chromium and WebKit scrolled the page
+      // on every typed character, the overlay riding along (T-519); WebKit
+      // reveals the control Tab lands on after focusin, and Tab through the
+      // header ran the page up a screen at a time. Every engine's drag-select autoscroll
       // honours it too: a drag begun on an overlay's own text kept the
       // pointer in that inset, and the page ran to one end of the document.
       // So the edge whose overlay holds focus or the press under way counts
