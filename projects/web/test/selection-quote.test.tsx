@@ -1,20 +1,26 @@
-import { act, fireEvent, waitFor } from "@testing-library/react";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import type { QuestionsComponent, TimelineComment } from "@todou/shared";
 import { type ReactNode, useRef, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { QUOTE_REHYPE_PLUGINS } from "../src/components/issue/entry-actions-menu.tsx";
+import { MarkdownView } from "../src/components/shared/markdown-view.tsx";
 import { CommentItem } from "../src/components/timeline/comment-item.tsx";
 import {
   QuoteReplyProvider,
   useQuoteSink,
+  useQuoteTarget,
 } from "../src/components/timeline/quote-reply.tsx";
 import {
   QUOTE_BODY_ATTR,
   quotableSelection,
   quoteOfQuotable,
   SelectionQuote,
+  useQuotableBody,
 } from "../src/components/timeline/selection-quote.tsx";
 import { inlineActionSource } from "../src/lib/action-text.ts";
-import { renderWithProviders } from "./render.tsx";
+import { POINTER_FINE } from "../src/lib/use-media-query.ts";
+import { renderWithProviders, testQueryClient } from "./render.tsx";
 
 // Code blocks render through pierre's CodeView, drawn in a shadow root
 // happy-dom cannot lay out. The tests that need its rows build them by hand
@@ -340,14 +346,12 @@ describe("quotableSelection", () => {
     },
   );
 
-  it("quotes from the body's first character for a drag in from above it", async () => {
+  it("quotes nothing from a drag in from above, through the comment's header", async () => {
     const { view, b } = await renderTwo(comment(1, A), comment(2, B));
     const between = view.getByTestId("between").firstChild as Node;
     expect(
-      quoted(
-        quotableSelection(select(between, 4, paragraph(b, 0), 5), document),
-      ),
-    ).toBe("Bravo");
+      quotableSelection(select(between, 4, paragraph(b, 0), 5), document),
+    ).toBeNull();
   });
 
   it("quotes only the text of a body's last item selected past the body", async () => {
@@ -629,12 +633,11 @@ function Page({
   first?: TimelineComment;
   children?: ReactNode;
 }) {
-  const content = useRef<HTMLDivElement>(null);
   return (
-    <div ref={content} className="relative">
+    <div>
       <CommentItem slug="p" issueNumber={7} comment={first} />
       <CommentItem slug="p" issueNumber={7} comment={comment(2, B)} />
-      <SelectionQuote containerRef={content} />
+      <SelectionQuote />
       {children}
     </div>
   );
@@ -668,11 +671,12 @@ function selectBold(a: Element): void {
 }
 
 /**
- * Let the rAF-batched recompute run and React commit it, so that "no button"
- * is a verdict rather than a frame the entry has not looked at yet.
+ * Let the rAF-batched read run and React commit it, so that "no button" is a
+ * verdict rather than a frame the entry has not looked at yet.
  */
 async function settle(): Promise<void> {
   await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50));
     await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
   });
 }
@@ -738,5 +742,174 @@ describe("SelectionQuote", () => {
     const caret = window.getSelection();
     expect(caret?.rangeCount).toBe(1);
     expect(caret?.anchorNode && box.contains(caret.anchorNode)).toBe(true);
+  });
+});
+
+/** One timeline entry: a header outside the body, and the rendered body. */
+function Entry({ id, body }: { id: string; body: string }) {
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const quoteRef = useQuotableBody(useQuoteTarget(body, bodyRef), body);
+  return (
+    <div data-testid={id}>
+      <header>{id} wrote</header>
+      <div ref={quoteRef} data-quote-body="">
+        <MarkdownView
+          slug="p"
+          issueNumber={1}
+          rehypePlugins={QUOTE_REHYPE_PLUGINS}
+        >
+          {body}
+        </MarkdownView>
+      </div>
+    </div>
+  );
+}
+
+function mount({ withBox = true } = {}) {
+  const onQuote = vi.fn();
+  const view = render(
+    <QueryClientProvider client={testQueryClient()}>
+      <QuoteReplyProvider>
+        <Entry id="first" body={"Alpha *beta* gamma.\n\nDelta epsilon."} />
+        <Entry id="second" body="Zeta eta." />
+        {withBox && <Sink onQuote={onQuote} />}
+        <SelectionQuote />
+      </QuoteReplyProvider>
+    </QueryClientProvider>,
+  );
+  return { view, onQuote };
+}
+
+async function rendered(view: ReturnType<typeof render>, id: string) {
+  return waitFor(() => {
+    const p = view.getByTestId(id).querySelector("p[data-loc]");
+    if (!p) throw new Error("not rendered");
+    return view.getByTestId(id);
+  });
+}
+
+function textOf(el: Element, selector: string): Node {
+  const node = el.querySelector(selector)?.firstChild;
+  if (!node) throw new Error(`no text under ${selector}`);
+  return node;
+}
+
+describe("floating Quote reply (T-723)", () => {
+  it("quotes the selected words' markdown from inside one body", async () => {
+    const { view, onQuote } = mount();
+    const first = await rendered(view, "first");
+    const alpha = textOf(first, "p[data-loc]");
+    select(alpha, 0, textOf(first, "em"), 4);
+
+    const button = await view.findByRole("button", { name: "Quote reply" });
+    fireEvent.click(button);
+    // The words selected, emphasis intact: what the `…` menu's Quote reply
+    // takes from the same selection.
+    expect(onQuote).toHaveBeenCalledWith("Alpha *beta*");
+    await waitFor(() =>
+      expect(view.queryByRole("button", { name: "Quote reply" })).toBeNull(),
+    );
+  });
+
+  it("stays away when the selection runs into the next entry", async () => {
+    const { view } = mount();
+    const first = await rendered(view, "first");
+    const second = await rendered(view, "second");
+    select(textOf(first, "p[data-loc]"), 0, textOf(second, "p[data-loc]"), 4);
+    await settle();
+    expect(view.queryByRole("button", { name: "Quote reply" })).toBeNull();
+  });
+
+  it("stays away when the selection reaches the entry's own header", async () => {
+    const { view } = mount();
+    const first = await rendered(view, "first");
+    select(textOf(first, "header"), 0, textOf(first, "p[data-loc]"), 4);
+    await settle();
+    expect(view.queryByRole("button", { name: "Quote reply" })).toBeNull();
+  });
+
+  it("offers nothing on a card with no comment box", async () => {
+    const { view } = mount({ withBox: false });
+    const first = await rendered(view, "first");
+    const alpha = textOf(first, "p[data-loc]");
+    select(alpha, 0, alpha, 5);
+    await settle();
+    expect(view.queryByRole("button", { name: "Quote reply" })).toBeNull();
+  });
+
+  it("survives its own press collapsing the selection", async () => {
+    const { view, onQuote } = mount();
+    const first = await rendered(view, "first");
+    const delta = first.querySelectorAll("p[data-loc]")[1]?.firstChild;
+    if (!delta) throw new Error("no second paragraph");
+    select(delta, 0, delta, (delta.nodeValue ?? "").length);
+    const button = await view.findByRole("button", { name: "Quote reply" });
+
+    fireEvent.pointerDown(button);
+    window.getSelection()?.removeAllRanges();
+    fireEvent.pointerUp(button);
+    await settle();
+    fireEvent.click(button);
+    expect(onQuote).toHaveBeenCalledWith("Delta epsilon.");
+  });
+
+  it("goes once the selection does", async () => {
+    const { view } = mount();
+    const first = await rendered(view, "first");
+    const alpha = textOf(first, "p[data-loc]");
+    select(alpha, 0, alpha, 5);
+    await view.findByRole("button", { name: "Quote reply" });
+    window.getSelection()?.removeAllRanges();
+    await waitFor(() =>
+      expect(view.queryByRole("button", { name: "Quote reply" })).toBeNull(),
+    );
+  });
+
+  it("pins a full-width bar to the viewport's foot for touch", async () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query !== POINTER_FINE,
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    const { view } = mount();
+    const first = await rendered(view, "first");
+    const alpha = textOf(first, "p[data-loc]");
+    select(alpha, 0, alpha, 5);
+    const button = await view.findByRole("button", { name: "Quote reply" });
+    expect(button.parentElement?.className).toContain("fixed");
+  });
+
+  it("follows a selection handle dragged after a long press", async () => {
+    // iOS Safari: once the long press lifts, holding a selection handle
+    // sends one touch pointerdown and no pointerup or pointercancel until
+    // the next press. A quick tap on the entry then clicks before the read
+    // its own pointerup schedules has rendered, which the pointerdown,
+    // pointerup and click fired back to back stand for here.
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query !== POINTER_FINE,
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    const { view, onQuote } = mount();
+    const first = await rendered(view, "first");
+    const alpha = textOf(first, "p[data-loc]");
+    const paragraph = alpha.parentElement as Element;
+    fireEvent.pointerDown(paragraph, { pointerType: "touch" });
+    select(alpha, 0, alpha, 5);
+    fireEvent.pointerUp(paragraph, { pointerType: "touch" });
+    await view.findByRole("button", { name: "Quote reply" });
+
+    fireEvent.pointerDown(paragraph, { pointerType: "touch" });
+    const delta = first.querySelectorAll("p[data-loc]")[1]?.firstChild;
+    if (!delta) throw new Error("no second paragraph");
+    select(alpha, 0, delta, 5);
+    await settle();
+    const button = view.getByRole("button", { name: "Quote reply" });
+    fireEvent.pointerDown(button, { pointerType: "touch" });
+    fireEvent.pointerUp(button, { pointerType: "touch" });
+    fireEvent.click(button);
+    expect(onQuote).toHaveBeenCalledWith("Alpha *beta* gamma.\n\nDelta");
   });
 });

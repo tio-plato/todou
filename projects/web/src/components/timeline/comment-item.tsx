@@ -33,6 +33,7 @@ import { RevisionHistory } from "@/components/shared/revision-history.tsx";
 import { UserChip } from "@/components/shared/user-chip.tsx";
 import { ActionItem } from "@/components/timeline/action-item.tsx";
 import { QuestionsCard } from "@/components/timeline/questions-card.tsx";
+import { useQuoteTarget } from "@/components/timeline/quote-reply.tsx";
 import { useQuotableBody } from "@/components/timeline/selection-quote.tsx";
 import { SpecCommentAnchorCard } from "@/components/timeline/spec-comment-card.tsx";
 import { Button } from "@/components/ui/button";
@@ -163,7 +164,10 @@ function PlainCommentItem({
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
-  const quotableRef = useQuotableBody(bodyRef, comment.body);
+  const quoteRef = useQuotableBody(
+    useQuoteTarget(comment.body, bodyRef),
+    comment.body,
+  );
   const editor = useRef<MarkdownEditorHandle>(null);
   const [uploading, setUploading] = useState(false);
   const staging = useStagedFiles();
@@ -421,7 +425,7 @@ function PlainCommentItem({
             </div>
           </div>
         ) : (
-          <div ref={quotableRef} data-quote-body="">
+          <div ref={quoteRef} data-quote-body="">
             <MarkdownView
               slug={slug}
               issueNumber={issueNumber}

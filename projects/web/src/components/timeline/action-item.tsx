@@ -25,6 +25,7 @@ import {
   type Target,
   useCommentWrites,
 } from "@/components/timeline/comment-item.tsx";
+import { useQuoteTarget } from "@/components/timeline/quote-reply.tsx";
 import { useQuotableBody } from "@/components/timeline/selection-quote.tsx";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -76,7 +77,11 @@ export function ActionItem({
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const source = inlineActionSource(comment.body);
-  const quotableRef = useQuotableBody(bodyRef, source);
+  const rowRef = useRef<HTMLDivElement>(null);
+  const quoteRef = useQuotableBody(
+    useQuoteTarget(comment.body, bodyRef, rowRef),
+    source,
+  );
   const editInput = useRef<HTMLTextAreaElement>(null);
   /** Set by Edit action, so closing the menu hands the focus to the input. */
   const openingEditor = useRef(false);
@@ -118,6 +123,7 @@ export function ActionItem({
   // inline modes; whitespace between grid or flex items is never rendered.
   return (
     <div
+      ref={rowRef}
       id={pending ? undefined : commentAnchor(comment.id)}
       data-comment-id={comment.id}
       data-comment-kind="action"
@@ -202,7 +208,7 @@ export function ActionItem({
           </form>
         ) : (
           <div
-            ref={quotableRef}
+            ref={quoteRef}
             data-quote-body=""
             // The prose line height a markdown body brings along would make
             // this line taller than an event's.

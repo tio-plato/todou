@@ -84,7 +84,10 @@ import {
   Composer,
   useCommentComposer,
 } from "@/components/timeline/composer.tsx";
-import { QuoteReplyProvider } from "@/components/timeline/quote-reply.tsx";
+import {
+  QuoteReplyProvider,
+  useQuoteTarget,
+} from "@/components/timeline/quote-reply.tsx";
 import { RevealAllEye } from "@/components/timeline/reveal-all-eye.tsx";
 import { RevealedRunsProvider } from "@/components/timeline/revealed-runs.tsx";
 import {
@@ -133,15 +136,13 @@ export function IssueDetailPage() {
   // timeline anchor, including before the mirror becomes visible (T-299).
   const rowRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
-  // What a selection is quoted from, and what the floating Quote reply is
-  // placed in.
-  const contentRef = useRef<HTMLDivElement>(null);
-  // Its bottom edge, the composer's or a trashed card's timeline's, is where
-  // the conversation ends: on a phone the sidebar follows it.
+  // The column's bottom edge, the composer's or a trashed card's timeline's,
+  // is where the conversation ends: on a phone the sidebar follows it.
+  const columnRef = useRef<HTMLDivElement>(null);
   useScrollInsets({
     top: [rowRef],
     bottom: [composerRef],
-    end: contentRef,
+    end: columnRef,
   });
   const [end, setEnd] = useState<HTMLDivElement | null>(null);
   const atEnd = useInView(end);
@@ -203,7 +204,7 @@ export function IssueDetailPage() {
                 </span>
               }
             />
-            <div ref={contentRef} className="relative space-y-4">
+            <div ref={columnRef} className="space-y-4">
               {trashed && <TrashBanner slug={slug} issue={issue.data} />}
               {/* The back control rides with the heading rather than with the
                   sticky row above, so it scrolls away with the title it
@@ -263,7 +264,6 @@ export function IssueDetailPage() {
                 pendingComments={composer.pending.filter((p) => !p.failed)}
                 viewer={viewer}
               />
-              <SelectionQuote containerRef={contentRef} />
               {/* Out of flow, so it adds no gap, yet it sits where the dock's
                   own slot begins. Above the dock rather than inside or below
                   it, because the dock's height changes with what it shows: a
@@ -315,6 +315,7 @@ export function IssueDetailPage() {
               )}
             </div>
           </div>
+          <SelectionQuote />
         </QuoteReplyProvider>
       </RevealedRunsProvider>
       <Sidebar
@@ -555,7 +556,10 @@ export function BodyBlock({
   const [editing, setEditing] = useState(false);
   const editor = useRef<MarkdownEditorHandle>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
-  const quotableRef = useQuotableBody(bodyRef, issue.body);
+  const quoteRef = useQuotableBody(
+    useQuoteTarget(issue.body, bodyRef),
+    issue.body,
+  );
   const opened = useOpenedEvent(slug, issue.number);
   const refCompletion = useRefCompletion(slug);
   const [uploading, setUploading] = useState(false);
@@ -745,7 +749,7 @@ export function BodyBlock({
             No description.
           </p>
         ) : (
-          <div ref={quotableRef} data-quote-body="">
+          <div ref={quoteRef} data-quote-body="">
             <MarkdownView
               slug={slug}
               issueNumber={issue.number}
