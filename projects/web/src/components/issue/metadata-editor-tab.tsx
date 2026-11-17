@@ -17,7 +17,7 @@ import {
   diffMetadata,
   METADATA_ENTRIES_PER_WRITE,
   type ParseError,
-  precheck,
+  readDocument,
 } from "@/lib/metadata-diff.ts";
 
 /** What a 409 hands up to the shell: the refused write and the server's report. */
@@ -36,7 +36,7 @@ export type WriteConflict = {
  * session (one document, two spellings) and hands down the text to open
  * with plus the snapshot the saves must be issued against. The panel only
  * holds the text between keystrokes, via the editor handle the shell gave
- * back.
+ * back, and a copy of it that decides whether Save has anything to send.
  *
  * Errors split in two: a 409 goes to `onConflict` so the shell can pair the
  * refused entries with the server's report and offer the retry; everything
@@ -56,6 +56,7 @@ export function MetadataEditorTab({
   snapshot,
   editorRef,
   gate,
+  writing,
   onDirty,
   onDiscard,
   onView,
@@ -82,9 +83,11 @@ export function MetadataEditorTab({
   editorRef: RefObject<CodeEditorHandle | null>;
   /** The tab-switch gate's rejection, rendered above the panel's own errors. */
   gate: { message: string; errors: ParseError[] } | null;
+  /** The shell's own write (the conflict retry) has not returned yet. */
+  writing: boolean;
   /** A keystroke landed; the shell clears a stale gate rejection. */
   onDirty: () => void;
-  /** Drop the draft and reopen the session from the server's current values. */
+  /** Drop the draft, close the session and return to Browse. */
   onDiscard: () => void;
   /** The mounted EditorView, once it exists; null after unmount. */
   onView?: (view: EditorView | null) => void;
@@ -95,20 +98,24 @@ export function MetadataEditorTab({
   const [errors, setErrors] = useState<ParseError[]>([]);
   const [saveError, setSaveError] = useState<string | null>(null);
   const write = useWriteIssueMetadata();
+  // Starts from initialText, not the mounted editor's text: CodeMirror
+  // normalizes line endings at mount without a transaction, and reading
+  // that back would make an untouched document look like an edit.
+  const [text, setText] = useState(initialText);
+
+  // Save is offered only when the text has something to write: an error
+  // to show (parse or limit) or a non-empty diff against the snapshot. The
+  // same read feeds doSave, so a Save that can be pressed never sends an
+  // empty write.
+  const read = readDocument(text, parse);
+  const diff = read.ok ? diffMetadata(snapshot, read.doc) : [];
+  const hasWrite = !read.ok || diff.length > 0;
 
   const doSave = () => {
-    const current = editorRef.current?.getValue() ?? initialText;
-    const parsed = parse(current);
-    if (!parsed.ok) {
-      setErrors(parsed.errors);
+    if (!read.ok) {
+      setErrors(read.errors);
       return;
     }
-    const limitErrors = precheck(parsed.entries);
-    if (limitErrors.length > 0) {
-      setErrors(limitErrors);
-      return;
-    }
-    const diff = diffMetadata(snapshot, parsed.entries);
     if (diff.length > METADATA_ENTRIES_PER_WRITE) {
       setErrors([
         {
@@ -176,7 +183,8 @@ export function MetadataEditorTab({
         placeholder={placeholder}
         readOnly={readOnly}
         onView={onView}
-        onChange={() => {
+        onChange={(value) => {
+          setText(value);
           onDirty();
         }}
         language={language}
@@ -187,10 +195,22 @@ export function MetadataEditorTab({
         <p className="text-xs text-muted-foreground">{helpText}</p>
         {canWrite && (
           <span className="flex gap-2">
-            <Button size="sm" variant="outline" onClick={onDiscard}>
+            {/* Grey while a write is out: Discard unmounts this panel and
+                resets the shell's write, so the write would land with no
+                receipt. */}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onDiscard}
+              disabled={write.isPending || writing}
+            >
               Discard
             </Button>
-            <Button size="sm" onClick={doSave} disabled={write.isPending}>
+            <Button
+              size="sm"
+              onClick={doSave}
+              disabled={write.isPending || !hasWrite}
+            >
               Save
             </Button>
           </span>

@@ -426,20 +426,64 @@ describe("the metadata editor tabs", () => {
     );
   });
 
-  it("Discard restores the server's current values and unlocks Browse", async () => {
-    // Falsifies by: not remounting the editor (key unchanged) — CodeEditor
-    // reads initialValue only at mount, so the text would stay "impl".
+  it("greys Save while the text has nothing to write, and sends nothing then", async () => {
+    // An untouched document used to send `entries: []`, which the server
+    // refuses with a 422. Falsifies by: judging Save by whether the reader
+    // typed (changed and changed back stays enabled), or against a snapshot
+    // frozen at mount (Save stays enabled after the save). A click on a grey
+    // Save that went out would show up in the call list.
+    const spy = vi
+      .spyOn(api, "writeIssueMetadata")
+      .mockResolvedValue({ entries: [] });
+    mount([
+      entry("ci", "run", "green"),
+      entry("ci", "branch", "fix/tabs"),
+      entry("deploy", "env", "staging"),
+    ]);
+    await openDialog();
+    await openTab("Bulk");
+    const host = await editorReady();
+    const original = cmGetValue(host);
+    const edited = original.replace(
+      "ci/branch = fix/tabs",
+      "ci/branch = fix/other",
+    );
+    const save = () =>
+      screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
+    expect(save().disabled).toBe(true);
+    fireEvent.click(save());
+    cmSetValue(host, edited);
+    expect(save().disabled).toBe(false);
+    cmSetValue(host, original);
+    expect(save().disabled).toBe(true);
+    fireEvent.click(save());
+    cmSetValue(host, edited);
+    fireEvent.click(save());
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+    expect(spy.mock.calls.map((call) => call[2])).toEqual([
+      {
+        entries: [
+          {
+            namespace: "ci",
+            key: "branch",
+            value: "fix/other",
+            if_match: "fix/tabs",
+          },
+        ],
+      },
+    ]);
+    // The shell folds the write into the snapshot: text and snapshot agree.
+    await waitFor(() => expect(save().disabled).toBe(true));
+  });
+
+  it("Discard drops an edited draft and returns to Browse", async () => {
+    // Falsifies by: a Discard that stays on the tab. Reopening Bulk then shows
+    // what the reader sees next: the server's value, not the dropped draft.
     mount([entry("orch", "phase", "plan")]);
     await openDialog();
     await openTab("Bulk");
     cmSetValue(await editorReady(), "orch/phase = impl");
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
-    await waitFor(async () => {
-      expect(await editorReady().then((h) => cmGetValue(h))).toBe(
-        "orch/phase = plan",
-      );
-    });
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "Browse" }));
     await waitFor(() =>
       expect(
         screen
@@ -447,23 +491,99 @@ describe("the metadata editor tabs", () => {
           .getAttribute("aria-selected"),
       ).toBe("true"),
     );
+    expect(screen.queryByTestId("metadata-editor-tab")).toBeNull();
+    await openTab("Bulk");
+    expect(cmGetValue(await editorReady())).toBe("orch/phase = plan");
   });
 
-  it("Discard on a clean document changes nothing", async () => {
-    // Falsifies by: a discard that clears the editor or errors.
+  it("Discard on an untouched document returns to Browse", async () => {
+    // Entered from a value and left untouched, Discard used to reopen the
+    // session in place: nothing changed on screen, and focus fell to the
+    // dialog. Falsifies by: staying on Bulk, or leaving focus where the
+    // unmounted Discard button drops it.
+    mount([entry("orch", "phase", "plan")]);
+    await openDialog();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Edit orch/phase in Bulk" }),
+    );
+    // The jump focuses the editor a frame later; until then focus may still
+    // sit on Browse, and the last assertion would pass for nothing.
+    await waitFor(() =>
+      expect(document.activeElement?.closest(".cm-content")).not.toBeNull(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    await waitFor(() =>
+      expect(
+        screen
+          .getByRole("tab", { name: "Browse" })
+          .getAttribute("aria-selected"),
+      ).toBe("true"),
+    );
+    expect(screen.queryByTestId("metadata-editor-tab")).toBeNull();
+    expect(document.activeElement).toBe(
+      screen.getByRole("tab", { name: "Browse" }),
+    );
+  });
+
+  it("greys Discard while a save is in flight", async () => {
+    // Discard unmounts the panel, and with it the save's callbacks: the
+    // write would land with no receipt. Falsifies by: leaving Discard
+    // enabled while the request is out, or grey after it returns.
+    let release!: (value: { entries: [] }) => void;
+    vi.spyOn(api, "writeIssueMetadata").mockReturnValueOnce(
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    );
     mount([entry("orch", "phase", "plan")]);
     await openDialog();
     await openTab("Bulk");
-    await editorReady();
-    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
-    await waitFor(async () => {
-      expect(await editorReady().then((h) => cmGetValue(h))).toBe(
-        "orch/phase = plan",
-      );
+    cmSetValue(await editorReady(), "orch/phase = impl");
+    const discard = () =>
+      screen.getByRole("button", { name: "Discard" }) as HTMLButtonElement;
+    expect(discard().disabled).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(discard().disabled).toBe(true));
+    release({ entries: [] });
+    await waitFor(() => expect(discard().disabled).toBe(false));
+    expect(toast.success).toHaveBeenCalledWith("Saved 1 entry");
+  });
+
+  it("greys Discard while a conflict retry is in flight", async () => {
+    // The retry is the shell's write, and Discard resets the shell's
+    // mutation: the same lost receipt from the other side. Falsifies by:
+    // judging Discard by the panel's own request alone.
+    const conflict = Object.assign(new Error("if_match did not hold"), {
+      status: 409,
+      code: "metadata_precondition",
+      details: {
+        failed: [{ namespace: "orch", key: "phase", current: "spec" }],
+      },
     });
-    expect(screen.getByTestId("metadata-editor-tab").textContent).not.toContain(
-      "line 1",
+    let release!: (value: { entries: [] }) => void;
+    vi.spyOn(api, "writeIssueMetadata")
+      .mockRejectedValueOnce(conflict)
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+      );
+    mount([entry("orch", "phase", "plan")]);
+    await openDialog();
+    await openTab("Bulk");
+    cmSetValue(await editorReady(), "orch/phase = impl");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByTestId("metadata-conflict");
+    const discard = () =>
+      screen.getByRole("button", { name: "Discard" }) as HTMLButtonElement;
+    expect(discard().disabled).toBe(false);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Write over the new value" }),
     );
+    await waitFor(() => expect(discard().disabled).toBe(true));
+    release({ entries: [] });
+    await waitFor(() => expect(discard().disabled).toBe(false));
+    expect(toast.success).toHaveBeenCalledWith("Saved 1 entry");
   });
 
   it("shows Discard only to writers", async () => {
