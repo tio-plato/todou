@@ -60,14 +60,14 @@ jobs:
         run: |
           set -euo pipefail
           repo=${REGISTRY_IMAGE#ghcr.io/}
-          token=$(curl -fsS "https://ghcr.io/token?scope=repository:$repo:pull" | jq -r .token) || {
+          token=$(curl -fsS --max-time 60 "https://ghcr.io/token?scope=repository:$repo:pull" | jq -r .token) || {
             echo "image lookup failed: no registry token" >&2
             exit 1
           }
           accept=application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json
           base=
           for rev in $(git rev-list --first-parent --max-count=50 HEAD^); do
-            code=$(curl -sS -o /dev/null -I -w '%{http_code}' \
+            code=$(curl -sS --max-time 60 -o /dev/null -I -w '%{http_code}' \
               -H "Authorization: Bearer $token" -H "Accept: $accept" \
               "https://ghcr.io/v2/$repo/manifests/sha-${rev:0:7}") || code="curl exit $?"
             if [ "$code" = 200 ]; then
