@@ -240,17 +240,34 @@ describe("auto-hiding header (T-585)", () => {
       return null;
     }
     beforeEach(() => {
-      // A sticky header slides by `--header-hide`, at once here: no
-      // transition runs in the test.
+      // A sticky header slides by `--header-hide`: at once under a finger,
+      // over the 150ms transition in styles.css while it settles.
+      let from = 0;
+      let to = 0;
+      let since = 0;
+      const slid = () =>
+        from + (to - from) * Math.min(1, (Date.now() - since) / 150);
+      const setProperty = root.style.setProperty.bind(root.style);
+      vi.spyOn(root.style, "setProperty").mockImplementation(
+        (name, value, priority) => {
+          if (name === "--header-hide") {
+            const next = Number.parseFloat(value ?? "0");
+            from = root.hasAttribute("data-header-settling") ? slid() : next;
+            to = next;
+            since = Date.now();
+          }
+          setProperty(name, value, priority);
+        },
+      );
       const header = document.querySelector("header") as HTMLElement;
-      vi.spyOn(header, "getBoundingClientRect").mockImplementation(() => {
-        const slid = Number.parseFloat(hidden() || "0");
-        return {
-          top: -slid,
-          bottom: HEADER - slid,
-          height: HEADER,
-        } as DOMRect;
-      });
+      vi.spyOn(header, "getBoundingClientRect").mockImplementation(
+        () =>
+          ({
+            top: -slid(),
+            bottom: HEADER - slid(),
+            height: HEADER,
+          }) as DOMRect,
+      );
       render(createElement(WithInsets));
       expect(root.style.scrollPaddingTop).toBe(`${8 + HEADER}px`);
     });
