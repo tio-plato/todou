@@ -65,15 +65,20 @@ type AnchorRequest = {
  * Revealing needs no `stall` guard the way expanding does: a run that is
  * open stays open, so the check cannot ask for the same thing twice.
  *
+ * `paused` holds off while the caller is still working out where to go: the
+ * address can keep the last comment it landed on meanwhile, and landing there
+ * again on the way would flash it for nothing.
+ *
  * Returns whether an anchor is being targeted, so the caller can skip its
  * default scroll-to-bottom.
  */
 export function useTimelineAnchor(
   gap: GapExpansion,
   request?: AnchorRequest,
+  paused = false,
 ): boolean {
   const hash = useRouterState({ select: (s) => s.location.hash });
-  const target = parseTimelineAnchor(hash ?? "");
+  const target = paused ? null : parseTimelineAnchor(hash ?? "");
   const doneFor = useRef<string | null>(null);
   const stall = useRef<{ key: string; remaining: number } | null>(null);
   const releaseHold = useRef<() => void>(() => {});
