@@ -4,7 +4,7 @@ import {
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query";
-import { useParams, useRouterState } from "@tanstack/react-router";
+import { useParams, useRouter, useRouterState } from "@tanstack/react-router";
 import {
   can,
   formatRef,
@@ -104,6 +104,7 @@ import { useRefCompletion } from "@/lib/editor/ref-completion.ts";
 import {
   isQuestionLandingHash,
   questionLandingHash,
+  withQuestionStep,
 } from "@/lib/question-landing.ts";
 import { useScrollInsets } from "@/lib/scroll-insets.ts";
 import { parseTimelineAnchor } from "@/lib/timeline-anchors.ts";
@@ -337,6 +338,11 @@ export function IssueDetailPage() {
  * the address names, else from the earliest; an entry still being read keeps
  * its own start, so a second press before it lands does not lose it. It reads
  * the address itself, so a landing re-renders the badge and not the card.
+ *
+ * A press asks in the entry's state and leaves the address as it is until the
+ * landing writes the comment it found: every address a page writes is a row in
+ * the browser's history, and the request is only a step on the way.
+ * The link itself still names the request, for a new tab and a copied link.
  */
 function CardQuestionBadge({
   slug,
@@ -347,18 +353,17 @@ function CardQuestionBadge({
   issueNumber: number;
   count: number;
 }) {
+  const router = useRouter();
   const hash = useRouterState({ select: (s) => s.location.hash });
   const anchor = parseTimelineAnchor(hash);
+  const entered = isQuestionLandingHash(hash);
+  const after = anchor?.kind === "comment" ? anchor.id : null;
   return (
     <QuestionBadge
       slug={slug}
       issueNumber={issueNumber}
       count={count}
-      hash={
-        isQuestionLandingHash(hash)
-          ? hash
-          : questionLandingHash(anchor?.kind === "comment" ? anchor.id : null)
-      }
+      hash={entered ? hash : questionLandingHash(after)}
       // Moving within the card: a pushed entry would make Back's last step
       // the top of the card, and nothing being edited here is left behind.
       replace
@@ -366,8 +371,31 @@ function CardQuestionBadge({
       // Its target is this page: matched without the hash, it would always
       // be marked as the current one.
       activeOptions={{ includeHash: true }}
-      // The title mirror reads a click on itself as "back to the top".
-      onClick={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        // The title mirror reads a click on itself as "back to the top".
+        event.stopPropagation();
+        // An entry from elsewhere still being read is reread through the
+        // link, as it was followed; a modified click opens a new tab.
+        if (
+          entered ||
+          event.button !== 0 ||
+          event.ctrlKey ||
+          event.metaKey ||
+          event.shiftKey ||
+          event.altKey
+        )
+          return;
+        event.preventDefault();
+        void router.navigate({
+          hash: true,
+          search: true,
+          replace: true,
+          resetScroll: false,
+          hashScrollIntoView: false,
+          ignoreBlocker: true,
+          state: withQuestionStep(after),
+        });
+      }}
     />
   );
 }
