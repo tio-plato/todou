@@ -2151,6 +2151,35 @@ describe("the card's own question badge", () => {
     await landed(view, scroll, 14);
   });
 
+  it("keeps a Retry's start when pressed while it reads", async () => {
+    const items = [
+      question(10),
+      answered(question(12), 13),
+      question(14),
+      question(16),
+    ];
+    const model = recoveryCard(items);
+    model.items = model.items.filter(
+      (item) => item.type !== "comment" || item.id !== 14,
+    );
+    serve({ "p/7": model });
+    const scroll = scrolling();
+    const view = renderAt("/projects/p/issues/7#comment-12");
+    await landed(view, scroll, 12);
+
+    await click(inTitle(view, model));
+    await view.findByText(UNAVAILABLE, {}, { timeout: 3_000 });
+    const pending = deferred<Response>();
+    model.questionReply = () => pending.promise;
+    fireEvent.click(retryFor(view, UNAVAILABLE));
+    // The address still names 14; the request being read starts earliest.
+    await click(inTitle(view, model));
+    await release(pending, json(model.questions));
+
+    await landed(view, scroll, 10);
+    expect(scroll.reveals("comment-16")).toBe(0);
+  });
+
   it("starts from the earliest when the address names a comment that asks nothing", () => {
     const open = questions([
       question(10),

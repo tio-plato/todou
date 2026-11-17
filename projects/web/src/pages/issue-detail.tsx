@@ -104,6 +104,7 @@ import { useRefCompletion } from "@/lib/editor/ref-completion.ts";
 import {
   isQuestionLandingHash,
   questionLandingHash,
+  readQuestionStep,
   withQuestionStep,
 } from "@/lib/question-landing.ts";
 import { useScrollInsets } from "@/lib/scroll-insets.ts";
@@ -355,9 +356,19 @@ function CardQuestionBadge({
 }) {
   const router = useRouter();
   const hash = useRouterState({ select: (s) => s.location.hash });
+  // A request still being read: a Retry asks from the earliest while the
+  // address still names the comment that went missing.
+  const pending = useRouterState({
+    select: (s) => readQuestionStep(s.location.state)?.after,
+  });
   const anchor = parseTimelineAnchor(hash);
   const entered = isQuestionLandingHash(hash);
-  const after = anchor?.kind === "comment" ? anchor.id : null;
+  const after =
+    pending !== undefined
+      ? pending
+      : anchor?.kind === "comment"
+        ? anchor.id
+        : null;
   return (
     <QuestionBadge
       slug={slug}
