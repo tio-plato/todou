@@ -429,6 +429,39 @@ function isDifference(entry: SpecDiffEntry): boolean {
   return entry.kind !== "unchanged";
 }
 
+/**
+ * Where a submitted comment stands on `version`, as `placeDraft` places a
+ * staged one: at its own lines on the version it is anchored to, and on the
+ * current version at the lines the server moved it to. Anywhere else, or
+ * once its lines changed, it has no place.
+ */
+function placeComment(
+  item: SpecCommentItem,
+  version: number,
+  currentVersion: number,
+): Exclude<DraftPlacement, { kind: "loading" }> {
+  const { anchor } = item;
+  if (anchor.line_start === null || anchor.line_end === null) {
+    return { kind: "file" };
+  }
+  if (anchor.version === version) {
+    return { kind: "line", start: anchor.line_start, end: anchor.line_end };
+  }
+  if (
+    version === currentVersion &&
+    !item.outdated &&
+    item.current_line_start !== null &&
+    item.current_line_end !== null
+  ) {
+    return {
+      kind: "line",
+      start: item.current_line_start,
+      end: item.current_line_end,
+    };
+  }
+  return { kind: "unplaced" };
+}
+
 export function SpecViewPage() {
   const { slug, number: numberParam } = useParams({
     from: "/authed/projects/$slug/issues/$number/spec",
@@ -1367,31 +1400,21 @@ function SpecViewBody({
         }
         continue;
       }
-      if (item.anchor.line_start === null || item.anchor.line_end === null) {
+      const placement = placeComment(
+        item,
+        version,
+        comments.data.current_version,
+      );
+      if (placement.kind === "file") {
         // File-level comments (T-61) sit above the document, not on a block.
         fileLevel.push(item);
-      } else if (item.anchor.version === version) {
+      } else if (placement.kind === "line") {
         displayed.push({
           key: `c${item.comment_id}`,
           kind: "comment",
           item,
-          start: item.anchor.line_start,
-          end: item.anchor.line_end,
-          colStart: item.anchor.col_start,
-          colEnd: item.anchor.col_end,
-        });
-      } else if (
-        version === comments.data.current_version &&
-        !item.outdated &&
-        item.current_line_start !== null &&
-        item.current_line_end !== null
-      ) {
-        displayed.push({
-          key: `c${item.comment_id}`,
-          kind: "comment",
-          item,
-          start: item.current_line_start,
-          end: item.current_line_end,
+          start: placement.start,
+          end: placement.end,
           // A successful remap means the anchored lines read the same, so
           // the stored columns still cut them correctly (T-142) — there is
           // no separate current_col_* to carry.
@@ -2006,11 +2029,15 @@ function SpecViewBody({
               fromVersion={baseline}
               toFiles={files.data.files}
               toVersion={version}
+              currentVersion={comments.data.current_version}
               comments={comments.data.items}
               drafts={drafts.drafts}
+              placements={placements}
               onStage={stage}
               onEditDraft={editDraft}
               onRemoveDraft={drafts.remove}
+              onResolve={resolveComment}
+              resolving={resolve.isPending}
               focusPath={search.file}
               wrap={wrap}
               stickyTop={stickyTop}
@@ -2126,33 +2153,18 @@ function SpecViewBody({
                   )}
                 </div>
               )}
-              {(unplaced.length > 0 || unplacedDrafts.length > 0) && (
-                <div className="space-y-2 rounded-lg border px-4 py-3">
-                  <h3 className="text-xs font-medium text-muted-foreground uppercase">
-                    Comments without a place in v{version}
-                  </h3>
-                  {unplaced.map((item) => (
-                    <UnplacedComment
-                      key={item.comment_id}
-                      slug={slug}
-                      issueNumber={issueNumber}
-                      item={item}
-                      onResolve={(id) =>
-                        resolve.mutate({ slug, issueNumber, commentId: id })
-                      }
-                      resolving={resolve.isPending}
-                    />
-                  ))}
-                  {unplacedDrafts.map((draft) => (
-                    <UnplacedDraft
-                      key={draft.id}
-                      draft={draft}
-                      onEdit={() => editDraft(draft)}
-                      onDiscard={() => drafts.remove(draft.id)}
-                    />
-                  ))}
-                </div>
-              )}
+              <UnplacedNotes
+                className="rounded-lg border px-4 py-3"
+                slug={slug}
+                issueNumber={issueNumber}
+                version={version}
+                comments={unplaced}
+                drafts={unplacedDrafts}
+                onResolve={resolveComment}
+                resolving={resolve.isPending}
+                onEditDraft={editDraft}
+                onRemoveDraft={drafts.remove}
+              />
             </>
           )}
         </main>
@@ -2378,6 +2390,62 @@ function RemovedFileNotice({
   );
 }
 
+/**
+ * The comments and drafts with no place on the version on screen, comments
+ * first. Draws nothing while there are none.
+ */
+function UnplacedNotes({
+  className,
+  slug,
+  issueNumber,
+  version,
+  comments,
+  drafts,
+  onResolve,
+  resolving,
+  onEditDraft,
+  onRemoveDraft,
+}: {
+  /** The box: the caller's to frame. */
+  className?: string;
+  slug: string;
+  issueNumber: number;
+  version: number;
+  comments: SpecCommentItem[];
+  drafts: SpecReviewDraft[];
+  onResolve: (id: number) => void;
+  resolving: boolean;
+  onEditDraft: (draft: SpecReviewDraft) => void;
+  onRemoveDraft: (id: string) => void;
+}) {
+  if (comments.length === 0 && drafts.length === 0) return null;
+  return (
+    <div className={cn("space-y-2", className)}>
+      <h3 className="text-xs font-medium text-muted-foreground uppercase">
+        Comments without a place in v{version}
+      </h3>
+      {comments.map((item) => (
+        <UnplacedComment
+          key={item.comment_id}
+          slug={slug}
+          issueNumber={issueNumber}
+          item={item}
+          onResolve={onResolve}
+          resolving={resolving}
+        />
+      ))}
+      {drafts.map((draft) => (
+        <UnplacedDraft
+          key={draft.id}
+          draft={draft}
+          onEdit={() => onEditDraft(draft)}
+          onDiscard={() => onRemoveDraft(draft.id)}
+        />
+      ))}
+    </div>
+  );
+}
+
 /** A staged comment whose lines no longer read the same here. */
 function UnplacedDraft({
   draft,
@@ -2517,6 +2585,124 @@ function UnplacedComment({
   );
 }
 
+/** A note the source diff hangs on one side of a file's entry. */
+type HungNote = {
+  note: LineNote;
+  side: "deletions" | "additions";
+  /** The side's lines it covers; null for the file as a whole. */
+  start: number | null;
+  end: number | null;
+  colStart: number | null;
+  colEnd: number | null;
+};
+
+/** What one entry of the source diff draws of the comments and drafts. */
+type EntryNotes = {
+  hung: HungNote[];
+  /** Listed under the entry: no place on the version on screen. */
+  unplaced: { comments: SpecCommentItem[]; drafts: SpecReviewDraft[] };
+};
+
+const NO_ENTRY_NOTES: EntryNotes = {
+  hung: [],
+  unplaced: { comments: [], drafts: [] },
+};
+
+/**
+ * Where the source diff draws each comment and draft, by entry path. One on
+ * the baseline hangs on the side that draws the baseline, at its own lines.
+ * Every other one goes where the rendered view puts it on the version on
+ * screen: at the lines it is placed on there, on the new side; at the file;
+ * or in the entry's list. One the rendered view leaves out, such as a draft
+ * on another version while an older one is on screen, is left out here too.
+ */
+function placeDiffNotes(
+  entries: SpecDiffEntry[],
+  fromVersion: number,
+  toVersion: number,
+  currentVersion: number,
+  comments: SpecCommentItem[],
+  drafts: SpecReviewDraft[],
+  placements: ReadonlyMap<string, DraftPlacement>,
+): Map<string, EntryNotes> {
+  const notes = new Map<string, EntryNotes>(
+    entries.map((entry) => [
+      entry.path,
+      { hung: [], unplaced: { comments: [], drafts: [] } },
+    ]),
+  );
+  const byOldPath = new Map(
+    entries
+      .filter((entry) => entry.kind !== "added")
+      .map((entry) => [entry.from ?? entry.path, entry]),
+  );
+  const byPath = new Map(entries.map((entry) => [entry.path, entry]));
+  const place = (
+    note: LineNote,
+    anchor: SpecReviewDraft["anchor"],
+    placement: DraftPlacement | undefined,
+  ) => {
+    const columns = { colStart: anchor.col_start, colEnd: anchor.col_end };
+    const old =
+      anchor.version === fromVersion ? byOldPath.get(anchor.path) : undefined;
+    if (old !== undefined) {
+      notes.get(old.path)?.hung.push({
+        note,
+        side: "deletions",
+        start: anchor.line_start,
+        end: anchor.line_end,
+        ...columns,
+      });
+      return;
+    }
+    const entry = byPath.get(anchor.path);
+    const here = notes.get(anchor.path);
+    if (entry === undefined || here === undefined) return;
+    switch (placement?.kind) {
+      case "line":
+        // Moved only when the lines read the same, so the columns still cut
+        // them where they did.
+        here.hung.push({
+          note,
+          side: "additions",
+          start: placement.start,
+          end: placement.end,
+          ...columns,
+        });
+        return;
+      case "file":
+        here.hung.push({
+          note,
+          // A removed file has only the baseline's side to hang it on.
+          side: entry.kind === "removed" ? "deletions" : "additions",
+          start: null,
+          end: null,
+          ...columns,
+        });
+        return;
+      case "unplaced":
+        if (note.kind === "comment") here.unplaced.comments.push(note.item);
+        else here.unplaced.drafts.push(note.draft);
+        return;
+      default:
+        // Its version's files are still on their way, or the rendered view
+        // leaves it out on this version: nothing to draw.
+        return;
+    }
+  };
+  for (const item of comments) {
+    place(
+      { kind: "comment", item },
+      item.anchor,
+      placeComment(item, toVersion, currentVersion),
+    );
+  }
+  for (const draft of drafts) {
+    place({ kind: "draft", draft }, draft.anchor, placements.get(draft.id));
+  }
+  return notes;
+}
+
 /** Every file of two versions, one stack entry each — diff, note, or block. */
 function SpecDiff({
   slug,
@@ -2524,11 +2710,15 @@ function SpecDiff({
   fromVersion,
   toFiles,
   toVersion,
+  currentVersion,
   comments,
   drafts,
+  placements,
   onStage,
   onEditDraft,
   onRemoveDraft,
+  onResolve,
+  resolving,
   focusPath,
   wrap,
   stickyTop,
@@ -2538,11 +2728,17 @@ function SpecDiff({
   fromVersion: number;
   toFiles: SpecFile[];
   toVersion: number;
+  /** The version the comments' current lines are on. */
+  currentVersion: number;
   comments: SpecCommentItem[];
   drafts: SpecReviewDraft[];
+  /** Where each draft stands on `toVersion`, as the rendered view has it. */
+  placements: ReadonlyMap<string, DraftPlacement>;
   onStage: (staging: ComposerStaging) => void;
   onEditDraft: (draft: SpecReviewDraft) => void;
   onRemoveDraft: (id: string) => void;
+  onResolve: (id: number) => void;
+  resolving: boolean;
   /** Scroll this file's diff into view — the version card's per-file link (T-59). */
   focusPath?: string;
   wrap: boolean;
@@ -2599,32 +2795,51 @@ function SpecDiff({
     [filesAt],
   );
   const { pending, clear } = useSelectionEntry(containerRef, resolveSelection);
-  // Only what hangs on a line here can be painted on it: an anchor to the
-  // exact version and path one side of a file draws.
+  const notes = useMemo(
+    () =>
+      placeDiffNotes(
+        entries,
+        fromVersion,
+        toVersion,
+        currentVersion,
+        comments,
+        drafts,
+        placements,
+      ),
+    [
+      entries,
+      fromVersion,
+      toVersion,
+      currentVersion,
+      comments,
+      drafts,
+      placements,
+    ],
+  );
+  // Only what hangs on a line here can be painted on it, on the lines it
+  // hangs on, of the version and path its side draws.
   const marks = useMemo(
     () =>
-      [
-        ...comments.map((c) => ({
-          kind: "comment" as const,
-          anchor: c.anchor,
-        })),
-        ...drafts.map((d) => ({ kind: "draft" as const, anchor: d.anchor })),
-      ].flatMap(({ kind, anchor }): SourceMark[] =>
-        anchor.line_start === null || anchor.line_end === null
-          ? []
-          : [
+      entries.flatMap((entry) =>
+        (notes.get(entry.path) ?? NO_ENTRY_NOTES).hung.flatMap(
+          (hung): SourceMark[] => {
+            if (hung.start === null || hung.end === null) return [];
+            const old = hung.side === "deletions";
+            return [
               {
-                kind,
-                path: anchor.path,
-                version: anchor.version,
-                lineStart: anchor.line_start,
-                lineEnd: anchor.line_end,
-                colStart: anchor.col_start ?? null,
-                colEnd: anchor.col_end ?? null,
+                kind: hung.note.kind,
+                path: old ? (entry.from ?? entry.path) : entry.path,
+                version: old ? fromVersion : toVersion,
+                lineStart: hung.start,
+                lineEnd: hung.end,
+                colStart: hung.colStart,
+                colEnd: hung.colEnd,
               },
-            ],
+            ];
+          },
+        ),
       ),
-    [comments, drafts],
+    [entries, notes, fromVersion, toVersion],
   );
   const paintCode = useCallback(
     (container: HTMLElement) =>
@@ -2687,11 +2902,12 @@ function SpecDiff({
               entry={entry}
               fromVersion={fromVersion}
               toVersion={toVersion}
-              comments={comments}
-              drafts={drafts}
+              notes={notes.get(entry.path) ?? NO_ENTRY_NOTES}
               onStage={onStage}
               onEditDraft={onEditDraft}
               onRemoveDraft={onRemoveDraft}
+              onResolve={onResolve}
+              resolving={resolving}
               focused={entry.path === focusPath}
               wrap={wrap}
               stickyTop={stickyTop}
@@ -2713,11 +2929,12 @@ function SpecStackEntry({
   entry,
   fromVersion,
   toVersion,
-  comments,
-  drafts,
+  notes,
   onStage,
   onEditDraft,
   onRemoveDraft,
+  onResolve,
+  resolving,
   focused,
   wrap,
   stickyTop,
@@ -2728,17 +2945,32 @@ function SpecStackEntry({
   entry: SpecDiffEntry;
   fromVersion: number;
   toVersion: number;
-  comments: SpecCommentItem[];
-  drafts: SpecReviewDraft[];
+  notes: EntryNotes;
   onStage: (staging: ComposerStaging) => void;
   onEditDraft: (draft: SpecReviewDraft) => void;
   onRemoveDraft: (id: string) => void;
+  onResolve: (id: number) => void;
+  resolving: boolean;
   /** The rail or a link pointed here: open a collapsed file on arrival. */
   focused: boolean;
   wrap: boolean;
   stickyTop: number;
 }) {
   const { path, kind, from, oldBody, newBody } = entry;
+  const unplaced = (
+    <UnplacedNotes
+      className="border-t px-3 py-3"
+      slug={slug}
+      issueNumber={issueNumber}
+      version={toVersion}
+      comments={notes.unplaced.comments}
+      drafts={notes.unplaced.drafts}
+      onResolve={onResolve}
+      resolving={resolving}
+      onEditDraft={onEditDraft}
+      onRemoveDraft={onRemoveDraft}
+    />
+  );
 
   if (kind === "unchanged" || (kind === "renamed" && oldBody === newBody)) {
     return (
@@ -2753,10 +2985,9 @@ function SpecStackEntry({
             ? `unchanged since v${fromVersion}`
             : `renamed from ${from} — contents unchanged`
         }
-        fromVersion={fromVersion}
         toVersion={toVersion}
-        comments={comments}
-        drafts={drafts}
+        hung={notes.hung}
+        footer={unplaced}
         onStage={onStage}
         onEditDraft={onEditDraft}
         onRemoveDraft={onRemoveDraft}
@@ -2770,12 +3001,27 @@ function SpecStackEntry({
   if (oldBody === newBody) {
     // Both sides empty: pierre draws a header and nothing else for a diff
     // with no hunks, so the fact that the file came or went is stated here
-    // instead of vanishing into an empty box (T-203).
+    // instead of vanishing into an empty box (T-203). With no line to hang
+    // on, whatever hangs on it hangs at the file, under that statement.
     return (
-      <SpecStackFrame header={path} stickyTop={stickyTop}>
+      <SpecStackFrame header={path} stickyTop={stickyTop} footer={unplaced}>
         <p className="px-3 py-2 text-xs text-muted-foreground italic">
           Empty file — {kind === "added" ? "added" : "removed"} in v{toVersion}.
         </p>
+        {notes.hung.map((hung) => (
+          <LineNoteView
+            key={
+              hung.note.kind === "comment"
+                ? `c${hung.note.item.comment_id}`
+                : hung.note.draft.id
+            }
+            slug={slug}
+            issueNumber={issueNumber}
+            note={hung.note}
+            onEditDraft={onEditDraft}
+            onRemoveDraft={onRemoveDraft}
+          />
+        ))}
       </SpecStackFrame>
     );
   }
@@ -2790,8 +3036,8 @@ function SpecStackEntry({
       newBody={newBody}
       fromVersion={fromVersion}
       toVersion={toVersion}
-      comments={comments}
-      drafts={drafts}
+      hung={notes.hung}
+      footer={unplaced}
       onStage={onStage}
       onEditDraft={onEditDraft}
       onRemoveDraft={onRemoveDraft}
@@ -2811,10 +3057,13 @@ function SpecStackFrame({
   header,
   stickyTop,
   children,
+  footer,
 }: {
   header: ReactNode;
   stickyTop: number;
   children: ReactNode;
+  /** Drawn under the entry, whether or not it is folded. */
+  footer?: ReactNode;
 }) {
   return (
     <div className="overflow-clip rounded-lg border">
@@ -2826,6 +3075,7 @@ function SpecStackFrame({
         {header}
       </div>
       {children}
+      {footer}
     </div>
   );
 }
@@ -2843,10 +3093,9 @@ function SpecUnfoldableFile({
   oldPath,
   body,
   note,
-  fromVersion,
   toVersion,
-  comments,
-  drafts,
+  hung,
+  footer,
   onStage,
   onEditDraft,
   onRemoveDraft,
@@ -2858,14 +3107,13 @@ function SpecUnfoldableFile({
   slug: string;
   issueNumber: number;
   path: string;
-  /** Set only for a rename: where the baseline's comments are anchored. */
+  /** Set only for a rename: the path the baseline had it under. */
   oldPath?: string;
   body: string;
   note: string;
-  fromVersion: number;
   toVersion: number;
-  comments: SpecCommentItem[];
-  drafts: SpecReviewDraft[];
+  hung: HungNote[];
+  footer: ReactNode;
   onStage: (staging: ComposerStaging) => void;
   onEditDraft: (draft: SpecReviewDraft) => void;
   onRemoveDraft: (id: string) => void;
@@ -2880,25 +3128,18 @@ function SpecUnfoldableFile({
     if (openOnMount) setOpen(true);
   }, [openOnMount]);
 
-  const lineAnnotations = useMemo(() => {
-    const here = (anchor: { path: string; version: number }) =>
-      (anchor.path === path && anchor.version === toVersion) ||
-      (anchor.path === (oldPath ?? path) && anchor.version === fromVersion);
-    return [
-      ...comments
-        .filter((c) => here(c.anchor))
-        .map((c) => ({
-          lineNumber: c.anchor.line_end ?? 0,
-          metadata: { kind: "comment" as const, item: c },
-        })),
-      ...drafts
-        .filter((d) => here(d.anchor))
-        .map((d) => ({
-          lineNumber: d.anchor.line_end ?? 0,
-          metadata: { kind: "draft" as const, draft: d },
-        })),
-    ];
-  }, [comments, drafts, path, oldPath, fromVersion, toVersion]);
+  // Both sides read the same, so either side's lines are the file's. pierre
+  // types the metadata one kind of note at a time, hence the branches.
+  const lineAnnotations = useMemo(
+    () =>
+      hung.map((h): LineAnnotation<LineNote> => {
+        const lineNumber = h.end ?? 0;
+        return h.note.kind === "comment"
+          ? { lineNumber, metadata: h.note }
+          : { lineNumber, metadata: h.note };
+      }),
+    [hung],
+  );
 
   return (
     <SpecStackFrame
@@ -2912,6 +3153,7 @@ function SpecUnfoldableFile({
         )
       }
       stickyTop={stickyTop}
+      footer={footer}
     >
       <button
         type="button"
@@ -2957,8 +3199,8 @@ function AnnotatedFileDiff({
   newBody,
   fromVersion,
   toVersion,
-  comments,
-  drafts,
+  hung,
+  footer,
   onStage,
   onEditDraft,
   onRemoveDraft,
@@ -2975,8 +3217,8 @@ function AnnotatedFileDiff({
   newBody: string;
   fromVersion: number;
   toVersion: number;
-  comments: SpecCommentItem[];
-  drafts: SpecReviewDraft[];
+  hung: HungNote[];
+  footer: ReactNode;
   onStage: (staging: ComposerStaging) => void;
   onEditDraft: (draft: SpecReviewDraft) => void;
   onRemoveDraft: (id: string) => void;
@@ -3054,58 +3296,29 @@ function AnnotatedFileDiff({
       deletions: shownLines(fileDiff, "deletions", COLLAPSED_CONTEXT_THRESHOLD),
     };
   }, [oldFile, newFile]);
-  const lineAnnotations = useMemo(() => {
-    type Anchor = {
-      path: string;
-      version: number;
-      line_start: number | null;
-      line_end: number | null;
-    };
-    const here = (anchor: Anchor) =>
-      (anchor.path === oldPath && anchor.version === fromVersion) ||
-      (anchor.path === newPath && anchor.version === toVersion);
-    const at = (anchor: Anchor) => {
-      const side =
-        anchor.version === fromVersion
-          ? ("deletions" as const)
-          : ("additions" as const);
-      return {
-        side,
-        // pierre's contract: lineNumber 0 renders a side-level annotation
-        // above the first hunk — exactly where file-level comments belong.
-        // A range hangs under its last line, or under the last of it pierre
-        // draws: a note on a collapsed line shows only once it is expanded.
-        lineNumber:
-          anchor.line_start === null
-            ? 0
-            : hangLine(
-                anchor.line_start,
-                anchor.line_end ?? anchor.line_start,
-                shown[side],
-              ),
-      };
-    };
-    return [
-      ...comments
-        .filter((c) => here(c.anchor))
-        .map(
-          (c): DiffLineAnnotation<LineNote> => ({
-            ...at(c.anchor),
-            metadata: { kind: "comment", item: c },
-          }),
-        ),
-      // A draft hangs where a comment at the same anchor would, so staging
-      // one leaves it on screen rather than only in the Finish review dialog.
-      ...drafts
-        .filter((d) => here(d.anchor))
-        .map(
-          (d): DiffLineAnnotation<LineNote> => ({
-            ...at(d.anchor),
-            metadata: { kind: "draft", draft: d },
-          }),
-        ),
-    ];
-  }, [comments, drafts, oldPath, newPath, fromVersion, toVersion, shown]);
+  // A draft hangs where a comment at the same anchor would, so staging one
+  // leaves it on screen rather than only in the Finish review dialog.
+  const lineAnnotations = useMemo(
+    () =>
+      hung.map((h): DiffLineAnnotation<LineNote> => {
+        const at = {
+          side: h.side,
+          // pierre's contract: lineNumber 0 renders a side-level annotation
+          // above the first hunk — exactly where file-level comments belong.
+          // A range hangs under its last line, or under the last of it pierre
+          // draws: a note on a collapsed line shows only once it is expanded.
+          lineNumber:
+            h.start === null
+              ? 0
+              : hangLine(h.start, h.end ?? h.start, shown[h.side]),
+        };
+        // pierre types the metadata one kind of note at a time.
+        return h.note.kind === "comment"
+          ? { ...at, metadata: h.note }
+          : { ...at, metadata: h.note };
+      }),
+    [hung, shown],
+  );
 
   return (
     <SpecStackFrame
@@ -3119,6 +3332,7 @@ function AnnotatedFileDiff({
         )
       }
       stickyTop={stickyTop}
+      footer={footer}
     >
       <MultiFileDiff<LineNote>
         oldFile={oldFile}
