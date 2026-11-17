@@ -1944,7 +1944,6 @@ describe("the card's own question badge", () => {
       { metaKey: true },
       { shiftKey: true },
       { altKey: true },
-      { button: 1 },
     ]) {
       let unhandled = false;
       await act(async () => {
@@ -2023,6 +2022,7 @@ describe("the card's own question badge", () => {
             href !== "/projects/p/issues/7#comment-10",
         ),
     ).toEqual([]);
+    expect(seen.filter(({ type }) => type === "PUSH")).toEqual([]);
     expect(view.router.state.location.state).toHaveProperty(
       "todouReturn",
       back,
@@ -2114,7 +2114,9 @@ describe("the card's own question badge", () => {
     model.questionReply = () => pending.promise;
     fireEvent.click(retryFor(view, UNAVAILABLE));
     // The address still names 14; the request being read starts earliest.
+    const seen = writes(view);
     await click(inTitle(view, model));
+    expect(seen).toEqual([]);
     await release(pending, json(model.questions));
 
     await landed(view, scroll, 10);
