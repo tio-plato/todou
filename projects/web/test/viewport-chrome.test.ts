@@ -445,6 +445,36 @@ describe("auto-hiding header (T-585)", () => {
     expect(hidden()).toBe(`${HEADER - 20}px`);
   });
 
+  it("leaves a header the page's top carries off alone on a click", () => {
+    mount();
+    slideAway();
+    // The page placing itself near the top: sticky shows 43px of it.
+    scrollTo(50);
+    expect(hidden()).toBe("50px");
+    const text = document.createElement("p");
+    document.body.append(text);
+    click(text);
+    vi.advanceTimersByTime(200);
+    expect(hidden()).toBe("50px");
+
+    // A click the page does scroll for: in, from where the page stood.
+    click(link("#comment-12"));
+    scrollTo(3000);
+    expect(hidden()).toBe("0px");
+  });
+
+  it("settles a header the reader left half way on the click that stops it", () => {
+    mount();
+    touch("touchstart");
+    touch("touchmove");
+    scrollTo(2040);
+    touch("touchend");
+    const text = document.createElement("p");
+    document.body.append(text);
+    click(text);
+    expect(hidden()).toBe("0px");
+  });
+
   it.each([
     {
       landing: "up to a block",
