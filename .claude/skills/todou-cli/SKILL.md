@@ -1,11 +1,12 @@
 ---
 name: todou-cli
-description: todou CLI quick reference — issue/comment/attach/watch commands, status-flow conventions, and the rules for how agents interact with the tracker. Read this first before touching a todou tracker.
+description: todou CLI quick reference — issue/comment/attach/watch commands and the rules for filing, commenting, asking and writing specs on a todou tracker. Read this first before touching a todou tracker; the agent workflow (status flow, taking an issue, the spec gate) is /todou-workflow.
 ---
 
 # todou CLI
 
 - Everything goes through the tracker: questions, reports, deliverables, reviews.
+- Status flow, taking an issue and the spec gate: `/todou-workflow`.
 - Flags and examples: `todou <command> --help`.
 - `<n>` takes `T-16`, `<proj>/16`, `#16` or a URL; `-p` takes a slug or id.
 - Bodies: `--body-file -` with a `<<'EOF'` heredoc; `--body-file <(…) --questions <(…)` together.
@@ -44,22 +45,11 @@ description: todou CLI quick reference — issue/comment/attach/watch commands, 
 
 ## Waiting
 
-- **Working on an issue: watch it, always.** Run `todou agent how-to-watch` first and do what it prints.
+- Run `todou agent how-to-watch` first and do what it prints.
 - `issue watch <n> --since <cursor> --forever` · `watch -p <proj> --since <cursor> --forever [--mine]`
 - Wait from the `cursor:` the write printed, not one taken afterwards.
 - A wait killed from outside: restart with the same cursor. Resume from the closing `cursor:`.
 - Watches skip your own agent session's entries.
-
-## Status flow
-
-- Backlog → Todo → Next → In Progress → Ready to Ship → Shipped → Done; Invalid closes a card without doing it.
-- A blocker stops blocking at the project's Blocks clear at status — Shipped by default.
-- Worker: Ready to Ship + summary comment. Orchestrator: Shipped. Only the user: Done.
-
-### Taking an issue
-
-- `issue edit <n> --status "In Progress" --add-assignee @me` — one write; then watch it (Waiting).
-- An assignee means held, never by whom (one machine account), and it is not a lock.
 
 ## Asking the user questions
 
@@ -86,7 +76,7 @@ EOF2
 - Draft in a scratch dir; git never carries them.
 - `spec push <n> <dir> --message vN [--if-version v] --wait` — the last stdout line is the outcome.
 - `approved` (latest version only; confirm with `spec status`) · `changes_requested` · `feedback` · `withdrawn`.
-- Exit 0 is not approval; only the latest version's approval allows implementing.
+- Exit 0 is not approval.
 - Reworking a pending version: `spec withdraw <n> --if-version v` first.
 - `spec comments <n> --unresolved` → revise → `spec resolve <n> <ids…>` → push again.
 - Documents state the design as it stands: no history, no review notes, no copied issue text.

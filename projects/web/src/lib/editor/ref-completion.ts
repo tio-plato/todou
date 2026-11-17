@@ -28,6 +28,7 @@ import {
   applyWithSpace,
   spaceAfterAccept,
 } from "@/lib/editor/completion-space.ts";
+import { faceOption, faceOptionClass } from "@/lib/editor/face-completion.tsx";
 import { mentionCompletionSource } from "@/lib/editor/mention-completion.ts";
 import {
   snippetFieldKeys,
@@ -236,9 +237,12 @@ export function completionWith(
     // Put tags first so <det selects the template while retaining project rows.
     autocompletion({
       override: [tagCompletionSource, ...sources],
-      optionClass: userOptionClass,
-      addToOptions:
-        queryClient === undefined ? [] : [userAvatarOption(queryClient)],
+      optionClass: (completion) =>
+        userOptionClass(completion) || faceOptionClass(completion),
+      addToOptions: [
+        faceOption(),
+        ...(queryClient === undefined ? [] : [userAvatarOption(queryClient)]),
+      ],
     }),
     spaceAfterAccept,
     completionTheme,
@@ -286,7 +290,7 @@ export const completionTheme = EditorView.theme({
     fontFamily: "inherit",
   },
   // The 16rem above loses to the base theme's `10em` on the longer selector,
-  // which at 14px is 140px: four 34px person rows and the top of a fifth.
+  // which at 14px is 140px: four 30px person rows and most of a fifth.
   ".cm-tooltip.cm-tooltip-autocomplete > ul": { maxHeight: "16rem" },
   ".cm-tooltip-autocomplete > ul > li": {
     display: "flex",
@@ -312,18 +316,29 @@ export const completionTheme = EditorView.theme({
   // takes the icon's place, and the login is set like a name, not like code.
   // Named in full: CodeMirror's base theme sets the list's font and its rows'
   // 1px padding through `.cm-tooltip.cm-tooltip-autocomplete > ul`, which
-  // outranks a shorter selector. The row is held to PICKER_ROW's 34px and
+  // outranks a shorter selector. The row is held to PICKER_ROW's 30px and
   // padding: at the panel's own 22px, the 20px avatar touched both edges and
   // its badge hung into the next row.
   ".cm-tooltip.cm-tooltip-autocomplete > ul > li.cm-completion-user": {
     alignItems: "center",
     gap: "0.5rem",
-    minHeight: "2.125rem",
-    padding: "0.375rem 0.5rem",
+    minHeight: "1.875rem",
+    padding: "0.25rem 0.5rem",
     fontFamily: "var(--font-sans)",
     fontSize: "0.875rem",
   },
   ".cm-completion-user .cm-completionIcon": { display: "none" },
+  // A status or a label is drawn like every picker's row (T-739): the face
+  // shows the name, so neither the icon nor the label text is printed.
+  ".cm-tooltip.cm-tooltip-autocomplete > ul > li.cm-completion-face": {
+    alignItems: "center",
+    minHeight: "1.875rem",
+    padding: "0.25rem 0.5rem",
+    fontFamily: "var(--font-sans)",
+  },
+  ".cm-completion-face .cm-completionIcon, .cm-completion-face .cm-completionLabel":
+    { display: "none" },
+  ".cm-completionFace": { display: "inline-flex", minWidth: "0" },
   ".cm-completion-user .cm-completionLabel": { fontFamily: "inherit" },
   // AVATAR_SLOT's width, room for the badge's overhang.
   ".cm-completionAvatar": {

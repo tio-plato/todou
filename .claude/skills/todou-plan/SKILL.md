@@ -5,17 +5,16 @@ description: Turn an approved design into a reviewable implementation plan as a 
 
 # todou plan
 
-- The plan is a spec set on the issue; git never carries it.
-- The review loop and what a spec may hold: `/todou-cli`, "Spec documents".
+- The plan is a spec set on the issue. Taking the issue and the spec gate: `/todou-workflow`.
+  Questions and what a spec may hold: `/todou-cli`.
 
 ## Steps
 
-1. Take the issue and watch it now (`/todou-cli`). Read the code. Open design details become questions
-   on the issue, never guesses.
-2. Write the documents below into a scratch dir (`mktemp -d`).
-3. Self-check: no placeholders, no contradictions, nothing readable two ways, scope fits.
-4. `spec push <n> <dir> --message "plan v1" --wait`; revise until the latest version is approved.
-5. Report in the terminal. Implementation is `/todou-impl-plan`.
+1. Take the issue and watch it now. Read the code.
+2. Write the documents below into a scratch dir.
+3. Self-review, then `spec push <n> <dir> --message "plan v1" --wait`; revise until the latest version
+   is approved.
+4. Report in the terminal. Implementation is `/todou-impl-plan`.
 
 ## The documents
 
