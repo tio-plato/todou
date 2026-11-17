@@ -2034,13 +2034,22 @@ describe("the card's own question badge", () => {
     const before = view.router.state.location.href;
     const seen = writes(view);
 
-    let unhandled = false;
-    await act(async () => {
-      unhandled = fireEvent.click(inTitle(view, model) as HTMLElement, {
-        ctrlKey: true,
+    for (const modified of [
+      { ctrlKey: true },
+      { metaKey: true },
+      { shiftKey: true },
+      { altKey: true },
+      { button: 1 },
+    ]) {
+      let unhandled = false;
+      await act(async () => {
+        unhandled = fireEvent.click(
+          inTitle(view, model) as HTMLElement,
+          modified,
+        );
       });
-    });
-    expect(unhandled).toBe(true);
+      expect(unhandled, JSON.stringify(modified)).toBe(true);
+    }
     expect(seen).toEqual([]);
     // The router's, not `window.location`, which happy-dom's own anchor moves.
     expect(view.router.state.location.href).toBe(before);
@@ -2067,7 +2076,14 @@ describe("the card's own question badge", () => {
   });
 
   it("retries a press whose question is gone without an entry address", async () => {
-    const items = [question(10), answered(question(12), 13), question(14)];
+    // 16 is open after the missing 14, so a Retry going on from the address
+    // would land there rather than on the earliest.
+    const items = [
+      question(10),
+      answered(question(12), 13),
+      question(14),
+      question(16),
+    ];
     const model = recoveryCard(items);
     model.items = model.items.filter(
       (item) => item.type !== "comment" || item.id !== 14,
@@ -2076,16 +2092,36 @@ describe("the card's own question badge", () => {
     const scroll = scrolling();
     const view = renderAt("/projects/p/issues/7#comment-12");
     await landed(view, scroll, 12);
-    const seen = writes(view);
+    const back = { origin: { target: { kind: "list", slug: "p" } } };
+    await act(async () => {
+      view.router.history.replace(view.router.state.location.href, {
+        todouReturn: back,
+      });
+    });
 
     await click(inTitle(view, model));
     await view.findByText(UNAVAILABLE, {}, { timeout: 3_000 });
-    model.questions = questions(items.slice(0, 2));
+    const seen = writes(view);
     fireEvent.click(retryFor(view, UNAVAILABLE));
 
     // From the earliest again, as before.
     await landed(view, scroll, 10);
-    expect(asksInTheAddress(seen)).toEqual([]);
+    expect(scroll.reveals("comment-16")).toBe(0);
+    // The Retry asks without an address of its own: the missing comment's
+    // stays until the landing writes the one it found.
+    expect(
+      seen
+        .map(({ href }) => href)
+        .filter(
+          (href) =>
+            href !== "/projects/p/issues/7#comment-14" &&
+            href !== "/projects/p/issues/7#comment-10",
+        ),
+    ).toEqual([]);
+    expect(view.router.state.location.state).toHaveProperty(
+      "todouReturn",
+      back,
+    );
   });
 
   it("in the title mirror lands without the mirror's scroll to the top", async () => {
