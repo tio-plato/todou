@@ -21,7 +21,6 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 export type Migration = { tag: string; when: number; sql: string };
@@ -176,6 +175,4 @@ function main(argv: string[]): void {
   process.exitCode = 1;
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  main(process.argv.slice(2));
-}
+if (import.meta.main) main(process.argv.slice(2));

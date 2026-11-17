@@ -160,6 +160,4 @@ async function main(argv: string[]): Promise<void> {
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  await main(process.argv.slice(2));
-}
+await main(process.argv.slice(2));

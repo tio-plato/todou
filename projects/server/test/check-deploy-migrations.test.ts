@@ -2,8 +2,8 @@
 // migrations.ts). Like the script, this file lives only on deploy and never
 // goes into a patch sent upstream.
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
@@ -123,6 +123,14 @@ describe("the command", () => {
     );
     for (const m of migrations) writeFileSync(join(dir, `${m.tag}.sql`), m.sql);
   };
+
+  it("runs when started through a symlinked path", () => {
+    const link = join(testTmpDir("todou-check-migrations-link-"), "scripts");
+    symlinkSync(dirname(script), link);
+    const r = run(link, process.execPath, [join(link, basename(script))]);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain("usage");
+  });
 
   it("reads what ran from --ran and the merge from the working tree", () => {
     const repo = testTmpDir("todou-check-migrations-");
