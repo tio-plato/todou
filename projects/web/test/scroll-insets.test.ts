@@ -410,6 +410,22 @@ describe("focus inside an overlay", () => {
     expect(page.y).toBe(554);
   });
 
+  it("keeps a reveal that brought a control below the screen into sight", () => {
+    stubHeights();
+    const view = render(createElement(Harness, { composer: "mounted" }));
+    const draft = view.getByLabelText("draft");
+    const page = pagePosition(1000);
+
+    // A composer sitting in the page further down, not pinned to the bottom:
+    // put back, the page would leave its control below the screen.
+    draft.dataset.top = String(window.innerHeight + 220);
+    draft.dataset.h = "40";
+    fireEvent.keyDown(window, { key: "Tab" });
+    page.y = 1400;
+    draft.focus();
+    expect(page.y).toBe(1400);
+  });
+
   it("lands targets clear of every overlay whatever holds focus", () => {
     shellHeader();
     stubHeights();
@@ -428,18 +444,25 @@ describe("focus inside an overlay", () => {
     shellHeader();
     stubHeights();
     const view = render(createElement(Harness, { composer: "mounted" }));
-    view.getByText("back").focus();
-    const during: string[] = [];
+    const during: { top: string; bottom: string }[] = [];
     vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {
-      during.push(insets().top);
+      during.push(insets());
     });
     const target = document.createElement("div");
     document.body.append(target);
-    const before = insets();
 
-    revealBlock(target, { flash: false });
-    expect(during).toEqual(["105px"]);
-    expect(insets()).toEqual(before);
+    // Focus in the title bar, then in the composer: each lets go of its own
+    // edge, and the landing still clears both.
+    for (const holder of [
+      view.getByText("back"),
+      view.getByLabelText("draft"),
+    ]) {
+      holder.focus();
+      const before = insets();
+      revealBlock(target, { flash: false });
+      expect(during.pop()).toEqual({ top: "105px", bottom: "93px" });
+      expect(insets()).toEqual(before);
+    }
     target.remove();
   });
 });
