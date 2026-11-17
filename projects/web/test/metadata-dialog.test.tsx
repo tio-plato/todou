@@ -525,6 +525,67 @@ describe("the metadata editor tabs", () => {
     );
   });
 
+  it("greys Discard while a save is in flight", async () => {
+    // Discard unmounts the panel, and with it the save's callbacks: the
+    // write would land with no receipt. Falsifies by: leaving Discard
+    // enabled while the request is out, or grey after it returns.
+    let release!: (value: { entries: [] }) => void;
+    vi.spyOn(api, "writeIssueMetadata").mockReturnValueOnce(
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    );
+    mount([entry("orch", "phase", "plan")]);
+    await openDialog();
+    await openTab("Bulk");
+    cmSetValue(await editorReady(), "orch/phase = impl");
+    const discard = () =>
+      screen.getByRole("button", { name: "Discard" }) as HTMLButtonElement;
+    expect(discard().disabled).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(discard().disabled).toBe(true));
+    release({ entries: [] });
+    await waitFor(() => expect(discard().disabled).toBe(false));
+    expect(toast.success).toHaveBeenCalledWith("Saved 1 entry");
+  });
+
+  it("greys Discard while a conflict retry is in flight", async () => {
+    // The retry is the shell's write, and Discard resets the shell's
+    // mutation: the same lost receipt from the other side. Falsifies by:
+    // judging Discard by the panel's own request alone.
+    const conflict = Object.assign(new Error("if_match did not hold"), {
+      status: 409,
+      code: "metadata_precondition",
+      details: {
+        failed: [{ namespace: "orch", key: "phase", current: "spec" }],
+      },
+    });
+    let release!: (value: { entries: [] }) => void;
+    vi.spyOn(api, "writeIssueMetadata")
+      .mockRejectedValueOnce(conflict)
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+      );
+    mount([entry("orch", "phase", "plan")]);
+    await openDialog();
+    await openTab("Bulk");
+    cmSetValue(await editorReady(), "orch/phase = impl");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByTestId("metadata-conflict");
+    const discard = () =>
+      screen.getByRole("button", { name: "Discard" }) as HTMLButtonElement;
+    expect(discard().disabled).toBe(false);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Write over the new value" }),
+    );
+    await waitFor(() => expect(discard().disabled).toBe(true));
+    release({ entries: [] });
+    await waitFor(() => expect(discard().disabled).toBe(false));
+    expect(toast.success).toHaveBeenCalledWith("Saved 1 entry");
+  });
+
   it("shows Discard only to writers", async () => {
     // The absence half alone cannot stand — a broken selector would fake
     // it. The writer pairing proves the selector matches a real button.

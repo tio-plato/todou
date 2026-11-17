@@ -507,6 +507,7 @@ export function MetadataDialog({
                     snapshot={session.snapshot}
                     editorRef={editorRef}
                     gate={gate}
+                    writing={write.isPending}
                     onDirty={clearGate}
                     onDiscard={onDiscard}
                     onView={onBulkView}
@@ -534,6 +535,7 @@ export function MetadataDialog({
                     editorRef={editorRef}
                     onDirty={clearGate}
                     gate={gate}
+                    writing={write.isPending}
                     onDiscard={onDiscard}
                     onConflict={(payload) => {
                       setRefused(payload.refused);
