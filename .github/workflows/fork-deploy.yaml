@@ -23,7 +23,9 @@ name: Fork deploy image
 # One-time setup on the fork: enable Actions, then disable upstream's Docker
 # and Release workflows, which would push to upstream's image name and cut
 # releases on the fork. CI stays enabled. After the first run, make the new
-# package public so rollouts can pull it without credentials.
+# package public so rollouts can pull it without credentials. The migration
+# check looks images up anonymously too, so it fails until that package
+# exists and is public: the first run needs that step taken out.
 
 on:
   push:
