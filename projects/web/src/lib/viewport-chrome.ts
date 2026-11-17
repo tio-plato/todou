@@ -112,11 +112,11 @@ const READER_WINDOW_MS = 600;
  * Only the reader's own scrolling moves it: a finger dragging the page, with
  * the momentum after it, the wheel, the page keys, the scrollbar. Momentum
  * keeps counting, because each scroll it produces renews the window the drag
- * opened. What scrolls after a tap or a typed key, a jump, a landing, a
- * keyboard opening, the caret brought into view, is the page placing itself,
- * and a header that moved with it would cover what was just put in view. The
- * page placing itself also shuts the reader's window, until their next
- * scroll.
+ * opened. Nothing else moves it: a jump, a landing, a keyboard opening and
+ * the caret brought into view are the page placing itself, and a header that
+ * moved with them would cover what was just put in view. A tap or a typed key
+ * opens no window; a click or a landing shuts an open one, until the reader's
+ * next scroll.
  *
  * Once scrolling stops the header settles fully in or fully out, as Safari's
  * does; a header left half-cut reads as broken.
@@ -207,6 +207,7 @@ export function useAutoHideHeader(enabled: boolean, page?: string): void {
     // and what follows it is a jump or a keyboard opening.
     window.addEventListener("touchmove", reading, options);
     window.addEventListener("wheel", reading, options);
+    // Only the keys that scroll the page: see `scrollsPage`.
     window.addEventListener(
       "keydown",
       (event) => {
