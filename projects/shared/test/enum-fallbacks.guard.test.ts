@@ -140,8 +140,8 @@ const DECLARED: Readonly<Record<string, string>> = {
     "Closed client producer: issueListVerdict constructs contains/read/unknown local literals; entryWantsRefetch switches on that computed result, not HTTP enum fields.",
   "projects/web/src/api/useUserEvents.ts :: switch verdict.verdict #2":
     "Closed client producer: issueListVerdict constructs contains/read/unknown local literals; entryWantsRefetch switches on that computed result, not HTTP enum fields.",
-  "projects/web/src/components/insights/insights-settings.tsx :: read ROLE_LABELS[role] #1":
-    "Closed options: Role.options.map((role) => ...) -> ROLE_LABELS[role]. Wire entry.role is only compared in checked={entry.role === role}; it is never the lookup key.",
+  "projects/web/src/components/settings/statuses-section.tsx :: read ROLE_LABELS[role] #1":
+    "Closed options: Role.options.map((role) => ...) -> ROLE_LABELS[role]. The wire role is only compared in aria-pressed={value === option}; it is never the lookup key.",
   "projects/web/src/components/issue/metadata-dialog.tsx :: read PARSERS[t] #1":
     "Closed client tabs: local Radix triggers emit browse/bulk/json; both parser lookups exclude browse before indexing the bulk/json parser table.",
   "projects/web/src/components/issue/metadata-dialog.tsx :: read PARSERS[tab] #1":
@@ -158,7 +158,7 @@ const DECLARED: Readonly<Record<string, string>> = {
     "Closed qualifier producer: KEYS = Object.keys(SEARCH_QUALIFIERS), or parsed search parts accepted by the hasOwn-checked qualifier registry; key selects labels/specs.",
   "projects/web/src/components/search/suggestions.ts :: read SEARCH_QUALIFIERS[key] #1":
     "Closed qualifier producer: KEYS = Object.keys(SEARCH_QUALIFIERS), or parsed search parts accepted by the hasOwn-checked qualifier registry; key selects labels/specs.",
-  "projects/web/src/components/shared/agent-projects-dialog.tsx :: read ROLE_RANK[option] #1":
+  "projects/web/src/components/shared/agent-projects.tsx :: read ROLE_RANK[option] #1":
     "Closed UI options: option comes from MemberRole.options. Current API role and ceiling are separately checked with roleRankOf; neither is the raw map key here.",
   "projects/web/src/components/shared/return-link.tsx :: read ARROW[back.scale] #1":
     "Closed client prop: BackScale is a local union and ARROW is a total Record of it; every render site writes the scale as a literal — nav inside NavBackControl, heading at issue-detail.tsx, compact at issue-return-row.tsx and spec-view.tsx. IssueReturnLink hands its own prop through unchanged on the no-origin arrow.",
@@ -192,6 +192,8 @@ const DECLARED: Readonly<Record<string, string>> = {
     "Closed client grouping state: AssigneeSide is locally assigned added/removed from recognized assigned/unassigned events; side and end.last index local sets/arrays.",
   "projects/web/src/components/timeline/spec-version-card.tsx :: read CHANGE_BADGE[row.change] #1":
     "Closed display rows: specVersionStatsQuery calls computeVersionStats, which constructs added/modified/removed/renamed literals from payload paths and snapshot comparisons. Before stats arrive, SpecVersionCardBody constructs added/modified/removed fallback rows from safeParsed SpecPushedPayload; neither path copies a wire change discriminator.",
+  "projects/web/src/components/ui/checkbox.tsx :: read SLOT_HOVER[hoverGroup] #1":
+    "Closed client prop: hoverGroup is typed keyof typeof SLOT_HOVER, which the table declares in full; every render site writes it as a literal — colhead in status-pill.tsx, att and att-head in attachment-list.tsx. Not a server value.",
   "projects/web/src/lib/editor/code-context.ts :: mapping LITERAL_NODES #1":
     "Membership-only registry: all consumers use Object.hasOwn(LITERAL_NODES/RAW_HTML_NODES, Lezer node name); absent/inherited node names return false.",
   "projects/web/src/lib/editor/code-context.ts :: mapping RAW_HTML_NODES #1":
@@ -373,10 +375,11 @@ describe("repository enum fallback source guard", () => {
     // The previously quoted 85 was not the current baseline. Freeze identities,
     // not the final total: new audited sites may be added without hiding losses.
     // One site fewer than the census recorded because T-512 deleted
-    // refs-migrate.ts outright, not because the census missed it. The
+    // refs-migrate.ts outright, not because the census missed it, and one
+    // more because T-704 deleted the ROLE_DOT mapping with the role dots. The
     // revision stays at the commit the census was measured on.
     expect(baseline.revision).toBe("5db8c5c");
-    expect(baseline.sites).toHaveLength(176);
+    expect(baseline.sites).toHaveLength(175);
     expect(baseline.declared).toHaveLength(86);
     const sites = new Map(scanSources(sources).map((site) => [site.id, site]));
     expect(

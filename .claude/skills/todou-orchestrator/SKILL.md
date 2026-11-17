@@ -25,7 +25,7 @@ cap      <n>
 ```
 
 The block comes out before any dispatch. Ahead of it you may run only the reads that fill it in —
-`todou config show`, `todou agent can-i-follow`, the card, `herdr agent list`; `herdr tab create`,
+`todou config show`, `todou agent how-to-watch`, the card, `herdr agent list`; `herdr tab create`,
 `herdr agent start`, `herdr agent prompt`, the background `todou watch` and every write to the
 tracker wait until it is out. The user's chance to correct a wrong model or cap lasts until the first
 agent starts on it. A value that changes mid-session reprints the block, ahead of the first dispatch
@@ -45,10 +45,10 @@ picked it.
 Keep one running in the background:
 
 ```bash
-todou watch -p <proj> --since <cursor> --debounce 60 --forever
+todou watch -p <proj> --since <cursor> --debounce 15 --forever
 ```
 
-Before you start it, run `todou agent can-i-follow` and do what it says. Run it without `--json`: the
+Before you start it, run `todou agent how-to-watch` and do what it says. Run it without `--json`: the
 line format carries each comment's opening, which is what you act on. A killed watch restarts from
 the same cursor (`/todou-cli`); after handling a batch, restart from the printed cursor.
 
@@ -113,7 +113,7 @@ session block already out; a model or cap that changed since the last one reprin
 - Subagents (the Agent tool) take investigations, merges and deploys, on the implementation phase's
   model — not the cheapest one to hand.
 - A card with an assignee is held: leave it where it is and say so instead of dispatching. Nobody
-  assigns except to take a card (`/todou-cli`, "Taking a card"), so the holder is a live agent or the
+  assigns except to take a card (`/todou-cli`, "Taking an issue"), so the holder is a live agent or the
   user, and either way a second agent on it is the conflict you exist to prevent. You never assign —
   not to reserve a card, not to record who did the work — because an assignee you wrote would hold
   the card against the fleet with nobody behind it. Triage is unaffected; a label never collides with
@@ -188,7 +188,7 @@ subagent and check the results.
 - Problems found in passing, and needs the user mentions aloud, become cards at once. A request that
   arrived outside the tracker (terminal, chat) goes into the card body word for word and nothing else
   goes in there; that text is the only trace the tracker will have, and your reading of it is a
-  comment on the card (`/todou-cli`, "Filing a card"). What arrives on a live worker's card is that
+  comment on the card (`/todou-cli`, "Filing an issue"). What arrives on a live worker's card is that
   worker's to file.
 - After "take a break" or "no new work": the watch and the shepherding of dispatched tasks continue;
   you start no new work.
@@ -230,4 +230,4 @@ arrives outside a live card, merging, deploying, Shipped and retiring stay yours
 - Send one-off work (merges, patches, investigations) to subagents.
 - To see whether an agent finished, read the card's status before its transcript.
 - Read the tail of an agent's output (`references/herdr.md`), never whole screens.
-- `--debounce 60` on the watch turns a burst of user actions into one wake-up.
+- `--debounce 15` on the watch turns a burst of user actions into one wake-up; references and other minor events already wait up to 5 minutes on their own.

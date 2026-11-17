@@ -118,7 +118,7 @@ to the agent (measured on omp 18.12.6). What does wake it is a watch without
 `--follow`, started with the bash tool's `async: true` and `timeout: 0`: it
 returns one batch and exits, omp announces the exit as a message that starts
 the next turn, and the agent starts it again from the `cursor:` it printed.
-`todou agent can-i-follow` says this in a session that has no channel.
+`todou agent how-to-watch` says this in a session that has no channel.
 
 A named bash service (`bash` with `name`) runs under a broker process omp
 starts, with `PATH` reset to the system default. `--follow=uds` works from
@@ -181,7 +181,7 @@ The same message arrives when a watch dies on its own; a watch the model
 stopped through the tool says nothing, because that call's return already
 did.
 
-`todou agent can-i-follow` reports whether this session can, and where the
+`todou agent how-to-watch` reports whether this session can, and where the
 extension's tool is present its answer is the tool. It talks to no server
 and resolves no project, so it answers at any point in a session, including
 one that starts with the tracker down.
@@ -210,7 +210,9 @@ waiting for that turn to end. omp makes room for it by backgrounding the
 foreground bash command early — it reports
 `Backgrounded early to handle an incoming message` when it does — and that
 command goes on running. How often this happens is set by the batching
-window, `--debounce`, which is 60 seconds by default here.
+window, `--debounce`, which is 15 seconds by default here; references,
+attachments and other minor events wait up to 5 minutes (`--defer`) for
+something else to ride along with.
 
 Delivery guarantees, the degradation when a push cannot be confirmed, and
 `todou agent opt-out-uds` are as [docs/claude-code.md](claude-code.md)

@@ -7,7 +7,7 @@ plugin installation or replacement Codex launcher is required.
 
 ```sh
 todou login https://todou.example --profile codex
-todou agent can-i-follow
+todou agent how-to-watch
 ```
 
 Run the second command from the Codex conversation so it inherits the thread
@@ -52,7 +52,9 @@ uses; todou never guesses from the newest transcript.
 Start at least one turn before attaching a watch, so Codex has saved the
 conversation that `codex queue` looks up.
 
-The watch batches activity for 60 seconds by default; `--debounce 0` queues
+The watch batches activity for 15 seconds by default, and holds references,
+attachments and other minor events up to 5 minutes unless something else comes
+first; `--debounce 0 --defer 0` queues everything
 immediately; Codex still controls when the queued turn starts. It carries
 comments, spec reviews, and question activity through the existing project/issue
 watch filters, including exclusion of the current

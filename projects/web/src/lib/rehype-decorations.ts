@@ -149,13 +149,26 @@ export const COMMENT_BLOCK_CLASS = "spec-mark-comment-block";
 export const DRAFT_BLOCK_CLASS = "spec-mark-draft-block";
 
 /**
- * The two halves of a swapped image, side by side (T-223). They carry layout
- * and nothing else: the colours come from `spec-del-block` and
- * `spec-ins-block`, which the fold pass, the ↑↓ navigation and the annotation
- * walker already know about, so a swap joins all three without being taught.
+ * The two halves of a swapped image, side by side, in the table cell the swap
+ * happened in (T-223) — outside a table `IMG_COMPARE_CLASS` below draws it.
+ * They carry layout and nothing else: the colours come from `spec-del-block`
+ * and `spec-ins-block`, which the fold pass, the ↑↓ navigation and the
+ * annotation walker already know about, so a swap joins all three without
+ * being taught.
  */
 export const IMG_DEL_CLASS = "spec-img-del";
 export const IMG_NEW_CLASS = "spec-img-new";
+
+/**
+ * A swapped image outside a table (T-722): the new `<img>` keeps its place and
+ * carries the old one's address, and `markdown-view.tsx` draws the two as one
+ * comparison. Nothing is spliced in beside it, so the paragraph keeps the
+ * children it was parsed with.
+ */
+export const IMG_COMPARE_CLASS = "spec-img-compare";
+/** As React hands them to the `img` override; hast spells them `dataSwapSrc`/`dataSwapAlt`. */
+export const SWAP_SRC_ATTR = "data-swap-src";
+export const SWAP_ALT_ATTR = "data-swap-alt";
 
 const CLASS_OF: Record<SpanKind, string> = {
   ins: "spec-ins",
@@ -1100,6 +1113,7 @@ function paintRestored(
       baseline,
     },
     false,
+    false,
   );
 }
 
@@ -1612,6 +1626,7 @@ function decorateTree(
   parent: Root | Element,
   paint: TreePaint,
   insideAdded: boolean,
+  insideTable: boolean,
 ): void {
   const next: ElementContent[] = [];
   let changed = false;
@@ -1648,7 +1663,7 @@ function decorateTree(
       if (child.tagName === "a") {
         const edges = besideLink(child, inline, paint.placed);
         for (const cut of edges.before) next.push(inlineDeletion(cut));
-        decorateTree(child, paint, added);
+        decorateTree(child, paint, added, insideTable);
         next.push(child);
         for (const cut of edges.after) next.push(inlineDeletion(cut));
         if (edges.before.length + edges.after.length > 0) changed = true;
@@ -1663,7 +1678,7 @@ function decorateTree(
       const edges = beside.spans.get(child);
       if (edges !== undefined) {
         for (const cut of edges.before) next.push(inlineDeletion(cut));
-        decorateTree(child, paint, added);
+        decorateTree(child, paint, added, insideTable);
         next.push(child);
         for (const cut of edges.after) next.push(inlineDeletion(cut));
         if (edges.before.length + edges.after.length > 0) changed = true;
@@ -1675,10 +1690,12 @@ function decorateTree(
       // has a paragraph to itself and the `<img>` when it does not — and
       // the `<p>` would then wrap the old image's `<del>` in the green
       // that means "new". No wrapper element either: `markdown-view.tsx`
-      // decides whether a paragraph carries an embed card by asking
+      // decides whether a paragraph turns into a `<div>` by asking
       // whether an `<img>` is a direct child of the `<p>`, and a flex
       // container in between would both break that test and produce a
-      // `<div>` inside a `<p>`. Side by side is two `inline-block`s.
+      // `<div>` inside a `<p>`. In a table cell, side by side is two
+      // `inline-block`s; elsewhere the `<img>` only carries the old
+      // address, and the comparison is drawn in React (T-722).
       if (child.tagName === "img") {
         // An image shows no text to put a mark in, and a mark reaching
         // into one — a selection made inside a document card anchors
@@ -1695,7 +1712,11 @@ function decorateTree(
           continue;
         }
         if (!added) addClass(child, INS_BLOCK_CLASS);
-        if (swap.old !== null) {
+        if (swap.old !== null && !insideTable) {
+          addClass(child, IMG_COMPARE_CLASS);
+          child.properties.dataSwapSrc = swap.old.url;
+          child.properties.dataSwapAlt = swap.old.alt;
+        } else if (swap.old !== null) {
           addClass(child, IMG_NEW_CLASS);
           next.push(swappedOutImage(swap.old));
           // Only now: `addClass` edits in place and leaves the node's
@@ -1707,7 +1728,12 @@ function decorateTree(
         next.push(child);
         continue;
       }
-      decorateTree(child, paint, added);
+      decorateTree(
+        child,
+        paint,
+        added,
+        insideTable || child.tagName === "table",
+      );
       next.push(child);
       continue;
     }
@@ -1791,6 +1817,7 @@ export function rehypeDecorations(options: Decorations = NO_DECORATIONS) {
         source,
         baseline: options.baselineIndex,
       },
+      false,
       false,
     );
 

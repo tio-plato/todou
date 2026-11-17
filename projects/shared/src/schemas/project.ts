@@ -212,31 +212,66 @@ export const StatusUpdateInput = z.object({
 export type StatusUpdateInput = z.infer<typeof StatusUpdateInput>;
 
 /**
+ * One drop on the Statuses page (T-712): the whole order, and where the
+ * block clear line now sits, written together so a drop across the line is
+ * one reevaluation of blocks rather than one per moved row.
+ */
+export const StatusOrderInput = z.object({
+  ids: z.array(Id).min(1),
+  block_clear_status_id: Id.nullable().optional(),
+});
+export type StatusOrderInput = z.infer<typeof StatusOrderInput>;
+
+export const StatusOrder = z.object({
+  statuses: z.array(Status),
+  block_clear_status_id: Id.nullable(),
+});
+export type StatusOrder = z.infer<typeof StatusOrder>;
+
+/**
+ * Issues sitting in a status (T-712). Trashed ones are split out because
+ * the issue list does not show them, yet they still keep a status from
+ * being deleted.
+ */
+export const StatusUsage = z.object({
+  id: Id,
+  issues: z.number().int().nonnegative(),
+  trashed: z.number().int().nonnegative(),
+});
+export type StatusUsage = z.infer<typeof StatusUsage>;
+
+/**
  * The status flow agents work in (see the todou-cli skill). Shared because
  * two places must agree on it: the server seeds it into every new project,
  * and `todou status init` applies it to projects that predate it.
  *
  * Colors run gray (not started) → cyan/blue (active) → amber (awaiting
- * delivery) → violet (out) → green (terminal). Category only has two values
- * and cannot carry that, so it holds one invariant instead: Done, the only
- * closed status, is green.
+ * delivery) → violet (out) → green (done). Invalid, the other closed status,
+ * is a dark slate: clear of green so a card closed without being done never
+ * reads as finished, and darker than the not-started grays.
  *
  * Todo is pinned as the default rather than left to the first-by-position
  * fallback, which Backlog now sits ahead of.
+ *
+ * Shipped is the block clear line (T-711): the card that waits on a blocker
+ * can start once the blocker is deployed, not only once the user has
+ * verified it. Invalid sits past Done, so it clears too.
  */
 export const CANONICAL_STATUSES: ReadonlyArray<{
   name: string;
   category: StatusCategory;
   color: string;
   is_default?: true;
+  block_clear?: true;
 }> = [
   { name: "Backlog", category: "open", color: "#9ca3af" },
   { name: "Todo", category: "open", color: "#6b7280", is_default: true },
   { name: "Next", category: "open", color: "#06b6d4" },
   { name: "In Progress", category: "open", color: "#3b82f6" },
   { name: "Ready to Ship", category: "open", color: "#f59e0b" },
-  { name: "Shipped", category: "open", color: "#8b5cf6" },
+  { name: "Shipped", category: "open", color: "#8b5cf6", block_clear: true },
   { name: "Done", category: "closed", color: "#22c55e" },
+  { name: "Invalid", category: "closed", color: "#475569" },
 ];
 
 /** The name a label is actually stored under: trimmed, spaces collapsed. */
@@ -281,6 +316,18 @@ export const Label = z.object({
   color: ColorHex,
 });
 export type Label = z.infer<typeof Label>;
+
+/**
+ * How many issues carry a label (T-713), out of the trash. Its own read
+ * rather than fields on `Label`: every CLI command that resolves a label
+ * name lists the catalog, and none of them needs a count.
+ */
+export const LabelUsage = z.object({
+  id: Id,
+  open_issues: z.number().int().nonnegative(),
+  issues: z.number().int().nonnegative(),
+});
+export type LabelUsage = z.infer<typeof LabelUsage>;
 
 export const LabelCreateInput = z.object({
   name: LabelName,

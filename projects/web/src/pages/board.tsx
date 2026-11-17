@@ -15,15 +15,17 @@ import { Link, useParams } from "@tanstack/react-router";
 import {
   formatRef,
   type IssueListItem,
+  type IssueListPage,
   type Label,
   type Member,
   type Status,
   type Watcher,
 } from "@todou/shared";
-import { TagIcon, UserPlusIcon } from "lucide-react";
+import { TagIcon, UserPlusIcon, XIcon } from "lucide-react";
 import {
   memo,
   type PointerEvent,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -32,6 +34,7 @@ import {
 import { boardColumnQuery, useBoardMove } from "@/api/board.ts";
 import {
   toggledById,
+  useBulkIssueStatusMutation,
   useIssueAssigneesMutation,
   useIssueLabelsMutation,
 } from "@/api/issues.ts";
@@ -50,6 +53,7 @@ import {
   QuestionBadge,
   SpecReviewBadge,
 } from "@/components/issue/attention-badge.tsx";
+import { BulkStatusMenu } from "@/components/issue/bulk-status-menu.tsx";
 import {
   AssigneesAndWatchers,
   MetaEditButton,
@@ -61,6 +65,7 @@ import {
 } from "@/components/issue/label-picker.tsx";
 import { MarkAllReadButton } from "@/components/issue/mark-all-read-button.tsx";
 import { MarkReadButton } from "@/components/issue/mark-read-button.tsx";
+import { StatusHeading } from "@/components/issue/status-pill.tsx";
 import { ProjectMuteButton } from "@/components/project-mute-button.tsx";
 import { ProjectWatchersChip } from "@/components/shared/project-watchers.tsx";
 import {
@@ -68,6 +73,8 @@ import {
   useReturnLinkState,
 } from "@/components/shared/return-context.tsx";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import { openBlockCount } from "@/lib/blocks.ts";
 import {
@@ -77,6 +84,11 @@ import {
 } from "@/lib/return-view.ts";
 import { useOverlayScrollbars } from "@/lib/use-overlay-scrollbars.ts";
 import { useReturnView } from "@/lib/use-return-view.ts";
+import {
+  groupState,
+  type SelectionState,
+  useSelection,
+} from "@/lib/use-selection.ts";
 import { cn } from "@/lib/utils";
 
 /**
@@ -96,6 +108,19 @@ type CardDragData = {
   issueNumber: number;
   fromStatusId: number;
   issue: IssueListItem;
+  /** Picking up a selected card picks up the whole selection (T-708). */
+  selected: boolean;
+};
+
+/**
+ * The selection as the columns see it (T-708). Absent without issue.triage:
+ * status is all a selection does, and the server refuses it below that role.
+ */
+type BoardSelect = {
+  isSelected: (issueNumber: number) => boolean;
+  stateOf: (issueNumbers: readonly number[]) => SelectionState;
+  onSelect: (issueNumber: number, extend: boolean) => void;
+  onSelectColumn: (issueNumbers: readonly number[]) => void;
 };
 
 /**
@@ -137,8 +162,26 @@ const everyColumnAnswered = (
   results: readonly { isPending: boolean }[],
 ): boolean => results.every((result) => !result.isPending);
 
+/**
+ * Every card on the board as `number:statusId`, columns left to right and
+ * cards top to bottom — the order a shift-click range runs in. A string, so
+ * the page re-renders only when a card arrives, leaves or moves.
+ */
+const boardRows = (
+  results: readonly { data?: IssueListPage | undefined }[],
+): string =>
+  results
+    .flatMap(
+      (result) =>
+        result.data?.items.map(
+          (issue) => `${issue.number}:${issue.status.id}`,
+        ) ?? [],
+    )
+    .join(" ");
+
 const NO_LABELS: Label[] = [];
 const NO_MEMBERS: Member[] = [];
+const NO_NUMBERS: readonly number[] = [];
 
 export function BoardPage() {
   const { slug } = useParams({ from: "/authed/projects/$slug" });
@@ -189,8 +232,60 @@ export function BoardPage() {
     target: { kind: "board", slug },
     ready: columnsAnswered,
   });
+  const rowsKey = useQueries({
+    queries: statuses.data.map((status) => boardColumnQuery(slug, status.id)),
+    combine: boardRows,
+  });
+  const rows = useMemo(() => {
+    const statusOf = new Map<number, number>();
+    for (const row of rowsKey ? rowsKey.split(" ") : []) {
+      const [number, statusId] = row.split(":").map(Number);
+      statusOf.set(number as number, statusId as number);
+    }
+    return { numbers: [...statusOf.keys()], statusOf };
+  }, [rowsKey]);
+  const selection = useSelection(rows.numbers);
+  // Through a ref, so the callbacks keep their identity while the selection
+  // changes under them, and the memoized columns skip what they need not see.
+  const selectionRef = useRef(selection);
+  useEffect(() => {
+    selectionRef.current = selection;
+  });
+  const onSelect = useCallback(
+    (issueNumber: number, extend: boolean) =>
+      selectionRef.current.toggle(issueNumber, { extend }),
+    [],
+  );
+  const onSelectColumn = useCallback(
+    (issueNumbers: readonly number[]) =>
+      selectionRef.current.toggleGroup(issueNumbers),
+    [],
+  );
+  // Keyed on what is selected rather than on the hook's own callbacks, which
+  // change with every column that answers: a board loading with nothing
+  // selected would otherwise re-render every column once per column.
+  const selectedKey = selection.selected.join(" ");
+  const select = useMemo<BoardSelect | null>(() => {
+    if (!canTriage) return null;
+    const picked = new Set(
+      selectedKey ? selectedKey.split(" ").map(Number) : [],
+    );
+    return {
+      isSelected: (issueNumber) => picked.has(issueNumber),
+      stateOf: (issueNumbers) => groupState(picked, issueNumbers),
+      onSelect,
+      onSelectColumn,
+    };
+  }, [canTriage, selectedKey, onSelect, onSelectColumn]);
   const move = useBoardMove();
-  const [activeIssue, setActiveIssue] = useState<IssueListItem | null>(null);
+  const bulkMove = useBulkIssueStatusMutation();
+  const [drag, setDrag] = useState<{
+    issue: IssueListItem;
+    count: number;
+  } | null>(null);
+  // The cards a drag carries, fixed when it starts: the selection in screen
+  // order when the card picked up is part of it, that card alone otherwise.
+  const dragGroup = useRef<readonly number[]>(NO_NUMBERS);
   // Require a small drag distance so plain clicks still navigate.
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -224,16 +319,39 @@ export function BoardPage() {
   function onDragStart(event: DragStartEvent) {
     dragHappened.current = true;
     const data = event.active.data.current as CardDragData | undefined;
-    setActiveIssue(data?.issue ?? null);
+    if (!data) {
+      dragGroup.current = NO_NUMBERS;
+      setDrag(null);
+      return;
+    }
+    dragGroup.current =
+      data.selected && selection.selected.length > 1
+        ? selection.selected
+        : [data.issueNumber];
+    setDrag({ issue: data.issue, count: dragGroup.current.length });
   }
 
   function onDragEnd(event: DragEndEvent) {
-    setActiveIssue(null);
+    const group = dragGroup.current;
+    dragGroup.current = NO_NUMBERS;
+    setDrag(null);
     const over = event.over;
     const data = event.active.data.current as CardDragData | undefined;
     if (!over || !data) return;
     const toStatus = statuses.data.find((s) => s.id === Number(over.id));
-    if (!toStatus || toStatus.id === data.fromStatusId) return;
+    if (!toStatus) return;
+    if (group.length > 1) {
+      // The drop names a status, not a column to leave: selected cards that
+      // already sit in it stay where they are.
+      const moving = group.filter(
+        (issueNumber) => rows.statusOf.get(issueNumber) !== toStatus.id,
+      );
+      if (moving.length === 0) return;
+      bulkMove.mutate({ slug, issueNumbers: moving, status: toStatus });
+      selection.clear();
+      return;
+    }
+    if (toStatus.id === data.fromStatusId) return;
     move.mutate({
       slug,
       issueNumber: data.issueNumber,
@@ -248,14 +366,41 @@ export function BoardPage() {
       collisionDetection={closestCorners}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
-      onDragCancel={() => setActiveIssue(null)}
+      onDragCancel={() => {
+        dragGroup.current = NO_NUMBERS;
+        setDrag(null);
+      }}
     >
       <div className="flex min-h-0 flex-1 flex-col gap-4">
         {/* The board has no filter toolbar to hang this off, so it gets a
             row of its own — project-scoped, like the list's copy, because
             the endpoint sweeps a project and not a column (T-100). */}
-        <div className="flex shrink-0 justify-end">
-          <ProjectWatchersChip slug={slug} className="me-auto" />
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-y-2">
+          <ProjectWatchersChip slug={slug} />
+          <div className="me-auto flex items-center gap-2 ps-2">
+            {selection.selected.length > 0 && (
+              <>
+                <span className="text-sm text-muted-foreground tabular-nums">
+                  {selection.selected.length} selected
+                </span>
+                <BulkStatusMenu
+                  slug={slug}
+                  statuses={statuses.data}
+                  issueNumbers={selection.selected}
+                  onMoved={selection.clear}
+                />
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Clear selection"
+                  title="Clear selection"
+                  onClick={selection.clear}
+                >
+                  <XIcon />
+                </Button>
+              </>
+            )}
+          </div>
           <MarkAllReadButton slug={slug} scopeName="this project" />
           <ProjectMuteButton slug={slug} />
         </div>
@@ -264,7 +409,9 @@ export function BoardPage() {
             instead of the columns being crushed to nothing. */}
         <div
           ref={canvas}
-          className="flex min-h-60 flex-1 gap-4 overflow-x-auto"
+          className="group/select flex min-h-60 flex-1 gap-4 overflow-x-auto"
+          // Once anything is selected, every card shows its box (T-732).
+          data-selecting={selection.selected.length > 0 ? "" : undefined}
         >
           {statuses.data.map((status) => (
             <BoardColumn
@@ -272,6 +419,7 @@ export function BoardPage() {
               slug={slug}
               status={status}
               edit={edit}
+              select={select}
             />
           ))}
         </div>
@@ -280,9 +428,24 @@ export function BoardPage() {
           sits inside a column scroll container that would clip it as soon
           as it crosses the column edge. */}
       <DragOverlay>
-        {activeIssue && (
-          <div className="cursor-grabbing rounded-md border bg-background p-2.5 shadow-lg">
-            <BoardCardContent slug={slug} issue={activeIssue} />
+        {drag && (
+          <div className="relative cursor-grabbing">
+            {/* The rest of the selection, as the edge of a stack under the
+                card that was picked up. */}
+            {drag.count > 1 && (
+              <div className="absolute inset-0 translate-x-1.5 translate-y-1.5 rounded-md border bg-background shadow-lg" />
+            )}
+            <div className="relative rounded-md border bg-background p-2.5 shadow-lg">
+              <BoardCardContent slug={slug} issue={drag.issue} />
+            </div>
+            {drag.count > 1 && (
+              <span
+                data-testid="drag-count"
+                className="absolute -top-2 -left-2 min-w-5 rounded-full bg-primary px-1.5 text-center text-xs leading-5 font-medium text-primary-foreground tabular-nums"
+              >
+                {drag.count}
+              </span>
+            )}
           </div>
         )}
       </DragOverlay>
@@ -300,12 +463,19 @@ const BoardColumn = memo(function BoardColumn({
   slug,
   status,
   edit,
+  select,
 }: {
   slug: string;
   status: Status;
   edit: CardEdit;
+  select: BoardSelect | null;
 }) {
   const column = useQuery(boardColumnQuery(slug, status.id));
+  const numbers = useMemo(
+    () => column.data?.items.map((issue) => issue.number) ?? NO_NUMBERS,
+    [column.data],
+  );
+  const columnState = select?.stateOf(numbers) ?? "none";
   // One project-wide read that every column shares, not one per card.
   const watchers = useQuery(projectWatchersQuery(slug)).data?.issues;
   const { setNodeRef, isOver } = useDroppable({ id: status.id });
@@ -333,18 +503,21 @@ const BoardColumn = memo(function BoardColumn({
       // is still the column the canvas has to find again (T-407).
       data-return-id={String(status.id)}
     >
-      <div className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
-        {/* The name is the only part that may give ground: without shrink-0 on
-            the other three, a long status name squeezes the count badge into an
-            ellipsis instead of truncating itself (T-303). */}
-        <span
-          className="size-2.5 shrink-0 rounded-full"
-          style={{ backgroundColor: status.color }}
-          aria-hidden
+      <div className="group/colhead flex shrink-0 items-center gap-2 border-b px-3 py-2 text-sm">
+        <StatusHeading
+          status={status}
+          select={
+            select
+              ? {
+                  checked: columnState === "all",
+                  indeterminate: columnState === "some",
+                  disabled: numbers.length === 0,
+                  onChange: () => select.onSelectColumn(numbers),
+                  label: `select every issue in ${status.name}`,
+                }
+              : undefined
+          }
         />
-        <span className="min-w-0 truncate text-sm font-medium">
-          {status.name}
-        </span>
         <Badge variant="secondary" className="ml-auto shrink-0">
           {column.data?.items.length ?? "…"}
         </Badge>
@@ -372,6 +545,8 @@ const BoardColumn = memo(function BoardColumn({
               statusId={status.id}
               edit={edit}
               watchers={watchers?.[String(issue.number)]}
+              selected={select?.isSelected(issue.number) ?? false}
+              onSelect={select?.onSelect}
             />
           ))}
           {column.data?.items.length === 0 && (
@@ -391,36 +566,55 @@ function BoardCard({
   statusId,
   edit,
   watchers,
+  selected,
+  onSelect,
 }: {
   slug: string;
   issue: IssueListItem;
   statusId: number;
   edit: CardEdit;
   watchers?: Watcher[];
+  selected: boolean;
+  onSelect?: (issueNumber: number, extend: boolean) => void;
 }) {
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
-    id: `issue-${issue.number}`,
-    data: {
-      issueNumber: issue.number,
-      fromStatusId: statusId,
-      issue,
-    } satisfies CardDragData,
-  });
-
+  const { active, attributes, listeners, setNodeRef, isDragging } =
+    useDraggable({
+      id: `issue-${issue.number}`,
+      data: {
+        issueNumber: issue.number,
+        fromStatusId: statusId,
+        issue,
+        selected,
+      } satisfies CardDragData,
+    });
+  // Riding along with a selected card someone else picked up. dnd-kit already
+  // re-renders every draggable as a drag starts, so reading it costs nothing.
+  const carried =
+    selected &&
+    (active?.data.current as CardDragData | undefined)?.selected === true;
   return (
     <div
       ref={setNodeRef}
       {...attributes}
       {...listeners}
       className={cn(
-        "group/card cursor-grab rounded-md border bg-background p-2.5 shadow-xs",
-        isDragging && "opacity-30",
+        "group/card relative cursor-grab rounded-md border bg-background p-2.5 shadow-xs",
+        selected && "border-primary bg-primary/10 ring-1 ring-primary/70",
+        (isDragging || carried) && "opacity-30",
       )}
       // The card's own id, the same identity `key` uses above. The number is
       // a per-project address that a move between projects replaces, and a
       // snapshot outlives the board it was taken from (T-407).
       data-return-id={String(issue.id)}
     >
+      {onSelect && (
+        <CardSelectBox
+          slug={slug}
+          number={issue.number}
+          selected={selected}
+          onSelect={onSelect}
+        />
+      )}
       <BoardCardContent
         slug={slug}
         issue={issue}
@@ -430,6 +624,44 @@ function BoardCard({
     </div>
   );
 }
+
+/**
+ * On the card's corner, where the drag count appears for the same selection
+ * (T-732). 6px out plus the 3px focus ring stays inside the column's 8px
+ * padding, which clips. Opaque while unchecked so the card's border does not
+ * run through the box. Memoized apart from the shell around it, which dnd-kit
+ * re-renders on every drag (T-691).
+ */
+const CardSelectBox = memo(function CardSelectBox({
+  slug,
+  number,
+  selected,
+  onSelect,
+}: {
+  slug: string;
+  number: number;
+  selected: boolean;
+  onSelect: (issueNumber: number, extend: boolean) => void;
+}) {
+  const ref = formatRef(useRefPrefix(slug), number);
+  return (
+    <span
+      data-card-select=""
+      className="absolute -top-1.5 -left-1.5 leading-none"
+    >
+      <Checkbox
+        aria-label={`select ${ref}`}
+        checked={selected}
+        // onClick rather than onChange: only the click carries shiftKey, and
+        // it fires for Space as well.
+        onClick={(e) => onSelect(number, e.shiftKey)}
+        onChange={() => {}}
+        onPointerDown={keepOffDrag}
+        className="bg-background opacity-0 group-hover/card:opacity-100 group-data-[selecting]/select:opacity-100 checked:opacity-100 focus-visible:opacity-100 touch:hidden"
+      />
+    </span>
+  );
+});
 
 export const BoardCardContent = memo(function BoardCardContent({
   slug,

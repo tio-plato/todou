@@ -32,6 +32,7 @@ import type {
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useBoardMove } from "../src/api/board.ts";
+import { insightsSettingsQuery } from "../src/api/insights.ts";
 import {
   useDeleteIssueMutation,
   useIssueLabelsMutation,
@@ -43,13 +44,17 @@ import {
   accessDenialsQuery,
   agentsQuery,
   labelsQuery,
+  labelUsageQuery,
   membersQuery,
   meQuery,
   projectQuery,
   statusesQuery,
+  statusUsageQuery,
 } from "../src/api/queries.ts";
 import { referenceConfigQuery } from "../src/api/references.ts";
+import { StatusesSection } from "../src/components/settings/statuses-section.tsx";
 import { ReviewSubmitDialog } from "../src/components/spec/review-submit.tsx";
+import { labelColorFor } from "../src/lib/labels.ts";
 import type { SpecReviewDraft } from "../src/lib/spec-drafts.ts";
 import {
   AccessDenialsSection,
@@ -58,7 +63,6 @@ import {
   ProjectSection,
   ReferencesSection,
   SlugSection,
-  StatusesSection,
 } from "../src/pages/project-settings.tsx";
 import { cmSetValue } from "./cm.ts";
 import { renderWithProviders } from "./render.tsx";
@@ -100,6 +104,7 @@ const project = (slug: string, name: string): Project => ({
   name,
   description: `Project ${name}.`,
   created_at: "2026-08-01T00:00:00.000Z",
+  viewer_role: "admin",
 });
 
 const referenceConfig = (slug: string): ReferenceConfig => ({
@@ -157,6 +162,13 @@ function stubFetch(): Call[] {
       body: init?.body === undefined ? undefined : String(init.body),
     };
     calls.push(call);
+    // A list the Labels page maps over, refetched on mount.
+    if (url.endsWith("/labels/usage") || url.endsWith("/statuses/usage")) {
+      return new Response("[]", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
     if (method === "PATCH" && call.body) {
       const slug = url.match(/\/api\/projects\/([^/]+)$/)?.[1];
       return new Response(JSON.stringify(project(slug ?? "p", "Pea")), {
@@ -196,6 +208,27 @@ function seed(client: QueryClient) {
   client.setQueryData(accessDenialsQuery("q").queryKey, [] as AccessDenial[]);
   client.setQueryData(statusesQuery("p").queryKey, statuses);
   client.setQueryData(statusesQuery("q").queryKey, statuses);
+  for (const slug of ["p", "q"]) {
+    client.setQueryData(insightsSettingsQuery(slug).queryKey, {
+      version: "0.x",
+      source: "default",
+      roles: statuses.map((s) => ({
+        status_id: s.id,
+        name: s.name,
+        category: s.category,
+        color: s.color,
+        position: s.position,
+        role:
+          s.category === "closed"
+            ? ("completed" as const)
+            : ("remaining" as const),
+      })),
+    });
+    client.setQueryData(
+      statusUsageQuery(slug).queryKey,
+      statuses.map((s) => ({ id: s.id, issues: 0, trashed: 0 })),
+    );
+  }
   client.setQueryData(labelsQuery("p").queryKey, [
     {
       id: 3,
@@ -204,6 +237,10 @@ function seed(client: QueryClient) {
     },
   ]);
   client.setQueryData(labelsQuery("q").queryKey, []);
+  client.setQueryData(labelUsageQuery("p").queryKey, [
+    { id: 3, open_issues: 1, issues: 2 },
+  ]);
+  client.setQueryData(labelUsageQuery("q").queryKey, []);
   client.setQueryData(referenceConfigQuery("p").queryKey, referenceConfig("p"));
   client.setQueryData(referenceConfigQuery("q").queryKey, referenceConfig("q"));
 }
@@ -249,11 +286,13 @@ type ProjectCase = {
   trigger: (view: SectionView) => void | Promise<void>;
   editWhilePaused: boolean;
   edit?: (view: SectionView) => void;
+  /** Statuses hides its controls from anyone without `status.manage`. */
+  asAdmin?: true;
   expect: (call: Call) => void;
 };
 
 /**
- * The 15 `project-settings.tsx` sites, one row each. `editWhilePaused`
+ * The 14 `project-settings.tsx` sites, one row each. `editWhilePaused`
  * marks the six rows whose payload comes from form state: without the
  * paused-edit step those rows cannot fail on an unfixed tree, because the
  * form's `useState` does not follow the navigation.
@@ -433,15 +472,17 @@ const cases: ProjectCase[] = [
   {
     name: "StatusesSection create",
     section: StatusesSection,
+    asAdmin: true,
     trigger: (view) => {
-      fireEvent.change(view.getByPlaceholderText("New status name"), {
+      fireEvent.click(view.getByRole("button", { name: /New status/ }));
+      fireEvent.change(view.getByLabelText("Name"), {
         target: { value: "in review" },
       });
-      fireEvent.click(view.getByRole("button", { name: "Add" }));
+      fireEvent.click(view.getByRole("button", { name: "Create" }));
     },
     editWhilePaused: true,
     edit: (view) => {
-      fireEvent.change(view.getByPlaceholderText("New status name"), {
+      fireEvent.change(view.getByLabelText("Name"), {
         target: { value: "Edited While Paused" },
       });
     },
@@ -450,19 +491,18 @@ const cases: ProjectCase[] = [
       expect(JSON.parse(call.body ?? "{}")).toEqual({
         name: "in review",
         category: "open",
-        color: "#6b7280",
+        color: labelColorFor("in review"),
       });
     },
   },
   {
     name: "StatusesSection patch",
     section: StatusesSection,
+    asAdmin: true,
     trigger: (view) => {
-      fireEvent.click(
-        view.container.querySelector(
-          "button[aria-label='make done the default status']",
-        ) as HTMLButtonElement,
-      );
+      fireEvent.click(view.getByLabelText("edit status done"));
+      fireEvent.click(view.getByLabelText("New issues start here"));
+      fireEvent.click(view.getByRole("button", { name: "Save" }));
     },
     editWhilePaused: false,
     expect: (call) => {
@@ -474,11 +514,12 @@ const cases: ProjectCase[] = [
   {
     name: "StatusesSection remove",
     section: StatusesSection,
-    trigger: (view) => {
+    asAdmin: true,
+    trigger: async (view) => {
+      fireEvent.click(view.getByLabelText("edit status done"));
+      fireEvent.click(view.getByRole("button", { name: /Delete/ }));
       fireEvent.click(
-        view.container.querySelector(
-          "button[aria-label='delete done']",
-        ) as HTMLButtonElement,
+        await view.findByRole("button", { name: "Delete status" }),
       );
     },
     editWhilePaused: false,
@@ -491,14 +532,15 @@ const cases: ProjectCase[] = [
     name: "LabelsSection create",
     section: LabelsSection,
     trigger: (view) => {
-      fireEvent.change(view.getByPlaceholderText("New label name"), {
+      fireEvent.click(view.getByRole("button", { name: /New label/ }));
+      fireEvent.change(view.getByLabelText("Name"), {
         target: { value: "ux" },
       });
-      fireEvent.click(view.getByRole("button", { name: "Add" }));
+      fireEvent.click(view.getByRole("button", { name: "Create" }));
     },
     editWhilePaused: true,
     edit: (view) => {
-      fireEvent.change(view.getByPlaceholderText("New label name"), {
+      fireEvent.change(view.getByLabelText("Name"), {
         target: { value: "Edited While Paused" },
       });
     },
@@ -506,7 +548,7 @@ const cases: ProjectCase[] = [
       expect(call.url).toContain("/api/projects/p/labels");
       expect(JSON.parse(call.body ?? "{}")).toEqual({
         name: "ux",
-        color: "#3b82f6",
+        color: labelColorFor("ux"),
       });
     },
   },
@@ -514,11 +556,9 @@ const cases: ProjectCase[] = [
     name: "LabelsSection remove",
     section: LabelsSection,
     trigger: (view) => {
-      fireEvent.click(
-        view.container.querySelector(
-          "button[aria-label='delete label bug']",
-        ) as HTMLButtonElement,
-      );
+      fireEvent.click(view.getByLabelText("edit label bug"));
+      fireEvent.click(view.getByRole("button", { name: "Delete" }));
+      fireEvent.click(view.getByRole("button", { name: "Delete label" }));
     },
     editWhilePaused: false,
     expect: (call) => {
@@ -527,51 +567,26 @@ const cases: ProjectCase[] = [
     },
   },
   {
-    name: "LabelsSection recolor",
+    // Project q has no labels, so the open row is gone after the swap and
+    // there is no form left to edit while paused.
+    name: "LabelsSection update",
     section: LabelsSection,
     trigger: (view) => {
-      fireEvent.click(
-        view.container.querySelector(
-          "button[aria-label='change bug color']",
-        ) as HTMLButtonElement,
-      );
-      const swatch = document.querySelector(
-        "button[aria-label='set bug color #22c55e']",
-      );
-      expect(swatch).not.toBeNull();
-      fireEvent.click(swatch as Element);
+      fireEvent.click(view.getByLabelText("edit label bug"));
+      fireEvent.change(view.getByLabelText("Name"), {
+        target: { value: "regression" },
+      });
+      fireEvent.click(view.getByLabelText("set regression color #22c55e"));
+      fireEvent.click(view.getByRole("button", { name: "Save" }));
     },
     editWhilePaused: false,
     expect: (call) => {
       expect(call.method).toBe("PATCH");
       expect(call.url).toContain("/api/projects/p/labels/3");
-      expect(JSON.parse(call.body ?? "{}")).toEqual({ color: "#22c55e" });
-    },
-  },
-  {
-    name: "LabelsSection rename",
-    section: LabelsSection,
-    trigger: (view) => {
-      fireEvent.click(
-        view.container.querySelector(
-          "button[aria-label='rename label bug']",
-        ) as HTMLButtonElement,
-      );
-      const input = view.container.querySelector(
-        "input[aria-label='new name for bug']",
-      ) as HTMLInputElement;
-      fireEvent.change(input, { target: { value: "regression" } });
-      fireEvent.click(
-        view.container.querySelector(
-          "button[aria-label='save name for bug']",
-        ) as HTMLButtonElement,
-      );
-    },
-    editWhilePaused: false,
-    expect: (call) => {
-      expect(call.method).toBe("PATCH");
-      expect(call.url).toContain("/api/projects/p/labels/3");
-      expect(JSON.parse(call.body ?? "{}")).toEqual({ name: "regression" });
+      expect(JSON.parse(call.body ?? "{}")).toEqual({
+        name: "regression",
+        color: "#22c55e",
+      });
     },
   },
 ];
@@ -581,6 +596,9 @@ describe("a project write the settings page then left", () => {
     const calls = stubFetch();
     const client = queryClient();
     seed(client);
+    if (c.asAdmin) {
+      client.setQueryData(projectQuery("p").queryKey, project("p", "Pea"));
+    }
     // Through the router shim: the user chips these sections render are links
     // now (T-391), and a link needs router context to resolve its href.
     const setSlug = { current: (_: string) => {} };

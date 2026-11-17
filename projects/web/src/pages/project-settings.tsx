@@ -5,11 +5,14 @@ import {
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query";
-import { Outlet, useNavigate, useParams } from "@tanstack/react-router";
+import { Link, Outlet, useNavigate, useParams } from "@tanstack/react-router";
 import {
   type AccessDenial,
   enumValue,
   formatRef,
+  type LabelCreateInput,
+  type Label as LabelEntity,
+  type LabelUpdateInput,
   Login,
   MEMBER_ROLES,
   type Member,
@@ -17,25 +20,17 @@ import {
   type ProjectUpdateInput,
   ROLE_RANK,
   roleRankOf,
-  type Status,
-  type StatusUpdateInput,
   type TodouError,
 } from "@todou/shared";
 import {
-  ArrowDownIcon,
-  ArrowUpIcon,
-  ChartLineIcon,
-  CheckIcon,
+  ChevronDownIcon,
   CircleDotIcon,
   HashIcon,
-  PencilIcon,
-  PinIcon,
   PlusIcon,
   SettingsIcon,
   TagIcon,
   Trash2Icon,
   UsersIcon,
-  XIcon,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -44,17 +39,17 @@ import {
   agentsQuery,
   api,
   labelsQuery,
+  labelUsageQuery,
   membersQuery,
   meQuery,
   projectQuery,
-  statusesQuery,
   useCan,
 } from "@/api/queries.ts";
 import { referenceConfigQuery } from "@/api/references.ts";
 import { userQuery } from "@/api/users.ts";
-import { InsightsSettings } from "@/components/insights/insights-settings.tsx";
 import { LabelChip } from "@/components/issue/label-chip.tsx";
-import { StatusPill } from "@/components/issue/status-pill.tsx";
+import { ColorSwatches } from "@/components/settings/color-swatches.tsx";
+import { StatusesSection } from "@/components/settings/statuses-section.tsx";
 import {
   SettingsLayout,
   SettingsNavGroup,
@@ -67,13 +62,9 @@ import { RolePermissionsDialog } from "@/components/shared/role-permissions-tabl
 import { displayNameOf, UserChip } from "@/components/shared/user-chip.tsx";
 import { UserOption } from "@/components/shared/user-picker.tsx";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -90,24 +81,15 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { PRESET_COLORS } from "@/lib/labels.ts";
+import { labelColorFor, PRESET_COLORS } from "@/lib/labels.ts";
 import { cappedRole } from "@/lib/roles.ts";
 import { useProjectRefs } from "@/lib/use-project-refs.ts";
+import { cn } from "@/lib/utils";
 
 /** Exported so a test can hold the picker to the schema's own list. */
 export const ROLES: readonly MemberRole[] = MEMBER_ROLES;
 
 export { PRESET_COLORS };
-
-/** Lenient hand-typed hex → canonical #rrggbb, or null when unparseable. */
-export function normalizeHexColor(input: string): string | null {
-  const raw = input.trim().replace(/^#/, "").toLowerCase();
-  if (/^[0-9a-f]{6}$/.test(raw)) return `#${raw}`;
-  if (/^[0-9a-f]{3}$/.test(raw)) {
-    return `#${raw.replaceAll(/./g, (c) => c + c)}`;
-  }
-  return null;
-}
 
 /** Everything under /projects/$slug/settings, one category per route (T-557). */
 export function ProjectSettingsLayout() {
@@ -159,13 +141,6 @@ export function ProjectSettingsLayout() {
             >
               References
             </SettingsNavLink>
-            <SettingsNavLink
-              to="/projects/$slug/settings/insights"
-              params={{ slug }}
-              icon={ChartLineIcon}
-            >
-              Insights
-            </SettingsNavLink>
           </SettingsNavGroup>
         </>
       }
@@ -209,10 +184,6 @@ export function ProjectLabelsSettingsPage() {
 
 export function ProjectReferencesSettingsPage() {
   return <ReferencesSection slug={useSettingsSlug()} />;
-}
-
-export function ProjectInsightsSettingsPage() {
-  return <InsightsSettings slug={useSettingsSlug()} />;
 }
 
 export function SlugSection({ slug }: { slug: string }) {
@@ -1215,470 +1186,305 @@ export function AccessDenialsSection({ slug }: { slug: string }) {
   );
 }
 
-export function StatusesSection({ slug }: { slug: string }) {
-  const statuses = useSuspenseQuery(statusesQuery(slug));
-  const [name, setName] = useState("");
-  const [category, setCategory] = useState<"open" | "closed">("open");
-  const queryClient = useQueryClient();
-  const invalidate = (slug: string) =>
-    queryClient.invalidateQueries({ queryKey: ["statuses", slug] });
-  const create = useMutation({
-    mutationFn: (vars: {
-      slug: string;
-      name: string;
-      category: "open" | "closed";
-    }) =>
-      api.createStatus(vars.slug, {
-        name: vars.name,
-        category: vars.category,
-        color: "#6b7280",
-      }),
-    onSuccess: (_data, vars) => {
-      setName("");
-      invalidate(vars.slug);
-    },
-    onError: (error) => toast.error(error.message),
-  });
-  const patch = useMutation({
-    mutationFn: (vars: {
-      slug: string;
-      id: number;
-      input: StatusUpdateInput;
-    }) => api.updateStatus(vars.slug, vars.id, vars.input),
-    onSuccess: (_data, vars) => invalidate(vars.slug),
-    onError: (error) => toast.error(error.message),
-  });
-  const remove = useMutation({
-    mutationFn: (vars: { slug: string; id: number }) =>
-      api.deleteStatus(vars.slug, vars.id),
-    onSuccess: (_data, vars) => invalidate(vars.slug),
-    onError: (error) =>
-      toast.error(
-        error.message.includes("used by")
-          ? "Status is in use — move its issues to another status first."
-          : error.message,
-      ),
-  });
-  function swap(index: number, direction: -1 | 1) {
-    const a = statuses.data[index];
-    const b = statuses.data[index + direction];
-    if (!a || !b) return;
-    patch.mutate({ slug, id: a.id, input: { position: b.position } });
-    patch.mutate({ slug, id: b.id, input: { position: a.position } });
-  }
-
-  return (
-    <section className="space-y-3">
-      <h2 className="text-lg font-semibold">Statuses</h2>
-      <div className="space-y-2">
-        {statuses.data.map((status: Status, index: number) => (
-          <div
-            key={status.id}
-            className="flex items-center gap-2 rounded-md border px-3 py-1.5"
-          >
-            <StatusPill status={status} />
-            <span className="text-xs text-muted-foreground">
-              {status.category}
-            </span>
-            {status.is_default && (
-              <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
-                default
-              </span>
-            )}
-            <span className="ml-auto flex items-center gap-1">
-              <ColorPicker
-                name={status.name}
-                color={status.color}
-                onPick={(color) =>
-                  patch.mutate({ slug, id: status.id, input: { color } })
-                }
-              />
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label={
-                  status.is_default
-                    ? `clear default status`
-                    : `make ${status.name} the default status`
-                }
-                title={
-                  status.is_default
-                    ? "Clear default — new issues go to the first status"
-                    : "New issues default to this status"
-                }
-                onClick={() =>
-                  patch.mutate({
-                    slug,
-                    id: status.id,
-                    input: { is_default: !status.is_default },
-                  })
-                }
-              >
-                <PinIcon
-                  className={
-                    status.is_default
-                      ? "size-4 fill-primary text-primary"
-                      : "size-4 text-muted-foreground"
-                  }
-                />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label={`move ${status.name} up`}
-                disabled={index === 0}
-                onClick={() => swap(index, -1)}
-              >
-                <ArrowUpIcon className="size-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label={`move ${status.name} down`}
-                disabled={index === statuses.data.length - 1}
-                onClick={() => swap(index, 1)}
-              >
-                <ArrowDownIcon className="size-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label={`delete ${status.name}`}
-                onClick={() => remove.mutate({ slug, id: status.id })}
-              >
-                <Trash2Icon className="size-4" />
-              </Button>
-            </span>
-          </div>
-        ))}
-      </div>
-      <form
-        className="flex items-center gap-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (name.trim()) create.mutate({ slug, name, category });
-        }}
-      >
-        <Input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="New status name"
-          className="w-48"
-        />
-        <Select
-          value={category}
-          onValueChange={(v) => setCategory(v as "open" | "closed")}
-        >
-          <SelectTrigger className="w-28" size="sm">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="open">open</SelectItem>
-            <SelectItem value="closed">closed</SelectItem>
-          </SelectContent>
-        </Select>
-        <Button type="submit" size="sm">
-          <PlusIcon className="size-3.5" /> Add
-        </Button>
-      </form>
-      <ClearLinePicker slug={slug} statuses={statuses.data} />
-    </section>
-  );
-}
-
 /**
- * Which status stops a card blocking the ones waiting for it (T-377).
- *
- * Inside Statuses rather than beside it: the value names a status, the rule
- * is read off their order, and reordering the list above silently moves what
- * this means.
+ * One list, a row per label; a row opens into its editor in place (T-713).
+ * The open row's chip is the editor's preview, which is why the draft lives
+ * here and not in the editor.
  */
-function ClearLinePicker({
-  slug,
-  statuses,
-}: {
-  slug: string;
-  statuses: Status[];
-}) {
-  const project = useSuspenseQuery(projectQuery(slug));
-  const queryClient = useQueryClient();
-  const current = project.data.block_clear_status_id ?? null;
-  const set = useMutation({
-    mutationFn: (vars: { slug: string; id: number | null }) =>
-      api.updateProject(vars.slug, { block_clear_status_id: vars.id }),
-    onSuccess: (_data, vars) => {
-      queryClient.invalidateQueries({ queryKey: ["project", vars.slug] });
-      // Every card's badge may have moved with the line.
-      queryClient.invalidateQueries({ queryKey: ["issues"] });
-      queryClient.invalidateQueries({ queryKey: ["issue"] });
-    },
-    onError: (error) => toast.error(error.message),
-  });
-
-  return (
-    <div className="flex items-center gap-2 border-t pt-3">
-      <span className="text-sm">Blocks clear at</span>
-      <Select
-        value={current === null ? "none" : String(current)}
-        onValueChange={(v) =>
-          set.mutate({ slug, id: v === "none" ? null : Number(v) })
-        }
-      >
-        <SelectTrigger className="w-48" size="sm" aria-label="blocks clear at">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="none">any closed status</SelectItem>
-          {statuses.map((status) => (
-            <SelectItem key={status.id} value={String(status.id)}>
-              {status.name} or later
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </div>
-  );
-}
-
-function ColorPicker({
-  name,
-  color,
-  onPick,
-}: {
-  name: string;
-  color: string;
-  onPick: (color: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [hex, setHex] = useState(color);
-  const normalized = normalizeHexColor(hex);
-
-  const pick = (picked: string) => {
-    onPick(picked);
-    setOpen(false);
-  };
-
-  return (
-    <Popover
-      open={open}
-      onOpenChange={(isOpen) => {
-        setOpen(isOpen);
-        if (isOpen) setHex(color);
-      }}
-    >
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          aria-label={`change ${name} color`}
-          title="Change color"
-        >
-          <span
-            className="size-4 rounded-full border"
-            style={{ backgroundColor: color }}
-            aria-hidden
-          />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-auto p-2">
-        <div className="grid grid-cols-6 gap-1.5">
-          {PRESET_COLORS.map((preset) => (
-            <button
-              key={preset}
-              type="button"
-              aria-label={`set ${name} color ${preset}`}
-              className="flex size-6 cursor-pointer items-center justify-center rounded-full border transition-transform hover:scale-110"
-              style={{ backgroundColor: preset }}
-              onClick={() => pick(preset)}
-            >
-              {preset === color.toLowerCase() && (
-                <CheckIcon className="size-3.5 text-white drop-shadow" />
-              )}
-            </button>
-          ))}
-        </div>
-        <form
-          className="mt-2 flex items-center gap-1.5"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (normalized) pick(normalized);
-          }}
-        >
-          <input
-            type="color"
-            value={normalized ?? color}
-            onChange={(e) => setHex(e.target.value)}
-            aria-label={`custom color for ${name}`}
-            className="size-7 shrink-0 cursor-pointer rounded border"
-          />
-          <Input
-            value={hex}
-            onChange={(e) => setHex(e.target.value)}
-            placeholder="#8b5cf6"
-            aria-label={`custom hex for ${name}`}
-            // text-base below md: sub-16px inputs trigger iOS focus auto-zoom.
-            className="h-7 w-24 font-mono text-base md:text-xs"
-          />
-          <Button
-            type="submit"
-            size="sm"
-            variant="outline"
-            disabled={!normalized}
-          >
-            Set
-          </Button>
-        </form>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
 export function LabelsSection({ slug }: { slug: string }) {
   const labels = useSuspenseQuery(labelsQuery(slug));
+  // A heavier read than the catalog; the list does not wait for it.
+  const usage = useQuery(labelUsageQuery(slug));
+  const usageById = new Map(usage.data?.map((u) => [u.id, u]));
+  const [open, setOpen] = useState<number | "new" | null>(null);
   const [name, setName] = useState("");
-  const [color, setColor] = useState("#3b82f6");
-  const [editing, setEditing] = useState<{ id: number; draft: string } | null>(
-    null,
-  );
+  const [color, setColor] = useState("");
+  // Until one is picked, a new label's colour follows its name, the way the
+  // label picker's on-the-fly create colours it.
+  const [colorPicked, setColorPicked] = useState(false);
+  const [deleting, setDeleting] = useState<LabelEntity | null>(null);
   const queryClient = useQueryClient();
   const invalidate = (slug: string) =>
     queryClient.invalidateQueries({ queryKey: ["labels", slug] });
 
   const create = useMutation({
-    mutationFn: (vars: { slug: string; name: string; color: string }) =>
-      api.createLabel(vars.slug, { name: vars.name, color: vars.color }),
+    mutationFn: (vars: { slug: string; input: LabelCreateInput }) =>
+      api.createLabel(vars.slug, vars.input),
     onSuccess: (_data, vars) => {
-      setName("");
+      setOpen(null);
       invalidate(vars.slug);
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const update = useMutation({
+    mutationFn: (vars: { slug: string; id: number; input: LabelUpdateInput }) =>
+      api.updateLabel(vars.slug, vars.id, vars.input),
+    onSuccess: (_data, vars) => {
+      setOpen(null);
+      invalidate(vars.slug);
+      // Issue rows and board cards embed label names and colours.
+      queryClient.invalidateQueries({ queryKey: ["issues", vars.slug] });
     },
     onError: (error) => toast.error(error.message),
   });
   const remove = useMutation({
     mutationFn: (vars: { slug: string; id: number }) =>
       api.deleteLabel(vars.slug, vars.id),
-    onSuccess: (_data, vars) => invalidate(vars.slug),
-    onError: (error) => toast.error(error.message),
-  });
-  const recolor = useMutation({
-    mutationFn: (vars: { slug: string; id: number; color: string }) =>
-      api.updateLabel(vars.slug, vars.id, { color: vars.color }),
-    onSuccess: (_data, vars) => invalidate(vars.slug),
-    onError: (error) => toast.error(error.message),
-  });
-  const rename = useMutation({
-    mutationFn: (vars: { slug: string; id: number; name: string }) =>
-      api.updateLabel(vars.slug, vars.id, { name: vars.name }),
     onSuccess: (_data, vars) => {
-      setEditing(null);
+      setDeleting(null);
+      setOpen(null);
       invalidate(vars.slug);
-      // Issue rows and board cards embed label names.
       queryClient.invalidateQueries({ queryKey: ["issues", vars.slug] });
     },
     onError: (error) => toast.error(error.message),
   });
 
+  function toggle(label: LabelEntity) {
+    if (open === label.id) return setOpen(null);
+    setName(label.name);
+    setColor(label.color);
+    setOpen(label.id);
+  }
+  function startNew() {
+    setName("");
+    setColor(labelColorFor(""));
+    setColorPicked(false);
+    setOpen("new");
+  }
+
+  const trimmed = name.trim();
+  const deletingUses = deleting ? usageById.get(deleting.id)?.issues : 0;
+
   return (
     <section className="space-y-3">
-      <h2 className="text-lg font-semibold">Labels</h2>
-      <div className="flex flex-wrap items-center gap-2">
-        {labels.data.map((label) => (
-          <span key={label.id} className="inline-flex items-center gap-1">
-            {editing?.id === label.id ? (
-              <form
-                className="inline-flex items-center gap-1"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const next = editing.draft.trim();
-                  if (next === "" || next === label.name) setEditing(null);
-                  else rename.mutate({ slug, id: label.id, name: next });
-                }}
-              >
-                <Input
-                  value={editing.draft}
-                  onChange={(e) =>
-                    setEditing({ id: label.id, draft: e.target.value })
-                  }
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") setEditing(null);
-                  }}
-                  aria-label={`new name for ${label.name}`}
-                  autoFocus
-                  // text-base below md: sub-16px inputs trigger iOS focus auto-zoom.
-                  className="h-7 w-44 text-base md:text-xs"
-                />
-                <Button
-                  type="submit"
-                  size="icon-sm"
-                  variant="ghost"
-                  aria-label={`save name for ${label.name}`}
-                >
-                  <CheckIcon className="size-3.5" />
-                </Button>
-                <Button
-                  type="button"
-                  size="icon-sm"
-                  variant="ghost"
-                  aria-label={`cancel renaming ${label.name}`}
-                  onClick={() => setEditing(null)}
-                >
-                  <XIcon className="size-3.5" />
-                </Button>
-              </form>
-            ) : (
-              <>
-                <LabelChip label={label} />
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label={`rename label ${label.name}`}
-                  onClick={() =>
-                    setEditing({ id: label.id, draft: label.name })
-                  }
-                >
-                  <PencilIcon className="size-3.5" />
-                </Button>
-              </>
-            )}
-            <ColorPicker
-              name={label.name}
-              color={label.color}
-              onPick={(picked) =>
-                recolor.mutate({ slug, id: label.id, color: picked })
-              }
-            />
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={`delete label ${label.name}`}
-              onClick={() => remove.mutate({ slug, id: label.id })}
-            >
-              <Trash2Icon className="size-3.5" />
-            </Button>
-          </span>
-        ))}
-        {labels.data.length === 0 && (
-          <span className="text-sm text-muted-foreground">No labels yet.</span>
+      <div className="flex min-h-8 items-center justify-between gap-3">
+        <h2 className="text-lg font-semibold">Labels</h2>
+        {open !== "new" && (
+          <Button variant="outline" onClick={startNew}>
+            <PlusIcon className="size-3.5" /> New label
+          </Button>
         )}
       </div>
-      <form
-        className="flex items-center gap-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (name.trim()) create.mutate({ slug, name, color });
+      {labels.data.length === 0 && open !== "new" ? (
+        <div className="rounded-lg border border-dashed p-10 text-center text-muted-foreground">
+          No labels yet.
+        </div>
+      ) : (
+        <div className="@container divide-y overflow-hidden rounded-lg border">
+          {open === "new" && (
+            <div className="bg-muted/45">
+              <div className="flex min-h-11 items-center pr-2 pl-3">
+                {trimmed ? (
+                  <LabelChip label={{ id: 0, name: trimmed, color }} />
+                ) : (
+                  <span className="text-sm text-muted-foreground">
+                    New label
+                  </span>
+                )}
+              </div>
+              <LabelEditor
+                name={name}
+                color={color}
+                onName={(next) => {
+                  setName(next);
+                  if (!colorPicked) setColor(labelColorFor(next.trim()));
+                }}
+                onColor={(next) => {
+                  setColor(next);
+                  setColorPicked(true);
+                }}
+                submitLabel="Create"
+                canSubmit={trimmed !== ""}
+                pending={create.isPending}
+                onCancel={() => setOpen(null)}
+                onSubmit={() =>
+                  create.mutate({ slug, input: { name: trimmed, color } })
+                }
+              />
+            </div>
+          )}
+          {labels.data.map((label) => {
+            const isOpen = open === label.id;
+            const uses = usageById.get(label.id);
+            const renamed = trimmed !== label.name;
+            const recolored = color !== label.color;
+            return (
+              <div key={label.id} className={cn(isOpen && "bg-muted/45")}>
+                <div
+                  className={cn(
+                    "flex min-h-11 items-center gap-3 pr-2 pl-3",
+                    !isOpen && "hover:bg-muted/60",
+                  )}
+                >
+                  <button
+                    type="button"
+                    aria-expanded={isOpen}
+                    aria-label={`edit label ${label.name}`}
+                    className="flex min-w-0 flex-1 cursor-pointer items-center self-stretch rounded-sm text-left outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                    onClick={() => toggle(label)}
+                  >
+                    <LabelChip
+                      label={
+                        isOpen && trimmed
+                          ? { id: label.id, name: trimmed, color }
+                          : label
+                      }
+                    />
+                  </button>
+                  {uses && (
+                    <Link
+                      to="/projects/$slug"
+                      params={{ slug }}
+                      search={{ label: String(label.id) }}
+                      className="text-sm whitespace-nowrap text-muted-foreground tabular-nums underline-offset-3 hover:text-foreground hover:underline"
+                    >
+                      {uses.open_issues} open
+                    </Link>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    tabIndex={-1}
+                    aria-hidden
+                    onClick={() => toggle(label)}
+                  >
+                    <ChevronDownIcon
+                      className={cn(
+                        "size-4 text-muted-foreground transition-transform",
+                        isOpen && "rotate-180",
+                      )}
+                    />
+                  </Button>
+                </div>
+                {isOpen && (
+                  <LabelEditor
+                    name={name}
+                    color={color}
+                    onName={setName}
+                    onColor={setColor}
+                    submitLabel="Save"
+                    canSubmit={trimmed !== "" && (renamed || recolored)}
+                    pending={update.isPending}
+                    onCancel={() => setOpen(null)}
+                    onDelete={() => setDeleting(label)}
+                    onSubmit={() =>
+                      update.mutate({
+                        slug,
+                        id: label.id,
+                        input: {
+                          ...(renamed && { name: trimmed }),
+                          ...(recolored && { color }),
+                        },
+                      })
+                    }
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <ConfirmDialog
+        open={deleting !== null}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) setDeleting(null);
         }}
-      >
-        <Input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="New label name"
-          className="w-48"
-        />
-        <ColorPicker name="new label" color={color} onPick={setColor} />
-        <Button type="submit" size="sm">
-          <PlusIcon className="size-3.5" /> Add
-        </Button>
-      </form>
+        title="Delete this label?"
+        description={
+          deleting && (
+            <>
+              <LabelChip label={deleting} />{" "}
+              {deletingUses === 0
+                ? "No issue carries it."
+                : deletingUses === undefined
+                  ? "It comes off every issue that carries it, and there is no undo."
+                  : `It comes off ${deletingUses} ${deletingUses === 1 ? "issue" : "issues"} at once, and there is no undo.`}
+            </>
+          )
+        }
+        confirmLabel="Delete label"
+        destructive
+        pending={remove.isPending}
+        onConfirm={() => {
+          if (deleting) remove.mutate({ slug, id: deleting.id });
+        }}
+      />
     </section>
+  );
+}
+
+function LabelEditor({
+  name,
+  color,
+  onName,
+  onColor,
+  submitLabel,
+  canSubmit,
+  pending,
+  onCancel,
+  onDelete,
+  onSubmit,
+}: {
+  name: string;
+  color: string;
+  onName: (name: string) => void;
+  onColor: (color: string) => void;
+  submitLabel: string;
+  canSubmit: boolean;
+  pending: boolean;
+  onCancel: () => void;
+  onDelete?: () => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <form
+      className="grid gap-4 px-3 pt-1 pb-3 @xl:grid-cols-[minmax(0,18rem)_auto] @xl:gap-x-8"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (canSubmit) onSubmit();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") onCancel();
+      }}
+    >
+      <div className="space-y-1.5">
+        <Label htmlFor="label-editor-name">Name</Label>
+        <Input
+          id="label-editor-name"
+          value={name}
+          onChange={(e) => onName(e.target.value)}
+          placeholder="area:web"
+          autoComplete="off"
+          autoFocus
+        />
+      </div>
+      <div className="space-y-1.5">
+        <div className="text-sm leading-none font-medium">Color</div>
+        <ColorSwatches
+          name={name.trim() || "new label"}
+          color={color}
+          onPick={onColor}
+        />
+      </div>
+      <div className="flex items-center gap-2 border-t pt-3 @xl:col-span-2">
+        {onDelete && (
+          <Button
+            type="button"
+            variant="ghost"
+            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+            onClick={onDelete}
+          >
+            <Trash2Icon className="size-3.5" /> Delete
+          </Button>
+        )}
+        <span className="flex-1" />
+        <Button type="button" variant="ghost" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={!canSubmit || pending}>
+          {submitLabel}
+        </Button>
+      </div>
+    </form>
   );
 }

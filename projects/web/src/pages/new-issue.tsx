@@ -43,6 +43,7 @@ import {
   StagedFileUploadButton,
   useStagedFiles,
 } from "@/components/issue/staged-files.tsx";
+import { StatusPill } from "@/components/issue/status-pill.tsx";
 import { PageSkeleton } from "@/components/page-skeleton.tsx";
 import { CommandErrors } from "@/components/shared/command-errors.tsx";
 import { EditorShortcutsHelp } from "@/components/shared/editor-shortcuts-help.tsx";
@@ -519,12 +520,7 @@ function NewIssueForm({
                   <SelectContent>
                     {statuses.data.map((s) => (
                       <SelectItem key={s.id} value={String(s.id)}>
-                        <span
-                          className="size-2 shrink-0 rounded-full"
-                          style={{ backgroundColor: s.color }}
-                          aria-hidden
-                        />
-                        {s.name}
+                        <StatusPill status={s} />
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -566,7 +562,6 @@ function NewIssueForm({
                       labels={labels.data.filter((label) =>
                         labelIds.includes(label.id),
                       )}
-                      truncate
                     />
                   </div>
                 )}

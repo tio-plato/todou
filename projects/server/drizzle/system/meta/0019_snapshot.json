@@ -1,5 +1,5 @@
 {
-  "id": "7f0d6e96-0d03-41eb-81ed-98eb511bd7a4",
+  "id": "f28a1c9d-ed86-4846-9c38-df6149888fd5",
   "prevId": "e55c1e05-e2a3-4745-9d9d-f731434bcb8a",
   "version": "7",
   "dialect": "postgresql",
@@ -653,18 +653,6 @@
         },
         "finished_at": {
           "name": "finished_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "leased_by": {
-          "name": "leased_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "leased_until": {
-          "name": "leased_until",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
@@ -1683,6 +1671,13 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "scopes": {
+          "name": "scopes",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::text[]"
         }
       },
       "indexes": {

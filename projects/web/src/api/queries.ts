@@ -123,11 +123,28 @@ export const statusesQuery = (slug: string) =>
     staleTime: METADATA_STALE_MS,
   });
 
+export const statusUsageQuery = (slug: string) =>
+  queryOptions({
+    queryKey: ["statuses", slug, "usage"],
+    queryFn: () => api.statusUsage(slug),
+  });
+
 export const labelsQuery = (slug: string) =>
   queryOptions({
     queryKey: ["labels", slug],
     queryFn: () => api.listLabels(slug),
     staleTime: METADATA_STALE_MS,
+  });
+
+/**
+ * Under `labels` so a label event refetches it too. Content staleness, not
+ * metadata's: the counts move with every issue write, and no issue event
+ * reaches this key.
+ */
+export const labelUsageQuery = (slug: string) =>
+  queryOptions({
+    queryKey: ["labels", slug, "usage"],
+    queryFn: () => api.labelUsage(slug),
   });
 
 export const membersQuery = (slug: string) =>

@@ -34,6 +34,7 @@ import { remapLineRange } from "@todou/shared/spec-remap";
 import { diffLines } from "diff";
 import {
   ArrowDownIcon,
+  ArrowRightIcon,
   ArrowUpIcon,
   ChevronDownIcon,
   ChevronRightIcon,
@@ -85,7 +86,11 @@ import {
   AnnotatedMarkdown,
   type DisplayedAnnotation,
 } from "@/components/spec/annotated-markdown.tsx";
-import { useNewerVersionToast } from "@/components/spec/newer-version-toast.tsx";
+import {
+  NewerVersionCard,
+  useNewerVersionToast,
+  VersionNumber,
+} from "@/components/spec/newer-version-toast.tsx";
 import { ReviewSubmitDialog } from "@/components/spec/review-submit.tsx";
 import {
   CommentEntryLabel,
@@ -865,6 +870,13 @@ function SpecViewBody({
     if (baselineBody === undefined || selected === undefined) return [];
     return changedLineRanges(baselineBody, selected.body);
   }, [baselineBody, selected]);
+  const compareLabels = useMemo(
+    () =>
+      baseline === null
+        ? undefined
+        : { before: `v${baseline}`, after: `v${version}` },
+    [baseline, version],
+  );
 
   // Files of the viewed version that differ from the baseline (new or
   // modified), in sidebar order — the rail the change navigation rides
@@ -1501,29 +1513,41 @@ function SpecViewBody({
     </ToolbarSlot>
   ) : null;
   const newerSearch = versionSearch(spec.current_version);
+  const newerInfo = spec.versions.find(
+    (v) => v.number === spec.current_version,
+  );
   // Held back while the review dialog or the composer is open: the dialog
   // links the newer version itself, and on a phone the toast would sit on
   // the composer.
   useNewerVersionToast({
     open:
       !isCurrent &&
+      newerInfo !== undefined &&
       !finishOpen &&
       staging === null &&
       newerDismissedAt !== spec.current_version,
     current: spec.current_version,
     contentKey: JSON.stringify(newerSearch),
-    content: (
-      <Link
-        to="/projects/$slug/issues/$number/spec"
-        params={params}
-        search={newerSearch}
-        state={returnState}
-        className="font-medium hover:underline"
-      >
-        Newer version: v{spec.current_version}
-        <span aria-hidden> →</span>
-      </Link>
-    ),
+    content: (close) =>
+      newerInfo && (
+        <NewerVersionCard
+          version={newerInfo}
+          onClose={close}
+          action={
+            <Button size="sm" asChild>
+              <Link
+                to="/projects/$slug/issues/$number/spec"
+                params={params}
+                search={newerSearch}
+                state={returnState}
+              >
+                Open <VersionNumber version={spec.current_version} />
+                <ArrowRightIcon data-icon="inline-end" aria-hidden />
+              </Link>
+            </Button>
+          }
+        />
+      ),
     onReaderDismiss: session.setNewerDismissedAt,
   });
   // The same destination, offered where a push lands on an open review.
@@ -2097,6 +2121,7 @@ function SpecViewBody({
                       onRemoveDraft={drafts.remove}
                       onResolve={resolveComment}
                       resolving={resolve.isPending}
+                      compareLabels={compareLabels}
                     />
                   )}
                 </div>

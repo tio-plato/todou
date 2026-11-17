@@ -11,15 +11,13 @@ import {
   FileDiffIcon,
   GitCommitHorizontalIcon,
 } from "lucide-react";
-import {
-  type MouseEvent,
-  type ReactNode,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import {
+  CopyButton,
+  FenceFrame,
+  FenceTitleLink,
+} from "@/components/shared/fence-frame.tsx";
 import {
   CodeBlock,
   PATCH_HEADER_HEIGHT,
@@ -125,7 +123,7 @@ function FileHeader({
   /** Drawn as this row alone. */
   collapsed: boolean;
   /** Absent where there is no other file to fold this one away for. */
-  onToggle?: (event: MouseEvent<HTMLButtonElement>) => void;
+  onToggle?: () => void;
   /** Present while the diff is held back. */
   onLoad?: () => void;
 }) {
@@ -169,17 +167,6 @@ function FileHeader({
       </span>
     </div>
   );
-}
-
-/**
- * Whether the item holding `header` begins above the top of `box`, the
- * scrolling element around it.
- */
-function scrolledPast(header: Element, box: HTMLElement | undefined) {
-  // pierre slots a header row into a wrapper div on the item's own element.
-  const item = header.closest("[slot]")?.parentElement;
-  if (item == null || box === undefined) return false;
-  return item.getBoundingClientRect().top < box.getBoundingClientRect().top;
 }
 
 function FileList({
@@ -278,6 +265,11 @@ function FilesMenu({
           undefined
         }
         align="end"
+        // The padding matches the width cap's 1rem a side. At the default 8px
+        // a phone-wide list was pushed against the left edge, 8px from it and
+        // 24px from the right, and out past the edge of the dialog it opened
+        // from, whose own margin is that same 1rem.
+        collisionPadding={16}
         className="max-h-[55vh] w-96 max-w-[calc(100vw-2rem)] overflow-y-auto p-0"
       >
         <FileList
@@ -312,6 +304,8 @@ export function PatchView({
   invalidNote = false,
   clipped = false,
   toolbar,
+  title,
+  lang,
 }: {
   /** Names the raw view's highlighting. */
   filename: string;
@@ -334,6 +328,10 @@ export function PatchView({
    * mounted. Omitted, the patch draws a title bar of its own.
    */
   toolbar?: HTMLElement | null;
+  /** A fence's filename, downloadable from the title bar this draws. */
+  title?: string;
+  /** A fence's tag, shown while its text is not drawn as a patch. */
+  lang?: string;
 }) {
   const [parsed, setParsed] = useState<Parsed>({ kind: "pending" });
   const [raw, setRaw] = useState(false);
@@ -410,19 +408,20 @@ export function PatchView({
           collapsed={shut}
           onToggle={
             drawn.files.length > 1
-              ? (event) => {
+              ? () => {
                   // Folding a file whose top has scrolled past the box's
                   // would leave the reader among files further down; bring
                   // its header back to the top so the next file follows it.
                   // `start` resolves from the item's top, which its own
                   // folding leaves alone.
+                  const code = view.current?.getInstance();
+                  const top = code?.getTopForItem(patchFileId(index));
                   if (
                     !shut &&
                     !clipped &&
-                    scrolledPast(
-                      event.currentTarget,
-                      view.current?.getInstance()?.getContainerElement(),
-                    )
+                    code !== undefined &&
+                    top !== undefined &&
+                    top < code.getScrollTop()
                   ) {
                     view.current?.scrollTo({
                       type: "item",
@@ -445,8 +444,29 @@ export function PatchView({
     return rows;
   }, [drawn, collapsed, clipped]);
 
-  if (parsed.kind === "pending") return <PlainCodeFallback contents={text} />;
+  // A fence that is not (yet) a drawn patch is still a code block, framed as
+  // every other one is.
+  // With no title bar to borrow, text not (yet) drawn as a patch is still a
+  // code block, and framed as every other one is.
+  const framed = toolbar === undefined;
+  if (parsed.kind === "pending") {
+    return framed ? (
+      <FenceFrame text={text} lang={lang} title={title}>
+        <PlainCodeFallback contents={text} bare />
+      </FenceFrame>
+    ) : (
+      <PlainCodeFallback contents={text} />
+    );
+  }
   if (patches === null || drawn === null) {
+    const code = (
+      <CodeBlock
+        filename={filename}
+        contents={text}
+        lineNumbers={lineNumbers}
+        bareFallback={framed}
+      />
+    );
     return (
       <>
         {parsed.kind === "invalid" && invalidNote && (
@@ -454,11 +474,13 @@ export function PatchView({
             Not a valid patch — showing the text.
           </p>
         )}
-        <CodeBlock
-          filename={filename}
-          contents={text}
-          lineNumbers={lineNumbers}
-        />
+        {framed ? (
+          <FenceFrame text={text} lang={lang} title={title}>
+            {code}
+          </FenceFrame>
+        ) : (
+          code
+        )}
       </>
     );
   }
@@ -530,10 +552,17 @@ export function PatchView({
   return (
     <div className="overflow-hidden rounded-lg border">
       <div className="flex items-center gap-2 border-b bg-muted/40 py-1 pr-1.5 pl-3 text-xs text-muted-foreground">
-        <FileDiffIcon className="size-3.5" />
-        <span>patch</span>
+        {title !== undefined ? (
+          <FenceTitleLink title={title} text={text} />
+        ) : (
+          <>
+            <FileDiffIcon className="size-3.5" />
+            <span>patch</span>
+          </>
+        )}
         <span className="ml-auto" />
         {controls}
+        <CopyButton text={text} />
       </div>
       <div className="p-2">{body}</div>
     </div>

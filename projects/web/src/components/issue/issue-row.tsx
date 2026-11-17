@@ -7,7 +7,7 @@ import {
   type Status,
   type Watcher,
 } from "@todou/shared";
-import { CheckIcon, EyeIcon, TagIcon, UserPlusIcon } from "lucide-react";
+import { EyeIcon, TagIcon, UserPlusIcon } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";
 import { useRefPlacement } from "@/api/prefs.ts";
 import { useRefPrefix } from "@/api/references.ts";
@@ -21,17 +21,13 @@ import {
 import { LabelChips } from "@/components/issue/label-chip.tsx";
 import { LabelPicker } from "@/components/issue/label-picker.tsx";
 import { MarkReadButton } from "@/components/issue/mark-read-button.tsx";
+import { StatusMenu } from "@/components/issue/status-menu.tsx";
 import { StatusPill } from "@/components/issue/status-pill.tsx";
 import { ProjectIcon } from "@/components/shared/project-icon.tsx";
 import { useReturnLinkState } from "@/components/shared/return-context.tsx";
 import { UserChip } from "@/components/shared/user-chip.tsx";
 import { groupWatchers } from "@/components/shared/watcher-stack.tsx";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 
 /**
@@ -77,8 +73,9 @@ const ISSUE_LIST_GRID_NO_MARKER_TRAILING_REF =
 
 /**
  * The column layout a list of `IssueRow`s must wear, per the viewer's
- * preference. `readMarker: false` must match the rows' own prop: the track and
- * the control are one decision, made once by the list.
+ * preference. `readMarker: false` must match the rows' own prop: the track
+ * and the control are one decision, made once by the list. Selecting takes
+ * no track; the row's box hangs on the list's border (T-732).
  */
 export function useIssueListGrid({
   readMarker = true,
@@ -145,6 +142,7 @@ export function IssueRow({
   badges = true,
   blocked = true,
   returnAnchor = true,
+  select,
 }: {
   slug: string;
   issue: IssueRowIssue;
@@ -172,6 +170,12 @@ export function IssueRow({
    * would offer the restorer two anchors carrying one id.
    */
   returnAnchor?: boolean;
+  /**
+   * The row's checkbox (T-707). The list wraps its rows in `group/select`
+   * with `data-selecting` so every box shows once any is checked (T-732).
+   * `extend` is a shift-click.
+   */
+  select?: { checked: boolean; onToggle: (extend: boolean) => void };
 }) {
   const refPrefix = useRefPrefix(slug);
   const refLeads = useRefPlacement("list") === "before";
@@ -185,9 +189,34 @@ export function IssueRow({
       data-return-id={returnAnchor ? String(issue.id) : undefined}
       className={cn(
         ISSUE_LIST_ROW,
-        "grid grid-cols-subgrid items-center border-b px-3.5 py-2.5 transition-colors last:border-0 hover:bg-muted/50",
+        "group/row relative grid grid-cols-subgrid items-center border-b px-3.5 py-2.5 transition-colors last:border-0 hover:bg-muted/50",
+        select?.checked && "bg-primary/10 hover:bg-primary/10",
       )}
     >
+      {select && (
+        // Hung on the list's left border, centred on it, so an idle list keeps
+        // no column for a box nobody is using (T-732). The row bleeds to the
+        // list's padding edge, so the 1px border is at x -1..0 and the box at
+        // -8.5..7.5. The label is the hit area, from the box's outer edge to
+        // the end of the row's padding, at full row height. Nothing above the
+        // list clips (T-306), and the 11.5px it reaches out with its focus
+        // ring fits inside the page's 16px gutter.
+        <label
+          htmlFor={`issue-select-${issue.id}`}
+          className="absolute inset-y-0 -left-3 flex w-[26px] cursor-pointer items-center pl-[3.5px] touch:hidden"
+        >
+          <Checkbox
+            id={`issue-select-${issue.id}`}
+            aria-label={`select ${ref}`}
+            checked={select.checked}
+            // onClick rather than onChange: only the click carries shiftKey,
+            // and it fires for Space as well.
+            onClick={(e) => select.onToggle(e.shiftKey)}
+            onChange={() => {}}
+            className="bg-background opacity-0 group-hover/row:opacity-100 group-data-[selecting]/select:opacity-100 checked:opacity-100 focus-visible:opacity-100"
+          />
+        </label>
+      )}
       {/* Centering keeps the ring and the 99+ badge on one axis; the width of
           the slot is the grid's first column (the CLI's ● column). */}
       {readMarker && (
@@ -312,7 +341,7 @@ export function IssueRowProjectTrailing({
 }) {
   return (
     <span className="ml-auto flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-      <StatusPill status={status} className="shrink-0" />
+      <StatusPill status={status} />
       <span className="flex max-w-40 items-center gap-2 max-sm:hidden">
         <ProjectIcon
           project={project}
@@ -372,7 +401,7 @@ export function IssueRowMeta({
       {/* The one thing on this line that can give ground: the status pill's
           width comes from the project's status list, the tag icon is 14px,
           and the title sits on the line above with its own truncate. */}
-      <LabelChips labels={issue.labels} truncate />
+      <LabelChips labels={issue.labels} />
       <LabelPicker
         allLabels={allLabels}
         selected={issue.labels}
@@ -407,43 +436,6 @@ export function IssueRowMeta({
         <AssigneesAndWatchers issue={issue} watchers={watchers} />
       </span>
     </>
-  );
-}
-
-/**
- * A row's status pill that opens the project's statuses. Without `onStatus`
- * it stays the bare pill: below `issue.triage` there is nothing to open that
- * the server would not refuse.
- */
-export function StatusMenu({
-  status,
-  statuses,
-  onStatus,
-}: {
-  status: Status;
-  statuses: readonly Status[];
-  onStatus?: (status: Status) => void;
-}) {
-  if (!onStatus) return <StatusPill status={status} />;
-  return (
-    <DropdownMenu>
-      {/* flex collapses the button's line box to the pill; the default
-          block box is 24px tall and seats the pill on its text baseline,
-          ~1.6px below the neighbouring label chips (T-98). */}
-      <DropdownMenuTrigger className="flex cursor-pointer">
-        <StatusPill status={status} />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent>
-        {statuses.map((s) => (
-          <DropdownMenuItem key={s.id} onSelect={() => onStatus(s)}>
-            <span className="w-4">
-              {s.id === status.id && <CheckIcon className="size-4" />}
-            </span>
-            <StatusPill status={s} className="border-0 px-0" />
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
   );
 }
 

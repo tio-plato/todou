@@ -1314,6 +1314,15 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
 
   it("a PATCH reopening a card closed meanwhile blocks what it blocks again", async () => {
     const p = await project();
+    // Without the seeded clear line (T-711) the categories decide: Open,
+    // added after Shipped, would otherwise clear the block too.
+    expect(
+      (
+        await send("PATCH", `/projects/${p.slug}`, {
+          block_clear_status_id: null,
+        })
+      ).status,
+    ).toBe(200);
     const status = async (name: string, category: string) => {
       const res = await send("POST", `/projects/${p.slug}/statuses`, {
         name,

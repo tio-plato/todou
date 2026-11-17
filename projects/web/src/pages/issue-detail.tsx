@@ -63,7 +63,7 @@ import {
   StagedFileUploadButton,
   useStagedFiles,
 } from "@/components/issue/staged-files.tsx";
-import { StatusPill } from "@/components/issue/status-pill.tsx";
+import { StatusMenu } from "@/components/issue/status-menu.tsx";
 import { AgentContextBadge } from "@/components/shared/agent-badge.tsx";
 import {
   COMMENT_HEADER_ACTION,
@@ -94,12 +94,6 @@ import {
 import { Timeline } from "@/components/timeline/timeline.tsx";
 import { TimelineDivider } from "@/components/timeline/timeline-divider.tsx";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDockCover } from "@/lib/dock-cover.ts";
@@ -831,36 +825,20 @@ export function Sidebar({
     // sides and bottom 4px to draw in without moving the column.
     <aside className="min-w-0 space-y-3 text-sm lg:sticky lg:top-20 lg:-mx-1 lg:max-h-[calc(100vh-6rem)] lg:self-start lg:overflow-y-auto lg:px-1 lg:pb-1">
       <SidebarSection name="status" title="Status">
-        {trashed ? (
-          <StatusPill status={issue.status} />
-        ) : (
-          <DropdownMenu>
-            <DropdownMenuTrigger className="cursor-pointer">
-              <StatusPill status={issue.status} />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent>
-              {statuses.map((s) => (
-                <DropdownMenuItem
-                  key={s.id}
-                  onSelect={() =>
-                    statusMutation.mutate({
-                      slug,
-                      issueNumber: issue.number,
-                      status: s,
-                    })
-                  }
-                >
-                  <span className="w-4">
-                    {s.id === issue.status.id && (
-                      <CheckIcon className="size-4" />
-                    )}
-                  </span>
-                  <StatusPill status={s} className="border-0 px-0" />
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
+        <StatusMenu
+          status={issue.status}
+          statuses={statuses}
+          onStatus={
+            trashed
+              ? undefined
+              : (s) =>
+                  statusMutation.mutate({
+                    slug,
+                    issueNumber: issue.number,
+                    status: s,
+                  })
+          }
+        />
       </SidebarSection>
 
       <SidebarSection
@@ -892,7 +870,7 @@ export function Sidebar({
       >
         {issue.labels.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5">
-            <LabelChips labels={issue.labels} truncate />
+            <LabelChips labels={issue.labels} />
           </div>
         )}
       </SidebarSection>

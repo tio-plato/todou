@@ -13,9 +13,10 @@ import {
   ImageIcon,
   PaperclipIcon,
 } from "lucide-react";
-import { type MouseEvent, type ReactNode, useState } from "react";
+import { type MouseEvent, type ReactNode, useMemo, useState } from "react";
 import { attachmentsQuery, useAttachmentDeleted } from "@/api/attachments.ts";
 import { useBoxedRefLinks } from "@/api/prefs.ts";
+import { AttachmentBulkActions } from "@/components/issue/attachment-bulk.tsx";
 import { AttachmentDeleteButton } from "@/components/issue/attachment-delete.tsx";
 import {
   AttachmentViewerDialog,
@@ -29,6 +30,7 @@ import {
   RICH_CHIP_SKIN,
   RICH_CHIP_STRUCTURE,
 } from "@/components/shared/rich-chip.ts";
+import { SelectSlot } from "@/components/ui/checkbox";
 import {
   formatSize,
   isArchiveFile,
@@ -41,6 +43,7 @@ import {
 } from "@/lib/attachment-preview.ts";
 import { attachmentAnchorHref, attachmentHref } from "@/lib/attachment-refs.ts";
 import { SOURCE_SPAN_ATTR } from "@/lib/rehype-source-lines.ts";
+import { useSelection } from "@/lib/use-selection.ts";
 import { cn } from "@/lib/utils.ts";
 
 /** Modifier-clicks (new tab, forced download) keep native link behavior. */
@@ -59,7 +62,7 @@ function isPlainLeftClick(e: MouseEvent): boolean {
  * TypeScript source and an MPEG transport stream, and `isTextDocument` has
  * to get the first look at it.
  */
-function attachmentIcon(attachment: {
+export function attachmentIcon(attachment: {
   filename: string;
   content_type?: string;
 }) {
@@ -108,7 +111,14 @@ export function AttachmentList({
   // Not persisted anywhere: expanding is "show me now", not a preference.
   const [expanded, setExpanded] = useState(false);
   const items = attachments.data ?? [];
+  const ids = useMemo(
+    () => (attachments.data ?? []).map((a) => a.id),
+    [attachments.data],
+  );
+  const selection = useSelection(ids);
   if (items.length === 0) return null;
+  // One file has its own download and delete on its row already.
+  const selectable = items.length > 1;
 
   const collapsible = items.length >= CAP + MIN_HIDDEN;
   const folded = collapsible && !expanded;
@@ -121,10 +131,34 @@ export function AttachmentList({
 
   return (
     <section className="rounded-lg border" id="attachments">
-      <div className="flex items-center gap-2 border-b bg-muted/40 px-3 py-1.5 text-sm">
-        <PaperclipIcon className="size-3.5 text-muted-foreground" />
+      {/* The paperclip's cell is 16px, `px-3` and `gap-x-2` like a row's
+          icon cell and the label's padding, so the clip, every file icon and
+          every box sit on one vertical line (T-732). */}
+      <div className="group/att-head flex flex-wrap items-center gap-x-2 border-b bg-muted/40 px-3 py-1.5 text-sm">
+        {selectable ? (
+          <SelectSlot
+            icon={<PaperclipIcon className="size-3.5 text-muted-foreground" />}
+            hoverGroup="att-head"
+            aria-label="select all attachments"
+            checked={selection.state === "all"}
+            indeterminate={selection.state === "some"}
+            onChange={selection.toggleAll}
+          />
+        ) : (
+          <span className="inline-grid size-4 shrink-0 place-items-center">
+            <PaperclipIcon className="size-3.5 text-muted-foreground" />
+          </span>
+        )}
         <span className="font-medium">Attachments</span>
         <span className="text-muted-foreground">{items.length}</span>
+        {selectable && (
+          <AttachmentBulkActions
+            slug={slug}
+            issueNumber={issueNumber}
+            items={items}
+            selection={selection}
+          />
+        )}
       </div>
       {collapsible && (
         <button
@@ -154,14 +188,51 @@ export function AttachmentList({
           // somewhere in the middle.
           const index = shownIndex + hiddenBefore;
           const Icon = attachmentIcon(attachment);
+          const icon = (
+            <Icon
+              className="size-4 shrink-0 text-muted-foreground"
+              data-attachment-icon=""
+            />
+          );
           return (
             <li
               key={attachment.id}
-              className="flex items-center hover:bg-muted/40"
+              className={cn(
+                "group/att flex items-center hover:bg-muted/40",
+                selection.isSelected(attachment.id) &&
+                  "bg-primary/10 hover:bg-primary/10",
+              )}
             >
+              {selectable && (
+                // The label is the hit area: the whole left gutter, row
+                // height, rather than a 16px box beside a link. The file's
+                // icon lives in it, standing for "not selected", so a tap on
+                // the icon selects on touch too (T-732).
+                <label
+                  htmlFor={`attachment-select-${attachment.id}`}
+                  className="flex shrink-0 cursor-pointer items-center self-stretch pr-2 pl-3"
+                >
+                  <SelectSlot
+                    icon={icon}
+                    hoverGroup="att"
+                    id={`attachment-select-${attachment.id}`}
+                    aria-label={`select ${attachment.filename}`}
+                    checked={selection.isSelected(attachment.id)}
+                    // onClick rather than onChange: only the click carries
+                    // shiftKey, and it fires for Space as well.
+                    onClick={(e) =>
+                      selection.toggle(attachment.id, { extend: e.shiftKey })
+                    }
+                    onChange={() => {}}
+                  />
+                </label>
+              )}
               <a
                 href={attachmentAnchorHref(attachment)}
-                className="flex min-w-0 flex-1 items-center gap-2 py-2 pl-3 text-sm"
+                className={cn(
+                  "flex min-w-0 flex-1 items-center gap-2 py-2 text-sm",
+                  !selectable && "pl-3",
+                )}
                 onClick={(e) => {
                   if (previewKind(attachment) !== null && isPlainLeftClick(e)) {
                     e.preventDefault();
@@ -169,7 +240,7 @@ export function AttachmentList({
                   }
                 }}
               >
-                <Icon className="size-4 shrink-0 text-muted-foreground" />
+                {!selectable && icon}
                 <span className="truncate font-medium hover:underline">
                   {attachment.filename}
                 </span>
@@ -490,6 +561,7 @@ export function AttachmentInlineImage({
   alt,
   className,
   sourceSpan,
+  onSize,
 }: {
   slug: string;
   issueNumber: number;
@@ -504,6 +576,8 @@ export function AttachmentInlineImage({
   className?: string;
   /** The image's source offsets (`SOURCE_SPAN_ATTR`), on the `<img>` too. */
   sourceSpan?: string;
+  /** The natural size once loaded; null when it failed to (T-722). */
+  onSize?: (size: { width: number; height: number } | null) => void;
 }) {
   const attachments = useQuery(attachmentsQuery(slug, issueNumber));
   const [viewer, setViewer] = useState<ViewerState | null>(null);
@@ -521,6 +595,15 @@ export function AttachmentInlineImage({
         alt={alt}
         {...{ [SOURCE_SPAN_ATTR]: sourceSpan }}
         className={cn("cursor-zoom-in", className)}
+        onLoad={
+          onSize &&
+          ((e) =>
+            onSize({
+              width: e.currentTarget.naturalWidth,
+              height: e.currentTarget.naturalHeight,
+            }))
+        }
+        onError={onSize && (() => onSize(null))}
         onClick={() =>
           setViewer(
             viewerStateFor(

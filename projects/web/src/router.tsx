@@ -40,6 +40,7 @@ import { parseInsightsSearch } from "@/lib/insights-search.ts";
 import { INBOX_TABS, type InboxTab } from "@/lib/return-view.ts";
 import { parseSpecSearch } from "@/lib/spec-search.ts";
 import { hasUnsavedWork } from "@/lib/unsaved-guard.ts";
+import { AgentSettingsPage } from "@/pages/agent-settings.tsx";
 import { AgentsSettingsPage } from "@/pages/agents-settings.tsx";
 import { BoardPage } from "@/pages/board.tsx";
 import { CliAuthPage } from "@/pages/cli-auth.tsx";
@@ -59,7 +60,6 @@ import {
 import { ProjectLayout, ProjectRouteError } from "@/pages/project-layout.tsx";
 import {
   ProjectGeneralSettingsPage,
-  ProjectInsightsSettingsPage,
   ProjectLabelsSettingsPage,
   ProjectMembersSettingsPage,
   ProjectReferencesSettingsPage,
@@ -440,10 +440,18 @@ const projectReferencesSettingsRoute = createRoute({
   component: ProjectReferencesSettingsPage,
 });
 
+// Chart roles moved into each status's editor (T-712); old links and
+// bookmarks still land on the page that holds them.
 const projectInsightsSettingsRoute = createRoute({
   getParentRoute: () => projectSettingsRoute,
   path: "insights",
-  component: ProjectInsightsSettingsPage,
+  beforeLoad: ({ params }) => {
+    throw redirect({
+      to: "/projects/$slug/settings/statuses",
+      params,
+      replace: true,
+    });
+  },
 });
 
 const inboxRoute = createRoute({
@@ -565,6 +573,12 @@ const agentsSettingsRoute = createRoute({
     search.state === "deactivated" ? { state: "deactivated" } : {},
 });
 
+const agentSettingsRoute = createRoute({
+  getParentRoute: () => userSettingsRoute,
+  path: "agents/$login",
+  component: AgentSettingsPage,
+});
+
 const tokensSettingsRoute = createRoute({
   getParentRoute: () => userSettingsRoute,
   path: "tokens",
@@ -620,6 +634,7 @@ const routeTree = rootRoute.addChildren([
       appearanceSettingsRoute,
       inboxSettingsRoute,
       agentsSettingsRoute,
+      agentSettingsRoute,
       tokensSettingsRoute,
     ]),
     cliAuthRoute,

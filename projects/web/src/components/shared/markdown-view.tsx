@@ -8,10 +8,12 @@ import {
   referenceDirectoryQuery,
 } from "@/api/references.ts";
 import {
+  ImageSwapCompare,
   MarkdownAttachmentAnchor,
   MarkdownAttachmentImage,
 } from "@/components/issue/attachment-markdown.tsx";
 import { BodyAnchor } from "@/components/shared/body-anchor.tsx";
+import { FenceFrame } from "@/components/shared/fence-frame.tsx";
 import { MarkdownLink } from "@/components/shared/issue-link.tsx";
 import { MermaidBlock } from "@/components/shared/mermaid-block.tsx";
 import { PatchView } from "@/components/shared/patch-view.tsx";
@@ -22,7 +24,9 @@ import {
 } from "@/components/shared/pierre.tsx";
 import { isTextEmbedName } from "@/lib/attachment-preview.ts";
 import { parseAttachmentHref } from "@/lib/attachment-refs.ts";
+import { FENCE_COLLAPSE_LINES, fenceTitle } from "@/lib/fence-meta.ts";
 import { MARKDOWN_SYNTAX_PLUGINS } from "@/lib/markdown-processor.ts";
+import { SWAP_ALT_ATTR, SWAP_SRC_ATTR } from "@/lib/rehype-decorations.ts";
 import { rehypeDetails } from "@/lib/rehype-details.ts";
 import {
   CODE_CONTENT_START_ATTR,
@@ -83,8 +87,9 @@ type HastNode = {
   type: string;
   tagName?: string;
   value?: string;
-  properties?: { className?: unknown; src?: unknown };
+  properties?: { className?: unknown; src?: unknown; dataSwapSrc?: unknown };
   children?: HastNode[];
+  data?: { meta?: unknown };
 };
 
 /**
@@ -107,11 +112,26 @@ function isEmbedImgNode(child: HastNode): boolean {
 }
 
 /**
- * Pull the code text and fence tag out of a <pre> element's hast node.
- * Returns null for shapes that aren't a plain fenced block, which then
- * keep the default <pre> rendering.
+ * True when this img node is a swapped image our override turns into an
+ * image comparison (T-722), which is block content too. Answers from the
+ * tree alone, for the reason `isEmbedImgNode` gives.
  */
-function parseFence(node: unknown): { text: string; tag?: string } | null {
+function isSwapImgNode(child: HastNode): boolean {
+  return (
+    child.type === "element" &&
+    child.tagName === "img" &&
+    typeof child.properties?.dataSwapSrc === "string"
+  );
+}
+
+/**
+ * Pull the code text, fence tag and the info string after the tag out of a
+ * <pre> element's hast node. Returns null for shapes that aren't a plain
+ * fenced block, which then keep the default <pre> rendering.
+ */
+function parseFence(
+  node: unknown,
+): { text: string; tag?: string; meta?: string } | null {
   const pre = node as HastNode | undefined;
   const code = pre?.children?.find(
     (child) => child.type === "element" && child.tagName === "code",
@@ -129,19 +149,26 @@ function parseFence(node: unknown): { text: string; tag?: string } | null {
     .filter((child) => child.type === "text")
     .map((child) => child.value ?? "")
     .join("");
+  const meta = code.data?.meta;
   // Fenced blocks always carry a trailing newline; CodeView would show it
   // as an empty last line.
-  return { text: text.replace(/\n$/, ""), tag };
+  return {
+    text: text.replace(/\n$/, ""),
+    tag,
+    meta: typeof meta === "string" ? meta : undefined,
+  };
 }
 
 function MarkdownPre({
   node,
   children,
   fenceBaselines,
+  collapseLongFences,
   ...props
 }: ComponentProps<"pre"> & {
   node?: unknown;
   fenceBaselines?: Map<number, SourceFence>;
+  collapseLongFences: boolean;
 }) {
   const fence = parseFence(node);
   if (fence === null) return <pre {...props}>{children}</pre>;
@@ -162,15 +189,54 @@ function MarkdownPre({
   // throttling, in the middle of the page's first load.
   const tag = fence.tag?.toLowerCase();
   const patch = baseline === undefined && (tag === "diff" || tag === "patch");
+  const title = fenceTitle(fence.meta);
+  const collapsible =
+    collapseLongFences && fence.text.split("\n").length > FENCE_COLLAPSE_LINES;
+  // A diagram and a patch draw their own frames: each has controls of its
+  // own to put in it.
   const block =
     baseline !== undefined ? (
-      <CodeDiffBlock filename={filename} before={baseline} after={fence.text} />
+      <FenceFrame
+        text={fence.text}
+        lang={fence.tag}
+        title={title}
+        collapsible={collapsible}
+      >
+        <CodeDiffBlock
+          filename={filename}
+          before={baseline}
+          after={fence.text}
+          bareFallback
+        />
+      </FenceFrame>
     ) : tag === "mermaid" ? (
-      <MermaidBlock filename={filename} source={fence.text} />
+      <MermaidBlock
+        filename={filename}
+        source={fence.text}
+        title={title}
+        collapsible={collapsible}
+      />
     ) : patch ? (
-      <PatchView filename={filename} text={fence.text} />
+      <PatchView
+        filename={filename}
+        text={fence.text}
+        title={title}
+        lang={fence.tag}
+      />
     ) : (
-      <CodeBlock filename={filename} contents={fence.text} offThread />
+      <FenceFrame
+        text={fence.text}
+        lang={fence.tag}
+        title={title}
+        collapsible={collapsible}
+      >
+        <CodeBlock
+          filename={filename}
+          contents={fence.text}
+          offThread
+          bareFallback
+        />
+      </FenceFrame>
     );
   const oldStamp = (props as Record<string, unknown>)[OLD_LINE_ATTR];
   const wrapperProps =
@@ -247,6 +313,12 @@ type MarkdownViewProps = {
    * the two versions instead of as its own contents.
    */
   fenceBaselines?: Map<number, SourceFence>;
+  /**
+   * Cap a long code block to scroll inside its frame (default). The spec
+   * document turns it off: a review reads every line, and an annotation on
+   * a line scrolled out of the frame could be neither seen nor selected.
+   */
+  collapseLongFences?: boolean;
 };
 
 export type MarkdownRemarkPlugins = NonNullable<
@@ -318,6 +390,7 @@ export const MarkdownViewWithPlugins = memo(function MarkdownViewWithPlugins({
   embedded = false,
   rehypePlugins,
   fenceBaselines,
+  collapseLongFences = true,
   remarkPlugins,
 }: MarkdownViewProps & { remarkPlugins: MarkdownRemarkPlugins }) {
   const rootRef = useRefChipFlow();
@@ -331,7 +404,11 @@ export const MarkdownViewWithPlugins = memo(function MarkdownViewWithPlugins({
   const components: ComponentProps<typeof Markdown>["components"] = useMemo(
     () => ({
       pre: (props) => (
-        <MarkdownPre {...props} fenceBaselines={fenceBaselines} />
+        <MarkdownPre
+          {...props}
+          fenceBaselines={fenceBaselines}
+          collapseLongFences={collapseLongFences}
+        />
       ),
       ...(slug === undefined
         ? {
@@ -343,20 +420,20 @@ export const MarkdownViewWithPlugins = memo(function MarkdownViewWithPlugins({
             ),
           }
         : {
-            // A document card is block content, which HTML forbids
-            // inside <p>; paragraphs that carry an embed swap to a
-            // <div> (same typography via .markdown-paragraph).
+            // A document card and an image comparison are block content,
+            // which HTML forbids inside <p>; paragraphs that carry one swap
+            // to a <div> (same typography via .markdown-paragraph).
             p: ({
               node,
               children,
               ...props
             }: ComponentProps<"p"> & { node?: unknown }): ReactNode => {
+              const kids = (node as HastNode | undefined)?.children ?? [];
               const carriesEmbed =
-                issueNumber !== undefined &&
-                !embedded &&
-                ((node as HastNode | undefined)?.children ?? []).some((child) =>
-                  isEmbedImgNode(child),
-                );
+                (issueNumber !== undefined &&
+                  !embedded &&
+                  kids.some((child) => isEmbedImgNode(child))) ||
+                kids.some((child) => isSwapImgNode(child));
               if (carriesEmbed) {
                 return (
                   <div className="markdown-paragraph" {...props}>
@@ -421,6 +498,24 @@ export const MarkdownViewWithPlugins = memo(function MarkdownViewWithPlugins({
               // has to stay two adjacent siblings (T-223).
               const [props, span] = withoutSpan(stamped);
               const sourceSpan = typeof span === "string" ? span : undefined;
+              const swapSrc = (props as Record<string, unknown>)[SWAP_SRC_ATTR];
+              if (typeof swapSrc === "string" && issueNumber !== undefined) {
+                const swapAlt = (props as Record<string, unknown>)[
+                  SWAP_ALT_ATTR
+                ];
+                return (
+                  <ImageSwapCompare
+                    slug={slug}
+                    issueNumber={issueNumber}
+                    before={{
+                      src: swapSrc,
+                      alt: typeof swapAlt === "string" ? swapAlt : "",
+                    }}
+                    after={{ src: props.src ?? "", alt: props.alt ?? "" }}
+                    className={props.className}
+                  />
+                );
+              }
               const target = parseAttachmentHref(props.src);
               if (target !== null && issueNumber !== undefined) {
                 const card = isTextEmbedName(target.name ?? "");
@@ -454,7 +549,7 @@ export const MarkdownViewWithPlugins = memo(function MarkdownViewWithPlugins({
             },
           }),
     }),
-    [fenceBaselines, slug, issueNumber, embedded],
+    [fenceBaselines, collapseLongFences, slug, issueNumber, embedded],
   );
 
   // `rehypeDetails` goes first so that every later pass — the caller's stamp,

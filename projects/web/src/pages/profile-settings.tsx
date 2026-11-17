@@ -26,6 +26,13 @@ import {
   useUserAvatarFallback,
 } from "@/api/prefs.ts";
 import { api, meQuery } from "@/api/queries.ts";
+import {
+  BoardPreview,
+  BodyReferencesPreview,
+  DetailPreview,
+  ListPreview,
+  ReferencePreview,
+} from "@/components/appearance-previews.tsx";
 import { AvatarEditor } from "@/components/shared/avatar-editor.tsx";
 import {
   type FallbackGenerator,
@@ -45,6 +52,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import {
+  setPlainTextEditor,
+  usePlainTextEditor,
+} from "@/lib/plain-text-editor.ts";
 
 /** The signed-in user's own profile. Agents are edited via /settings/agents. */
 export function ProfileSettingsPage() {
@@ -155,6 +166,7 @@ export function AppearanceSettingsPage() {
       <DisplaySection />
       <BodyReferencesSection />
       <FallbackAvatarsSection />
+      <TextEditorSection />
     </div>
   );
 }
@@ -231,40 +243,51 @@ function DisplaySection() {
       <div className="space-y-1">
         <h2 className="font-medium">Issue number placement</h2>
       </div>
-      <PlacementRow
-        id="ref-placement-list"
-        label="Issue lists & Inbox"
-        value={list}
-        options={FLAT_PLACEMENTS}
-        disabled={pending}
-        onChange={(value) => patch.mutate({ ref_placement_list: value })}
-      />
-      <PlacementRow
-        id="ref-placement-board"
-        label="Board cards"
-        description="On its own line puts the number under the title, above labels and assignees."
-        value={board}
-        options={BOARD_PLACEMENTS}
-        disabled={pending}
-        onChange={(value) => patch.mutate({ ref_placement_board: value })}
-      />
-      <PlacementRow
-        id="ref-placement-detail"
-        label="Issue page title"
-        description="The floating title bar and the browser tab title follow it."
-        value={detail}
-        options={FLAT_PLACEMENTS}
-        disabled={pending}
-        onChange={(value) => patch.mutate({ ref_placement_detail: value })}
-      />
-      <PlacementRow
-        id="ref-placement-reference"
-        label="Issue references"
-        value={reference}
-        options={FLAT_PLACEMENTS}
-        disabled={pending}
-        onChange={(value) => patch.mutate({ ref_placement_reference: value })}
-      />
+      <div className="space-y-2">
+        <PlacementRow
+          id="ref-placement-list"
+          label="Issue lists & Inbox"
+          value={list}
+          options={FLAT_PLACEMENTS}
+          disabled={pending}
+          onChange={(value) => patch.mutate({ ref_placement_list: value })}
+        />
+        <ListPreview />
+      </div>
+      <div className="space-y-2">
+        <PlacementRow
+          id="ref-placement-board"
+          label="Board cards"
+          value={board}
+          options={BOARD_PLACEMENTS}
+          disabled={pending}
+          onChange={(value) => patch.mutate({ ref_placement_board: value })}
+        />
+        <BoardPreview />
+      </div>
+      <div className="space-y-2">
+        <PlacementRow
+          id="ref-placement-detail"
+          label="Issue page title"
+          description="The floating title bar and the browser tab title follow it."
+          value={detail}
+          options={FLAT_PLACEMENTS}
+          disabled={pending}
+          onChange={(value) => patch.mutate({ ref_placement_detail: value })}
+        />
+        <DetailPreview />
+      </div>
+      <div className="space-y-2">
+        <PlacementRow
+          id="ref-placement-reference"
+          label="Issue references"
+          value={reference}
+          options={FLAT_PLACEMENTS}
+          disabled={pending}
+          onChange={(value) => patch.mutate({ ref_placement_reference: value })}
+        />
+        <ReferencePreview />
+      </div>
     </div>
   );
 }
@@ -293,6 +316,7 @@ function BodyReferencesSection() {
           full reference.
         </p>
       </div>
+      <BodyReferencesPreview />
       <ToggleRow
         id="boxed-ref-links"
         label="Bordered references"
@@ -486,6 +510,29 @@ function FallbackAvatarsSection() {
             ))}
           </FallbackPreview>
         }
+      />
+    </div>
+  );
+}
+
+/**
+ * The textarea way out of CodeMirror (T-709). Kept in this browser alone, so
+ * unlike the sections above it never waits on the server's prefs.
+ */
+function TextEditorSection() {
+  const plain = usePlainTextEditor();
+  return (
+    <div className="space-y-4 border-t pt-6">
+      <div className="space-y-1">
+        <h2 className="font-medium">Text editor</h2>
+      </div>
+      <ToggleRow
+        id="plain-text-editor"
+        label="Plain text box in this browser"
+        description="Gives up suggestions after #, @ and /, and pasting rich text as markdown."
+        checked={plain}
+        disabled={false}
+        onChange={setPlainTextEditor}
       />
     </div>
   );
