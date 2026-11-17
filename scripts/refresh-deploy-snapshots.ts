@@ -77,7 +77,13 @@ async function refreshTier(drizzleDir: string, tier: string): Promise<Outcome> {
         "--out",
         relative(server, copy),
       ],
-      { cwd: server, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+      {
+        cwd: server,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        // A run takes seconds; a stalled one ends here as giving up.
+        timeout: 120_000,
+      },
     );
     const output = `${run.stdout ?? ""}${run.stderr ?? ""}${run.error?.message ?? ""}`;
     const tags = tagsOf(dir);
