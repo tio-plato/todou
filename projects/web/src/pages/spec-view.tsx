@@ -424,6 +424,39 @@ function isDifference(entry: SpecDiffEntry): boolean {
   return entry.kind !== "unchanged";
 }
 
+/**
+ * Where a submitted comment stands on `version`, as `placeDraft` places a
+ * staged one: at its own lines on the version it is anchored to, and on the
+ * current version at the lines the server moved it to. Anywhere else, or
+ * once its lines changed, it has no place.
+ */
+function placeComment(
+  item: SpecCommentItem,
+  version: number,
+  currentVersion: number,
+): Exclude<DraftPlacement, { kind: "loading" }> {
+  const { anchor } = item;
+  if (anchor.line_start === null || anchor.line_end === null) {
+    return { kind: "file" };
+  }
+  if (anchor.version === version) {
+    return { kind: "line", start: anchor.line_start, end: anchor.line_end };
+  }
+  if (
+    version === currentVersion &&
+    !item.outdated &&
+    item.current_line_start !== null &&
+    item.current_line_end !== null
+  ) {
+    return {
+      kind: "line",
+      start: item.current_line_start,
+      end: item.current_line_end,
+    };
+  }
+  return { kind: "unplaced" };
+}
+
 export function SpecViewPage() {
   const { slug, number: numberParam } = useParams({
     from: "/authed/projects/$slug/issues/$number/spec",
@@ -1356,31 +1389,21 @@ function SpecViewBody({
         }
         continue;
       }
-      if (item.anchor.line_start === null || item.anchor.line_end === null) {
+      const placement = placeComment(
+        item,
+        version,
+        comments.data.current_version,
+      );
+      if (placement.kind === "file") {
         // File-level comments (T-61) sit above the document, not on a block.
         fileLevel.push(item);
-      } else if (item.anchor.version === version) {
+      } else if (placement.kind === "line") {
         displayed.push({
           key: `c${item.comment_id}`,
           kind: "comment",
           item,
-          start: item.anchor.line_start,
-          end: item.anchor.line_end,
-          colStart: item.anchor.col_start,
-          colEnd: item.anchor.col_end,
-        });
-      } else if (
-        version === comments.data.current_version &&
-        !item.outdated &&
-        item.current_line_start !== null &&
-        item.current_line_end !== null
-      ) {
-        displayed.push({
-          key: `c${item.comment_id}`,
-          kind: "comment",
-          item,
-          start: item.current_line_start,
-          end: item.current_line_end,
+          start: placement.start,
+          end: placement.end,
           // A successful remap means the anchored lines read the same, so
           // the stored columns still cut them correctly (T-142) — there is
           // no separate current_col_* to carry.
@@ -2102,33 +2125,18 @@ function SpecViewBody({
                   )}
                 </div>
               )}
-              {(unplaced.length > 0 || unplacedDrafts.length > 0) && (
-                <div className="space-y-2 rounded-lg border px-4 py-3">
-                  <h3 className="text-xs font-medium text-muted-foreground uppercase">
-                    Comments without a place in v{version}
-                  </h3>
-                  {unplaced.map((item) => (
-                    <UnplacedComment
-                      key={item.comment_id}
-                      slug={slug}
-                      issueNumber={issueNumber}
-                      item={item}
-                      onResolve={(id) =>
-                        resolve.mutate({ slug, issueNumber, commentId: id })
-                      }
-                      resolving={resolve.isPending}
-                    />
-                  ))}
-                  {unplacedDrafts.map((draft) => (
-                    <UnplacedDraft
-                      key={draft.id}
-                      draft={draft}
-                      onEdit={() => editDraft(draft)}
-                      onDiscard={() => drafts.remove(draft.id)}
-                    />
-                  ))}
-                </div>
-              )}
+              <UnplacedNotes
+                className="rounded-lg border px-4 py-3"
+                slug={slug}
+                issueNumber={issueNumber}
+                version={version}
+                comments={unplaced}
+                drafts={unplacedDrafts}
+                onResolve={resolveComment}
+                resolving={resolve.isPending}
+                onEditDraft={editDraft}
+                onRemoveDraft={drafts.remove}
+              />
             </>
           )}
         </main>
@@ -2350,6 +2358,62 @@ function RemovedFileNotice({
           Open the source diff
         </Link>
       </Button>
+    </div>
+  );
+}
+
+/**
+ * The comments and drafts with no place on the version on screen, comments
+ * first. Draws nothing while there are none.
+ */
+function UnplacedNotes({
+  className,
+  slug,
+  issueNumber,
+  version,
+  comments,
+  drafts,
+  onResolve,
+  resolving,
+  onEditDraft,
+  onRemoveDraft,
+}: {
+  /** The box: the caller's to frame. */
+  className?: string;
+  slug: string;
+  issueNumber: number;
+  version: number;
+  comments: SpecCommentItem[];
+  drafts: SpecReviewDraft[];
+  onResolve: (id: number) => void;
+  resolving: boolean;
+  onEditDraft: (draft: SpecReviewDraft) => void;
+  onRemoveDraft: (id: string) => void;
+}) {
+  if (comments.length === 0 && drafts.length === 0) return null;
+  return (
+    <div className={cn("space-y-2", className)}>
+      <h3 className="text-xs font-medium text-muted-foreground uppercase">
+        Comments without a place in v{version}
+      </h3>
+      {comments.map((item) => (
+        <UnplacedComment
+          key={item.comment_id}
+          slug={slug}
+          issueNumber={issueNumber}
+          item={item}
+          onResolve={onResolve}
+          resolving={resolving}
+        />
+      ))}
+      {drafts.map((draft) => (
+        <UnplacedDraft
+          key={draft.id}
+          draft={draft}
+          onEdit={() => onEditDraft(draft)}
+          onDiscard={() => onRemoveDraft(draft.id)}
+        />
+      ))}
     </div>
   );
 }
