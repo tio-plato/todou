@@ -113,6 +113,13 @@ export function useAutoHideHeader(enabled: boolean, page?: string): void {
       hidden = next;
       root.toggleAttribute("data-header-settling", animate);
       root.style.setProperty("--header-hide", `${hidden}px`);
+      // The scroll insets measure where the header is. Dragged, it is there
+      // already, and a caret revealed before the drag settles has to clear
+      // it; settling, it gets there after the transition in styles.css, and
+      // mid-slide it is neither in nor out.
+      window.clearTimeout(settled);
+      if (animate) settled = window.setTimeout(announce, SETTLE_MS);
+      else announce();
     };
     const snap = () => {
       const height = header.offsetHeight;
@@ -120,11 +127,6 @@ export function useAutoHideHeader(enabled: boolean, page?: string): void {
       // the start of the page itself.
       const out = hidden > height / 2 && window.scrollY > height;
       publish(out ? height : 0, true);
-      // After the settling transition in styles.css, not at its start: the
-      // scroll insets measure where the header is, and mid-slide it is
-      // neither in nor out.
-      window.clearTimeout(settled);
-      settled = window.setTimeout(announce, SETTLE_MS);
     };
     const onScroll = () => {
       const y = window.scrollY;
