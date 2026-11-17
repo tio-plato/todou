@@ -1,6 +1,7 @@
 import { cleanup, render } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { usableViewport, useScrollInsets } from "../src/lib/scroll-insets.ts";
 import {
   useAutoHideHeader,
   useVisualViewportInsets,
@@ -214,6 +215,47 @@ describe("auto-hiding header (T-585)", () => {
     expect(hidden()).not.toBe("");
     on.unmount();
     expect(hidden()).toBe("");
+  });
+
+  describe("and the scroll insets", () => {
+    function WithInsets() {
+      useAutoHideHeader(true);
+      useScrollInsets({});
+      return null;
+    }
+    beforeEach(() => {
+      // A sticky header slides by `--header-hide`, at once here: no
+      // transition runs in the test.
+      const header = document.querySelector("header") as HTMLElement;
+      vi.spyOn(header, "getBoundingClientRect").mockImplementation(() => {
+        const slid = Number.parseFloat(hidden() || "0");
+        return {
+          top: -slid,
+          bottom: HEADER - slid,
+          height: HEADER,
+        } as DOMRect;
+      });
+      render(createElement(WithInsets));
+      expect(root.style.scrollPaddingTop).toBe(`${8 + HEADER}px`);
+    });
+
+    it("follow the header once it has settled", () => {
+      touch("touchstart");
+      scrollTo(2060);
+      touch("touchend");
+      vi.advanceTimersByTime(120 + 170);
+      expect(root.style.scrollPaddingTop).toBe("8px");
+    });
+
+    it("follow the header while the reader drags it", () => {
+      touch("touchstart");
+      scrollTo(2060);
+      // One frame on, long before it would settle: a caret revealed now
+      // has to clear the header where it stands.
+      vi.advanceTimersByTime(16);
+      expect(root.style.scrollPaddingTop).toBe(`${8 + HEADER - 60}px`);
+      expect(usableViewport().top).toBe(8 + HEADER - 60);
+    });
   });
 
   it("comes back in view on the next page (T-594)", () => {
