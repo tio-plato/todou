@@ -354,6 +354,9 @@ describe("auto-hiding header (T-585)", () => {
     vi.advanceTimersByTime(200);
     // Not settled back in by the tap's release; sticky leaves 50px out.
     expect(hidden()).toBe("50px");
+    // An overscroll past the top never sets it below its place.
+    scrollTo(-20);
+    expect(hidden()).toBe("0px");
   });
 
   it("follows the page keys, never typing", () => {
@@ -366,9 +369,20 @@ describe("auto-hiding header (T-585)", () => {
     // The browser bringing the caret into view.
     scrollTo(2100);
     expect(hidden()).toBe("");
+    // Nor a key that scrolls nothing itself: Tab reveals what it focuses.
+    press(document.body, "Tab");
+    scrollTo(2200);
+    expect(hidden()).toBe("");
 
     press(document.body, "PageDown");
     scrollTo(2300);
+    expect(hidden()).toBe(`${HEADER}px`);
+  });
+
+  it("follows the wheel", () => {
+    mount();
+    window.dispatchEvent(new Event("wheel"));
+    scrollTo(2100);
     expect(hidden()).toBe(`${HEADER}px`);
   });
 
