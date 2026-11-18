@@ -263,7 +263,7 @@ export function StatusesSection({ slug }: { slug: string }) {
 }
 
 /** A write's outcome for the list: its errors are already toasted. */
-const succeeded = (write: Promise<unknown>) =>
+export const succeeded = (write: Promise<unknown>) =>
   write.then(
     () => true,
     () => false,

@@ -162,6 +162,33 @@ function DeleteTemplateButton({ template }: { template: ProjectTemplate }) {
   );
 }
 
+/**
+ * Creates a template, then opens its page; `onCreated` runs just before the
+ * page opens.
+ */
+export function useCreateTemplate(onCreated?: () => void) {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ProjectTemplateCreateInput) =>
+      api.createProjectTemplate(input),
+    onSuccess: (created) => {
+      // In the list before the page that reads it from there opens; the
+      // refetch then puts it in its place by name.
+      queryClient.setQueryData(templatesKey, (list) =>
+        list ? [...list, created] : list,
+      );
+      void queryClient.invalidateQueries({ queryKey: templatesKey });
+      onCreated?.();
+      void navigate({
+        to: "/settings/templates/$template",
+        params: { template: String(created.ref) },
+      });
+    },
+    onError: (error) => toast.error(error.message),
+  });
+}
+
 const START: StartFrom = {
   kind: "template",
   template: "default",
@@ -177,27 +204,7 @@ function NewTemplateDialog({
   const [name, setName] = useState("");
   const [from, setFrom] = useState<StartFrom>(START);
   const projects = useQuery(projectsQuery);
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
-
-  const create = useMutation({
-    mutationFn: (input: ProjectTemplateCreateInput) =>
-      api.createProjectTemplate(input),
-    onSuccess: (created) => {
-      // In the list before the page that reads it from there opens; the
-      // refetch then puts it in its place by name.
-      queryClient.setQueryData(templatesKey, (list) =>
-        list ? [...list, created] : list,
-      );
-      void queryClient.invalidateQueries({ queryKey: templatesKey });
-      setOpen(false);
-      void navigate({
-        to: "/settings/templates/$template",
-        params: { template: String(created.ref) },
-      });
-    },
-    onError: (error) => toast.error(error.message),
-  });
+  const create = useCreateTemplate(() => setOpen(false));
 
   const trimmed = name.trim();
   // A template's body is copied from the list; a project is read by the

@@ -5,11 +5,10 @@ import {
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query";
-import { useNavigate, useParams } from "@tanstack/react-router";
+import { useParams } from "@tanstack/react-router";
 import {
   ChangeRow,
   type Label as LabelEntity,
-  type ProjectTemplateCreateInput,
   type StatusRef,
   type TemplateApplyInput,
   type TemplateApplyResult,
@@ -42,6 +41,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
+import { useCreateTemplate } from "@/pages/project-templates-settings.tsx";
 
 /** Under /projects/$slug/settings/template. */
 export function ProjectSettingsTemplatePage() {
@@ -589,27 +589,7 @@ function SaveAsTemplateSection({ slug }: { slug: string }) {
   const [draft, setDraft] = useState<string | null>(null);
   const value = draft ?? project.data.name.slice(0, NAME_MAX);
   const name = value.trim();
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const templatesKey = projectTemplatesQuery.queryKey;
-
-  const save = useMutation({
-    mutationFn: (input: ProjectTemplateCreateInput) =>
-      api.createProjectTemplate(input),
-    onSuccess: (created) => {
-      // In the list before the page that reads it from there opens; the
-      // refetch then puts it in its place by name.
-      queryClient.setQueryData(templatesKey, (list) =>
-        list ? [...list, created] : list,
-      );
-      void queryClient.invalidateQueries({ queryKey: templatesKey });
-      void navigate({
-        to: "/settings/templates/$template",
-        params: { template: String(created.ref) },
-      });
-    },
-    onError: (error) => toast.error(error.message),
-  });
+  const save = useCreateTemplate();
 
   return (
     <section className="space-y-3">
