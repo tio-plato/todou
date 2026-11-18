@@ -13,6 +13,7 @@ vi.mock("mermaid", () => ({
   default: {
     initialize: () => {},
     parse: async () => true,
+    mermaidAPI: { getDiagramFromText: async () => ({ db: {} }) },
     render: async (id: string, _source: string, container?: Element) => {
       const scratch = document.createElement("div");
       scratch.id = `d${id}`;

@@ -52,6 +52,18 @@ export function renderDiagram(
       // drawn as mermaid's error diagram before render() throws the same
       // message.
       await mermaid.parse(source);
+      // mermaid's ELK layout spins forever, before ELK itself even starts,
+      // on a diagram whose nesting loops back on itself where an edge
+      // touches it, and the queue and the page spin with it.
+      const loop = nestingLoop(
+        (await mermaid.mermaidAPI.getDiagramFromText(source)).db,
+      );
+      if (loop !== null) {
+        return {
+          ok: false,
+          error: `Nesting cycle: ${loop.join(" inside ")}. Move the lines in ${loop[1]}'s block that name ${loop[0]} out of that block.`,
+        };
+      }
       const { svg } = await mermaid.render(
         `mermaid-${++sequence}`,
         source,
@@ -69,6 +81,57 @@ export function renderDiagram(
   });
   queue = run.catch(() => undefined);
   return run;
+}
+
+type LayoutData = {
+  nodes: { id: string; parentId?: string; isGroup?: boolean }[];
+  edges: { start?: string; end?: string }[];
+};
+
+/**
+ * The nesting loop an edge of the diagram runs into, as the names on it from
+ * child to parent (`["A", "B", "A"]`: A inside B inside A), or null. mermaid
+ * files every name a block mentions under that block, so a line in A's block
+ * that names A puts A inside A. The parent table is built the way mermaid's
+ * layout builds it: keyed by id, and written only for a parent that is a group.
+ */
+function nestingLoop(db: object): string[] | null {
+  if (!("getData" in db) || typeof db.getData !== "function") return null;
+  const { nodes, edges } = db.getData() as LayoutData;
+  const parent = new Map<string, string>();
+  for (const group of nodes) {
+    if (!group.isGroup) continue;
+    for (const node of nodes) {
+      if (node.parentId === group.id) parent.set(node.id, group.id);
+    }
+  }
+  // The loop the walk up from `id` ends in, from the first name it repeats,
+  // or null once the walk reaches the top.
+  const loopAbove = (id: string): string[] | null => {
+    const path: string[] = [];
+    for (let at: string | undefined = id; at !== undefined; ) {
+      const first = path.indexOf(at);
+      if (first !== -1) return [...path.slice(first), at];
+      path.push(at);
+      at = parent.get(at);
+    }
+    return null;
+  };
+  for (const { start, end } of edges) {
+    if (start === end) continue;
+    const ends = [start, end].filter((id) => id !== undefined);
+    // An end on the loop itself first: its loop starts at the name the
+    // misplaced line wrote, which is where the hint has to point.
+    for (const id of ends) {
+      const loop = loopAbove(id);
+      if (loop?.[0] === id) return loop;
+    }
+    for (const id of ends) {
+      const loop = loopAbove(id);
+      if (loop !== null) return loop;
+    }
+  }
+  return null;
 }
 
 /**
