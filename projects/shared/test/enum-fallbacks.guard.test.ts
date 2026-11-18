@@ -110,6 +110,10 @@ const DECLARED: Readonly<Record<string, string>> = {
     "Same-version server role invariant: roles combine MemberSetInput parsed at routes/projects.ts with project_members rows written by this server. DB reads are not parsed; mixed-version DB writers/manual corruption are outside this exception.",
   "projects/server/src/services/members.ts :: read ROLE_RANK[role] #1":
     "Same-version server role invariant: roles combine MemberSetInput parsed at routes/projects.ts with project_members rows written by this server. DB reads are not parsed; mixed-version DB writers/manual corruption are outside this exception.",
+  "projects/server/src/services/project-templates.ts :: read BUILTIN_TEMPLATES[key] #1":
+    "Closed local keys: builtinTemplates maps BUILTIN_TEMPLATE_KEYS, the tuple BUILTIN_TEMPLATES is typed by, so every key is an own key. A wire TemplateRef reaches the table only through resolveTemplate's Object.hasOwn guard.",
+  "projects/server/src/services/project-templates.ts :: read BUILTIN_TEMPLATES[key] #2":
+    "Closed local keys: builtinTemplates maps BUILTIN_TEMPLATE_KEYS, the tuple BUILTIN_TEMPLATES is typed by, so every key is an own key. A wire TemplateRef reaches the table only through resolveTemplate's Object.hasOwn guard.",
   "projects/server/src/services/search.ts :: switch filter.key #1":
     "Parsed search query: parseSearchQuery resolves filter.key only after Object.hasOwn(SEARCH_QUALIFIER_KEYS, typed); server planQualifiers gets the resulting closed qualifier set.",
   "projects/server/src/services/users.ts :: read ROLE_RANK[a.role] #1":
@@ -238,8 +242,6 @@ const DECLARED: Readonly<Record<string, string>> = {
     "Closed capability catalog: BY_ID is built from local CAPABILITIES. capabilityOf is called with literal capability ids, and by ownOnly with ids from role-permissions-table's local DISPLAY_ROWS.caps; no wire role value supplies this key.",
   "projects/shared/src/permissions.ts :: read BY_ID[id] #2":
     "Closed capability ids: minRoleOf callers use local literals, DISPLAY_ROWS.caps, or wrappers can/useCan/roleTag/requireCapability that forward those ids. members.targetOf chooses between literal capability arguments. Wire role strings are separately handled by roleRankOf and never index BY_ID.",
-  "projects/shared/src/schemas/project-template.ts :: mapping BUILTIN_TEMPLATES #1":
-    "Closed built-in template catalog keyed by local BUILTIN_TEMPLATE_KEYS literals: seedProject and status init read the fixed default property. No wire value indexes it here.",
   "projects/web/src/lib/activity-calendar-search.ts :: mapping values #1":
     "Intl date-parts dictionary: activityToday maps formatToParts from an en-US-u-ca-gregory-nu-latn formatter with year/month/day options. It reads only fixed year, month and day properties to build the date string; no wire enum selects a label.",
   "projects/web/src/pages/agents-settings.tsx :: mapping search #1":

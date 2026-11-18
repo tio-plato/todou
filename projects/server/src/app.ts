@@ -38,6 +38,7 @@ import { meRoutes } from "./routes/me.ts";
 import { metadataRoutes } from "./routes/metadata.ts";
 import { muteRoutes } from "./routes/mutes.ts";
 import { serveOpenAPIDocument } from "./routes/openapi-doc.ts";
+import { projectTemplateRoutes } from "./routes/project-templates.ts";
 import { projectRoutes } from "./routes/projects.ts";
 import { referenceRoutes } from "./routes/references.ts";
 import { searchRoutes } from "./routes/search.ts";
@@ -194,6 +195,8 @@ export function createApp(ctx: AppContext) {
   api.route("/auth", cliAuthSessionRoutes());
   api.route("/", activityRoutes());
   api.route("/", meRoutes());
+  // /me/project-templates, and the apply routes under /projects/{slug}.
+  api.route("/", projectTemplateRoutes());
   api.route("/", inboxRoutes());
   api.route("/", muteRoutes());
   api.route("/", userRoutes());
