@@ -119,7 +119,9 @@ const happyDom = globalThis as unknown as {
 describe("annotation chip popover on a phone", () => {
   afterEach(() => {
     vi.restoreAllMocks();
-    Reflect.deleteProperty(window, "visualViewport");
+    vi.unstubAllGlobals();
+    Reflect.deleteProperty(document.documentElement, "clientWidth");
+    Reflect.deleteProperty(document.documentElement, "clientHeight");
     happyDom.happyDOM.setViewport({ width: 1024, height: 768 });
   });
 
@@ -162,14 +164,14 @@ describe("annotation chip popover on a phone", () => {
     const wrapper = (await view.findByText("needs a caveat")).closest(
       "[data-radix-popper-content-wrapper]",
     ) as HTMLElement;
-    return await waitFor(() => {
-      // Only y: x comes from the popover's width, which happy-dom leaves NaN.
-      const y = /^translate\([^,]+, ([-\d.]+)px\)$/.exec(
-        wrapper.style.transform,
-      );
-      expect(y).not.toBeNull();
-      return Number(y?.[1]);
-    });
+    // It is placed twice as it opens, the second time once its offset is
+    // known; both land within the click's microtasks, so one macrotask
+    // later the wrapper holds the last.
+    await act(() => new Promise((done) => setTimeout(done, 0)));
+    // Only y: x comes from the popover's width, which happy-dom leaves NaN.
+    const y = /^translate\([^,]+, ([-\d.]+)px\)$/.exec(wrapper.style.transform);
+    expect(y).not.toBeNull();
+    return Number(y?.[1]);
   }
 
   it("centres on the window where the browser has no visual viewport", async () => {
@@ -180,16 +182,14 @@ describe("annotation chip popover on a phone", () => {
     expect(top + CAPPED / 2).toBe(PHONE.height / 2);
   });
 
-  it("reaches down to a chip too low to centre beside", async () => {
-    // Floating UI listens to it for scrolls, as it does to every scroller.
-    Object.defineProperty(window, "visualViewport", {
-      configurable: true,
-      value: Object.assign(new EventTarget(), {
-        offsetTop: 0,
-        height: PHONE.height,
-      }),
-    });
-    const chipTop = 700;
+  it("reaches down to a chip too low in the visible part to centre beside", async () => {
+    // The visible part shorter than the window, as with a keyboard up. An
+    // EventTarget: Floating UI listens to it for scrolls.
+    vi.stubGlobal(
+      "visualViewport",
+      Object.assign(new EventTarget(), { offsetTop: 0, height: 600 }),
+    );
+    const chipTop = 500;
     const top = await openAt(chipTop);
     expect(top + CAPPED).toBe(chipTop + CHIP);
   });
