@@ -593,13 +593,20 @@ function RowText({
     <>
       <Muted>Delete</Muted>
       <LabelChip label={chip(row)} />
-      <Muted>
-        {row.issues === 0
-          ? "on no issue"
-          : `comes off ${plural(row.issues, "issue")}`}
-      </Muted>
+      <Muted>{labelUses(row.issues, row.trashed)}</Muted>
     </>
   );
+}
+
+/**
+ * The cards a label deletion takes it off. Trashed ones count, said apart:
+ * a card restored later comes back without the label.
+ */
+function labelUses(issues: number, trashed: number): string {
+  const all = issues + trashed;
+  if (all === 0) return "on no issue";
+  const off = `comes off ${plural(all, "issue")}`;
+  return trashed === 0 ? off : `${off} (${trashed} in the trash)`;
 }
 
 /** The longest name a template takes; a project's may be twice as long. */

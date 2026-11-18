@@ -31,7 +31,12 @@ function project(
   specs: StatusSpec[],
   opts: {
     line?: string;
-    labels?: Array<{ name: string; color: string; issues?: number }>;
+    labels?: Array<{
+      name: string;
+      color: string;
+      issues?: number;
+      trashed?: number;
+    }>;
   } = {},
 ): ProjectState {
   const statuses = specs.map((spec, i) => {
@@ -61,6 +66,7 @@ function project(
       name: l.name,
       color: l.color,
       issues: l.issues ?? 0,
+      trashed: l.trashed ?? 0,
     })),
   };
 }
@@ -131,6 +137,30 @@ describe("planTemplateApply", () => {
     expect(discard).toMatchObject({ selectable: false, issues: 3 });
     expect(row(rows, `status.delete:${idOf("Parked")}`).selectable).toBe(true);
     expect(row(rows, "status.add:Invalid")).toMatchObject({ after: "Done" });
+  });
+
+  it("counts the trashed cards a label deletion takes it off", () => {
+    const state = project(
+      [
+        ...FLOW.map((name) => ({ name })),
+        { name: "Shipped" },
+        { name: "Done" },
+        { name: "Invalid" },
+      ],
+      {
+        labels: [
+          ...DEFAULT_LABELS,
+          { name: "area:old", color: "#14b8a6", trashed: 1 },
+        ],
+      },
+    );
+    const old = state.labels.find((l) => l.name === "area:old")?.id;
+    expect(
+      row(planTemplateApply(state, DEFAULT), `label.delete:${old}`),
+    ).toMatchObject({
+      issues: 0,
+      trashed: 1,
+    });
   });
 
   it("will not offer to delete a status holding only trashed issues", () => {

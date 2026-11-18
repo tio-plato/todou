@@ -292,6 +292,8 @@ export const ChangeRow = z.discriminatedUnion("type", [
     name: z.string(),
     color: ColorHex,
     issues: z.number().int().nonnegative(),
+    /** Trashed cards carrying it, which lose it too. */
+    trashed: z.number().int().nonnegative(),
   }),
 ]);
 export type ChangeRow = z.infer<typeof ChangeRow>;

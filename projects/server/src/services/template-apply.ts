@@ -13,13 +13,15 @@ import {
   type TemplateRef,
   type TemplateStatus,
 } from "@todou/shared";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import { uniqueViolation } from "../auth/provision.ts";
 import type { AppContext } from "../bootstrap.ts";
 import type { Db } from "../db/driver.ts";
 import {
   insightsSettings,
+  issueLabels,
+  issues,
   LABEL_NAME_INDEX,
   labels,
   projectMeta,
@@ -60,7 +62,14 @@ export type ProjectState = {
   lineId: number | null;
   /** The stored insights row, when there is one. */
   saved: { revision: number; roles: Record<string, string> } | null;
-  labels: Array<{ id: number; name: string; color: string; issues: number }>;
+  /** `issues` out of the trash, as the Labels page counts; `trashed` apart. */
+  labels: Array<{
+    id: number;
+    name: string;
+    color: string;
+    issues: number;
+    trashed: number;
+  }>;
 };
 
 /**
@@ -330,6 +339,7 @@ export function planTemplateApply(
       name: label.name,
       color: label.color,
       issues: label.issues,
+      trashed: label.trashed,
     });
   }
   return rows;
@@ -542,6 +552,21 @@ async function readState(db: Db, projectId: number): Promise<ProjectState> {
     .where(eq(labels.projectId, projectId));
   const statusUsage = await statusUsageRows(db, projectId);
   const labelUsage = await labelUsageRows(db, projectId);
+  // Deleting a label takes it off trashed cards too, which the Labels
+  // page's count leaves out.
+  const labelTrash = await db
+    .select({
+      id: issueLabels.labelId,
+      trashed: sql<number>`count(*)::int`,
+    })
+    .from(issueLabels)
+    .innerJoin(
+      issues,
+      and(eq(issues.id, issueLabels.issueId), isNotNull(issues.deletedAt)),
+    )
+    .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+    .where(eq(labels.projectId, projectId))
+    .groupBy(issueLabels.labelId);
   const roleOf = new Map(
     insightsSettingsResponse(statusRows, saved[0]).roles.map((entry) => [
       entry.status_id,
@@ -550,6 +575,7 @@ async function readState(db: Db, projectId: number): Promise<ProjectState> {
   );
   const statusUses = new Map(statusUsage.map((u) => [u.id, u]));
   const labelUses = new Map(labelUsage.map((u) => [u.id, u.issues]));
+  const labelTrashed = new Map(labelTrash.map((u) => [u.id, u.trashed]));
   const row = saved[0];
   return {
     statuses: statusRows.map((s) => ({
@@ -570,6 +596,7 @@ async function readState(db: Db, projectId: number): Promise<ProjectState> {
       name: l.name,
       color: l.color,
       issues: labelUses.get(l.id) ?? 0,
+      trashed: labelTrashed.get(l.id) ?? 0,
     })),
   };
 }

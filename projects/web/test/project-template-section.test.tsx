@@ -210,6 +210,7 @@ const PLAN_7: TemplateApplyPlan = {
       name: "area:web",
       color: "#0ea5e9",
       issues: 3,
+      trashed: 0,
     },
     {
       ...row("label.delete:42", "labels", "delete"),
@@ -217,6 +218,7 @@ const PLAN_7: TemplateApplyPlan = {
       name: "kind:docs",
       color: "#8b5cf6",
       issues: 1,
+      trashed: 1,
     },
   ],
 };
@@ -585,6 +587,19 @@ describe("applying a template", () => {
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe(
       "Other",
     );
+  });
+
+  it("counts the trashed cards a label deletion takes it off", async () => {
+    fakeServer();
+    renderPage();
+    await rowsOf7();
+    expect(rowOf("Delete label kind:docs").textContent).toContain(
+      "comes off 2 issues (1 in the trash)",
+    );
+    expect(rowOf("Delete label area:web").textContent).toContain(
+      "comes off 3 issues",
+    );
+    expect(rowOf("Delete label area:web").textContent).not.toContain("trash");
   });
 
   it("says the project already matches a template with no difference", async () => {

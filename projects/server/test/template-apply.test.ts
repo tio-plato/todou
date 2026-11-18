@@ -265,6 +265,23 @@ describe.each(PLACEMENTS)("applying a template (%s placement)", (placement) => {
     ).toMatchObject({ selectable: false, issues: 0, trashed: 1 });
   });
 
+  it("counts the trashed cards a label deletion takes it off", async () => {
+    const s = slug();
+    await created("/projects", { slug: s, name: s });
+    const old = await created(`/projects/${s}/labels`, { name: "area:old" });
+    const card = await created(`/projects/${s}/issues`, {
+      title: "binned",
+      label_ids: [old.id],
+    });
+    expect(
+      (await call("DELETE", `/projects/${s}/issues/${card.number}`)).status,
+    ).toBe(204);
+    const plan = await preview(s);
+    expect(
+      plan.changes.find((r) => r.id === `label.delete:${old.id}`),
+    ).toMatchObject({ issues: 0, trashed: 1 });
+  });
+
   it("refuses a preview the project has moved on from, and changes nothing", async () => {
     const p = await drifted();
     const plan = await preview(p.s);
