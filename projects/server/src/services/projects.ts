@@ -241,9 +241,11 @@ async function resolveAgents(
         ),
       )
       .orderBy(asc(users.id));
-    return rows.flatMap((row) =>
-      row.role === null ? [] : [{ userId: row.id, role: row.role }],
-    );
+    // Never null: the query keeps only agents with a role.
+    return rows.map((row) => ({
+      userId: row.id,
+      role: row.role as MemberRole,
+    }));
   }
   const logins = requested.map((agent) => agent.login);
   const twice = logins.find((login, i) => logins.indexOf(login) !== i);
@@ -310,26 +312,30 @@ async function seedProject(
     )
     .returning({ id: statuses.id, name: statuses.name });
   // By name, which a template holds once, rather than by RETURNING order.
-  const idOf = new Map(seeded.map((s) => [s.name, s.id]));
+  const ids = new Map(seeded.map((s) => [s.name, s.id]));
+  const idOf = (name: string): number => {
+    const id = ids.get(name);
+    if (id === undefined) throw new Error(`status ${name} was not inserted`);
+    return id;
+  };
   const clearName = template.statuses.find((s) => s.block_clear)?.name;
   await db
     .insert(projectMeta)
     .values({
       projectId: row.id,
-      blockClearStatusId:
-        clearName === undefined ? null : (idOf.get(clearName) ?? null),
+      blockClearStatusId: clearName === undefined ? null : idOf(clearName),
     })
     .onConflictDoNothing();
   // Only the roles that depart from the default are stored, as the Statuses
   // page stores a new status's; with none, no row, as before templates.
   const roles = storedRoles(
     {},
-    template.statuses.flatMap((s) => {
-      const statusId = idOf.get(s.name);
-      return statusId === undefined
-        ? []
-        : [{ kind: "added" as const, statusId, status: s, role: s.chart_role }];
-    }),
+    template.statuses.map((s) => ({
+      kind: "added" as const,
+      statusId: idOf(s.name),
+      status: s,
+      role: s.chart_role,
+    })),
   );
   if (Object.keys(roles).length > 0) {
     await db

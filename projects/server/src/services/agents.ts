@@ -124,7 +124,9 @@ export async function updateAgent(
       .set({ newProjectRole: input.new_project_role })
       .where(eq(users.id, agent.id))
       .returning();
-    row = updated[0] ?? row;
+    const updatedRow = updated[0];
+    if (!updatedRow) throw new Error("agent update returned no row");
+    row = updatedRow;
   }
   return toAgent(ctx, row);
 }
