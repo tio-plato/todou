@@ -67,6 +67,11 @@ const COLOR_EXCEPTIONS: Record<string, { count: number; reason: string }> = {
     count: 4,
     reason: "the status editor's draft colour, sent as the write it edits",
   },
+  "pages/project-templates-settings.tsx": {
+    count: 2,
+    reason:
+      "the status editor's draft colour, written into the template it edits",
+  },
 };
 
 /** Uses of the prefix split outside the drawing, with the same exact counts. */

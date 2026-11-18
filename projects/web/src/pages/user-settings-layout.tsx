@@ -3,6 +3,7 @@ import {
   BotIcon,
   InboxIcon,
   KeyRoundIcon,
+  LayoutTemplateIcon,
   PaletteIcon,
   UserIcon,
 } from "lucide-react";
@@ -30,6 +31,9 @@ export function UserSettingsLayout() {
             </SettingsNavLink>
             <SettingsNavLink to="/settings/inbox" icon={InboxIcon}>
               Inbox
+            </SettingsNavLink>
+            <SettingsNavLink to="/settings/templates" icon={LayoutTemplateIcon}>
+              Project templates
             </SettingsNavLink>
           </SettingsNavGroup>
           <SettingsNavGroup label="Access">

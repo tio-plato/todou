@@ -33,6 +33,7 @@ export function LabelSetList({
   onUpdate,
   onDelete,
   pending,
+  template = false,
 }: {
   labels: readonly LabelEntity[];
   /** Issues carrying each label; without it the rows show no count. */
@@ -48,6 +49,8 @@ export function LabelSetList({
   onUpdate: (id: number, input: LabelUpdateInput) => Promise<boolean>;
   onDelete: (id: number) => Promise<boolean>;
   pending: { create: boolean; update: boolean; delete: boolean };
+  /** The labels are a template's, on no issue: a delete takes none off. */
+  template?: boolean;
 }) {
   const usageById = new Map(usage?.map((u) => [u.id, u]));
   const [open, setOpen] = useState<number | "new" | null>(null);
@@ -226,12 +229,17 @@ export function LabelSetList({
         description={
           deleting && (
             <>
-              <LabelChip label={deleting} />{" "}
-              {deletingUses === 0
-                ? "No issue carries it."
-                : deletingUses === undefined
-                  ? "It comes off every issue that carries it, and there is no undo."
-                  : `It comes off ${deletingUses} ${deletingUses === 1 ? "issue" : "issues"} at once, and there is no undo.`}
+              <LabelChip label={deleting} />
+              {!template && (
+                <>
+                  {" "}
+                  {deletingUses === 0
+                    ? "No issue carries it."
+                    : deletingUses === undefined
+                      ? "It comes off every issue that carries it, and there is no undo."
+                      : `It comes off ${deletingUses} ${deletingUses === 1 ? "issue" : "issues"} at once, and there is no undo.`}
+                </>
+              )}
             </>
           )
         }
