@@ -867,6 +867,122 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
     }
   });
 
+  it("a bulk command that removes and re-adds a label queues behind its deletion", async () => {
+    const p = await project();
+    const a = await card(p.slug, "a");
+    const b = await card(p.slug, "b");
+    const l = await label(p.slug, "L");
+    for (const x of [a, b]) {
+      const labeled = await send(
+        "PATCH",
+        `/projects/${p.slug}/issues/${x.number}`,
+        { label_ids: [l] },
+      );
+      expect(labeled.status).toBe(200);
+    }
+
+    // The holder deletes the label: the label row first, then the card rows
+    // its cascade removes. It rolls back, so the label is still there for
+    // the command to put back.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query("SELECT id FROM labels WHERE id = $1 FOR UPDATE", [l]);
+      pending = send("POST", `/projects/${p.slug}/issues/bulk`, {
+        numbers: [a.number, b.number],
+        commands: [
+          { type: "label_remove", label_id: l },
+          { type: "label_add", label_id: l },
+        ],
+      });
+      await waitForLockWaiters(1);
+      await holder.query("DELETE FROM labels WHERE id = $1", [l]);
+      await holder.query("ROLLBACK");
+      expect((await pending).status).toBe(200);
+      const kept = await observer.query<{ issue_id: string }>(
+        "SELECT issue_id FROM issue_labels WHERE label_id = $1 ORDER BY issue_id",
+        [l],
+      );
+      expect(kept.rows).toEqual([
+        { issue_id: String(a.id) },
+        { issue_id: String(b.id) },
+      ]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("a bulk command adding a label that is being deleted refuses the whole selection", async () => {
+    const p = await project();
+    const a = await card(p.slug, "a");
+    const b = await card(p.slug, "b");
+    const l = await label(p.slug, "L");
+
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query("SELECT id FROM labels WHERE id = $1 FOR UPDATE", [l]);
+      pending = send("POST", `/projects/${p.slug}/issues/bulk`, {
+        numbers: [a.number, b.number],
+        commands: [{ type: "label_add", label_id: l }],
+      });
+      await waitForLockWaiters(1);
+      await holder.query("DELETE FROM labels WHERE id = $1", [l]);
+      await holder.query("COMMIT");
+      const res = await pending;
+      expect(res.status).toBe(422);
+      expect((await json(res)).error.message).toBe(
+        "command[0]: unknown label_id",
+      );
+      for (const x of [a, b]) {
+        expect(await eventsOf(x, "label_added")).toEqual([]);
+      }
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  // The holder puts b in the trash the way a delete does: it holds the card,
+  // then marks it. The bulk command passed the gate before its transaction,
+  // so only the gate it asks again under the cards' locks can refuse it.
+  it("a bulk command asks the write gate again under its cards' locks", async () => {
+    const p = await project();
+    const a = await card(p.slug, "a");
+    const b = await card(p.slug, "b");
+    const l = await label(p.slug, "L");
+
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issues WHERE id = $1 FOR NO KEY UPDATE",
+        [b.id],
+      );
+      pending = send("POST", `/projects/${p.slug}/issues/bulk`, {
+        numbers: [a.number, b.number],
+        commands: [{ type: "label_add", label_id: l }],
+      });
+      await waitForLockWaiters(1);
+      await holder.query("UPDATE issues SET deleted_at = now() WHERE id = $1", [
+        b.id,
+      ]);
+      await holder.query("COMMIT");
+      const res = await pending;
+      expect(res.status).toBe(409);
+      const labeled = await observer.query<{ count: string }>(
+        "SELECT count(*) FROM issue_labels WHERE label_id = $1",
+        [l],
+      );
+      expect(labeled.rows).toEqual([{ count: "0" }]);
+      expect(await eventsOf(a, "label_added")).toEqual([]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
   it("creating a card with a label that is being deleted is refused", async () => {
     const p = await project();
     const l = await label(p.slug, "L");
@@ -1465,6 +1581,56 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
         [[ra, rb], start?.now],
       );
       expect(after.rows).toEqual([{ seen: true }, { seen: true }]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("marking several cards read takes the cards before their read positions", async () => {
+    const p = await project();
+    const a = await card(p.slug, "a");
+    const b = await card(p.slug, "b");
+    // a has a position of its own; b has none yet, so marking it read
+    // inserts one under the card.
+    const read = await send(
+      "PUT",
+      `/projects/${p.slug}/issues/${a.number}/read`,
+      {},
+    );
+    expect(read.status).toBe(204);
+    const [start] = (await observer.query<{ now: Date }>("SELECT now() AS now"))
+      .rows;
+
+    // The holder cleans up a deleted project the way the cleanup does: its
+    // cards, then its read positions. It rolls back, so the cards are still
+    // there to be read.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issues WHERE project_id = $1 ORDER BY id FOR UPDATE",
+        [p.id],
+      );
+      pending = send("PUT", `/projects/${p.slug}/issues/read`, {
+        numbers: [a.number, b.number],
+      });
+      await waitForLockWaiters(1);
+      await holder.query(
+        "SELECT id FROM issue_reads WHERE project_id = $1 ORDER BY id FOR UPDATE",
+        [p.id],
+      );
+      await holder.query("ROLLBACK");
+      expect((await pending).status).toBe(204);
+      const after = await observer.query<{ issue_id: string; seen: boolean }>(
+        `SELECT issue_id, last_seen_at >= $2 AS seen FROM issue_reads
+         WHERE issue_id = ANY($1) ORDER BY issue_id`,
+        [[a.id, b.id], start?.now],
+      );
+      expect(after.rows).toEqual([
+        { issue_id: String(a.id), seen: true },
+        { issue_id: String(b.id), seen: true },
+      ]);
     } finally {
       await holder.query("ROLLBACK");
       await Promise.allSettled([pending]);

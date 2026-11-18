@@ -1,4 +1,9 @@
-import type { BulkReadInput, IssueReadInput, MuteReason } from "@todou/shared";
+import type {
+  BulkReadInput,
+  IssueReadInput,
+  IssuesReadInput,
+  MuteReason,
+} from "@todou/shared";
 import { and, asc, count, eq, gt, inArray, max, ne, sql } from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import type { UserRow } from "../auth/pat.ts";
@@ -420,6 +425,73 @@ export async function markIssueRead(
         lastSeenAt: sql`greatest(${issueReads.lastSeenAt}, excluded.last_seen_at)`,
       },
     });
+}
+
+/**
+ * markIssueRead for several cards of one project at once (T-775), to now.
+ * Numbers that name nothing live are skipped rather than refused: a card in
+ * the trash has nothing unread, and one somebody else just deleted should
+ * not fail the rest of the selection.
+ */
+export async function markIssuesRead(
+  ctx: AppContext,
+  actor: UserRow,
+  slug: string,
+  input: IssuesReadInput,
+): Promise<void> {
+  const { project } = await requireCapability(
+    ctx,
+    actor,
+    slug,
+    "issue.mark_read",
+  );
+  const db = await ctx.router.forProject(routeInfoOf(project));
+  // One statement holding several positions while it waits for more, so it
+  // takes them in the order every other writer does (see lockIssueRows): the
+  // cards first, in ascending id, in the mode the new positions' foreign key
+  // takes anyway; then the caller's positions on them in id order; and only
+  // then the write. Deleting the project takes the same cards and then the
+  // same positions, and a move its card and then the card's positions.
+  await db.transaction(async (tx) => {
+    const rows = await tx
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.projectId, project.id),
+          inArray(issues.number, [...new Set(input.numbers)]),
+          live,
+        ),
+      )
+      .orderBy(asc(issues.id))
+      .for("key share");
+    if (rows.length === 0) return;
+    const ids = rows.map((row) => row.id);
+    await tx
+      .select({ id: issueReads.id })
+      .from(issueReads)
+      .where(
+        and(inArray(issueReads.issueId, ids), eq(issueReads.userId, actor.id)),
+      )
+      .orderBy(asc(issueReads.id))
+      .for("update");
+    await tx
+      .insert(issueReads)
+      .values(
+        ids.map((issueId) => ({
+          projectId: project.id,
+          issueId,
+          userId: actor.id,
+          lastSeenAt: sql`now()`,
+        })),
+      )
+      .onConflictDoUpdate({
+        target: [issueReads.issueId, issueReads.userId],
+        set: {
+          lastSeenAt: sql`greatest(${issueReads.lastSeenAt}, excluded.last_seen_at)`,
+        },
+      });
+  });
 }
 
 /**

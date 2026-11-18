@@ -34,7 +34,7 @@ import {
 import { boardColumnQuery, useBoardMove } from "@/api/board.ts";
 import {
   toggledById,
-  useBulkIssueStatusMutation,
+  useBulkIssueMutation,
   useIssueAssigneesMutation,
   useIssueLabelsMutation,
 } from "@/api/issues.ts";
@@ -53,7 +53,7 @@ import {
   QuestionBadge,
   SpecReviewBadge,
 } from "@/components/issue/attention-badge.tsx";
-import { BulkStatusMenu } from "@/components/issue/bulk-status-menu.tsx";
+import { BulkActions } from "@/components/issue/bulk-actions.tsx";
 import {
   AssigneesAndWatchers,
   MetaEditButton,
@@ -89,6 +89,7 @@ import {
   type SelectionState,
   useSelection,
 } from "@/lib/use-selection.ts";
+import { useSweepSelect } from "@/lib/use-sweep-select.ts";
 import { cn } from "@/lib/utils";
 
 /**
@@ -245,6 +246,7 @@ export function BoardPage() {
     return { numbers: [...statusOf.keys()], statusOf };
   }, [rowsKey]);
   const selection = useSelection(rows.numbers);
+  const selecting = selection.selected.length > 0;
   // Through a ref, so the callbacks keep their identity while the selection
   // changes under them, and the memoized columns skip what they need not see.
   const selectionRef = useRef(selection);
@@ -256,6 +258,13 @@ export function BoardPage() {
       selectionRef.current.toggle(issueNumber, { extend }),
     [],
   );
+  const sweep = useSweepSelect({
+    isSelected: (issueNumber: number) =>
+      selectionRef.current.isSelected(issueNumber),
+    paint: (issueNumbers: readonly number[], on: boolean) =>
+      selectionRef.current.paint(issueNumbers, on),
+    parse: Number,
+  });
   const onSelectColumn = useCallback(
     (issueNumbers: readonly number[]) =>
       selectionRef.current.toggleGroup(issueNumbers),
@@ -278,7 +287,7 @@ export function BoardPage() {
     };
   }, [canTriage, selectedKey, onSelect, onSelectColumn]);
   const move = useBoardMove();
-  const bulkMove = useBulkIssueStatusMutation();
+  const bulkMove = useBulkIssueMutation();
   const [drag, setDrag] = useState<{
     issue: IssueListItem;
     count: number;
@@ -347,7 +356,11 @@ export function BoardPage() {
         (issueNumber) => rows.statusOf.get(issueNumber) !== toStatus.id,
       );
       if (moving.length === 0) return;
-      bulkMove.mutate({ slug, issueNumbers: moving, status: toStatus });
+      bulkMove.mutate({
+        slug,
+        issueNumbers: moving,
+        change: { kind: "status", status: toStatus },
+      });
       selection.clear();
       return;
     }
@@ -374,16 +387,20 @@ export function BoardPage() {
       <div className="flex min-h-0 flex-1 flex-col gap-4">
         {/* The board has no filter toolbar to hang this off, so it gets a
             row of its own — project-scoped, like the list's copy, because
-            the endpoint sweeps a project and not a column (T-100). */}
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-y-2">
-          <ProjectWatchersChip slug={slug} />
+            the endpoint sweeps a project and not a column (T-100). While
+            anything is selected the row is the selection's alone (T-778):
+            none of the project actions serves a selection, and Mark all read
+            would sit beside the selection's Mark read looking the same with
+            a different scope. */}
+        <div className="@container/bulk flex shrink-0 flex-wrap items-center justify-end gap-y-2">
+          {!selecting && <ProjectWatchersChip slug={slug} />}
           <div className="me-auto flex items-center gap-2 ps-2">
-            {selection.selected.length > 0 && (
+            {selecting && (
               <>
                 <span className="text-sm text-muted-foreground tabular-nums">
                   {selection.selected.length} selected
                 </span>
-                <BulkStatusMenu
+                <BulkActions
                   slug={slug}
                   statuses={statuses.data}
                   issueNumbers={selection.selected}
@@ -401,8 +418,12 @@ export function BoardPage() {
               </>
             )}
           </div>
-          <MarkAllReadButton slug={slug} scopeName="this project" />
-          <ProjectMuteButton slug={slug} />
+          {!selecting && (
+            <>
+              <MarkAllReadButton slug={slug} scopeName="this project" />
+              <ProjectMuteButton slug={slug} />
+            </>
+          )}
         </div>
         {/* 240px is the floor a cramped window degrades against: this row
             bursts the canvas and overflows visibly, so the page scrolls
@@ -411,7 +432,10 @@ export function BoardPage() {
           ref={canvas}
           className="group/select flex min-h-60 flex-1 gap-4 overflow-x-auto"
           // Once anything is selected, every card shows its box (T-732).
-          data-selecting={selection.selected.length > 0 ? "" : undefined}
+          data-selecting={selecting ? "" : undefined}
+          onPointerDownCapture={
+            canTriage ? sweep.onPointerDownCapture : undefined
+          }
         >
           {statuses.data.map((status) => (
             <BoardColumn
@@ -606,6 +630,7 @@ function BoardCard({
       // a per-project address that a move between projects replaces, and a
       // snapshot outlives the board it was taken from (T-407).
       data-return-id={String(issue.id)}
+      data-sweep-key={onSelect ? issue.number : undefined}
     >
       {onSelect && (
         <CardSelectBox
@@ -647,6 +672,7 @@ const CardSelectBox = memo(function CardSelectBox({
   return (
     <span
       data-card-select=""
+      data-sweep-start=""
       className="absolute -top-1.5 -left-1.5 leading-none"
     >
       <Checkbox

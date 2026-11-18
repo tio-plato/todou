@@ -1704,6 +1704,22 @@ function decorateTree(
         // document card or a picture through its `className`.
         const wash = markBlockClass(child, paint.spans);
         if (wash !== null) addClass(child, wash);
+        // An author's pair (T-767) is a comparison already: a swap of
+        // either of its images marks it changed and leaves its sides alone.
+        if (child.properties.dataComparePair !== undefined) {
+          const at = child.position?.start.offset;
+          const rawBeforeAt = child.properties.dataPairBeforeAt;
+          const beforeAt =
+            rawBeforeAt === "" ? Number.NaN : Number(rawBeforeAt);
+          const touched = paint.images.some(
+            (image) =>
+              image.at.start === at ||
+              (Number.isFinite(beforeAt) && image.at.start === beforeAt),
+          );
+          if (touched && !added) addClass(child, INS_BLOCK_CLASS);
+          next.push(child);
+          continue;
+        }
         const swap = paint.images.find(
           (image) => image.at.start === child.position?.start.offset,
         );

@@ -44,6 +44,7 @@ import {
 import { attachmentAnchorHref, attachmentHref } from "@/lib/attachment-refs.ts";
 import { SOURCE_SPAN_ATTR } from "@/lib/rehype-source-lines.ts";
 import { useSelection } from "@/lib/use-selection.ts";
+import { useSweepSelect } from "@/lib/use-sweep-select.ts";
 import { cn } from "@/lib/utils.ts";
 
 /** Modifier-clicks (new tab, forced download) keep native link behavior. */
@@ -116,6 +117,11 @@ export function AttachmentList({
     [attachments.data],
   );
   const selection = useSelection(ids);
+  const sweep = useSweepSelect({
+    isSelected: selection.isSelected,
+    paint: selection.paint,
+    parse: Number,
+  });
   if (items.length === 0) return null;
   // One file has its own download and delete on its row already.
   const selectable = items.length > 1;
@@ -181,7 +187,12 @@ export function AttachmentList({
           )}
         </button>
       )}
-      <ul className="divide-y">
+      <ul
+        className="divide-y"
+        onPointerDownCapture={
+          selectable ? sweep.onPointerDownCapture : undefined
+        }
+      >
         {shown.map((attachment, shownIndex) => {
           // The viewer pages through the whole list, so a row hands it its
           // place in `items` — the fold's offset put the first visible row
@@ -197,6 +208,7 @@ export function AttachmentList({
           return (
             <li
               key={attachment.id}
+              data-sweep-key={selectable ? attachment.id : undefined}
               className={cn(
                 "group/att flex items-center hover:bg-muted/40",
                 selection.isSelected(attachment.id) &&
@@ -210,6 +222,7 @@ export function AttachmentList({
                 // the icon selects on touch too (T-732).
                 <label
                   htmlFor={`attachment-select-${attachment.id}`}
+                  data-sweep-start=""
                   className="flex shrink-0 cursor-pointer items-center self-stretch pr-2 pl-3"
                 >
                   <SelectSlot

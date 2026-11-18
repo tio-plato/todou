@@ -39,6 +39,8 @@ const MODES: Array<{ value: CompareMode; long: string; short: string }> = [
   { value: "diff", long: "Difference", short: "Diff" },
 ];
 
+const ALL_MODES: readonly CompareMode[] = MODES.map((option) => option.value);
+
 /**
  * Two versions of a picture, compared side by side, by swipe, by onion skin or
  * by difference (T-722). It knows nothing of what the two are: an image and a
@@ -54,8 +56,11 @@ export function MediaCompare({
   align,
   backdrop,
   text,
+  title,
   actions,
   replacement,
+  modes = ALL_MODES,
+  onOpen,
   className,
 }: {
   before: CompareSide;
@@ -66,10 +71,19 @@ export function MediaCompare({
   backdrop: "checker" | "page";
   /** Handed to the frame's Copy; leave it out for no Copy. */
   text?: string;
+  /** A fence's filename; see `FenceFrame`. */
+  title?: string;
   /** More controls at the head's right edge. */
   actions?: ReactNode;
   /** Drawn in place of the comparison, with no mode pressed. */
   replacement?: ReactNode;
+  /** The modes this block offers, all four by default. With one there is no mode control. */
+  modes?: readonly CompareMode[];
+  /**
+   * Given, each side's picture is a button opening both in the viewer, and
+   * its content has to be phrasing content to sit in one.
+   */
+  onOpen?: () => void;
   className?: string;
 }) {
   const stored = useCompareMode();
@@ -80,15 +94,72 @@ export function MediaCompare({
     !after.failed;
   // Falling back leaves the store alone: a block that cannot overlay must not
   // switch every other block on the page back with it.
-  const mode = overlayable ? stored : "2up";
+  const mode = overlayable && modes.includes(stored) ? stored : "2up";
   const pressed = replacement === undefined ? mode : null;
+  const choosable = modes.length > 1;
 
-  const modes = (
+  return (
+    <div
+      className={cn("media-compare select-none", className)}
+      data-backdrop={backdrop}
+    >
+      <FenceFrame
+        text={text}
+        title={title}
+        leading={
+          choosable ? (
+            <CompareModes
+              pressed={pressed}
+              overlayable={overlayable}
+              modes={modes}
+            />
+          ) : undefined
+        }
+        // With no mode control there is no head bar, and the floating tools
+        // may hold the only way back to the source, so they never hide.
+        toolbarAlwaysVisible={!choosable}
+        actions={actions}
+      >
+        {replacement ??
+          (mode === "2up" || before.size === null || after.size === null ? (
+            <SideBySide
+              before={before}
+              after={after}
+              align={align}
+              onOpen={onOpen}
+            />
+          ) : (
+            <Overlay
+              mode={mode}
+              before={{ ...before, size: before.size }}
+              after={{ ...after, size: after.size }}
+              align={align}
+            />
+          ))}
+      </FenceFrame>
+    </div>
+  );
+}
+
+/**
+ * The modes as one segmented control, writing the page's shared mode. The
+ * overlay three are off until both sides have a size to line up.
+ */
+export function CompareModes({
+  pressed,
+  overlayable,
+  modes = ALL_MODES,
+}: {
+  pressed: CompareMode | null;
+  overlayable: boolean;
+  modes?: readonly CompareMode[];
+}) {
+  return (
     <fieldset
       aria-label="Comparison"
       className="media-compare-modes inline-flex h-7 shrink-0 items-center rounded-full border p-0.5"
     >
-      {MODES.map((option) => (
+      {MODES.filter((option) => modes.includes(option.value)).map((option) => (
         <button
           key={option.value}
           type="button"
@@ -111,68 +182,67 @@ export function MediaCompare({
       ))}
     </fieldset>
   );
-
-  return (
-    <div
-      className={cn("media-compare select-none", className)}
-      data-backdrop={backdrop}
-    >
-      <FenceFrame text={text} leading={modes} actions={actions}>
-        {replacement ??
-          (mode === "2up" || before.size === null || after.size === null ? (
-            <SideBySide before={before} after={after} align={align} />
-          ) : (
-            <Overlay
-              mode={mode}
-              before={{ ...before, size: before.size }}
-              after={{ ...after, size: after.size }}
-              align={align}
-            />
-          ))}
-      </FenceFrame>
-    </div>
-  );
 }
 
 function SideBySide({
   before,
   after,
   align,
+  onOpen,
 }: {
   before: CompareSide;
   after: CompareSide;
   align: "start" | "center";
+  onOpen?: () => void;
 }) {
+  // A side that failed never reports a size, so the other is the widest there
+  // is; waiting on it would squeeze a wide picture into half the stage.
   const widest =
-    before.size === null || after.size === null
-      ? null
-      : Math.max(before.size.width, after.size.width);
-  const pane = (side: CompareSide, which: "before" | "after") => (
-    <div className="media-compare-pane" data-side={which}>
-      <CompareLabel
-        which={which}
-        side={side}
-        other={which === "before" ? after : before}
-      />
-      <div
-        className="media-compare-box"
-        data-sized={side.size === null ? undefined : ""}
-        style={
-          // Unsized until both are known: a box guessed at now would jump
-          // when the other side's size arrives.
-          widest === null || side.size === null
-            ? undefined
-            : {
-                width: `${(side.size.width / widest) * 100}%`,
-                maxWidth: `${side.size.width}px`,
-                marginInline: align === "center" ? "auto" : undefined,
-              }
-        }
-      >
-        {side.content}
+    before.size !== null && after.size !== null
+      ? Math.max(before.size.width, after.size.width)
+      : before.size !== null && after.failed
+        ? before.size.width
+        : after.size !== null && before.failed
+          ? after.size.width
+          : null;
+  const pane = (side: CompareSide, which: "before" | "after") => {
+    const box = {
+      className: "media-compare-box",
+      "data-sized": side.size === null ? undefined : "",
+      // Unsized until both are known: a box guessed at now would jump when
+      // the other side's size arrives.
+      style:
+        widest === null || side.size === null
+          ? undefined
+          : {
+              width: `${(side.size.width / widest) * 100}%`,
+              maxWidth: `${side.size.width}px`,
+              ...(align === "center" ? { marginInline: "auto" } : {}),
+            },
+    };
+    return (
+      <div className="media-compare-pane" data-side={which}>
+        <CompareLabel
+          which={which}
+          side={side}
+          other={which === "before" ? after : before}
+        />
+        {onOpen !== undefined && !side.failed ? (
+          <button
+            type="button"
+            {...box}
+            className="media-compare-box media-compare-open"
+            aria-label="Open in the viewer"
+            onClick={onOpen}
+          >
+            {side.content}
+          </button>
+        ) : (
+          <div {...box}>{side.content}</div>
+        )}
       </div>
-    </div>
-  );
+    );
+  };
   return (
     <div className="media-compare-stage">
       <div className="media-compare-2up">
@@ -302,7 +372,7 @@ function Overlay({
  * because scaling hides it: two screenshots drawn at one width look the same
  * size whatever their pixels say. A dimension the two disagree on is marked.
  */
-function CompareLabel({
+export function CompareLabel({
   which,
   side,
   other,
@@ -320,7 +390,12 @@ function CompareLabel({
   return (
     <span className="media-compare-label" data-side={which}>
       <span className="media-compare-tick" />
-      <span className="font-semibold">{side.label}</span>
+      <span
+        className="media-compare-label-name font-semibold"
+        title={side.label}
+      >
+        {side.label}
+      </span>
       {side.size !== null && (
         <span className="media-compare-dims">
           {dimension("width")}×{dimension("height")}

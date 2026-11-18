@@ -60,7 +60,7 @@ import {
   useCanIfLoaded,
   useIsProjectAdmin,
 } from "@/api/queries.ts";
-import { BulkStatusMenu } from "@/components/issue/bulk-status-menu.tsx";
+import { BulkActions } from "@/components/issue/bulk-actions.tsx";
 import { FilterBar } from "@/components/issue/filter-bar.tsx";
 import {
   ISSUE_LIST_ROW,
@@ -101,7 +101,12 @@ import { headerBottom, useHeaderHeight } from "@/lib/use-header-height.ts";
 import { usePagedAppend } from "@/lib/use-paged-append.ts";
 import { useReadFailure } from "@/lib/use-read-failure.ts";
 import { useReturnView } from "@/lib/use-return-view.ts";
-import { type Selection, useSelection } from "@/lib/use-selection.ts";
+import {
+  groupState,
+  type Selection,
+  useSelection,
+} from "@/lib/use-selection.ts";
+import { useSweepSelect } from "@/lib/use-sweep-select.ts";
 import { cn } from "@/lib/utils";
 
 /**
@@ -335,6 +340,12 @@ export function ProjectIssueListPage({
   // The server refuses a status change below `issue.triage`, and status is
   // the only thing a selection does here yet.
   const canSelect = useCanIfLoaded(slug, "issue.triage");
+  const selecting = canSelect && selection.selected.length > 0;
+  const sweep = useSweepSelect({
+    isSelected: selection.isSelected,
+    paint: selection.paint,
+    parse: Number,
+  });
 
   // Nothing upstream catches a failed counts read any more, so it is handled
   // where a failed group already is: inside the list area, with the header
@@ -381,8 +392,12 @@ export function ProjectIssueListPage({
             offset is measured, not hard-coded. */}
         {/* One full-width group, project watchers at its left end (T-540).
             Below `sm` the actions have about 35px to spare at 390px, so the
-            chip takes a line of its own above them. */}
-        <div className="flex w-full flex-wrap items-center gap-2">
+            chip takes a line of its own above them. While anything is
+            selected the row is the selection's alone (T-778): none of the
+            project actions serves a selection, their width is what pushed
+            its buttons down to icons, and Mark all read would sit beside the
+            selection's Mark read looking the same with a different scope. */}
+        <div className="@container/bulk flex w-full flex-wrap items-center gap-2">
           {canSelect && shownNumbers.length > 0 && (
             <IssueSelectionBar
               slug={slug}
@@ -390,30 +405,35 @@ export function ProjectIssueListPage({
               selection={selection}
             />
           )}
-          <ProjectWatchersChip
-            slug={slug}
-            className="max-sm:order-first max-sm:basis-full"
-          />
-          <MarkAllReadButton
-            slug={slug}
-            scopeName="this project"
-            className="ml-auto"
-          />
-          <ProjectMuteButton slug={slug} />
-          {/* Admin-only, because only they see the whole project's trash. An
-              author with deleted cards of their own reaches the same view by
-              URL or through `todou issue list --deleted`. */}
-          {isAdmin && (
-            <Button variant="ghost" size="sm" asChild>
-              <Link
-                to="/projects/$slug"
-                params={{ slug }}
-                search={{ deleted: true }}
-              >
-                <Trash2Icon />
-                Trash
-              </Link>
-            </Button>
+          {!selecting && (
+            <>
+              <ProjectWatchersChip
+                slug={slug}
+                className="max-sm:order-first max-sm:basis-full"
+              />
+              <MarkAllReadButton
+                slug={slug}
+                scopeName="this project"
+                className="ml-auto"
+              />
+              <ProjectMuteButton slug={slug} />
+              {/* Admin-only, because only they see the whole project's
+                  trash. An author with deleted cards of their own reaches
+                  the same view by URL or through
+                  `todou issue list --deleted`. */}
+              {isAdmin && (
+                <Button variant="ghost" size="sm" asChild>
+                  <Link
+                    to="/projects/$slug"
+                    params={{ slug }}
+                    search={{ deleted: true }}
+                  >
+                    <Trash2Icon />
+                    Trash
+                  </Link>
+                </Button>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -429,8 +449,9 @@ export function ProjectIssueListPage({
             {/* Once anything is selected, every row shows its box (T-732). */}
             <div
               className="group/select"
-              data-selecting={
-                canSelect && selection.selected.length > 0 ? "" : undefined
+              data-selecting={selecting ? "" : undefined}
+              onPointerDownCapture={
+                canSelect ? sweep.onPointerDownCapture : undefined
               }
             >
               {grouped ? (
@@ -611,7 +632,7 @@ function IssueSelectionBar({
           <span className="text-sm text-muted-foreground tabular-nums">
             {count} selected
           </span>
-          <BulkStatusMenu
+          <BulkActions
             slug={slug}
             statuses={statuses}
             issueNumbers={selection.selected}
@@ -918,6 +939,8 @@ function IssueGroup({
     [narrowing, items, typed],
   );
   const selectable = useReportShown(`status:${status.id}`, shown);
+  const selection = useContext(SelectionContext);
+  const numbers = useMemo(() => shown.map((issue) => issue.number), [shown]);
   const grid = useIssueListGrid();
   const lastCursor =
     paged.pages.length === 0
@@ -1010,8 +1033,17 @@ function IssueGroup({
           top: "calc(var(--group-sticky-top, 56px) + var(--vv-top, 0px) - var(--header-hide, 0px))",
         }}
       >
-        <div className="flex items-center gap-2 rounded-t-lg border bg-muted px-3.5 py-2 text-sm">
-          <StatusHeading status={status} />
+        <div className="group/colhead flex items-center gap-2 rounded-t-lg border bg-muted px-3.5 py-2 text-sm">
+          {/* The dot doubles as the group's select-all, as a board column's
+              does (T-768). */}
+          <StatusHeading
+            status={status}
+            select={
+              selection
+                ? selectAllOf(selection, numbers, status.name)
+                : undefined
+            }
+          />
           <span className="text-muted-foreground">{total}</span>
         </div>
       </div>
@@ -1075,6 +1107,21 @@ function IssueGroup({
       </ul>
     </section>
   );
+}
+
+function selectAllOf(
+  selection: Selection<number>,
+  numbers: readonly number[],
+  name: string,
+) {
+  const state = groupState(new Set(selection.selected), numbers);
+  return {
+    checked: state === "all",
+    indeterminate: state === "some",
+    disabled: numbers.length === 0,
+    onChange: () => selection.toggleGroup(numbers),
+    label: `select every issue in ${name}`,
+  };
 }
 
 /** Exported for tests (pagination state, like IssueRow). */

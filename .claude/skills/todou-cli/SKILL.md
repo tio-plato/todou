@@ -76,6 +76,8 @@ EOF2
 - Draft in a scratch dir; git never carries them.
 - `spec push <n> <dir> --message vN [--if-version v] --wait` — the last stdout line is the outcome.
 - `approved` (latest version only; confirm with `spec status`) · `changes_requested` · `feedback` · `withdrawn`.
+- `not waiting`: a mermaid diagram does not parse (stderr names `file:line`); fix it and push again
+  with `--if-version`. Comment and issue writes print the same warning with the command to update.
 - Exit 0 is not approval.
 - Reworking a pending version: `spec withdraw <n> --if-version v` first.
 - `spec comments <n> --unresolved` → revise → `spec resolve <n> <ids…>` → push again.
@@ -93,11 +95,12 @@ EOF2
 ## Markdown
 
 - GFM: tables, `- [ ]` task lists, `~~strike~~`
-- ```` ```mermaid ```` → diagram · ```` ```diff ```` → diff view · other fences highlighted
+- Fences that render: ```` ```mermaid ```` → diagram; ```` ```diff ```` / ```` ```patch ```` → diff view. Other fences are highlighted.
 - `<details><summary>…</summary>…</details>` → fold (bare tags only)
 - leading `---` YAML frontmatter → table
 - `[name](/api/projects/<proj>/attachments/<id>/download/<name>)` → attachment link
-- `![](…/download/shot.png)` → inline image · `![](…/download/page.html)` (any text file) → embedded document
+- `![](…/download/<file>)` embeds an attachment: any image; `.md` rendered; `.patch` / `.diff` as a diff; `.html`, `.txt` and other text files as a document.
+- `![before](/...) -> ![plan A](/...)` on a separated paragraph → compare images (side by side, swipe, …); each alt labels its side
 - `T-1144` → issue (the project's own spelling; `#1144` only where it has no prefix)
 - `#comment-1144` → comment 1144 of this project: comment ids are their own sequence, unrelated to issue T-1144
 - `T-12#comment-34` → that comment on that issue

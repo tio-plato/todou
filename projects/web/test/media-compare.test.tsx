@@ -4,7 +4,7 @@ import {
   type CompareSide,
   MediaCompare,
 } from "../src/components/shared/media-compare.tsx";
-import { resetCompareMode } from "../src/lib/compare-mode.ts";
+import { resetCompareMode, setCompareMode } from "../src/lib/compare-mode.ts";
 
 beforeEach(() => resetCompareMode());
 
@@ -105,6 +105,16 @@ describe("MediaCompare (T-722)", () => {
       (mark) => mark.textContent,
     );
     expect(marked).toEqual(["400", "460"]);
+  });
+
+  it("titles each side's name with all of it, for when a long one is cut (T-767)", () => {
+    const long = "Safari 18 on an iPhone 15 Pro";
+    const { container } = renderCompare({ after: side(long, SAME) });
+    const names = [
+      ...container.querySelectorAll<HTMLElement>(".media-compare-label-name"),
+    ];
+    expect(names.map((name) => name.title)).toEqual(["v2", long]);
+    expect(names[1].textContent).toBe(long);
   });
 
   it("switches every comparison on the page together", () => {
@@ -210,5 +220,92 @@ describe("MediaCompare (T-722)", () => {
       ["50%", "400px"],
       ["100%", "800px"],
     ]);
+  });
+});
+
+describe("MediaCompare modes (T-724)", () => {
+  it("has no mode control with one mode, and stays side by side without touching the page's mode", () => {
+    render(
+      <>
+        <div data-testid="one">
+          <MediaCompare
+            before={side("v2", SAME)}
+            after={side("v5", SAME)}
+            align="center"
+            backdrop="page"
+            modes={["2up"]}
+          />
+        </div>
+        <div data-testid="all">
+          <MediaCompare
+            before={side("v2", SAME)}
+            after={side("v5", SAME)}
+            align="start"
+            backdrop="checker"
+          />
+        </div>
+      </>,
+    );
+    const one = screen.getByTestId("one");
+    const all = screen.getByTestId("all");
+    expect(one.querySelector('fieldset[aria-label="Comparison"]')).toBeNull();
+    expect(one.querySelector(".fence-tools")?.hasAttribute("data-always")).toBe(
+      true,
+    );
+    act(() => setCompareMode("swipe"));
+    expect(one.querySelector(".media-compare-2up")).not.toBeNull();
+    expect(one.querySelector(".media-compare-overlay")).toBeNull();
+    expect(mode("Swipe", all).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("offers only the modes it is given", () => {
+    const { container } = renderCompare({ modes: ["2up", "swipe"] });
+    expect(
+      [...container.querySelectorAll('[aria-label="Comparison"] button')].map(
+        (button) => button.getAttribute("aria-label"),
+      ),
+    ).toEqual(["Side by side", "Swipe"]);
+  });
+
+  it("opens the viewer from either side's picture, given onOpen (T-773)", () => {
+    let opened = 0;
+    const { container, unmount } = renderCompare({
+      align: "center",
+      onOpen: () => {
+        opened += 1;
+      },
+    });
+    const buttons = screen.getAllByRole("button", {
+      name: "Open in the viewer",
+    });
+    expect(buttons).toHaveLength(2);
+    expect(
+      buttons.every((b) => b.classList.contains("media-compare-box")),
+    ).toBe(true);
+    fireEvent.click(buttons[1] as HTMLElement);
+    expect(opened).toBe(1);
+    // The grid has one rule for images and diagrams alike.
+    const grid = container.querySelector<HTMLElement>(".media-compare-2up");
+    expect(grid?.getAttributeNames().filter((n) => n !== "class")).toEqual([]);
+    expect(grid?.getAttribute("style")).toBeNull();
+    unmount();
+
+    renderCompare();
+    expect(
+      screen.queryByRole("button", { name: "Open in the viewer" }),
+    ).toBeNull();
+  });
+
+  it("sizes the side that drew when the other failed", () => {
+    const { container } = renderCompare({
+      before: side("v2", null, true),
+      after: side("v5", { width: 1456, height: 781 }),
+    });
+    const [failed, drawn] = container.querySelectorAll<HTMLElement>(
+      ".media-compare-2up .media-compare-box",
+    );
+    expect(failed?.style.width).toBe("");
+    expect(drawn?.style.maxWidth).toBe("1456px");
+    expect(drawn?.style.width).toBe("100%");
   });
 });

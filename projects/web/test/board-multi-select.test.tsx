@@ -105,6 +105,21 @@ function statefulServer() {
     init?: RequestInit,
   ): Promise<Response> => {
     const url = new URL(String(input), "http://test");
+    // A selection moves in one request (T-775); recorded card by card, as
+    // a single card's PATCH is.
+    if (url.pathname.endsWith("/issues/bulk") && init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as {
+        numbers: number[];
+        commands: { status_id: number }[];
+      };
+      const statusId = body.commands[0]?.status_id as number;
+      const moved = statuses.find((s) => s.id === statusId) as Status;
+      for (const number of body.numbers) {
+        patches.push({ number, status_id: statusId });
+        cards.set(number, moved);
+      }
+      return json({ issues: body.numbers.map((n) => item(n, moved)) });
+    }
     const patch = url.pathname.match(/\/issues\/(\d+)$/);
     if (patch && init?.method === "PATCH") {
       const number = Number(patch[1]);
@@ -362,6 +377,23 @@ describe("selecting cards on the board (T-708)", () => {
 
     fireEvent.click(screen.getByLabelText("Clear selection"));
     expect(canvas.hasAttribute("data-selecting")).toBe(false);
+  });
+
+  it("gives the toolbar row to the selection while anything is selected (T-778)", async () => {
+    mountBoard(statefulServer());
+    await screen.findByText("card 61");
+    const projectActions = () => [
+      screen.queryByLabelText("Mark this project as read"),
+      screen.queryByLabelText("Mute alpha"),
+    ];
+    expect(projectActions().every(Boolean)).toBe(true);
+
+    fireEvent.click(box(21));
+    expect(projectActions()).toEqual([null, null]);
+    expect(screen.getByTestId("bulk-status-trigger")).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("Clear selection"));
+    expect(projectActions().every(Boolean)).toBe(true);
   });
 
   it("offers no checkboxes to a reporter", async () => {
