@@ -605,11 +605,15 @@ function RowText({
 /** The longest name a template takes; a project's may be twice as long. */
 const NAME_MAX = 100;
 
+/** `name` cut to what a template name holds, never mid-character. */
+const fitName = (name: string) =>
+  name.slice(0, NAME_MAX).replace(/[\uD800-\uDBFF]$/, "");
+
 function SaveAsTemplateSection({ slug }: { slug: string }) {
   const project = useSuspenseQuery(projectQuery(slug));
   // null = untouched; the field shows the project's name until edited.
   const [draft, setDraft] = useState<string | null>(null);
-  const value = draft ?? project.data.name.slice(0, NAME_MAX);
+  const value = draft ?? fitName(project.data.name);
   const name = value.trim();
   const save = useCreateTemplate();
 
