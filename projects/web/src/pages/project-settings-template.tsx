@@ -580,11 +580,15 @@ function RowText({
   );
 }
 
+/** The longest name a template takes; a project's may be twice as long. */
+const NAME_MAX = 100;
+
 function SaveAsTemplateSection({ slug }: { slug: string }) {
   const project = useSuspenseQuery(projectQuery(slug));
   // null = untouched; the field shows the project's name until edited.
   const [draft, setDraft] = useState<string | null>(null);
-  const name = (draft ?? project.data.name).trim();
+  const value = draft ?? project.data.name.slice(0, NAME_MAX);
+  const name = value.trim();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const templatesKey = projectTemplatesQuery.queryKey;
@@ -621,8 +625,8 @@ function SaveAsTemplateSection({ slug }: { slug: string }) {
           <Label htmlFor="save-template-name">Name</Label>
           <Input
             id="save-template-name"
-            value={draft ?? project.data.name}
-            maxLength={100}
+            value={value}
+            maxLength={NAME_MAX}
             onChange={(e) => setDraft(e.target.value)}
             autoComplete="off"
           />

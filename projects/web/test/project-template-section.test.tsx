@@ -105,10 +105,13 @@ const PREFS: MePrefs = {
   new_project_template: 7,
 };
 
-const project = (role: Project["viewer_role"]): Project => ({
+const project = (
+  role: Project["viewer_role"],
+  name = "Potato field",
+): Project => ({
   id: 1,
   slug: "todou",
-  name: "Potato field",
+  name,
   description: "",
   created_at: "2026-01-01T00:00:00Z",
   viewer_role: role,
@@ -307,9 +310,10 @@ function fakeServer({
 function renderPage({
   role = "admin" as Project["viewer_role"],
   preferred = 7 as MePrefs["new_project_template"],
+  name = "Potato field",
 } = {}) {
   const client = testQueryClient();
-  client.setQueryData(projectQuery("todou").queryKey, project(role));
+  client.setQueryData(projectQuery("todou").queryKey, project(role, name));
   client.setQueryData(projectTemplatesQuery.queryKey, TEMPLATES);
   client.setQueryData(prefsQuery.queryKey, {
     ...PREFS,
@@ -726,6 +730,24 @@ describe("saving the project as a template", () => {
     );
     await waitFor(() =>
       expect(router.state.location.pathname).toBe("/settings/templates/12"),
+    );
+  });
+
+  it("names it after as much of a long project name as a template name holds", async () => {
+    const server = fakeServer();
+    // A project's name may run to 200 characters, a template's to 100.
+    const long = "Potato field ".repeat(15).trim();
+    renderPage({ name: long });
+    const name = (await screen.findByLabelText("Name")) as HTMLInputElement;
+    expect(name.value).toBe(long.slice(0, 100));
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(
+        server.calls.find(
+          (c) => c.method === "POST" && c.path === "/me/project-templates",
+        )?.body,
+      ).toEqual({ name: long.slice(0, 100).trim(), from_project: "todou" }),
     );
   });
 });
