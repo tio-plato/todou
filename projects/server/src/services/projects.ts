@@ -7,7 +7,16 @@ import type {
   ProjectUpdateInput,
   TemplateBody,
 } from "@todou/shared";
-import { and, asc, desc, eq, inArray, ne } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+} from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import { uniqueViolation } from "../auth/provision.ts";
 import type { AppContext } from "../bootstrap.ts";
@@ -33,7 +42,12 @@ import {
   specVersions,
   statuses,
 } from "../db/project-schema.ts";
-import { projectMembers, projects, slugHistory } from "../db/system-schema.ts";
+import {
+  projectMembers,
+  projects,
+  slugHistory,
+  users,
+} from "../db/system-schema.ts";
 import {
   ConflictError,
   SlugReservedError,
@@ -193,6 +207,72 @@ async function canSeeProject(
   return rows.length > 0;
 }
 
+/** An agent joining a new project, and as what. */
+type AgentSeat = { userId: number; role: MemberRole };
+
+/**
+ * The agents a new project starts with. They are always the agents of the
+ * person behind the request — the actor, or a machine actor's owner — and
+ * never the actor itself, which joins as admin anyway. Given a list, exactly
+ * those, an empty one included; given none, every enabled agent of theirs
+ * with a join role set, as that role. Any role fits under the owner's admin.
+ *
+ * A login that is not one of theirs is refused the same way whether it
+ * exists or not, so the refusal does not tell anyone whose agents exist.
+ */
+async function resolveAgents(
+  system: Db,
+  actor: UserRow,
+  requested: ProjectCreateInput["agents"],
+): Promise<AgentSeat[]> {
+  const principal = actor.kind === "machine" ? actor.ownerId : actor.id;
+  if (requested === undefined) {
+    if (principal === null) return [];
+    const rows = await system
+      .select({ id: users.id, role: users.newProjectRole })
+      .from(users)
+      .where(
+        and(
+          eq(users.kind, "machine"),
+          eq(users.ownerId, principal),
+          isNull(users.disabledAt),
+          isNotNull(users.newProjectRole),
+          ne(users.id, actor.id),
+        ),
+      )
+      .orderBy(asc(users.id));
+    return rows.flatMap((row) =>
+      row.role === null ? [] : [{ userId: row.id, role: row.role }],
+    );
+  }
+  const logins = requested.map((agent) => agent.login);
+  const twice = logins.find((login, i) => logins.indexOf(login) !== i);
+  if (twice !== undefined) {
+    throw new ValidationFailedError(`@${twice} is listed twice`);
+  }
+  if (requested.length === 0) return [];
+  const rows = await system
+    .select()
+    .from(users)
+    .where(inArray(users.login, logins));
+  const byLogin = new Map(rows.map((row) => [row.login, row]));
+  const seats: AgentSeat[] = [];
+  for (const { login, role } of requested) {
+    const row = byLogin.get(login);
+    if (
+      row === undefined ||
+      principal === null ||
+      row.kind !== "machine" ||
+      row.ownerId !== principal ||
+      row.disabledAt !== null
+    ) {
+      throw new ValidationFailedError(`@${login} is not one of your agents`);
+    }
+    if (row.id !== actor.id) seats.push({ userId: row.id, role });
+  }
+  return seats;
+}
+
 /**
  * Everything a new project owns beyond its registry row, split by tier: the
  * system database holds the slug history and the memberships, the project's
@@ -207,6 +287,7 @@ async function seedProject(
   input: ProjectCreateInput,
   actor: UserRow,
   template: TemplateBody,
+  agents: AgentSeat[],
 ): Promise<void> {
   // Anchored at createdAt for the same reason the ref format is: the
   // history has to cover every instant this project could hold content.
@@ -285,8 +366,8 @@ async function seedProject(
   // No guard on the actor's kind, deliberately: a machine has always been
   // able to create projects here, and taking that away belongs to a card
   // that can go and look at who would break.
-  await system.insert(projectMembers).values(
-    actor.kind === "machine" && actor.ownerId !== null
+  await system.insert(projectMembers).values([
+    ...(actor.kind === "machine" && actor.ownerId !== null
       ? [
           { projectId: row.id, userId: actor.id, role: "admin" as const },
           {
@@ -295,8 +376,9 @@ async function seedProject(
             role: "admin" as const,
           },
         ]
-      : [{ projectId: row.id, userId: actor.id, role: "admin" as const }],
-  );
+      : [{ projectId: row.id, userId: actor.id, role: "admin" as const }]),
+    ...agents.map((seat) => ({ projectId: row.id, ...seat })),
+  ]);
   if (input.ref_prefix != null) {
     await mirrorRefFormat(system, row.id, {
       prefix: input.ref_prefix,
@@ -338,12 +420,14 @@ export async function createProject(
 ): Promise<Project> {
   const system = ctx.router.system();
   // Before anything is written, so a template or source project that is not
-  // there leaves no half-made project behind. Naming neither means the
-  // built-in default, whoever asks.
+  // there, or an agent that is not the caller's, leaves no half-made project
+  // behind. Naming neither template nor source means the built-in default,
+  // whoever asks.
   const template =
     input.from_project === undefined
       ? (await resolveTemplate(ctx, actor, input.template ?? "default")).body
       : await templateBodyFromProject(ctx, actor, input.from_project);
+  const agents = await resolveAgents(system, actor, input.agents);
 
   if (ctx.router.newProjectSharesSystemDatabase()) {
     // No `provision` call: for a project resolving to the system database it
@@ -364,7 +448,7 @@ export async function createProject(
       if (!ctx.router.sharesSystemDatabase(routeInfoOf(row))) {
         throw new Error("project routed out of the system database mid-create");
       }
-      await seedProject(tx, tx, row, input, actor, template);
+      await seedProject(tx, tx, row, input, actor, template, agents);
       return row;
     });
     // After the commit: a subscriber that reacts by reading the project has
@@ -398,7 +482,7 @@ export async function createProject(
     // leaves a registry row with no database behind it. It adds no catch of
     // its own — a failure here is a 5xx, same as any other step.
     if (input.ref_prefix != null) await markPendingMirror(ctx, row);
-    await seedProject(system, db, row, input, actor, template);
+    await seedProject(system, db, row, input, actor, template, agents);
   } catch (cause) {
     // Cross-database creation cannot be one transaction; compensate by
     // removing the registry row so the failed project is unroutable.
