@@ -562,6 +562,77 @@ describe("applying a template", () => {
     );
   });
 
+  it("keeps a row the reader turned off when the preview comes back with another plan", async () => {
+    const plans = { ...PLANS };
+    const server = fakeServer({ plans });
+    renderPage();
+    await rowsOf7();
+    fireEvent.click(box("Change status Done"));
+
+    // Someone recoloured urgent meanwhile: the same rows, another plan.
+    plans["7"] = {
+      expected: "plan-7-again",
+      changes: PLAN_7.changes.map((change) =>
+        change.type === "label_change"
+          ? { ...change, from: "#eab308" }
+          : change,
+      ),
+    };
+    fireEvent(window, new Event("visibilitychange"));
+    const recoloured = drawn(
+      <LabelChip label={{ id: 0, name: "urgent", color: "#eab308" }} />,
+    );
+    await waitFor(() =>
+      expect(rowOf("Change label urgent").innerHTML).toContain(recoloured),
+    );
+    expect(box("Change status Done").checked).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply 4 changes" }));
+    await waitFor(() => expect(server.applies()).toHaveLength(1));
+    expect(server.applies()[0]?.body).toEqual({
+      template: 7,
+      expected: "plan-7-again",
+      selected: DEFAULT_SELECTED.filter((id) => id !== "status.change:3"),
+    });
+  });
+
+  it("starts a row new to the plan as the server does, and keeps off a row whose requirement is off", async () => {
+    // The default status moves to Doing, which the project has.
+    const toDoing: ChangeRow[] = PLAN_7.changes.map((change) =>
+      change.type === "status_default"
+        ? { ...change, requires: [], to: { name: "Doing", color: "#3b82f6" } }
+        : change,
+    );
+    const plans: Record<string, TemplateApplyPlan> = {
+      ...PLANS,
+      "7": { expected: "plan-7", changes: toDoing },
+    };
+    fakeServer({ plans });
+    renderPage();
+    await rowsOf7();
+    fireEvent.click(box("Add status Review"));
+    expect(box("Change the default status").checked).toBe(true);
+
+    // The template moved its default to Review since, and gained a label.
+    plans["7"] = {
+      expected: "plan-7-again",
+      changes: [
+        ...PLAN_7.changes,
+        {
+          ...row("label.add:wontfix", "labels", "add"),
+          type: "label_add",
+          name: "wontfix",
+          color: "#64748b",
+        },
+      ],
+    };
+    fireEvent(window, new Event("visibilitychange"));
+    await screen.findByRole("checkbox", { name: "Add label wontfix" });
+    expect(box("Add label wontfix").checked).toBe(true);
+    expect(box("Add status Review").checked).toBe(false);
+    expect(box("Change the default status").checked).toBe(false);
+  });
+
   it("leaves off a row of a kind this page does not know", async () => {
     const server = fakeServer({
       plans: {

@@ -107,14 +107,24 @@ function withRows(
   return next;
 }
 
-/** What the server starts selected: additions and changes, no deletion. */
-const defaults = (rows: readonly ChangeRow[]) =>
-  withRows(
-    rows,
-    new Set(),
-    rows.filter((row) => row.default_selected).map((row) => row.id),
-    true,
-  );
+/**
+ * What a plan starts selected: each row as `choices` holds it from an
+ * earlier plan, else as the server starts it (additions and changes, no
+ * deletion). Then a row that cannot be selected is off, and so is a row
+ * whose requirement is.
+ */
+function selectedIn(
+  rows: readonly ChangeRow[],
+  choices: ReadonlyMap<string, boolean>,
+): Set<string> {
+  const off = rows
+    .filter(
+      (row) =>
+        !row.selectable || !(choices.get(row.id) ?? row.default_selected),
+    )
+    .map((row) => row.id);
+  return withRows(rows, new Set(rows.map((row) => row.id)), off, false);
+}
 
 const STALE =
   "Nothing was applied: the project or the template changed since the preview.";
@@ -156,24 +166,27 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
     () => plan?.changes.filter((row) => ChangeRow.safeParse(row).success) ?? [],
     [plan],
   );
-  // The reader's choices hold for the plan they were made on; another plan,
-  // after an apply or a 409, starts from its own defaults.
-  const [picked, setPicked] = useState<{
-    expected: string;
-    ids: ReadonlySet<string>;
+  // Each row as the reader left it, by id, for this template. A refetch
+  // brings another plan whenever the project or the template changed; a
+  // row the reader turned off must stay off in it, or Apply would carry it
+  // out unseen.
+  const [choices, setChoices] = useState<{
+    template: TemplateRef;
+    rows: ReadonlyMap<string, boolean>;
   } | null>(null);
+  const chosen =
+    choices?.template === template ? choices.rows : new Map<string, boolean>();
   const selected =
-    plan === undefined
-      ? new Set<string>()
-      : picked?.expected === plan.expected
-        ? // Re-derived, in case a refetch of the same plan greyed a row.
-          withRows(rows, new Set(), [...picked.ids], true)
-        : defaults(rows);
+    plan === undefined ? new Set<string>() : selectedIn(rows, chosen);
   const select = (ids: readonly string[], on: boolean) => {
     if (plan === undefined) return;
-    setPicked({
-      expected: plan.expected,
-      ids: withRows(rows, selected, ids, on),
+    const next = withRows(rows, selected, ids, on);
+    setChoices({
+      template,
+      rows: new Map([
+        ...chosen,
+        ...rows.map((row) => [row.id, next.has(row.id)] as const),
+      ]),
     });
   };
 
