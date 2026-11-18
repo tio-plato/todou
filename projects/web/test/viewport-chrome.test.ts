@@ -474,6 +474,21 @@ describe("auto-hiding header (T-585)", () => {
     expect(hidden()).toBe("30px");
   });
 
+  it("settles a header the page's top carries in before the app lands", () => {
+    mount();
+    slideAway();
+    scrollTo(50);
+    let seen = "";
+    const target = block(3000, () => {
+      seen = hidden();
+    });
+    click(link("#comment-12"));
+    revealBlock(target);
+    expect(seen).toBe("0px");
+    scrolled();
+    expect(hidden()).toBe("0px");
+  });
+
   it("settles a header the reader left half way on the click that stops it", () => {
     mount();
     touch("touchstart");
