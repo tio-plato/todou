@@ -176,6 +176,95 @@ describe.each(PLACEMENTS)("applying a template (%s placement)", (placement) => {
     ).toBe("excluded");
   });
 
+  it("changes paired statuses, the default and the roles, and adds labels", async () => {
+    const s = slug();
+    await created("/projects", { slug: s, name: s });
+    const statusId = async (name: string) =>
+      (await get(`/projects/${s}/statuses`)).find(
+        (x: { name: string }) => x.name === name,
+      )?.id as number;
+    const done = await statusId("Done");
+    const shipped = await statusId("Shipped");
+    const next = await statusId("Next");
+    for (const [path, body] of [
+      [
+        `/projects/${s}/statuses/${done}`,
+        { color: "#000000", category: "open" },
+      ],
+      [`/projects/${s}/statuses/${next}`, { is_default: true }],
+    ] as const) {
+      expect((await call("PATCH", path, body)).status).toBe(200);
+    }
+    // Shipped differs in its chart role alone.
+    expect(
+      (
+        await call("PUT", `/projects/${s}/insights/settings/roles/${shipped}`, {
+          role: "excluded",
+        })
+      ).status,
+    ).toBe(200);
+    const chore = (await get(`/projects/${s}/labels`)).find(
+      (l: { name: string }) => l.name === "kind:chore",
+    );
+    expect(
+      (await call("DELETE", `/projects/${s}/labels/${chore.id}`)).status,
+    ).toBe(204);
+
+    const plan = await preview(s);
+    const selected = plan.changes
+      .filter((r) => (r as { default_selected?: boolean }).default_selected)
+      .map((r) => r.id);
+    expect(selected.sort()).toEqual(
+      [
+        `status.change:${done}`,
+        `status.change:${shipped}`,
+        "status.default",
+        "label.add:kind:chore",
+      ].sort(),
+    );
+    const res = await apply(s, plan.expected, selected);
+    expect(res.status).toBe(200);
+
+    const statuses = await get(`/projects/${s}/statuses`);
+    const byName = (name: string) =>
+      statuses.find((x: { name: string }) => x.name === name);
+    expect(byName("Done")).toMatchObject({
+      color: "#22c55e",
+      category: "closed",
+    });
+    expect(
+      statuses.filter((x: { is_default: boolean }) => x.is_default),
+    ).toMatchObject([{ name: "Todo" }]);
+    const roles = (await get(`/projects/${s}/insights/settings`)).roles;
+    expect(roles.find((r: { name: string }) => r.name === "Shipped").role).toBe(
+      "completed",
+    );
+    expect(
+      (await get(`/projects/${s}/labels`)).map((l: { name: string }) => l.name),
+    ).toContain("kind:chore");
+    expect((await preview(s)).changes).toEqual([]);
+  });
+
+  it("will not offer to delete a status holding only trashed issues", async () => {
+    const s = slug();
+    await created("/projects", { slug: s, name: s });
+    const binned = await created(`/projects/${s}/statuses`, {
+      name: "Binned",
+      category: "closed",
+    });
+    const card = await created(`/projects/${s}/issues`, {
+      title: "trashed",
+      status_id: binned.id,
+    });
+    expect(
+      (await call("DELETE", `/projects/${s}/issues/${card.number}`)).status,
+    ).toBe(204);
+    const plan = await preview(s);
+    expect(
+      plan.changes.find((r) => r.id === `status.delete:${binned.id}`),
+    ).toMatchObject({ selectable: false, issues: 0, trashed: 1 });
+  });
+
   it("refuses a preview the project has moved on from, and changes nothing", async () => {
     const p = await drifted();
     const plan = await preview(p.s);

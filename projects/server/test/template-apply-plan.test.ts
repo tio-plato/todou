@@ -9,6 +9,7 @@ import {
   applySelection,
   type ProjectState,
   planTemplateApply,
+  templateApplyDigest,
 } from "../src/services/template-apply.ts";
 
 const DEFAULT = BUILTIN_TEMPLATES.default.body;
@@ -314,6 +315,31 @@ describe("applySelection", () => {
     expect(state.statuses[6]?.name).toBe("Done ");
   });
 
+  it("keeps the template's chart role when only the category changes", () => {
+    // QA counts as remaining, by default, while open. Closed, its default
+    // would be completed; the template wants it remaining all the same.
+    const state = project([{ name: "QA", category: "open" }], { line: "QA" });
+    const template: TemplateBody = {
+      statuses: [
+        {
+          name: "QA",
+          category: "closed",
+          color: colorIn(DEFAULT, "QA"),
+          chart_role: "remaining",
+          block_clear: true,
+        },
+      ],
+      labels: [],
+    };
+    const rows = planTemplateApply(state, template);
+    expect(ids(rows)).toEqual(["status.change:1"]);
+    const outcome = applySelection(state, template, rows, ["status.change:1"]);
+    expect(outcome.updateStatuses).toEqual([{ id: 1, category: "closed" }]);
+    expect(outcome.roleChanges).toEqual([
+      { kind: "edited", key: 1, role: "remaining" },
+    ]);
+  });
+
   it("deletes only the label it was asked to", () => {
     const state = drifted();
     const docs = state.labels.find((l) => l.name === "kind:docs")?.id;
@@ -358,5 +384,20 @@ describe("applySelection", () => {
     const outcome = applySelection(state, DEFAULT, rows, ["status.delete:6"]);
     expect(outcome.deleteStatusIds).toEqual([6]);
     expect(outcome.defaultStatus).toBeUndefined();
+  });
+});
+
+describe("templateApplyDigest", () => {
+  it("tells two template bodies apart at the same revision", () => {
+    // A built-in template is always revision 0: an upgrade that changes it
+    // between a preview and its apply has to void the preview all the same.
+    const state = drifted();
+    const changed: TemplateBody = {
+      ...DEFAULT,
+      labels: DEFAULT.labels.filter((l) => l.name !== "kind:chore"),
+    };
+    expect(templateApplyDigest(state, changed, 0)).not.toBe(
+      templateApplyDigest(state, DEFAULT, 0),
+    );
   });
 });

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   type ChangeRow,
   canonicalizeLabelName,
+  defaultInsightsRole,
   lineAfterDeleting,
   type Role,
   type StatusRef,
@@ -388,7 +389,7 @@ export function applySelection(
       roleChanges.push({ kind: "deleted", key: idIn(row) });
     } else if (row.type === "status_add") {
       const status = template.statuses.find((s) => s.name === row.name);
-      if (status === undefined) continue;
+      if (status === undefined) throw new Error(`${row.id} has no status`);
       addStatuses.push(status);
       roleChanges.push({
         kind: "added",
@@ -397,17 +398,29 @@ export function applySelection(
         role: status.chart_role,
       });
     } else if (row.type === "status_change") {
-      updateStatuses.push({
-        id: idIn(row),
-        ...(row.color && { color: row.color.to }),
-        ...(row.category && { category: row.category.to }),
-      });
-      if (row.chart_role) {
-        roleChanges.push({
-          kind: "edited",
-          key: idIn(row),
-          role: row.chart_role.to,
+      const id = idIn(row);
+      // A row may change the chart role alone, which writes no column here.
+      if (row.color || row.category) {
+        updateStatuses.push({
+          id,
+          ...(row.color && { color: row.color.to }),
+          ...(row.category && { category: row.category.to }),
         });
+      }
+      const wanted = template.statuses.find(
+        (s) => pairing.paired.get(s.name)?.id === id,
+      );
+      if (wanted === undefined) throw new Error(`${row.id} has no status`);
+      // The role the status ends up counting as has to be the template's.
+      // With the category changing, a role nobody stored follows the new
+      // category's default, so it is stored whenever that default differs.
+      if (
+        row.chart_role ||
+        (row.category &&
+          defaultInsightsRole({ name: row.name, category: row.category.to }) !==
+            wanted.chart_role)
+      ) {
+        roleChanges.push({ kind: "edited", key: id, role: wanted.chart_role });
       }
     } else if (row.type === "label_delete") {
       deleteLabelIds.push(idIn(row));
@@ -740,8 +753,13 @@ async function write(
       created.push(row.id);
     }
   }
-  const resolve = (key: StatusKey | null) =>
-    key === null ? null : (idOf.get(key) ?? null);
+  const idFor = (key: StatusKey): number => {
+    const id = idOf.get(key);
+    // Every key names a status the project had or was just given.
+    if (id === undefined) throw new Error(`no status for ${String(key)}`);
+    return id;
+  };
+  const resolve = (key: StatusKey | null) => (key === null ? null : idFor(key));
 
   const updated = new Set<number>();
   for (const change of outcome.updateStatuses) {
@@ -757,8 +775,8 @@ async function write(
 
   const positionOf = new Map(state.statuses.map((s) => [s.id, s.position]));
   for (const [position, key] of outcome.order.entries()) {
-    const id = resolve(key);
-    if (id === null || positionOf.get(id) === position) continue;
+    const id = idFor(key);
+    if (positionOf.get(id) === position) continue;
     await tx.update(statuses).set({ position }).where(eq(statuses.id, id));
     if (positionOf.has(id)) updated.add(id);
   }
@@ -796,10 +814,10 @@ async function write(
     }
   }
 
-  const changes: RoleChange[] = outcome.roleChanges.flatMap((change) => {
-    const statusId = resolve(change.key);
-    return statusId === null ? [] : [{ ...change, statusId }];
-  });
+  const changes: RoleChange[] = outcome.roleChanges.map((change) => ({
+    ...change,
+    statusId: idFor(change.key),
+  }));
   const current = state.saved?.roles ?? {};
   const roles = storedRoles(current, changes);
   const rolesChanged = canonicalJson(roles) !== canonicalJson(current);
