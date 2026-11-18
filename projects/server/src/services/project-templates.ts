@@ -7,6 +7,7 @@ import {
   type ProjectTemplateCreateInput,
   type ProjectTemplateUpdateInput,
   TemplateBody,
+  type TemplateProblem,
   type TemplateRef,
 } from "@todou/shared";
 import { and, asc, eq, sql } from "drizzle-orm";
@@ -45,14 +46,34 @@ function normalized(body: TemplateBody): TemplateBody {
   };
 }
 
+/**
+ * A stored body read by this version's rules, or where it breaks them. Only
+ * this module writes the column, and only a parsed body, yet another version
+ * may have written it — a newer one, before a rollback — so a row that does
+ * not parse is reported rather than thrown: one such row must not take the
+ * whole list down, and with it every new project.
+ */
+function readBody(
+  row: TemplateRow,
+): { body: TemplateBody } | { problems: TemplateProblem[] } {
+  const parsed = TemplateBody.safeParse(row.body);
+  if (parsed.success) return { body: parsed.data };
+  return {
+    problems: parsed.error.issues.map((issue) => ({
+      path: issue.path.map(String).join("."),
+      message: issue.message,
+    })),
+  };
+}
+
 function toTemplate(row: TemplateRow): ProjectTemplate {
+  const read = readBody(row);
   return {
     ref: row.id,
     name: row.name,
     builtin: false,
     revision: row.revision,
-    // Only this module writes the column, and only a parsed body.
-    body: TemplateBody.parse(row.body),
+    ...("body" in read ? read : { body: null, problems: read.problems }),
   };
 }
 
@@ -105,7 +126,14 @@ export async function resolveTemplate(
     );
   const row = rows[0];
   if (!row) throw new NotFoundError(TEMPLATE_NOT_FOUND);
-  return { body: TemplateBody.parse(row.body), revision: row.revision };
+  const read = readBody(row);
+  if ("problems" in read) {
+    throw new ValidationFailedError(
+      `template "${row.name}" cannot be read by this version of todou`,
+      { problems: read.problems },
+    );
+  }
+  return { body: read.body, revision: row.revision };
 }
 
 /**

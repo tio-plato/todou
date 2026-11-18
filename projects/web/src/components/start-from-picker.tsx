@@ -1,4 +1,9 @@
-import type { Project, ProjectTemplate, TemplateRef } from "@todou/shared";
+import type {
+  Project,
+  ProjectTemplate,
+  TemplateBody,
+  TemplateRef,
+} from "@todou/shared";
 import { useCallback, useMemo } from "react";
 import { ProjectListbox } from "@/components/project-listbox.tsx";
 import { SearchableListbox } from "@/components/searchable-listbox.tsx";
@@ -6,16 +11,23 @@ import { Segmented } from "@/components/settings/status-set-list.tsx";
 import { MatchHighlight } from "@/components/shared/match-highlight.tsx";
 import { matchText, type ProjectMatch } from "@/lib/project-match.ts";
 
+/** A template this version can read, and so one something can be made from. */
+export type UsableTemplate = ProjectTemplate & { body: TemplateBody };
+export const usable = (template: ProjectTemplate): template is UsableTemplate =>
+  template.body !== null;
+
 /**
  * The template the account starts new projects from: the one its prefs
- * name, or Default once that one is gone — a deleted template leaves the
- * pref behind, and nothing on the server clears it.
+ * name, or Default once that one is gone or unreadable — a deleted template
+ * leaves the pref behind, and nothing on the server clears it.
  */
 export function preferredTemplate(
   templates: readonly ProjectTemplate[],
   preferred: TemplateRef,
 ): TemplateRef {
-  return templates.some((template) => template.ref === preferred)
+  return templates.some(
+    (template) => template.ref === preferred && usable(template),
+  )
     ? preferred
     : "default";
 }
@@ -42,13 +54,15 @@ export function TemplateListbox({
   className?: string;
   listClassName?: string;
 }) {
+  // One this version cannot read is listed on its own page, not here.
+  const options = useMemo(() => templates.filter(usable), [templates]);
   const match = useCallback((template: ProjectTemplate, query: string) => {
     const range = matchText(template.name, query);
     return range === undefined ? null : { range };
   }, []);
   return (
     <SearchableListbox<ProjectTemplate, { range: ProjectMatch["range"] }>
-      options={templates}
+      options={options}
       optionKey={(template) => String(template.ref)}
       match={match}
       renderOption={(template, hit) => (

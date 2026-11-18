@@ -163,6 +163,13 @@ export const BUILTIN_TEMPLATES: Record<
 
 export const TemplateName = z.string().trim().min(1).max(100);
 
+/** Where a stored template fails this version's rules, and why. */
+export const TemplateProblem = z.object({
+  path: z.string(),
+  message: z.string(),
+});
+export type TemplateProblem = z.infer<typeof TemplateProblem>;
+
 export const ProjectTemplate = z.object({
   /** A built-in template's key; the id for one of the caller's own. */
   ref: TemplateRef,
@@ -170,7 +177,14 @@ export const ProjectTemplate = z.object({
   builtin: z.boolean(),
   /** Bumped by every PUT; a built-in template's is always 0. */
   revision: z.number().int(),
-  body: TemplateBody,
+  /**
+   * Null when this version cannot read what was stored — written by a newer
+   * one, say, before a rollback. Such a template is still listed, so it can
+   * be seen and deleted, but nothing can be made from it.
+   */
+  body: TemplateBody.nullable(),
+  /** Present exactly when `body` is null. */
+  problems: z.array(TemplateProblem).optional(),
 });
 export type ProjectTemplate = z.infer<typeof ProjectTemplate>;
 

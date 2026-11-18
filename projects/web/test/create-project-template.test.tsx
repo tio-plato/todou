@@ -44,10 +44,18 @@ const template = (
   revision: 0,
   body: BUILTIN_TEMPLATES.default.body,
 });
-const TEMPLATES = [
+const TEMPLATES: ProjectTemplate[] = [
   template("default", "Default", true),
   template(9, "Bugs"),
   template(7, "Kanban"),
+  // Written by a version that allows more than this one reads.
+  {
+    ...template(11, "From the future"),
+    body: null,
+    problems: [
+      { path: "statuses", message: "only one status may be marked is_default" },
+    ],
+  },
 ];
 
 const project = (slug: string): Project => ({
@@ -240,6 +248,12 @@ describe("New project: Start from", () => {
 
   it("starts from Default when the template the prefs name is gone", async () => {
     renderDialog({ preferred: 99 });
+    const dialog = await openDialog();
+    expect(selectedTemplates(dialog)).toEqual(["Default"]);
+  });
+
+  it("starts from Default when the template the prefs name cannot be read", async () => {
+    renderDialog({ preferred: 11 });
     const dialog = await openDialog();
     expect(selectedTemplates(dialog)).toEqual(["Default"]);
   });

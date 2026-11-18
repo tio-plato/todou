@@ -31,6 +31,8 @@ import {
   preferredTemplate,
   type StartFrom,
   StartFromPicker,
+  type UsableTemplate,
+  usable,
 } from "@/components/start-from-picker.tsx";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -50,6 +52,8 @@ const templatesKey = projectTemplatesQuery.queryKey;
 
 const DEFAULT_PILL =
   "rounded-full border px-2 py-0.5 text-xs text-muted-foreground";
+const INCOMPATIBLE_PILL =
+  "rounded-full border border-destructive/40 px-2 py-0.5 text-xs text-destructive";
 
 const counted = (n: number, one: string, many: string) =>
   `${n} ${n === 1 ? one : many}`;
@@ -89,14 +93,19 @@ export function ProjectTemplatesSettingsPage() {
                 {template.ref === current && (
                   <span className={DEFAULT_PILL}>default</span>
                 )}
+                {template.body === null && (
+                  <span className={INCOMPATIBLE_PILL}>Incompatible</span>
+                )}
               </div>
-              <div className="text-sm text-muted-foreground">
-                {counted(template.body.statuses.length, "status", "statuses")}
-                {" · "}
-                {counted(template.body.labels.length, "label", "labels")}
-              </div>
+              {template.body !== null && (
+                <div className="text-sm text-muted-foreground">
+                  {counted(template.body.statuses.length, "status", "statuses")}
+                  {" · "}
+                  {counted(template.body.labels.length, "label", "labels")}
+                </div>
+              )}
             </div>
-            {template.ref !== current && (
+            {template.ref !== current && template.body !== null && (
               <Button
                 variant="outline"
                 size="sm"
@@ -209,7 +218,7 @@ function NewTemplateDialog({
   const trimmed = name.trim();
   // A template's body is copied from the list; a project is read by the
   // server as it stands when the request lands.
-  const source = templates.find((t) => t.ref === from.template);
+  const source = templates.filter(usable).find((t) => t.ref === from.template);
   const input: ProjectTemplateCreateInput | null =
     trimmed === ""
       ? null
@@ -304,7 +313,41 @@ export function ProjectTemplateSettings({ template }: { template: string }) {
       </div>
     );
   }
+  if (!usable(found)) return <IncompatibleTemplate template={found} />;
   return <TemplateEditor key={template} template={found} />;
+}
+
+/**
+ * A template this version cannot read: what is wrong with it, place by
+ * place. It can be deleted from the list; nothing can be made from it.
+ */
+function IncompatibleTemplate({ template }: { template: ProjectTemplate }) {
+  return (
+    <div className="space-y-4">
+      <BackToTemplates />
+      <div className="flex min-w-0 items-center gap-2">
+        <h1 className="truncate text-xl font-semibold">{template.name}</h1>
+        <span className={INCOMPATIBLE_PILL}>Incompatible</span>
+      </div>
+      <p className="text-sm text-muted-foreground">
+        This version of todou cannot read this template, so nothing can be made
+        from it:
+      </p>
+      <ul className="divide-y rounded-lg border text-sm">
+        {(template.problems ?? []).map((problem) => (
+          <li
+            key={`${problem.path}:${problem.message}`}
+            className="flex flex-wrap gap-x-3 gap-y-1 px-3 py-2"
+          >
+            <code className="font-mono text-muted-foreground">
+              {problem.path || "(template)"}
+            </code>
+            <span>{problem.message}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 function BackToTemplates() {
@@ -406,7 +449,7 @@ const STALE =
  * use. An edit shows at once and saves the whole template; the saves run one
  * after another, each sending the revision the one before it got back.
  */
-function TemplateEditor({ template }: { template: ProjectTemplate }) {
+function TemplateEditor({ template }: { template: UsableTemplate }) {
   const queryClient = useQueryClient();
   const { ref } = template;
   const canManage = !template.builtin;
@@ -428,9 +471,12 @@ function TemplateEditor({ template }: { template: ProjectTemplate }) {
     });
 
   /** The template as the page shows it now, queued edits included. */
-  const now = () =>
-    queryClient.getQueryData(templatesKey)?.find((t) => t.ref === ref) ??
-    template;
+  const now = (): UsableTemplate => {
+    const cached = queryClient
+      .getQueryData(templatesKey)
+      ?.find((t) => t.ref === ref);
+    return cached !== undefined && usable(cached) ? cached : template;
+  };
 
   const save = useMutation({
     scope: { id: scope },

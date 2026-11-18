@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { projectTemplates } from "../src/db/system-schema.ts";
 import { addUserWithToken, makeTestApp, type TestApp } from "./helpers.ts";
 
 // biome-ignore lint/suspicious/noExplicitAny: test-side response poking
@@ -297,5 +298,58 @@ describe("project templates", () => {
     expect(refused.status).toBe(422);
     expect(refused.data.error.message).toContain('"Done "');
     expect(refused.data.error.message).toContain('"Done"');
+  });
+
+  it("lists a template this version cannot read, and makes nothing from it", async () => {
+    // Two defaults: what a newer version might allow and this one refuses.
+    const me = (await json(await request("/me", "GET"))).id as number;
+    const inserted = await t.ctx.router
+      .system()
+      .insert(projectTemplates)
+      .values({
+        ownerId: me,
+        name: "From the future",
+        body: {
+          ...BODY,
+          statuses: BODY.statuses.map((s) => ({ ...s, is_default: true })),
+        },
+      })
+      .returning({ id: projectTemplates.id });
+    const id = inserted[0]?.id as number;
+
+    const res = await request("/me/project-templates", "GET");
+    expect(res.status).toBe(200);
+    const list = await json(res);
+    const unreadable = list.find((x: { ref: unknown }) => x.ref === id);
+    expect(unreadable).toMatchObject({ name: "From the future", body: null });
+    expect(unreadable.problems).toEqual([
+      expect.objectContaining({
+        path: "statuses",
+        message: expect.stringContaining("is_default"),
+      }),
+    ]);
+    expect(
+      list.find((x: { ref: unknown }) => x.ref === "default").body,
+    ).not.toBeNull();
+
+    const slug = `tpl-future-${n++}`;
+    const refused = await request("/projects", "POST", {
+      slug,
+      name: slug,
+      template: id,
+    });
+    expect(refused.status).toBe(422);
+    expect((await json(refused)).error.details.problems).toHaveLength(1);
+    const source = await createProject();
+    expect(
+      (
+        await request(`/projects/${source}/template/preview`, "POST", {
+          template: id,
+        })
+      ).status,
+    ).toBe(422);
+    expect(
+      (await request("/projects", "POST", { slug, name: slug })).status,
+    ).toBe(201);
   });
 });

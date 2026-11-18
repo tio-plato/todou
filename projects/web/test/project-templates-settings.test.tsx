@@ -30,6 +30,7 @@ import { referenceDirectoryQuery } from "../src/api/references.ts";
 import {
   type StartFrom,
   StartFromPicker,
+  type UsableTemplate,
 } from "../src/components/start-from-picker.tsx";
 import {
   ProjectTemplateSettingsPage,
@@ -37,7 +38,7 @@ import {
 } from "../src/pages/project-templates-settings.tsx";
 import { renderWithProviders, testQueryClient } from "./render.tsx";
 
-const DEFAULT: ProjectTemplate = {
+const DEFAULT: UsableTemplate = {
   ref: "default",
   name: "Default",
   builtin: true,
@@ -46,7 +47,7 @@ const DEFAULT: ProjectTemplate = {
 };
 
 // Named to sort before Default, so a list ordered by name alone shows.
-const BUGS: ProjectTemplate = {
+const BUGS: UsableTemplate = {
   ref: 9,
   name: "Bugs",
   builtin: false,
@@ -64,7 +65,7 @@ const BUGS: ProjectTemplate = {
   },
 };
 
-const KANBAN: ProjectTemplate = {
+const KANBAN: UsableTemplate = {
   ref: 7,
   name: "Kanban",
   builtin: false,
@@ -135,9 +136,12 @@ const json = (status: number, payload: unknown) =>
  * unless it names the stored revision, and bumps it by one when it does.
  * With `hold`, each PUT waits for `release()` before it is answered.
  */
-function fakeServer({ hold = false } = {}) {
+function fakeServer({
+  hold = false,
+  templates = TEMPLATES as ProjectTemplate[],
+} = {}) {
   const calls: Call[] = [];
-  const stored = new Map(TEMPLATES.map((t) => [t.ref, structuredClone(t)]));
+  const stored = new Map(templates.map((t) => [t.ref, structuredClone(t)]));
   const waiting: Array<() => void> = [];
 
   vi.stubGlobal("fetch", (async (input: unknown, init?: RequestInit) => {
@@ -154,7 +158,7 @@ function fakeServer({ hold = false } = {}) {
       return json(200, [...stored.values()]);
     }
     if (path === "/me/project-templates" && method === "POST") {
-      const created: ProjectTemplate = {
+      const created: UsableTemplate = {
         ref: 12,
         name: body.name,
         builtin: false,
@@ -201,8 +205,8 @@ function fakeServer({ hold = false } = {}) {
     /** Answer the oldest PUT still waiting. */
     release: () => act(async () => waiting.shift()?.()),
     /** Another tab saves template 7, twice, before this one's PUT lands. */
-    changeElsewhere: (change: (t: ProjectTemplate) => ProjectTemplate) => {
-      const current = stored.get(7) as ProjectTemplate;
+    changeElsewhere: (change: (t: UsableTemplate) => UsableTemplate) => {
+      const current = stored.get(7) as UsableTemplate;
       stored.set(7, { ...change(current), revision: current.revision + 2 });
     },
     /** The templates as a GET would answer now. */
@@ -214,8 +218,12 @@ function fakeServer({ hold = false } = {}) {
  * The two template pages at their real paths. `/authed` mirrors the app's
  * id prefix, which the template page's `useParams({ from })` names.
  */
-function renderAt(url: string, client = testQueryClient()) {
-  client.setQueryData(projectTemplatesQuery.queryKey, TEMPLATES);
+function renderAt(
+  url: string,
+  client = testQueryClient(),
+  templates: ProjectTemplate[] = TEMPLATES,
+) {
+  client.setQueryData(projectTemplatesQuery.queryKey, templates);
   client.setQueryData(prefsQuery.queryKey, PREFS);
   client.setQueryData(projectsQuery.queryKey, PROJECTS);
   client.setQueryData(referenceDirectoryQuery.queryKey, null);
@@ -317,6 +325,52 @@ describe("the project templates list", () => {
         },
       ]),
     );
+  });
+});
+
+describe("a template this version cannot read", () => {
+  const FUTURE: ProjectTemplate = {
+    ref: 11,
+    name: "From the future",
+    builtin: false,
+    revision: 3,
+    body: null,
+    problems: [
+      { path: "statuses", message: "only one status may be marked is_default" },
+    ],
+  };
+  const templates = [...TEMPLATES, FUTURE];
+
+  it("is listed as incompatible, with no counts and no way to make it the default", async () => {
+    fakeServer({ templates });
+    renderAt("/settings/templates", undefined, templates);
+    const rows = await screen.findAllByRole("listitem");
+    const row = rows.find((r) => r.textContent?.includes("From the future"));
+    expect(row).toBeDefined();
+    const inRow = within(row as HTMLElement);
+    expect(inRow.getByText("Incompatible")).toBeTruthy();
+    expect(inRow.queryByText(/statuses/)).toBeNull();
+    expect(inRow.queryByRole("button", { name: "Set as default" })).toBeNull();
+    expect(
+      inRow.getByRole("button", { name: "Delete From the future" }),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "New template" }));
+    const dialog = within(await screen.findByRole("dialog"));
+    expect(
+      dialog.getAllByRole("option").map((option) => option.textContent),
+    ).not.toContain("From the future");
+  });
+
+  it("says on its page where it cannot be read", async () => {
+    fakeServer({ templates });
+    renderAt("/settings/templates/11", undefined, templates);
+    expect(await screen.findByText("Incompatible")).toBeTruthy();
+    expect(screen.getByText("statuses")).toBeTruthy();
+    expect(
+      screen.getByText("only one status may be marked is_default"),
+    ).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Statuses" })).toBeNull();
   });
 });
 
@@ -430,7 +484,7 @@ describe("a template's page", () => {
     await settle();
     // QA was added to the template before that label: sent, it would take
     // the label off again.
-    expect(server.list().find((t) => t.ref === 7)?.body.labels).toContainEqual(
+    expect(server.list().find((t) => t.ref === 7)?.body?.labels).toContainEqual(
       elsewhere,
     );
     expect(error).toHaveBeenCalledWith(
