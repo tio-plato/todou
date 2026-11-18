@@ -171,7 +171,9 @@ export function StatusesSection({ slug }: { slug: string }) {
   });
 
   const remove = useMutation({
-    mutationFn: (vars: { slug: string; id: number }) =>
+    // `heldLine` as the delete was asked for: by its answer the project may
+    // already have been read again, the line moved on.
+    mutationFn: (vars: { slug: string; id: number; heldLine: boolean }) =>
       api.deleteStatus(vars.slug, vars.id),
     onSuccess: (_data, vars) => {
       afterWrite(vars.slug);
@@ -179,7 +181,7 @@ export function StatusesSection({ slug }: { slug: string }) {
       queryClient.invalidateQueries({
         queryKey: projectQuery(vars.slug).queryKey,
       });
-      if (vars.id === lineStatusId) invalidateBlocks();
+      if (vars.heldLine) invalidateBlocks();
     },
     onError: (error, vars) => {
       toast.error(error.message);
@@ -246,7 +248,11 @@ export function StatusesSection({ slug }: { slug: string }) {
           }),
         );
       }}
-      onDelete={(id) => succeeded(remove.mutateAsync({ slug, id }))}
+      onDelete={(id) =>
+        succeeded(
+          remove.mutateAsync({ slug, id, heldLine: id === lineStatusId }),
+        )
+      }
       pending={{
         save: save.isPending,
         create: create.isPending,
