@@ -53,15 +53,19 @@ const COLOR_EXCEPTIONS: Record<string, { count: number; reason: string }> = {
     count: 2,
     reason: "the open/closed glyph of a reference draws the issue, tinted",
   },
-  "pages/project-settings.tsx": {
+  "components/settings/label-set-list.tsx": {
     count: 2,
     reason: "the label editor's draft edits a colour",
   },
-  "components/settings/statuses-section.tsx": {
-    count: 11,
+  "components/settings/status-set-list.tsx": {
+    count: 7,
     reason:
       "the status editor's draft edits a colour, and hands it to StatusPill " +
       "as the open row's preview",
+  },
+  "components/settings/statuses-section.tsx": {
+    count: 4,
+    reason: "the status editor's draft colour, sent as the write it edits",
   },
 };
 
