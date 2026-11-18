@@ -119,6 +119,7 @@ const happyDom = globalThis as unknown as {
 describe("annotation chip popover on a phone", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    Reflect.deleteProperty(window, "visualViewport");
     happyDom.happyDOM.setViewport({ width: 1024, height: 768 });
   });
 
@@ -177,5 +178,19 @@ describe("annotation chip popover on a phone", () => {
     expect(window.visualViewport).toBeUndefined();
     const top = await openAt(400);
     expect(top + CAPPED / 2).toBe(PHONE.height / 2);
+  });
+
+  it("reaches down to a chip too low to centre beside", async () => {
+    // Floating UI listens to it for scrolls, as it does to every scroller.
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: Object.assign(new EventTarget(), {
+        offsetTop: 0,
+        height: PHONE.height,
+      }),
+    });
+    const chipTop = 700;
+    const top = await openAt(chipTop);
+    expect(top + CAPPED).toBe(chipTop + CHIP);
   });
 });
