@@ -1161,9 +1161,10 @@ const AnnotationChip = memo(function AnnotationChip({
       // The height the cap leaves it, not the whole thread's.
       const height = content.offsetHeight;
       const at = trigger.getBoundingClientRect();
+      // Undefined, not the null the DOM types admit, where there is no API.
       const view = window.visualViewport;
       const middle =
-        view === null
+        view == null
           ? window.innerHeight / 2
           : view.offsetTop + view.height / 2;
       const top = Math.min(
