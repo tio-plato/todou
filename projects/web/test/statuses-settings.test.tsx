@@ -378,7 +378,6 @@ describe("Statuses settings (T-712)", () => {
   it.each([
     ["Next", "5 issues are in it — move them first."],
     ["Invalid", "2 trashed issues are still in it."],
-    ["Shipped", "Blocks clear here — move the line first."],
   ])("refuses to delete %s while the server would", async (name, reason) => {
     stubFetch();
     await renderSection();
@@ -404,6 +403,20 @@ describe("Statuses settings (T-712)", () => {
     await waitFor(() => expect(writes(calls)).toHaveLength(1));
     expect(writes(calls)[0]?.method).toBe("DELETE");
     expect(writes(calls)[0]?.url).toContain("/statuses/1");
+  });
+
+  it("deletes the line's status and says where the line moves", async () => {
+    const calls = stubFetch();
+    await renderSection();
+    fireEvent.click(screen.getByLabelText("edit status Shipped"));
+    const remove = screen.getByRole("button", { name: /Delete/ });
+    expect((remove as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(remove);
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toContain("The block clear line moves to Done.");
+    fireEvent.click(screen.getByRole("button", { name: "Delete status" }));
+    await waitFor(() => expect(writes(calls)).toHaveLength(1));
+    expect(writes(calls)[0]?.url).toContain(`/statuses/${SHIPPED}`);
   });
 
   it("creates with the default role, and sends a role only when picked otherwise", async () => {

@@ -25,6 +25,7 @@ import { Link } from "@tanstack/react-router";
 import {
   defaultInsightsRole,
   enumValue,
+  lineAfterDeleting,
   Role,
   type Status,
   type StatusOrderInput,
@@ -250,6 +251,11 @@ export function StatusesSection({ slug }: { slug: string }) {
       setDeleting(null);
       setOpen(null);
       afterWrite(vars.slug);
+      // Deleting the line's status moves the line.
+      queryClient.invalidateQueries({
+        queryKey: projectQuery(vars.slug).queryKey,
+      });
+      if (vars.id === lineStatusId) invalidateBlocks();
     },
     onError: (error, vars) => {
       toast.error(error.message);
@@ -354,6 +360,16 @@ export function StatusesSection({ slug }: { slug: string }) {
 
   const firstStatus = statuses.data[0];
   const deletingStatus = deleting;
+  const lineAfterDelete =
+    deletingStatus !== null && deletingStatus.id === lineStatusId
+      ? byId.get(
+          lineAfterDeleting(
+            statuses.data.map((s) => s.id),
+            lineStatusId,
+            new Set([deletingStatus.id]),
+          ) ?? -1,
+        )
+      : undefined;
 
   return (
     <section className="space-y-3">
@@ -419,7 +435,6 @@ export function StatusesSection({ slug }: { slug: string }) {
                         slug,
                         status,
                         usageById.get(status.id),
-                        lineStatusId,
                       )}
                       onDelete={() => setDeleting(status)}
                       onSubmit={() => {
@@ -525,6 +540,13 @@ export function StatusesSection({ slug }: { slug: string }) {
             <>
               <StatusPill status={deletingStatus} /> Burn charts will count time
               spent in it as unknown.
+              {lineAfterDelete && (
+                <>
+                  {" "}
+                  The block clear line moves to{" "}
+                  <StatusPill status={lineAfterDelete} />.
+                </>
+              )}
             </>
           )
         }
@@ -568,7 +590,6 @@ function deleteBlock(
   slug: string,
   status: Status,
   uses: StatusUsage | undefined,
-  lineStatusId: number | null,
 ): ReactNode {
   if (uses && uses.issues > 0) {
     return (
@@ -583,9 +604,6 @@ function deleteBlock(
   }
   if (uses && uses.trashed > 0) {
     return `${plural(uses.trashed, "trashed issue")} ${uses.trashed === 1 ? "is" : "are"} still in it.`;
-  }
-  if (lineStatusId === status.id) {
-    return "Blocks clear here — move the line first.";
   }
   return null;
 }
