@@ -1542,7 +1542,8 @@ const AnnotationChip = memo(function AnnotationChip({
       <PopoverContent
         ref={contentRef}
         side="left"
-        // A thread belongs to its chip's block. The popover layer's "always"
+        // From `sm` up, the one layout that handles collisions (below): a
+        // thread belongs to its chip's block. The popover layer's "always"
         // keeps the surface on screen after the chip has scrolled away, which
         // pins it to the viewport edge over unrelated text; "partial" still
         // pushes it back while part of the chip shows, then lets it follow.
