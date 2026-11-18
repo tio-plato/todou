@@ -15,6 +15,7 @@ import {
 } from "@todou/shared";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
+import { uniqueViolation } from "../auth/provision.ts";
 import type { AppContext } from "../bootstrap.ts";
 import type { Db } from "../db/driver.ts";
 import {
@@ -645,7 +646,12 @@ export async function applyTemplate(
       );
       return write(tx, project.id, state, outcome);
     },
-  );
+  ).catch((cause: unknown) => {
+    // A status or label of the same name created since the read: outside
+    // serializable, so it reaches the insert as a duplicate, not a conflict.
+    if (uniqueViolation(cause) === null) throw cause;
+    throw new ConflictError("project or template changed — preview again");
+  });
 
   const { outcome } = written;
   if (written.orderChanged || written.categoryChanged || outcome.lineChanged) {
@@ -680,6 +686,12 @@ async function write(
   // so this cannot wait on a transaction that is waiting on it. Creating an
   // issue holds project_meta for its number before its foreign keys share-
   // lock a status and labels.
+  //
+  // The rows are locked for a no-key update, which leaves the key share a
+  // card write takes on its status or label free: a card edit dropping a
+  // label this deletes, then moving to a status, would otherwise wait on the
+  // status while the delete's cascade waits on the edit. The deletes below
+  // take the stronger lock themselves, on the rows nobody may still use.
   await tx
     .select({ id: projectMeta.projectId })
     .from(projectMeta)
@@ -691,7 +703,7 @@ async function write(
     .from(statuses)
     .where(eq(statuses.projectId, projectId))
     .orderBy(asc(statuses.id))
-    .for("update");
+    .for("no key update");
   const touchedLabels = [
     ...outcome.deleteLabelIds,
     ...outcome.updateLabels.map((l) => l.id),
@@ -704,7 +716,7 @@ async function write(
         and(eq(labels.projectId, projectId), inArray(labels.id, touchedLabels)),
       )
       .orderBy(asc(labels.id))
-      .for("update");
+      .for("no key update");
   }
 
   if (outcome.deleteLabelIds.length > 0) {

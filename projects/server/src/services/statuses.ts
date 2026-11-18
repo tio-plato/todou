@@ -8,7 +8,7 @@ import {
   type StatusUpdateInput,
   type StatusUsage,
 } from "@todou/shared";
-import { and, asc, count, eq, ne, sql } from "drizzle-orm";
+import { and, asc, count, eq, ne, or, sql } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import type { AppContext } from "../bootstrap.ts";
 import type { Db } from "../db/driver.ts";
@@ -240,6 +240,20 @@ export async function updateStatus(
   }
   const row = await db.transaction(async (tx) => {
     if (input.is_default === true) {
+      // Both rows first, by id: applying a template locks every status in
+      // that order, and taking the two in another one could leave each
+      // transaction holding the row the other waits for.
+      await tx
+        .select({ id: statuses.id })
+        .from(statuses)
+        .where(
+          and(
+            eq(statuses.projectId, project.id),
+            or(eq(statuses.isDefault, true), eq(statuses.id, statusId)),
+          ),
+        )
+        .orderBy(asc(statuses.id))
+        .for("no key update");
       // Only one default per project: becoming it demotes the previous one.
       await tx
         .update(statuses)
