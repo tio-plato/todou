@@ -218,7 +218,8 @@ function NewTemplateDialog({
   const trimmed = name.trim();
   // A template's body is copied from the list; a project is read by the
   // server as it stands when the request lands.
-  const source = templates.filter(usable).find((t) => t.ref === from.template);
+  const picked = templates.find((t) => t.ref === from.template);
+  const source = picked !== undefined && usable(picked) ? picked : undefined;
   const input: ProjectTemplateCreateInput | null =
     trimmed === ""
       ? null
