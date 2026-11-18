@@ -1,5 +1,5 @@
 import { act, fireEvent, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AnnotatedMarkdown } from "../src/components/spec/annotated-markdown.tsx";
 import type { SpecReviewDraft } from "../src/lib/spec-drafts.ts";
 import { renderWithProviders } from "./render.tsx";
@@ -99,5 +99,98 @@ describe("annotation chip popover", () => {
     // Scrolled back until part of the chip shows at the top: the popover is
     // pushed onto the viewport again, 8px clear, not left over the edge.
     expect(await scrollChipTo(-10)).toBe(8);
+  });
+});
+
+// Below `sm` the popover opens centred on the visible part of the screen,
+// with its top no lower than its chip's and its bottom no higher, and then
+// rides with the page. happy-dom lays nothing out and draws no stylesheet,
+// so the ride-along layer is no containing block here and the wrapper's
+// transform is in viewport coordinates, from these stubs: an upright phone,
+// the chip where the test puts it, and the popover at a capped height.
+const PHONE = { width: 390, height: 844 };
+const CAPPED = 300;
+const CHIP = 24;
+
+const happyDom = globalThis as unknown as {
+  happyDOM: { setViewport(size: { width?: number; height?: number }): void };
+};
+
+describe("annotation chip popover on a phone", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    Reflect.deleteProperty(document.documentElement, "clientWidth");
+    Reflect.deleteProperty(document.documentElement, "clientHeight");
+    happyDom.happyDOM.setViewport({ width: 1024, height: 768 });
+  });
+
+  async function openAt(chipTop: number) {
+    happyDom.happyDOM.setViewport(PHONE);
+    stub(document.documentElement, "clientWidth", PHONE.width);
+    stub(document.documentElement, "clientHeight", PHONE.height);
+    // The content exists only once the popover opens, which is when its
+    // height is read, so the stub has to be in place before the click.
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
+      function (this: HTMLElement) {
+        return this.dataset.slot === "popover-content" ? CAPPED : 0;
+      },
+    );
+    const view = renderWithProviders(
+      <AnnotatedMarkdown
+        slug="p"
+        issueNumber={1}
+        body={"Alpha beta gamma.\n"}
+        annotations={[
+          {
+            key: DRAFT.id,
+            kind: "draft",
+            draft: DRAFT,
+            start: 1,
+            end: 1,
+            colStart: null,
+            colEnd: null,
+          },
+        ]}
+        onStage={() => {}}
+        onEditDraft={() => {}}
+        onRemoveDraft={() => {}}
+        onResolve={() => {}}
+      />,
+    );
+    const chip = await view.findByLabelText(/comment\(s\) on this block/);
+    chip.getBoundingClientRect = () => new DOMRect(366, chipTop, CHIP, CHIP);
+    fireEvent.click(chip);
+    const wrapper = (await view.findByText("needs a caveat")).closest(
+      "[data-radix-popper-content-wrapper]",
+    ) as HTMLElement;
+    // It is placed twice as it opens, the second time once its offset is
+    // known; both land within the click's microtasks, so one macrotask
+    // later the wrapper holds the last.
+    await act(() => new Promise((done) => setTimeout(done, 0)));
+    // Only y: x comes from the popover's width, which happy-dom leaves NaN.
+    const y = /^translate\([^,]+, ([-\d.]+)px\)$/.exec(wrapper.style.transform);
+    expect(y).not.toBeNull();
+    return Number(y?.[1]);
+  }
+
+  it("centres on the window where the browser has no visual viewport", async () => {
+    // happy-dom has no API either, and says so the way such engines do:
+    // undefined, not the null the DOM types admit.
+    expect(window.visualViewport).toBeUndefined();
+    const top = await openAt(400);
+    expect(top + CAPPED / 2).toBe(PHONE.height / 2);
+  });
+
+  it("reaches down to a chip too low in the visible part to centre beside", async () => {
+    // The visible part shorter than the window, as with a keyboard up. An
+    // EventTarget: Floating UI listens to it for scrolls.
+    vi.stubGlobal(
+      "visualViewport",
+      Object.assign(new EventTarget(), { offsetTop: 0, height: 600 }),
+    );
+    const chipTop = 500;
+    const top = await openAt(chipTop);
+    expect(top + CAPPED).toBe(chipTop + CHIP);
   });
 });
