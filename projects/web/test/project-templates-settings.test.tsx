@@ -205,6 +205,8 @@ function fakeServer({ hold = false } = {}) {
       const current = stored.get(7) as ProjectTemplate;
       stored.set(7, { ...change(current), revision: current.revision + 2 });
     },
+    /** The templates as a GET would answer now. */
+    list: () => [...stored.values()],
   };
 }
 
@@ -212,8 +214,7 @@ function fakeServer({ hold = false } = {}) {
  * The two template pages at their real paths. `/authed` mirrors the app's
  * id prefix, which the template page's `useParams({ from })` names.
  */
-function renderAt(url: string) {
-  const client = testQueryClient();
+function renderAt(url: string, client = testQueryClient()) {
   client.setQueryData(projectTemplatesQuery.queryKey, TEMPLATES);
   client.setQueryData(prefsQuery.queryKey, PREFS);
   client.setQueryData(projectsQuery.queryKey, PROJECTS);
@@ -399,6 +400,42 @@ describe("a template's page", () => {
         labels: [...KANBAN.body.labels, { name: "elsewhere" }],
       },
     });
+  });
+
+  it("sends a queued edit on the revision the save before it got back, not one a refetch brought in", async () => {
+    const error = vi.spyOn(toast, "error");
+    const server = fakeServer({ hold: true });
+    const elsewhere = { name: "elsewhere", color: "#8b5cf6" };
+    const client = testQueryClient();
+    // A list refetch lands just as the first save comes back, with a label
+    // another tab saved after it.
+    const unsubscribe = client.getMutationCache().subscribe((event) => {
+      if (event.type !== "updated" || event.action.type !== "success") return;
+      unsubscribe();
+      server.changeElsewhere((t) => ({
+        ...t,
+        body: { ...t.body, labels: [...t.body.labels, elsewhere] },
+      }));
+      client.setQueryData(projectTemplatesQuery.queryKey, server.list());
+    });
+    renderAt("/settings/templates/7", client);
+    await screen.findByText("Doing");
+    await addStatus("Review");
+    await addStatus("QA");
+    await settle();
+
+    await server.release();
+    await waitFor(() => expect(server.puts()).toHaveLength(2));
+    await server.release();
+    await settle();
+    // QA was added to the template before that label: sent, it would take
+    // the label off again.
+    expect(server.list().find((t) => t.ref === 7)?.body.labels).toContainEqual(
+      elsewhere,
+    );
+    expect(error).toHaveBeenCalledWith(
+      "This template changed elsewhere — your last change was not saved.",
+    );
   });
 
   it("shows Default with nothing to change", async () => {

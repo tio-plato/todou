@@ -409,7 +409,16 @@ function TemplateEditor({ template }: { template: ProjectTemplate }) {
   // made on the template as it was: sent with the revision the refetch
   // brings, it would put that back over whatever replaced it.
   const conflicts = useRef(0);
+  // The revision the next write is sent on: the cached one when an edit is
+  // queued with no write ahead of it, then each one a write got back. Never
+  // one a refetch brings in mid-queue: the edits behind were made without
+  // what it carries, and sent on it they would put that back.
+  const base = useRef(template.revision);
   const scope = `project-template-${ref}`;
+  const writing = () =>
+    queryClient.isMutating({
+      predicate: (m) => m.options.scope?.id === scope,
+    });
 
   /** The template as the page shows it now, queued edits included. */
   const now = () =>
@@ -423,7 +432,7 @@ function TemplateEditor({ template }: { template: ProjectTemplate }) {
         return Promise.reject(new DroppedEdit());
       }
       return api.updateProjectTemplate(ref, {
-        revision: now().revision,
+        revision: base.current,
         name: edit.name,
         body: edit.body,
       });
@@ -436,12 +445,10 @@ function TemplateEditor({ template }: { template: ProjectTemplate }) {
       );
     },
     onSuccess: (saved) => {
+      base.current = saved.revision;
       // With another edit queued the list already shows more than this one
       // saved, so only the revision is taken from it.
-      const last =
-        queryClient.isMutating({
-          predicate: (m) => m.options.scope?.id === scope,
-        }) === 1;
+      const last = writing() === 1;
       queryClient.setQueryData(templatesKey, (list) =>
         list?.map((t) =>
           t.ref !== saved.ref
@@ -472,6 +479,7 @@ function TemplateEditor({ template }: { template: ProjectTemplate }) {
   /** Queue a save of the template as it is now, with `next` in place. */
   function queue(next: { name?: string; body?: TemplateBody }) {
     const current = now();
+    if (writing() === 0) base.current = current.revision;
     save.mutate({
       name: next.name ?? current.name,
       body: next.body ?? current.body,
