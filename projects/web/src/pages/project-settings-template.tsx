@@ -127,6 +127,22 @@ function selectedIn(
   return withRows(rows, new Set(rows.map((row) => row.id)), off, false);
 }
 
+/**
+ * The reader's choices once an apply has run or been refused: what they
+ * turned off stays off in the next plan, so a change they left out is not
+ * carried out by the next Apply; what they turned on goes back to the
+ * server's default, so a deletion skipped now does not stay armed for it.
+ */
+function forgetTicks<T extends { rows: ReadonlyMap<string, boolean> }>(
+  choices: T | null,
+): T | null {
+  if (choices === null) return null;
+  return {
+    ...choices,
+    rows: new Map([...choices.rows].filter(([, on]) => !on)),
+  };
+}
+
 const STALE =
   "Nothing was applied: the project or the template changed since the preview.";
 
@@ -167,10 +183,10 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
     () => plan?.changes.filter((row) => ChangeRow.safeParse(row).success) ?? [],
     [plan],
   );
-  // Each row as the reader left it, by id, for this template. A refetch
-  // brings another plan whenever the project or the template changed; a
-  // row the reader turned off must stay off in it, or Apply would carry it
-  // out unseen.
+  // The rows the reader turned on or off, by id, for this template. A
+  // refetch brings another plan whenever the project or the template
+  // changed; a row the reader turned off must stay off in it, or Apply
+  // would carry it out unseen. Rows nobody touched follow the server.
   const [choices, setChoices] = useState<{
     template: TemplateRef;
     rows: ReadonlyMap<string, boolean>;
@@ -182,11 +198,14 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
   const select = (ids: readonly string[], on: boolean) => {
     if (plan === undefined) return;
     const next = withRows(rows, selected, ids, on);
+    const touched = rows.filter(
+      (row) => next.has(row.id) !== selected.has(row.id),
+    );
     setChoices({
       template,
       rows: new Map([
         ...chosen,
-        ...rows.map((row) => [row.id, next.has(row.id)] as const),
+        ...touched.map((row) => [row.id, next.has(row.id)] as const),
       ]),
     });
   };
@@ -214,6 +233,7 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
       queryClient.invalidateQueries({ queryKey: ["issues"] });
       queryClient.invalidateQueries({ queryKey: ["issue"] });
       queryClient.invalidateQueries({ queryKey: previewKey(slug) });
+      setChoices(forgetTicks);
       const text = appliedText(vars.input.selected, result, vars.rows);
       if (result.skipped.length > 0) toast.warning(text);
       else toast.success(text);
@@ -221,6 +241,7 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
     onError: (error, vars) => {
       if (error instanceof TodouError && error.status === 409) {
         toast.error(STALE);
+        setChoices(forgetTicks);
         queryClient.invalidateQueries({ queryKey: previewKey(vars.slug) });
         return;
       }

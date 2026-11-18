@@ -543,6 +543,28 @@ describe("applying a template", () => {
     await waitFor(() => expect(server.previews()).toHaveLength(2));
   });
 
+  it("after an apply, keeps what the reader left out and disarms what they ticked", async () => {
+    // Parked took an issue after the preview, so its deletion was skipped;
+    // it must not stay ticked, ready for the next Apply. Done's change the
+    // reader left out must not come back ticked either.
+    const warning = vi.spyOn(toast, "warning");
+    const server = fakeServer({
+      apply: () => json(200, { skipped: ["status.delete:4"] }),
+    });
+    renderPage();
+    await rowsOf7();
+    fireEvent.click(box("Delete status Parked"));
+    fireEvent.click(box("Change status Done"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply 5 changes" }));
+    await waitFor(() => expect(warning).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(server.previews()).toHaveLength(2));
+    await waitFor(() =>
+      expect(box("Delete status Parked").checked).toBe(false),
+    );
+    expect(box("Change status Done").checked).toBe(false);
+    expect(box("Add status Review").checked).toBe(true);
+  });
+
   it("does not carry one project's choices to another's", async () => {
     const server = fakeServer();
     const router = renderPage();
