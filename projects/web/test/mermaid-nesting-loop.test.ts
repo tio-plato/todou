@@ -105,6 +105,16 @@ describe("renderDiagram on a nesting cycle", () => {
       shape: "a cycle no edge touches",
       source: ["classDiagram", "  namespace A {", "    class A", "  }"],
     },
+    {
+      shape: "a self-loop on a cycle",
+      source: [
+        "classDiagram",
+        "  namespace A {",
+        "    class A",
+        "  }",
+        "  A --> A",
+      ],
+    },
   ])("draws $shape", async ({ source }) => {
     const result = await renderDiagram(source.join("\n"), PALETTE, "serif");
     expect(result.ok).toBe(true);

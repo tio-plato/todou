@@ -8,12 +8,18 @@ const seen = vi.hoisted(() => ({
   visibility: "",
   position: "",
   fail: false,
+  checkFails: false,
 }));
 vi.mock("mermaid", () => ({
   default: {
     initialize: () => {},
     parse: async () => true,
-    mermaidAPI: { getDiagramFromText: async () => ({ db: {} }) },
+    mermaidAPI: {
+      getDiagramFromText: async () => {
+        if (seen.checkFails) throw new Error("check failed");
+        return { db: {} };
+      },
+    },
     render: async (id: string, _source: string, container?: Element) => {
       const scratch = document.createElement("div");
       scratch.id = `d${id}`;
@@ -43,6 +49,7 @@ const PALETTE: DiagramPalette = {
 beforeEach(() => {
   seen.container = undefined;
   seen.fail = false;
+  seen.checkFails = false;
 });
 
 describe("renderDiagram scratch drawing (T-703)", () => {
@@ -67,5 +74,12 @@ describe("renderDiagram scratch drawing (T-703)", () => {
     expect(result).toEqual({ ok: false, error: "draw failed" });
     expect(seen.container?.isConnected).toBe(false);
     expect(document.querySelector('[id^="dmermaid-"]')).toBeNull();
+  });
+
+  it("reports a failing nesting check as the diagram's error", async () => {
+    seen.checkFails = true;
+    const result = await renderDiagram("flowchart LR\n  A", PALETTE, "serif");
+    expect(result).toEqual({ ok: false, error: "check failed" });
+    expect(document.body.childElementCount).toBe(0);
   });
 });
