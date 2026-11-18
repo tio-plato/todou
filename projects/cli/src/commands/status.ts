@@ -5,7 +5,7 @@ import type {
   StatusUpdateInput,
   TodouClient,
 } from "@todou/shared";
-import { CANONICAL_STATUSES, TodouError } from "@todou/shared";
+import { BUILTIN_TEMPLATES, TodouError } from "@todou/shared";
 import { Command, Option } from "clipanion";
 import { ProjectCommand } from "../api-command.ts";
 import { CliError } from "../errors.ts";
@@ -266,7 +266,8 @@ export class StatusInitCommand extends ProjectCommand {
     const created: Status[] = [];
     const recolored: Status[] = [];
     let previous: Status | undefined;
-    for (const canonical of CANONICAL_STATUSES) {
+    const canonicalStatuses = BUILTIN_TEMPLATES.default.body.statuses;
+    for (const canonical of canonicalStatuses) {
       const existing = board.find(
         (s) => s.name.toLowerCase() === canonical.name.toLowerCase(),
       );
@@ -310,7 +311,7 @@ export class StatusInitCommand extends ProjectCommand {
     // Without an explicit default, new issues fall back to the first status
     // by position (T-14) — which init just changed by putting Backlog ahead
     // of Todo. Pin Todo so the effective default stays put.
-    const defaultName = CANONICAL_STATUSES.find((s) => s.is_default)?.name;
+    const defaultName = canonicalStatuses.find((s) => s.is_default)?.name;
     let defaulted: Status | undefined;
     if (defaultName !== undefined && !board.some((s) => s.is_default)) {
       const todo = board.find(
@@ -327,7 +328,7 @@ export class StatusInitCommand extends ProjectCommand {
     // Same rule as the default: only where nobody has chosen a line yet. A
     // line someone did pick decides when their blocked cards may start, and
     // moving it would re-decide every edge in the project.
-    const clearName = CANONICAL_STATUSES.find((s) => s.block_clear)?.name;
+    const clearName = canonicalStatuses.find((s) => s.block_clear)?.name;
     let clearLine: Status | undefined;
     if (
       clearName !== undefined &&

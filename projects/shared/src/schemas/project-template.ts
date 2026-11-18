@@ -1,6 +1,7 @@
 import { z } from "zod";
-import { Role } from "./insights.ts";
+import { defaultInsightsRole, Role } from "./insights.ts";
 import {
+  type BuiltinTemplateKey,
   ColorHex,
   canonicalizeLabelName,
   LabelName,
@@ -77,6 +78,88 @@ export const TemplateBody = z
     }
   });
 export type TemplateBody = z.infer<typeof TemplateBody>;
+
+/** A status of a built-in template, its chart role the default one. */
+function builtinStatus(
+  status: Omit<TemplateStatus, "chart_role">,
+): TemplateStatus {
+  return { ...status, chart_role: defaultInsightsRole(status) };
+}
+
+/**
+ * The templates that ship with todou, by key. `default` is what every new
+ * project starts as unless the request names another template, and the only
+ * place the status flow new projects get is spelled out.
+ *
+ * Its statuses are the flow agents work in (see the todou-workflow skill),
+ * which `todou status init` also applies to projects that predate it.
+ * Colors run gray (not started) → cyan/blue (active) → amber (awaiting
+ * delivery) → violet (out) → green (done). Invalid, the other closed status,
+ * is a dark slate: clear of green so a card closed without being done never
+ * reads as finished, and darker than the not-started grays.
+ *
+ * Todo is pinned as the default rather than left to the first-by-position
+ * fallback, which Backlog now sits ahead of.
+ *
+ * Shipped is the block clear line (T-711): the card that waits on a blocker
+ * can start once the blocker is deployed, not only once the user has
+ * verified it. Invalid sits past Done, so it clears too.
+ *
+ * Each chart role is whatever `defaultInsightsRole` says, so a project
+ * created from this stores none, and a change to that rule reaches it.
+ *
+ * The labels are the issue kinds and the design flag the workflow uses, in
+ * colors from the label palette: red for bugs, the one color trackers agree
+ * on; light blue, green and yellow kept apart from it and from each other.
+ */
+export const BUILTIN_TEMPLATES: Record<
+  BuiltinTemplateKey,
+  { name: string; body: TemplateBody }
+> = {
+  default: {
+    name: "Default",
+    body: {
+      statuses: [
+        builtinStatus({ name: "Backlog", category: "open", color: "#9ca3af" }),
+        builtinStatus({
+          name: "Todo",
+          category: "open",
+          color: "#6b7280",
+          is_default: true,
+        }),
+        builtinStatus({ name: "Next", category: "open", color: "#06b6d4" }),
+        builtinStatus({
+          name: "In Progress",
+          category: "open",
+          color: "#3b82f6",
+        }),
+        builtinStatus({
+          name: "Ready to Ship",
+          category: "open",
+          color: "#f59e0b",
+        }),
+        builtinStatus({
+          name: "Shipped",
+          category: "open",
+          color: "#8b5cf6",
+          block_clear: true,
+        }),
+        builtinStatus({ name: "Done", category: "closed", color: "#22c55e" }),
+        builtinStatus({
+          name: "Invalid",
+          category: "closed",
+          color: "#475569",
+        }),
+      ],
+      labels: [
+        { name: "kind:bug", color: "#ef4444" },
+        { name: "kind:chore", color: "#22c55e" },
+        { name: "kind:feature", color: "#0ea5e9" },
+        { name: "needs-brainstorm", color: "#eab308" },
+      ],
+    },
+  },
+};
 
 export const TemplateName = z.string().trim().min(1).max(100);
 
