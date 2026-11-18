@@ -410,10 +410,8 @@ export function applySelection(
           ...(row.category && { category: row.category.to }),
         });
       }
-      const wanted = template.statuses.find(
-        (s) => pairing.paired.get(s.name)?.id === id,
-      );
-      if (wanted === undefined) throw new Error(`${row.id} has no status`);
+      const target = template.statuses.find((s) => keyOf(s) === id);
+      if (target === undefined) throw new Error(`${row.id} has no status`);
       // The role the status ends up counting as has to be the template's.
       // With the category changing, a role nobody stored follows the new
       // category's default, so it is stored whenever that default differs.
@@ -421,9 +419,9 @@ export function applySelection(
         row.chart_role ||
         (row.category &&
           defaultInsightsRole({ name: row.name, category: row.category.to }) !==
-            wanted.chart_role)
+            target.chart_role)
       ) {
-        roleChanges.push({ kind: "edited", key: id, role: wanted.chart_role });
+        roleChanges.push({ kind: "edited", key: id, role: target.chart_role });
       }
     } else if (row.type === "label_delete") {
       deleteLabelIds.push(idIn(row));
