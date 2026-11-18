@@ -56,6 +56,14 @@ export async function listStatusUsage(
 ): Promise<StatusUsage[]> {
   const { project } = await requireCapability(ctx, actor, slug, "status.list");
   const db = await ctx.router.forProject(routeInfoOf(project));
+  return statusUsageRows(db, project.id);
+}
+
+/**
+ * Issues per status, trashed ones apart: the counts the Statuses page shows
+ * and applying a template decides deletions by, read one way for both.
+ */
+export function statusUsageRows(db: Db, projectId: number) {
   return db
     .select({
       id: statuses.id,
@@ -64,7 +72,7 @@ export async function listStatusUsage(
     })
     .from(statuses)
     .leftJoin(issues, eq(issues.statusId, statuses.id))
-    .where(eq(statuses.projectId, project.id))
+    .where(eq(statuses.projectId, projectId))
     .groupBy(statuses.id)
     .orderBy(asc(statuses.id));
 }

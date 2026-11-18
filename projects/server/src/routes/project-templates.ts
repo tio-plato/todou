@@ -1,8 +1,13 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import {
+  ProjectRef,
   ProjectTemplate,
   ProjectTemplateCreateInput,
   ProjectTemplateUpdateInput,
+  TemplateApplyInput,
+  TemplateApplyPlan,
+  TemplateApplyResult,
+  TemplatePreviewInput,
 } from "@todou/shared";
 import type { AppEnv } from "../auth/middleware.ts";
 import {
@@ -11,11 +16,17 @@ import {
   listProjectTemplates,
   updateProjectTemplate,
 } from "../services/project-templates.ts";
+import {
+  applyTemplate,
+  previewTemplateApply,
+} from "../services/template-apply.ts";
+import { roleTag } from "./role-tag.ts";
 
 // Digits only: a built-in template is listed but never written to.
 const templateParams = z.object({
   id: z.coerce.number().int().positive(),
 });
+const slugParam = z.object({ slug: ProjectRef });
 const jsonBody = <T extends z.ZodType>(schema: T) => ({
   content: { "application/json": { schema } },
 });
@@ -58,6 +69,26 @@ const deleteRoute = createRoute({
   responses: { 204: { description: "Deleted" } },
 });
 
+const previewRoute = createRoute({
+  method: "post",
+  path: "/projects/{slug}/template/preview",
+  summary: `Every difference between this project and a template, one row each ${roleTag("status.manage")}`,
+  request: { params: slugParam, body: jsonBody(TemplatePreviewInput) },
+  responses: {
+    200: { description: "Apply plan", ...jsonBody(TemplateApplyPlan) },
+  },
+});
+
+const applyRoute = createRoute({
+  method: "post",
+  path: "/projects/{slug}/template/apply",
+  summary: `Carry out the selected rows of a preview (409 once the project or the template changed) ${roleTag("status.manage")}`,
+  request: { params: slugParam, body: jsonBody(TemplateApplyInput) },
+  responses: {
+    200: { description: "Applied", ...jsonBody(TemplateApplyResult) },
+  },
+});
+
 export function projectTemplateRoutes() {
   const app = new OpenAPIHono<AppEnv>();
 
@@ -82,6 +113,30 @@ export function projectTemplateRoutes() {
         c.get("appCtx"),
         c.get("user"),
         c.req.valid("param").id,
+        c.req.valid("json"),
+      ),
+      200,
+    ),
+  );
+
+  app.openapi(previewRoute, async (c) =>
+    c.json(
+      await previewTemplateApply(
+        c.get("appCtx"),
+        c.get("user"),
+        c.req.valid("param").slug,
+        c.req.valid("json").template,
+      ),
+      200,
+    ),
+  );
+
+  app.openapi(applyRoute, async (c) =>
+    c.json(
+      await applyTemplate(
+        c.get("appCtx"),
+        c.get("user"),
+        c.req.valid("param").slug,
         c.req.valid("json"),
       ),
       200,
