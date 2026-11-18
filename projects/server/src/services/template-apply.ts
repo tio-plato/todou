@@ -530,7 +530,16 @@ export function templateApplyDigest(
     .digest("base64url");
 }
 
-async function readState(db: Db, projectId: number): Promise<ProjectState> {
+/**
+ * `labelCounts` reads how many cards carry each label, which only the
+ * preview shows: the apply leaves them out, so a card relabelled meanwhile
+ * does not conflict with its serializable transaction.
+ */
+async function readState(
+  db: Db,
+  projectId: number,
+  { labelCounts }: { labelCounts: boolean },
+): Promise<ProjectState> {
   // One after another: inside the apply's transaction these share a single
   // connection, which takes one query at a time.
   const statusRows = await db
@@ -551,22 +560,24 @@ async function readState(db: Db, projectId: number): Promise<ProjectState> {
     .from(labels)
     .where(eq(labels.projectId, projectId));
   const statusUsage = await statusUsageRows(db, projectId);
-  const labelUsage = await labelUsageRows(db, projectId);
+  const labelUsage = labelCounts ? await labelUsageRows(db, projectId) : [];
   // Deleting a label takes it off trashed cards too, which the Labels
   // page's count leaves out.
-  const labelTrash = await db
-    .select({
-      id: issueLabels.labelId,
-      trashed: sql<number>`count(*)::int`,
-    })
-    .from(issueLabels)
-    .innerJoin(
-      issues,
-      and(eq(issues.id, issueLabels.issueId), isNotNull(issues.deletedAt)),
-    )
-    .innerJoin(labels, eq(labels.id, issueLabels.labelId))
-    .where(eq(labels.projectId, projectId))
-    .groupBy(issueLabels.labelId);
+  const labelTrash = !labelCounts
+    ? []
+    : await db
+        .select({
+          id: issueLabels.labelId,
+          trashed: sql<number>`count(*)::int`,
+        })
+        .from(issueLabels)
+        .innerJoin(
+          issues,
+          and(eq(issues.id, issueLabels.issueId), isNotNull(issues.deletedAt)),
+        )
+        .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+        .where(eq(labels.projectId, projectId))
+        .groupBy(issueLabels.labelId);
   const roleOf = new Map(
     insightsSettingsResponse(statusRows, saved[0]).roles.map((entry) => [
       entry.status_id,
@@ -615,7 +626,7 @@ export async function previewTemplateApply(
   );
   const template = await resolveTemplate(ctx, actor, ref);
   const db = await ctx.router.forProject(routeInfoOf(project));
-  const state = await readState(db, project.id);
+  const state = await readState(db, project.id, { labelCounts: true });
   return {
     expected: templateApplyDigest(state, template.body, template.revision),
     changes: planTemplateApply(state, template.body),
@@ -657,7 +668,7 @@ export async function applyTemplate(
     db,
     "the project is busy — preview again shortly",
     async (tx) => {
-      const state = await readState(tx, project.id);
+      const state = await readState(tx, project.id, { labelCounts: false });
       if (
         templateApplyDigest(state, template.body, template.revision) !==
         input.expected
