@@ -116,7 +116,8 @@ const READER_WINDOW_MS = 600;
  * the caret brought into view are the page placing itself, and a header that
  * moved with them would cover what was just put in view. A tap or a typed key
  * opens no window; a click or a landing shuts an open one, until the reader's
- * next scroll.
+ * next scroll. Near the page's start, where sticky leaves the header in the
+ * flow, the page's own scrolling carries it as it would any page header.
  *
  * Once scrolling stops the header settles fully in or fully out, as Safari's
  * does; a header left half-cut reads as broken.
@@ -135,8 +136,6 @@ export function useAutoHideHeader(enabled: boolean, page?: string): void {
     let touching = false;
     let settle: number | undefined;
     let settled: number | undefined;
-    // Set by a click that left a header the page's top carries off alone.
-    let settleOnScroll = false;
     // Never while a finger is down: a drag that pauses is not a drag that
     // ended, and snapping under it would yank the header out of its hand.
     const settleSoon = () => {
@@ -159,8 +158,12 @@ export function useAutoHideHeader(enabled: boolean, page?: string): void {
     };
     // Near the top there is no room to keep it hidden: what it covers is the
     // start of the page itself.
-    const settledAt = (height: number, y = window.scrollY) =>
-      hidden > height / 2 && y > height ? height : 0;
+    const settledAt = (height: number) =>
+      hidden > height / 2 && window.scrollY > height ? height : 0;
+    // Partly out only because the page's start took it along: sticky leaves
+    // it at its place in the flow, where it is the page's own top.
+    const carried = (height: number, y: number) =>
+      hidden > 0 && hidden < height && hidden >= Math.max(0, y);
     const snap = () => {
       publish(settledAt(header.offsetHeight), true);
     };
@@ -171,19 +174,15 @@ export function useAutoHideHeader(enabled: boolean, page?: string): void {
       lastY = y;
       const now = performance.now();
       if (now > readerUntil) {
-        // The page moves after all: settle the header a click left alone,
-        // judged from where the page stood when it was clicked.
-        if (settleOnScroll) {
-          settleOnScroll = false;
-          const height = header.offsetHeight;
-          if (hidden > 0 && hidden < height)
-            publish(settledAt(height, from), false);
-        }
+        const height = header.offsetHeight;
+        const top = Math.max(0, y);
+        // Carried by the page's start, it comes and goes with it, as a page
+        // header that does not stick would: never left half out on top.
+        if (carried(height, from)) publish(Math.min(height, top), false);
         // Sticky already shows this much of the header near the top; the
         // variable only catches up. The reader's own scroll is held to the
         // same bound below, so it is not held here twice.
-        const top = Math.max(0, y);
-        if (hidden > top) publish(top, false);
+        else if (hidden > top) publish(top, false);
         return;
       }
       readerUntil = now + READER_WINDOW_MS;
@@ -204,22 +203,21 @@ export function useAutoHideHeader(enabled: boolean, page?: string): void {
     const placing = (click: boolean) => {
       readerUntil = Number.NEGATIVE_INFINITY;
       window.clearTimeout(settle);
-      settleOnScroll = false;
       const height = header.offsetHeight;
-      if (hidden > 0 && hidden < height) {
-        // Carried off by the page's top, it stands where sticky puts it at
-        // the page's start: a click that scrolls nothing leaves it there.
-        // One the reader's own slide cut, settles now.
-        if (click && hidden >= window.scrollY) settleOnScroll = true;
-        else publish(settledAt(height), false);
-      }
+      // A click leaves one the page's start carries where it is; one the
+      // reader's own slide cut, it settles. A landing settles either.
+      if (
+        hidden > 0 &&
+        hidden < height &&
+        !(click && carried(height, window.scrollY))
+      )
+        publish(settledAt(height), false);
       // Mid-transition its edge reads half way through the slide.
       root.removeAttribute("data-header-settling");
       announce();
     };
     const reading = () => {
       readerUntil = performance.now() + READER_WINDOW_MS;
-      settleOnScroll = false;
     };
     const options = { capture: true, passive: true, signal };
     // A finger that moves, not one that lands: a tap scrolls nothing itself,

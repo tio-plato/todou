@@ -423,13 +423,24 @@ describe("auto-hiding header (T-585)", () => {
     const text = document.createElement("p");
     document.body.append(text);
     click(text);
-    vi.advanceTimersByTime(200);
+    vi.advanceTimersByTime(3000);
     expect(hidden()).toBe("50px");
+    // Content loading above pushes the page down: the top takes it along.
+    scrollTo(130);
+    expect(hidden()).toBe(`${HEADER}px`);
+  });
 
-    // A click the page does scroll for: in, from where the page stood.
-    click(link("#comment-12"));
+  it("moves a header the page's top carries with the page", () => {
+    mount();
+    slideAway();
+    scrollTo(50);
+    scrollTo(80);
+    expect(hidden()).toBe("80px");
     scrollTo(3000);
-    expect(hidden()).toBe("0px");
+    expect(hidden()).toBe(`${HEADER}px`);
+    scrollTo(50);
+    scrollTo(30);
+    expect(hidden()).toBe("30px");
   });
 
   it("settles a header the reader left half way on the click that stops it", () => {
