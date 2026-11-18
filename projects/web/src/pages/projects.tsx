@@ -205,8 +205,13 @@ function CreateProjectDialog() {
       }),
     );
   // Before both lists are in, the request could carry neither the template
-  // the dialog would show nor the agents that join by default.
-  const ready = templates.data !== undefined && agents.data !== undefined;
+  // the dialog would show nor the agents that join by default. Before the
+  // prefs are read, or fail to be, it would carry Default in place of the
+  // template they name, unless another start was picked here.
+  const ready =
+    templates.data !== undefined &&
+    agents.data !== undefined &&
+    (from !== null || !prefs.isPending);
 
   const submit = () => {
     if (!ready || source === null) return;

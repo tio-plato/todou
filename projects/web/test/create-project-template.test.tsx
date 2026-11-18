@@ -110,19 +110,27 @@ const json = (status: number, payload: unknown) =>
 /**
  * The reads the dialog makes, answered as the server would, and every
  * `POST /projects` body as it went over the wire. With `holdAgents`, the
- * agent list is neither cached nor answered until `releaseAgents()`.
+ * agent list is neither cached nor answered until `releaseAgents()`; with
+ * `prefs: "held"` the prefs likewise until `releasePrefs()`, and with
+ * `prefs: "failing"` they are not cached and their read fails.
  */
 function renderDialog({
   preferred = "default",
   holdAgents = false,
+  prefs: prefsRead = "cached",
 }: {
   preferred?: TemplateRef;
   holdAgents?: boolean;
+  prefs?: "cached" | "held" | "failing";
 } = {}) {
   const posts: Record<string, unknown>[] = [];
   let releaseAgents = () => {};
   const agentsAnswered = new Promise<void>((resolve) => {
     releaseAgents = resolve;
+  });
+  let releasePrefs = () => {};
+  const prefsAnswered = new Promise<void>((resolve) => {
+    releasePrefs = resolve;
   });
   vi.stubGlobal("fetch", (async (input: unknown, init?: RequestInit) => {
     const path = new URL(String(input), "http://test").pathname.replace(
@@ -137,7 +145,13 @@ function renderDialog({
     }
     if (path === "/projects") return json(200, PROJECTS);
     if (path === "/me/project-templates") return json(200, TEMPLATES);
-    if (path === "/me/prefs") return json(200, prefs(preferred));
+    if (path === "/me/prefs") {
+      if (prefsRead === "failing") {
+        return json(500, { error: { code: "internal", message: "down" } });
+      }
+      if (prefsRead === "held") await prefsAnswered;
+      return json(200, prefs(preferred));
+    }
     if (path === "/agents") {
       if (holdAgents) await agentsAnswered;
       return json(200, AGENTS);
@@ -148,7 +162,9 @@ function renderDialog({
   const client = testQueryClient();
   client.setQueryData(projectsQuery.queryKey, PROJECTS);
   client.setQueryData(projectTemplatesQuery.queryKey, TEMPLATES);
-  client.setQueryData(prefsQuery.queryKey, prefs(preferred));
+  if (prefsRead === "cached") {
+    client.setQueryData(prefsQuery.queryKey, prefs(preferred));
+  }
   client.setQueryData(referenceDirectoryQuery.queryKey, null);
   if (!holdAgents) client.setQueryData(agentsQuery.queryKey, AGENTS);
 
@@ -186,6 +202,7 @@ function renderDialog({
   return {
     posts,
     releaseAgents: () => act(async () => releaseAgents()),
+    releasePrefs: () => act(async () => releasePrefs()),
   };
 }
 
@@ -246,6 +263,39 @@ describe("New project: Start from", () => {
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]).toMatchObject({ slug: "potato", template: 9 });
     expect(posts[0]).not.toHaveProperty("from_project");
+  });
+
+  // Sent before the prefs are in, the request would carry Default, which
+  // the dialog shows until then, and not the template they name.
+  it("holds Create until the prefs are in", async () => {
+    const { posts, releasePrefs } = renderDialog({
+      preferred: 7,
+      prefs: "held",
+    });
+    const dialog = await openDialog();
+    const button = dialog.getByRole("button", {
+      name: "Create",
+    }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+
+    await releasePrefs();
+    await waitFor(() => expect(button.disabled).toBe(false));
+    create(dialog);
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]).toMatchObject({ template: 7 });
+  });
+
+  it("starts from Default when the prefs cannot be read", async () => {
+    const { posts } = renderDialog({ preferred: 7, prefs: "failing" });
+    const dialog = await openDialog();
+    const button = dialog.getByRole("button", {
+      name: "Create",
+    }) as HTMLButtonElement;
+    await waitFor(() => expect(button.disabled).toBe(false));
+    expect(selectedTemplates(dialog)).toEqual(["Default"]);
+    create(dialog);
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]).toMatchObject({ template: "default" });
   });
 
   it("sends the project chosen in place of a template", async () => {
