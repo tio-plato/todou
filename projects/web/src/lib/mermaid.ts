@@ -55,15 +55,11 @@ export function renderDiagram(
       // mermaid's ELK layout spins forever, before ELK itself even starts,
       // on a diagram whose nesting loops back on itself where an edge
       // touches it, and the queue and the page spin with it.
-      const loop = nestingLoop(
+      const error = nestingCycleError(
+        source,
         (await mermaid.mermaidAPI.getDiagramFromText(source)).db,
       );
-      if (loop !== null) {
-        return {
-          ok: false,
-          error: `Nesting cycle: ${loop.join(" inside ")}. Move the lines in ${loop[1]}'s block that name ${loop[0]} out of that block.`,
-        };
-      }
+      if (error !== null) return { ok: false, error };
       const { svg } = await mermaid.render(
         `mermaid-${++sequence}`,
         source,
@@ -84,18 +80,24 @@ export function renderDiagram(
 }
 
 type LayoutData = {
-  nodes: { id: string; parentId?: string; isGroup?: boolean }[];
+  nodes: {
+    id: string;
+    parentId?: string;
+    isGroup?: boolean;
+    label?: string;
+    shape?: string;
+  }[];
   edges: { start?: string; end?: string }[];
 };
 
 /**
- * The nesting loop an edge of the diagram runs into, as the names on it from
- * child to parent (`["A", "B", "A"]`: A inside B inside A), or null. mermaid
- * files every name a block mentions under that block, so a line in A's block
- * that names A puts A inside A. The parent table is built the way mermaid's
- * layout builds it: keyed by id, and written only for a parent that is a group.
+ * The error for a diagram with an edge that runs into a nesting loop, or
+ * null. mermaid files every name a block mentions under that block, so a
+ * line in A's block that names A puts A inside A. The parent table is built
+ * the way mermaid's layout builds it: keyed by id, and written only for a
+ * parent that is a group.
  */
-function nestingLoop(db: object): string[] | null {
+function nestingCycleError(source: string, db: object): string | null {
   if (!("getData" in db) || typeof db.getData !== "function") return null;
   const { nodes, edges } = db.getData() as LayoutData;
   const parent = new Map<string, string>();
@@ -106,32 +108,67 @@ function nestingLoop(db: object): string[] | null {
     }
   }
   // The loop the walk up from `id` ends in, from the first name it repeats,
-  // or null once the walk reaches the top.
+  // child first, or null once the walk reaches the top.
   const loopAbove = (id: string): string[] | null => {
     const path: string[] = [];
     for (let at: string | undefined = id; at !== undefined; ) {
       const first = path.indexOf(at);
-      if (first !== -1) return [...path.slice(first), at];
+      if (first !== -1) return path.slice(first);
       path.push(at);
       at = parent.get(at);
     }
     return null;
   };
-  for (const { start, end } of edges) {
-    if (start === end) continue;
-    const ends = [start, end].filter((id) => id !== undefined);
-    // An end on the loop itself first: its loop starts at the name the
-    // misplaced line wrote, which is where the hint has to point.
-    for (const id of ends) {
-      const loop = loopAbove(id);
-      if (loop?.[0] === id) return loop;
+  // The first loop an edge runs into, and whether the edge's own line is
+  // the one that closed it.
+  const find = (): { loop: string[]; known: boolean } | null => {
+    for (const { start, end } of edges) {
+      if (start === end) continue;
+      const ends = [start, end].filter((id) => id !== undefined);
+      // An end on the loop itself first. When both ends share a block, the
+      // edge was written in it, and that line is what put this end there.
+      for (const id of ends) {
+        const loop = loopAbove(id);
+        if (loop?.[0] !== id) continue;
+        const other = ends.find((each) => each !== id);
+        const known =
+          other !== undefined && parent.get(other) === parent.get(id);
+        return { loop, known };
+      }
+      for (const id of ends) {
+        const loop = loopAbove(id);
+        if (loop !== null) return { loop, known: false };
+      }
     }
-    for (const id of ends) {
-      const loop = loopAbove(id);
-      if (loop !== null) return loop;
-    }
+    return null;
+  };
+  const found = find();
+  if (found === null) return null;
+
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  // A concurrent region is nameless, and its composite's block is all
+  // regions: a line moved to another region stays in that block, so the
+  // region counts as its composite.
+  const blocks = found.loop.filter((id) => byId.get(id)?.shape !== "divider");
+  // A generated id (a subgraph titled with spaces gets `subGraph0`) is
+  // nowhere in the source, but its title is.
+  const names = blocks.map((id) => {
+    const label = byId.get(id)?.label;
+    return source.includes(id) || !label ? id : `"${label}"`;
+  });
+  const ring = [...names, names[0]];
+  const cycle = `Nesting cycle: ${ring.join(" inside ")}.`;
+  if (found.known || names.length === 1) {
+    return `${cycle} Move the lines in ${ring[1]}'s block that name ${ring[0]} out of that block.`;
   }
-  return null;
+  // The table cannot tell a block's own declaration from a mention of it,
+  // so each step of the loop is offered; any one of them breaks or
+  // shortens it.
+  const moves = names.map(
+    (child, i) => `the lines in ${ring[i + 1]}'s block that name ${child}`,
+  );
+  const last = moves.pop();
+  return `${cycle} Move one of these out of its block: ${moves.join(", ")}${moves.length > 1 ? "," : ""} or ${last}.`;
 }
 
 /**

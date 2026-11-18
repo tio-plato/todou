@@ -83,6 +83,91 @@ describe("renderDiagram on a nesting cycle", () => {
       error:
         "Nesting cycle: A inside B inside A. Move the lines in B's block that name A out of that block.",
     },
+    {
+      shape: "a subgraph with no id of its own",
+      source: [
+        "flowchart TD",
+        "  subgraph A",
+        "    subgraph inner title",
+        "      A --> C",
+        "    end",
+        "  end",
+      ],
+      error:
+        'Nesting cycle: A inside "inner title" inside A. Move the lines in "inner title"\'s block that name A out of that block.',
+    },
+    {
+      shape: "a line in a concurrent region",
+      source: [
+        "stateDiagram-v2",
+        "  state A {",
+        "    C --> D",
+        "    --",
+        "    A --> B",
+        "  }",
+      ],
+      error:
+        "Nesting cycle: A inside A. Move the lines in A's block that name A out of that block.",
+    },
+    {
+      shape: "an edge with both ends on the cycle",
+      source: [
+        "flowchart TD",
+        "  subgraph A",
+        "    subgraph B",
+        "      B --> A",
+        "    end",
+        "  end",
+      ],
+      error:
+        "Nesting cycle: B inside A inside B. Move one of these out of its block: the lines in A's block that name B or the lines in B's block that name A.",
+    },
+    {
+      shape: "an edge walking into the cycle",
+      source: [
+        "stateDiagram-v2",
+        "  X --> C",
+        "  state A {",
+        "    state B {",
+        "      A",
+        "      C",
+        "    }",
+        "  }",
+      ],
+      error:
+        "Nesting cycle: B inside A inside B. Move one of these out of its block: the lines in A's block that name B or the lines in B's block that name A.",
+    },
+    {
+      shape: "an edge written outside the cycle",
+      source: [
+        "flowchart TD",
+        "  subgraph A",
+        "    subgraph B",
+        "      A",
+        "    end",
+        "  end",
+        "  B --> X",
+      ],
+      error:
+        "Nesting cycle: B inside A inside B. Move one of these out of its block: the lines in A's block that name B or the lines in B's block that name A.",
+    },
+    {
+      shape: "a cycle of three blocks",
+      source: [
+        "stateDiagram-v2",
+        "  Y --> X",
+        "  state A {",
+        "    state B {",
+        "      state C {",
+        "        A",
+        "        X",
+        "      }",
+        "    }",
+        "  }",
+      ],
+      error:
+        "Nesting cycle: C inside B inside A inside C. Move one of these out of its block: the lines in B's block that name C, the lines in A's block that name B, or the lines in C's block that name A.",
+    },
   ])("refuses $shape before drawing it", async ({ source, error }) => {
     const result = await renderDiagram(source.join("\n"), PALETTE, "serif");
     expect(result).toEqual({ ok: false, error });
@@ -113,6 +198,18 @@ describe("renderDiagram on a nesting cycle", () => {
         "    class A",
         "  }",
         "  A --> A",
+      ],
+    },
+    {
+      shape: "concurrent regions",
+      source: [
+        "stateDiagram-v2",
+        "  state A {",
+        "    B --> C",
+        "    --",
+        "    D --> E",
+        "  }",
+        "  X --> A",
       ],
     },
   ])("draws $shape", async ({ source }) => {
