@@ -1,5 +1,6 @@
 import {
   INT4_MAX,
+  lineAfterDeleting,
   type Status,
   type StatusCreateInput,
   type StatusOrder,
@@ -7,7 +8,7 @@ import {
   type StatusUpdateInput,
   type StatusUsage,
 } from "@todou/shared";
-import { and, asc, count, eq, ne, sql } from "drizzle-orm";
+import { and, asc, count, eq, ne, or, sql } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import type { AppContext } from "../bootstrap.ts";
 import type { Db } from "../db/driver.ts";
@@ -55,6 +56,14 @@ export async function listStatusUsage(
 ): Promise<StatusUsage[]> {
   const { project } = await requireCapability(ctx, actor, slug, "status.list");
   const db = await ctx.router.forProject(routeInfoOf(project));
+  return statusUsageRows(db, project.id);
+}
+
+/**
+ * Issues per status, trashed ones apart: the counts the Statuses page shows
+ * and applying a template decides deletions by, read one way for both.
+ */
+export function statusUsageRows(db: Db, projectId: number) {
   return db
     .select({
       id: statuses.id,
@@ -63,7 +72,7 @@ export async function listStatusUsage(
     })
     .from(statuses)
     .leftJoin(issues, eq(issues.statusId, statuses.id))
-    .where(eq(statuses.projectId, project.id))
+    .where(eq(statuses.projectId, projectId))
     .groupBy(statuses.id)
     .orderBy(asc(statuses.id));
 }
@@ -89,6 +98,14 @@ export async function reorderStatuses(
   const db = await ctx.router.forProject(routeInfoOf(project));
 
   const result = await db.transaction(async (tx) => {
+    // project_meta first, before any status is written: every transaction
+    // that writes both takes them in this order, applying a template among
+    // them, so none can hold a status while waiting on one holding the line.
+    const meta = await tx
+      .select({ lineId: projectMeta.blockClearStatusId })
+      .from(projectMeta)
+      .where(eq(projectMeta.projectId, project.id))
+      .for("no key update");
     const rows = await tx
       .select()
       .from(statuses)
@@ -123,10 +140,6 @@ export async function reorderStatuses(
       ordered.push({ ...row, position: index });
     }
 
-    const meta = await tx
-      .select({ lineId: projectMeta.blockClearStatusId })
-      .from(projectMeta)
-      .where(eq(projectMeta.projectId, project.id));
     const before = meta[0]?.lineId ?? null;
     const after = line === undefined ? before : line;
     if (after !== before) {
@@ -227,6 +240,20 @@ export async function updateStatus(
   }
   const row = await db.transaction(async (tx) => {
     if (input.is_default === true) {
+      // Both rows first, by id: applying a template locks every status in
+      // that order, and taking the two in another one could leave each
+      // transaction holding the row the other waits for.
+      await tx
+        .select({ id: statuses.id })
+        .from(statuses)
+        .where(
+          and(
+            eq(statuses.projectId, project.id),
+            or(eq(statuses.isDefault, true), eq(statuses.id, statusId)),
+          ),
+        )
+        .orderBy(asc(statuses.id))
+        .for("no key update");
       // Only one default per project: becoming it demotes the previous one.
       await tx
         .update(statuses)
@@ -298,25 +325,56 @@ export async function deleteStatus(
       "status is used by existing issues — move them to another status first",
     );
   }
-  const meta = await db
-    .select({ lineId: projectMeta.blockClearStatusId })
-    .from(projectMeta)
-    .where(eq(projectMeta.projectId, project.id));
-  if ((meta[0]?.lineId ?? null) === statusId) {
-    throw new ConflictError(
-      "status is this project's block clear line — point it elsewhere first",
-    );
-  }
-  const deleted = await db
-    .delete(statuses)
-    .where(and(eq(statuses.id, statusId), eq(statuses.projectId, project.id)))
-    .returning({ id: statuses.id });
-  if (deleted.length === 0) throw new NotFoundError("status not found");
+  const lineChanged = await db.transaction(async (tx) => {
+    // project_meta before the statuses, the order every transaction writing
+    // both takes, so this one cannot wait on one waiting on it.
+    const meta = await tx
+      .select({ lineId: projectMeta.blockClearStatusId })
+      .from(projectMeta)
+      .where(eq(projectMeta.projectId, project.id))
+      .for("no key update");
+    const before = meta[0]?.lineId ?? null;
+    let after = before;
+    if (before === statusId) {
+      // The line moves down rather than holding the delete up: a line nobody
+      // can delete would have to be moved by hand first, which says nothing
+      // the moved line does not.
+      const order = await tx
+        .select({ id: statuses.id })
+        .from(statuses)
+        .where(eq(statuses.projectId, project.id))
+        .orderBy(asc(statuses.position), asc(statuses.id));
+      after = lineAfterDeleting(
+        order.map((row) => row.id),
+        before,
+        new Set([statusId]),
+      );
+      await tx
+        .update(projectMeta)
+        .set({ blockClearStatusId: after })
+        .where(eq(projectMeta.projectId, project.id));
+    }
+    const deleted = await tx
+      .delete(statuses)
+      .where(and(eq(statuses.id, statusId), eq(statuses.projectId, project.id)))
+      .returning({ id: statuses.id });
+    if (deleted.length === 0) throw new NotFoundError("status not found");
+    return after !== before;
+  });
   ctx.bus.publish(project.id, {
     entity: "status",
     id: statusId,
     action: "deleted",
   });
+  if (lineChanged) {
+    const changes = await reevaluateProjectBlocks(ctx, project, db);
+    await announceBlockChanges(ctx, changes, actor.id);
+    ctx.bus.publish(project.id, {
+      entity: "project",
+      id: project.id,
+      action: "updated",
+    });
+  }
 }
 
 async function ensureNameFree(

@@ -16,6 +16,7 @@ const USER = [
   ["Profile", "/settings/profile"],
   ["Appearance", "/settings/appearance"],
   ["Inbox", "/settings/inbox"],
+  ["Project templates", "/settings/templates"],
   ["Agents", "/settings/agents"],
   ["Personal tokens", "/settings/tokens"],
 ] as const;
@@ -25,6 +26,7 @@ const PROJECT = [
   ["Members", "/projects/p/settings/members"],
   ["Statuses", "/projects/p/settings/statuses"],
   ["Labels", "/projects/p/settings/labels"],
+  ["Template", "/projects/p/settings/template"],
   ["References", "/projects/p/settings/references"],
 ] as const;
 
@@ -67,7 +69,7 @@ function renderAt(url: string) {
     routeTree: rootRoute.addChildren([
       authed.addChildren([
         user.addChildren(
-          ["profile", "appearance", "inbox", "tokens"]
+          ["profile", "appearance", "inbox", "templates", "tokens"]
             .map((path) => child(user, path))
             .concat(
               child(user, "agents", {
@@ -77,9 +79,14 @@ function renderAt(url: string) {
         ),
         project.addChildren([
           projectSettings.addChildren(
-            ["/", "members", "statuses", "labels", "references"].map((path) =>
-              child(projectSettings, path),
-            ),
+            [
+              "/",
+              "members",
+              "statuses",
+              "labels",
+              "template",
+              "references",
+            ].map((path) => child(projectSettings, path)),
           ),
         ]),
       ]),

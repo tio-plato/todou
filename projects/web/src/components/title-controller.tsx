@@ -4,7 +4,7 @@ import { formatRef } from "@todou/shared";
 import { useEffect } from "react";
 import { issueQuery } from "@/api/issues.ts";
 import { useRefPlacement } from "@/api/prefs.ts";
-import { projectQuery } from "@/api/queries.ts";
+import { projectQuery, projectTemplatesQuery } from "@/api/queries.ts";
 import { useRefPrefix } from "@/api/references.ts";
 
 const FALLBACK = "todou 🥔";
@@ -18,6 +18,7 @@ function titleFor(
     refPrefix: string | null;
     refLeads: boolean;
     login?: string;
+    templateName?: string;
   },
 ): string {
   const ref = formatRef(ctx.refPrefix, ctx.issueNumber ?? 0);
@@ -41,6 +42,8 @@ function titleFor(
       return `${ctx.projectName} · statuses`;
     case "/authed/projects/$slug/settings/labels":
       return `${ctx.projectName} · labels`;
+    case "/authed/projects/$slug/settings/template":
+      return `${ctx.projectName} · template`;
     case "/authed/projects/$slug/settings/references":
       return `${ctx.projectName} · references`;
     case "/authed/projects/$slug/issues/new":
@@ -59,6 +62,10 @@ function titleFor(
       return "Appearance · todou";
     case "/authed/settings/inbox":
       return "Inbox settings · todou";
+    case "/authed/settings/templates":
+      return "Project templates · todou";
+    case "/authed/settings/templates/$template":
+      return `${ctx.templateName ?? ""} · Project templates · todou`;
     case "/authed/settings/agents":
       return "Agents · todou";
     case "/authed/settings/agents/$login":
@@ -88,10 +95,12 @@ export function TitleController() {
     slug,
     number: numberParam,
     login,
+    template,
   } = (match?.params ?? {}) as {
     slug?: string;
     number?: string;
     login?: string;
+    template?: string;
   };
   const issueNumber = numberParam ? Number(numberParam) : undefined;
 
@@ -105,6 +114,11 @@ export function TitleController() {
       slug != null && issueNumber != null && Number.isFinite(issueNumber),
   });
 
+  const templates = useQuery({
+    ...projectTemplatesQuery,
+    enabled: template != null,
+  });
+
   const refPrefix = useRefPrefix(slug ?? undefined);
   const refLeads = useRefPlacement("detail") === "before";
   const title = titleFor(match?.routeId, {
@@ -114,6 +128,7 @@ export function TitleController() {
     refPrefix,
     refLeads,
     login,
+    templateName: templates.data?.find((t) => String(t.ref) === template)?.name,
   });
 
   useEffect(() => {

@@ -620,7 +620,7 @@ describe("issue block edges T-377", () => {
     expect(await timelineTypes(slug, blocked)).toContain("block_reblocked");
   });
 
-  it("refuses to delete the status a project uses as its clear line", async () => {
+  it("moves the clear line down off a status it deletes", async () => {
     const res = await t.app.request(`/api/projects/${PA}/statuses`, {
       method: "POST",
       headers: headers(),
@@ -628,23 +628,13 @@ describe("issue block edges T-377", () => {
     });
     expect(res.status).toBe(201);
     const line = (await json(res)).id as number;
-    expect(
-      (
-        await t.app.request(`/api/projects/${PA}`, {
-          method: "PATCH",
-          headers: headers(),
-          body: JSON.stringify({ block_clear_status_id: line }),
-        })
-      ).status,
-    ).toBe(200);
+    expect((await setClearLine(PA, "Line")).status).toBe(200);
+    const blocked = await createIssue(PA, "waits past the last status");
+    const blocker = await createIssue(PA, "closed as invalid");
+    await block(PA, blocked, "blocked-by", `#${blocker}`);
+    await setStatus(PA, blocker, "Invalid");
+    expect((await issue(PA, blocked)).blocked_by[0].cleared_at).toBeNull();
 
-    const refused = await t.app.request(
-      `/api/projects/${PA}/statuses/${line}`,
-      { method: "DELETE", headers: headers() },
-    );
-    expect(refused.status).toBe(409);
-
-    expect((await setClearLine(PA, "Shipped")).status).toBe(200);
     expect(
       (
         await t.app.request(`/api/projects/${PA}/statuses/${line}`, {
@@ -653,6 +643,16 @@ describe("issue block edges T-377", () => {
         })
       ).status,
     ).toBe(204);
+
+    // Line was last, so the line lands on the new last status.
+    const project = await json(
+      await t.app.request(`/api/projects/${PA}`, { headers: { cookie } }),
+    );
+    expect(project.block_clear_status_id).toBe(
+      await statusNamed(PA, "Invalid"),
+    );
+    expect((await issue(PA, blocked)).blocked_by[0].cleared_at).not.toBeNull();
+    expect((await setClearLine(PA, "Shipped")).status).toBe(200);
   });
 
   it("refuses a clear line that is not this project's status", async () => {

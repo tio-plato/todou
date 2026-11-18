@@ -637,6 +637,390 @@ describe.each(PLACEMENTS)("projects domain (%s placement)", (placement) => {
     });
   });
 
+  describe("statuses and labels from a template", () => {
+    const get = async (path: string) =>
+      json(await t.app.request(`/api${path}`, { headers: { cookie } }));
+    const post = (
+      path: string,
+      body: unknown,
+      who: Record<string, string> = { cookie },
+    ) =>
+      t.app.request(`/api${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...who },
+        body: JSON.stringify(body),
+      });
+
+    /** Everything a template decides, read back through the API. */
+    async function laidOut(s: string) {
+      const [statuses, project, settings, labels] = await Promise.all([
+        get(`/projects/${s}/statuses`),
+        get(`/projects/${s}`),
+        get(`/projects/${s}/insights/settings`),
+        get(`/projects/${s}/labels`),
+      ]);
+      return {
+        statuses: statuses.map(
+          (x: {
+            name: string;
+            category: string;
+            color: string;
+            is_default: boolean;
+          }) => [x.name, x.category, x.color, x.is_default],
+        ),
+        line:
+          statuses.find(
+            (x: { id: number }) => x.id === project.block_clear_status_id,
+          )?.name ?? null,
+        source: settings.source,
+        roles: Object.fromEntries(
+          settings.roles.map((r: { name: string; role: string }) => [
+            r.name,
+            r.role,
+          ]),
+        ),
+        labels: labels.map((l: { name: string; color: string }) => [
+          l.name,
+          l.color,
+        ]),
+      };
+    }
+
+    const body = (reviewRole: string) => ({
+      statuses: [
+        {
+          name: "Doing",
+          category: "open",
+          color: "#3b82f6",
+          chart_role: "remaining",
+        },
+        {
+          name: "Review",
+          category: "open",
+          color: "#f59e0b",
+          chart_role: reviewRole,
+          block_clear: true,
+        },
+        {
+          name: "Queued",
+          category: "open",
+          color: "#9ca3af",
+          chart_role: "remaining",
+          is_default: true,
+        },
+        {
+          name: "Done",
+          category: "closed",
+          color: "#22c55e",
+          chart_role: "completed",
+        },
+      ],
+      labels: [
+        { name: "area:web", color: "#0ea5e9" },
+        { name: "urgent", color: "#f97316" },
+      ],
+    });
+
+    async function myTemplate(content: unknown): Promise<number> {
+      const res = await post("/me/project-templates", {
+        name: "Mine",
+        body: content,
+      });
+      expect(res.status).toBe(201);
+      return (await json(res)).ref;
+    }
+
+    it("lays a project out the way one of my templates says", async () => {
+      const template = await myTemplate(body("excluded"));
+      const s = slug();
+      expect((await postProject({ slug: s, name: s, template })).status).toBe(
+        201,
+      );
+
+      expect(await laidOut(s)).toEqual({
+        statuses: [
+          ["Doing", "open", "#3b82f6", false],
+          ["Review", "open", "#f59e0b", false],
+          ["Queued", "open", "#9ca3af", true],
+          ["Done", "closed", "#22c55e", false],
+        ],
+        line: "Review",
+        source: "saved",
+        roles: {
+          Doing: "remaining",
+          Review: "excluded",
+          Queued: "remaining",
+          Done: "completed",
+        },
+        labels: [
+          ["area:web", "#0ea5e9"],
+          ["urgent", "#f97316"],
+        ],
+      });
+    });
+
+    it("stores no chart roles when every one is the default", async () => {
+      const template = await myTemplate(body("remaining"));
+      const s = slug();
+      expect((await postProject({ slug: s, name: s, template })).status).toBe(
+        201,
+      );
+      expect((await laidOut(s)).source).toBe("default");
+    });
+
+    it("gives a project that names no template the built-in Default", async () => {
+      const plain = slug();
+      await createProject(plain);
+      const named = slug();
+      expect(
+        (await postProject({ slug: named, name: named, template: "default" }))
+          .status,
+      ).toBe(201);
+
+      const omitted = await laidOut(plain);
+      expect(omitted.labels.map(([name]: [string]) => name)).toEqual([
+        "kind:bug",
+        "kind:chore",
+        "kind:feature",
+        "needs-brainstorm",
+      ]);
+      expect(await laidOut(named)).toEqual(omitted);
+    });
+
+    it("refuses a template that is not there or not mine, and leaves the slug free", async () => {
+      const other = await addUserWithToken(t.ctx, `tpl-owner-${slug()}`);
+      const theirs = await post(
+        "/me/project-templates",
+        { name: "Theirs", body: body("remaining") },
+        other.headers,
+      );
+      expect(theirs.status).toBe(201);
+      const s = slug();
+      for (const template of [(await json(theirs)).ref, 999_999]) {
+        const res = await postProject({ slug: s, name: s, template });
+        expect(res.status).toBe(404);
+        expect((await json(res)).error.message).toBe("template not found");
+      }
+      await createProject(s);
+    });
+
+    it("copies another project's statuses and labels", async () => {
+      const source = slug();
+      await createProject(source);
+      const statuses = await get(`/projects/${source}/statuses`);
+      const ids = statuses.map((x: { id: number }) => x.id);
+      expect(
+        (
+          await t.app.request(`/api/projects/${source}/statuses/order`, {
+            method: "PUT",
+            headers: { "content-type": "application/json", cookie },
+            body: JSON.stringify({ ids: [...ids].reverse() }),
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (
+          await post(`/projects/${source}/labels`, {
+            name: "area:cli",
+            color: "#14b8a6",
+          })
+        ).status,
+      ).toBe(201);
+
+      const copy = slug();
+      expect(
+        (await postProject({ slug: copy, name: copy, from_project: source }))
+          .status,
+      ).toBe(201);
+      const [from, to] = [await laidOut(source), await laidOut(copy)];
+      expect(to.statuses).toEqual(from.statuses);
+      expect(to.labels).toEqual(from.labels);
+      expect(to.labels).toContainEqual(["area:cli", "#14b8a6"]);
+    });
+
+    it("refuses a source project the caller cannot see, and leaves the slug free", async () => {
+      const source = slug();
+      await createProject(source);
+      const outsider = await addUserWithToken(t.ctx, `outsider-${source}`);
+      const s = slug();
+      const refused = await post(
+        "/projects",
+        { slug: s, name: s, from_project: source },
+        outsider.headers,
+      );
+      expect(refused.status).toBe(404);
+      expect(
+        (await post("/projects", { slug: s, name: s }, outsider.headers))
+          .status,
+      ).toBe(201);
+    });
+  });
+
+  describe("agents joining a new project", () => {
+    const tag = placement.replaceAll(/[^a-z]/g, "");
+    let owner: Awaited<ReturnType<typeof addUserWithToken>>;
+    const as = (headers: Record<string, string>) => ({
+      "content-type": "application/json",
+      ...headers,
+    });
+
+    beforeAll(async () => {
+      owner = await addUserWithToken(t.ctx, `agent-owner-${tag}`);
+    });
+
+    async function agent(name: string, joinAs: string | null = null) {
+      const res = await t.app.request("/api/agents", {
+        method: "POST",
+        headers: as(owner.headers),
+        body: JSON.stringify({ login: `${name}-${tag}`, display_name: name }),
+      });
+      expect(res.status).toBe(201);
+      const created = await json(res);
+      if (joinAs !== null) await setJoinRole(created.id, joinAs);
+      return created as { id: number; login: string };
+    }
+
+    async function setJoinRole(id: number, role: string | null) {
+      const res = await t.app.request(`/api/agents/${id}`, {
+        method: "PATCH",
+        headers: as(owner.headers),
+        body: JSON.stringify({ new_project_role: role }),
+      });
+      expect(res.status).toBe(200);
+    }
+
+    const create = (
+      body: Record<string, unknown>,
+      headers: Record<string, string> = owner.headers,
+    ) =>
+      t.app.request("/api/projects", {
+        method: "POST",
+        headers: as(headers),
+        body: JSON.stringify({ name: String(body.slug), ...body }),
+      });
+
+    async function rolesIn(s: string): Promise<Record<string, string>> {
+      const res = await t.app.request(`/api/projects/${s}/members`, {
+        headers: owner.headers,
+      });
+      expect(res.status).toBe(200);
+      return Object.fromEntries(
+        (await json(res)).map(
+          (m: { user: { login: string }; role: string }) => [
+            m.user.login,
+            m.role,
+          ],
+        ),
+      );
+    }
+
+    // Each test retires the join roles it set, so the next starts with none.
+    async function cleared(...agents: Array<{ id: number }>) {
+      for (const a of agents) await setJoinRole(a.id, null);
+    }
+
+    it("adds exactly the agents it is given", async () => {
+      const one = await agent("bot-given");
+      const s = slug();
+      expect(
+        (
+          await create({
+            slug: s,
+            agents: [{ login: one.login, role: "writer" }],
+          })
+        ).status,
+      ).toBe(201);
+      expect(await rolesIn(s)).toEqual({
+        [`agent-owner-${tag}`]: "admin",
+        [one.login]: "writer",
+      });
+    });
+
+    it("adds each enabled agent with a join role when given none", async () => {
+      const one = await agent("bot-joins", "reporter");
+      await agent("bot-stays");
+      const off = await agent("bot-off", "writer");
+      expect(
+        (
+          await t.app.request(`/api/agents/${off.id}`, {
+            method: "DELETE",
+            headers: owner.headers,
+          })
+        ).status,
+      ).toBe(204);
+      const s = slug();
+      expect((await create({ slug: s })).status).toBe(201);
+      expect(await rolesIn(s)).toEqual({
+        [`agent-owner-${tag}`]: "admin",
+        [one.login]: "reporter",
+      });
+
+      const none = slug();
+      expect((await create({ slug: none, agents: [] })).status).toBe(201);
+      expect(await rolesIn(none)).toEqual({
+        [`agent-owner-${tag}`]: "admin",
+      });
+      await cleared(one, off);
+    });
+
+    it("refuses an agent that is not the caller's, and one named twice", async () => {
+      const mine = await agent("bot-twice");
+      const stranger = await addUserWithToken(t.ctx, `stranger-${tag}`, {
+        kind: "machine",
+        ownerId: (await addUserWithToken(t.ctx, `other-owner-${tag}`)).user.id,
+      });
+      const s = slug();
+      const messages: string[] = [];
+      for (const login of [stranger.user.login, `nobody-${tag}`]) {
+        const res = await create({
+          slug: s,
+          agents: [{ login, role: "reader" }],
+        });
+        expect(res.status).toBe(422);
+        messages.push((await json(res)).error.message);
+      }
+      expect(messages).toEqual([
+        `@${stranger.user.login} is not one of your agents`,
+        `@nobody-${tag} is not one of your agents`,
+      ]);
+      const twice = await create({
+        slug: s,
+        agents: [
+          { login: mine.login, role: "reader" },
+          { login: mine.login, role: "writer" },
+        ],
+      });
+      expect(twice.status).toBe(422);
+      expect((await create({ slug: s })).status).toBe(201);
+    });
+
+    it("brings a machine creator's fellow agents, and not the creator twice", async () => {
+      const creator = await agent("bot-creator", "writer");
+      const fellow = await agent("bot-fellow", "reporter");
+      const token = await t.app.request(`/api/agents/${creator.id}/tokens`, {
+        method: "POST",
+        headers: as(owner.headers),
+        body: JSON.stringify({ name: "create" }),
+      });
+      expect(token.status).toBe(201);
+      const s = slug();
+      expect(
+        (
+          await create(
+            { slug: s },
+            { authorization: `Bearer ${(await json(token)).token}` },
+          )
+        ).status,
+      ).toBe(201);
+      expect(await rolesIn(s)).toEqual({
+        [`agent-owner-${tag}`]: "admin",
+        [creator.login]: "admin",
+        [fellow.login]: "reporter",
+      });
+      await cleared(creator, fellow);
+    });
+  });
+
   it("deletes a project and its insights roles before it stops routing", async () => {
     const s = slug();
     const project = await createProject(s);

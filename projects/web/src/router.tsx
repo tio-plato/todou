@@ -66,6 +66,11 @@ import {
   ProjectSettingsLayout,
   ProjectStatusesSettingsPage,
 } from "@/pages/project-settings.tsx";
+import { ProjectSettingsTemplatePage } from "@/pages/project-settings-template.tsx";
+import {
+  ProjectTemplateSettingsPage,
+  ProjectTemplatesSettingsPage,
+} from "@/pages/project-templates-settings.tsx";
 import { ProjectsPage } from "@/pages/projects.tsx";
 import { SearchPage } from "@/pages/search.tsx";
 import { TokensSettingsPage } from "@/pages/tokens-settings.tsx";
@@ -434,6 +439,12 @@ const projectLabelsSettingsRoute = createRoute({
   component: ProjectLabelsSettingsPage,
 });
 
+const projectSettingsTemplateRoute = createRoute({
+  getParentRoute: () => projectSettingsRoute,
+  path: "template",
+  component: ProjectSettingsTemplatePage,
+});
+
 const projectReferencesSettingsRoute = createRoute({
   getParentRoute: () => projectSettingsRoute,
   path: "references",
@@ -563,6 +574,18 @@ const inboxSettingsRoute = createRoute({
   component: InboxSettingsPage,
 });
 
+const projectTemplatesSettingsRoute = createRoute({
+  getParentRoute: () => userSettingsRoute,
+  path: "templates",
+  component: ProjectTemplatesSettingsPage,
+});
+
+const projectTemplateSettingsRoute = createRoute({
+  getParentRoute: () => userSettingsRoute,
+  path: "templates/$template",
+  component: ProjectTemplateSettingsPage,
+});
+
 const agentsSettingsRoute = createRoute({
   getParentRoute: () => userSettingsRoute,
   path: "agents",
@@ -624,6 +647,7 @@ const routeTree = rootRoute.addChildren([
         projectMembersSettingsRoute,
         projectStatusesSettingsRoute,
         projectLabelsSettingsRoute,
+        projectSettingsTemplateRoute,
         projectReferencesSettingsRoute,
         projectInsightsSettingsRoute,
       ]),
@@ -633,6 +657,8 @@ const routeTree = rootRoute.addChildren([
       profileSettingsRoute,
       appearanceSettingsRoute,
       inboxSettingsRoute,
+      projectTemplatesSettingsRoute,
+      projectTemplateSettingsRoute,
       agentsSettingsRoute,
       agentSettingsRoute,
       tokensSettingsRoute,

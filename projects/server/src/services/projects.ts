@@ -5,9 +5,20 @@ import type {
   ProjectBrief,
   ProjectCreateInput,
   ProjectUpdateInput,
+  TemplateBody,
 } from "@todou/shared";
-import { CANONICAL_STATUSES } from "@todou/shared";
-import { and, asc, count, desc, eq, inArray, ne, or } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  or,
+} from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import { uniqueViolation } from "../auth/provision.ts";
 import type { AppContext } from "../bootstrap.ts";
@@ -38,6 +49,7 @@ import {
   projectMembers,
   projects,
   slugHistory,
+  users,
 } from "../db/system-schema.ts";
 import {
   ConflictError,
@@ -46,7 +58,12 @@ import {
 } from "../errors.ts";
 import { type ProjectRow, requireCapability, routeInfoOf } from "./access.ts";
 import { announceBlockChanges, reevaluateProjectBlocks } from "./blocks.ts";
+import { storedRoles } from "./insights-settings.ts";
 import { markPendingMirror } from "./pending-mirror.ts";
+import {
+  resolveTemplate,
+  templateBodyFromProject,
+} from "./project-templates.ts";
 import { mirrorRefFormat } from "./reference-directory.ts";
 import {
   type BlobReapEntry,
@@ -193,10 +210,79 @@ async function canSeeProject(
   return rows.length > 0;
 }
 
+/** An agent joining a new project, and as what. */
+type AgentSeat = { userId: number; role: MemberRole };
+
+/**
+ * The agents a new project starts with. They are always the agents of the
+ * person behind the request — the actor, or a machine actor's owner — and
+ * never the actor itself, which joins as admin anyway. Given a list, exactly
+ * those, an empty one included; given none, every enabled agent of theirs
+ * with a join role set, as that role. Any role fits under the owner's admin.
+ *
+ * A login that is not one of theirs is refused the same way whether it
+ * exists or not, so the refusal does not tell anyone whose agents exist.
+ */
+async function resolveAgents(
+  system: Db,
+  actor: UserRow,
+  requested: ProjectCreateInput["agents"],
+): Promise<AgentSeat[]> {
+  const principal = actor.kind === "machine" ? actor.ownerId : actor.id;
+  if (requested === undefined) {
+    if (principal === null) return [];
+    const rows = await system
+      .select({ id: users.id, role: users.newProjectRole })
+      .from(users)
+      .where(
+        and(
+          eq(users.kind, "machine"),
+          eq(users.ownerId, principal),
+          isNull(users.disabledAt),
+          isNotNull(users.newProjectRole),
+          ne(users.id, actor.id),
+        ),
+      )
+      .orderBy(asc(users.id));
+    // Never null: the query keeps only agents with a role.
+    return rows.map((row) => ({
+      userId: row.id,
+      role: row.role as MemberRole,
+    }));
+  }
+  const logins = requested.map((agent) => agent.login);
+  const twice = logins.find((login, i) => logins.indexOf(login) !== i);
+  if (twice !== undefined) {
+    throw new ValidationFailedError(`@${twice} is listed twice`);
+  }
+  if (requested.length === 0) return [];
+  const rows = await system
+    .select()
+    .from(users)
+    .where(inArray(users.login, logins));
+  const byLogin = new Map(rows.map((row) => [row.login, row]));
+  const seats: AgentSeat[] = [];
+  for (const { login, role } of requested) {
+    const row = byLogin.get(login);
+    if (
+      row === undefined ||
+      principal === null ||
+      row.kind !== "machine" ||
+      row.ownerId !== principal ||
+      row.disabledAt !== null
+    ) {
+      throw new ValidationFailedError(`@${login} is not one of your agents`);
+    }
+    if (row.id !== actor.id) seats.push({ userId: row.id, role });
+  }
+  return seats;
+}
+
 /**
  * Everything a new project owns beyond its registry row, split by tier: the
  * system database holds the slug history and the memberships, the project's
- * own database the rest. Taking both handles as parameters is what lets a
+ * own database the rest — the template's statuses, line, chart roles and
+ * labels among it. Taking both handles as parameters is what lets a
  * colocated create pass the same transaction twice.
  */
 async function seedProject(
@@ -205,6 +291,8 @@ async function seedProject(
   row: ProjectRow,
   input: ProjectCreateInput,
   actor: UserRow,
+  template: TemplateBody,
+  agents: AgentSeat[],
 ): Promise<void> {
   // Anchored at createdAt for the same reason the ref format is: the
   // history has to cover every instant this project could hold content.
@@ -216,7 +304,7 @@ async function seedProject(
   const seeded = await db
     .insert(statuses)
     .values(
-      CANONICAL_STATUSES.map((s, i) => ({
+      template.statuses.map((s, i) => ({
         projectId: row.id,
         name: s.name,
         category: s.category,
@@ -226,14 +314,46 @@ async function seedProject(
       })),
     )
     .returning({ id: statuses.id, name: statuses.name });
-  const clearName = CANONICAL_STATUSES.find((s) => s.block_clear)?.name;
+  // By name, which a template holds once, rather than by RETURNING order.
+  const ids = new Map(seeded.map((s) => [s.name, s.id]));
+  const idOf = (name: string): number => {
+    const id = ids.get(name);
+    if (id === undefined) throw new Error(`status ${name} was not inserted`);
+    return id;
+  };
+  const clearName = template.statuses.find((s) => s.block_clear)?.name;
   await db
     .insert(projectMeta)
     .values({
       projectId: row.id,
-      blockClearStatusId: seeded.find((s) => s.name === clearName)?.id ?? null,
+      blockClearStatusId: clearName === undefined ? null : idOf(clearName),
     })
     .onConflictDoNothing();
+  // Only the roles that depart from the default are stored, as the Statuses
+  // page stores a new status's; with none, no row, as before templates.
+  const roles = storedRoles(
+    {},
+    template.statuses.map((s) => ({
+      kind: "added" as const,
+      statusId: idOf(s.name),
+      status: s,
+      role: s.chart_role,
+    })),
+  );
+  if (Object.keys(roles).length > 0) {
+    await db
+      .insert(insightsSettings)
+      .values({ projectId: row.id, revision: 0, roles });
+  }
+  if (template.labels.length > 0) {
+    await db.insert(labels).values(
+      template.labels.map((label) => ({
+        projectId: row.id,
+        name: label.name,
+        color: label.color,
+      })),
+    );
+  }
   // Anchored at the registry row's own createdAt, not now(): the history
   // then covers every instant the project could already hold content.
   if (input.ref_prefix != null) {
@@ -255,8 +375,8 @@ async function seedProject(
   // No guard on the actor's kind, deliberately: a machine has always been
   // able to create projects here, and taking that away belongs to a card
   // that can go and look at who would break.
-  await system.insert(projectMembers).values(
-    actor.kind === "machine" && actor.ownerId !== null
+  await system.insert(projectMembers).values([
+    ...(actor.kind === "machine" && actor.ownerId !== null
       ? [
           { projectId: row.id, userId: actor.id, role: "admin" as const },
           {
@@ -265,8 +385,9 @@ async function seedProject(
             role: "admin" as const,
           },
         ]
-      : [{ projectId: row.id, userId: actor.id, role: "admin" as const }],
-  );
+      : [{ projectId: row.id, userId: actor.id, role: "admin" as const }]),
+    ...agents.map((seat) => ({ projectId: row.id, ...seat })),
+  ]);
   if (input.ref_prefix != null) {
     await mirrorRefFormat(system, row.id, {
       prefix: input.ref_prefix,
@@ -307,6 +428,15 @@ export async function createProject(
   input: ProjectCreateInput,
 ): Promise<Project> {
   const system = ctx.router.system();
+  // Before anything is written, so a template or source project that is not
+  // there, or an agent that is not the caller's, leaves no half-made project
+  // behind. Naming neither template nor source means the built-in default,
+  // whoever asks.
+  const template =
+    input.from_project === undefined
+      ? (await resolveTemplate(ctx, actor, input.template ?? "default")).body
+      : await templateBodyFromProject(ctx, actor, input.from_project);
+  const agents = await resolveAgents(system, actor, input.agents);
 
   if (ctx.router.newProjectSharesSystemDatabase()) {
     // No `provision` call: for a project resolving to the system database it
@@ -327,7 +457,7 @@ export async function createProject(
       if (!ctx.router.sharesSystemDatabase(routeInfoOf(row))) {
         throw new Error("project routed out of the system database mid-create");
       }
-      await seedProject(tx, tx, row, input, actor);
+      await seedProject(tx, tx, row, input, actor, template, agents);
       return row;
     });
     // After the commit: a subscriber that reacts by reading the project has
@@ -361,7 +491,7 @@ export async function createProject(
     // leaves a registry row with no database behind it. It adds no catch of
     // its own — a failure here is a 5xx, same as any other step.
     if (input.ref_prefix != null) await markPendingMirror(ctx, row);
-    await seedProject(system, db, row, input, actor);
+    await seedProject(system, db, row, input, actor, template, agents);
   } catch (cause) {
     // Cross-database creation cannot be one transaction; compensate by
     // removing the registry row so the failed project is unroutable.

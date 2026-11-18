@@ -112,6 +112,10 @@ const DECLARED: Readonly<Record<string, string>> = {
     "Same-version server role invariant: roles combine MemberSetInput parsed at routes/projects.ts with project_members rows written by this server. DB reads are not parsed; mixed-version DB writers/manual corruption are outside this exception.",
   "projects/server/src/services/members.ts :: read ROLE_RANK[role] #1":
     "Same-version server role invariant: roles combine MemberSetInput parsed at routes/projects.ts with project_members rows written by this server. DB reads are not parsed; mixed-version DB writers/manual corruption are outside this exception.",
+  "projects/server/src/services/project-templates.ts :: read BUILTIN_TEMPLATES[key] #1":
+    "Closed local keys: builtinTemplates maps BUILTIN_TEMPLATE_KEYS, the tuple BUILTIN_TEMPLATES is typed by, so every key is an own key. A wire TemplateRef reaches the table only through resolveTemplate's Object.hasOwn guard.",
+  "projects/server/src/services/project-templates.ts :: read BUILTIN_TEMPLATES[key] #2":
+    "Closed local keys: builtinTemplates maps BUILTIN_TEMPLATE_KEYS, the tuple BUILTIN_TEMPLATES is typed by, so every key is an own key. A wire TemplateRef reaches the table only through resolveTemplate's Object.hasOwn guard.",
   "projects/server/src/services/search.ts :: switch filter.key #1":
     "Parsed search query: parseSearchQuery resolves filter.key only after Object.hasOwn(SEARCH_QUALIFIER_KEYS, typed); server planQualifiers gets the resulting closed qualifier set.",
   "projects/server/src/services/users.ts :: read ROLE_RANK[a.role] #1":
@@ -140,7 +144,7 @@ const DECLARED: Readonly<Record<string, string>> = {
     "Closed client producer: issueListVerdict constructs contains/read/unknown local literals; entryWantsRefetch switches on that computed result, not HTTP enum fields.",
   "projects/web/src/api/useUserEvents.ts :: switch verdict.verdict #2":
     "Closed client producer: issueListVerdict constructs contains/read/unknown local literals; entryWantsRefetch switches on that computed result, not HTTP enum fields.",
-  "projects/web/src/components/settings/statuses-section.tsx :: read ROLE_LABELS[role] #1":
+  "projects/web/src/components/settings/status-set-list.tsx :: read ROLE_LABELS[role] #1":
     "Closed options: Role.options.map((role) => ...) -> ROLE_LABELS[role]. The wire role is only compared in aria-pressed={value === option}; it is never the lookup key.",
   "projects/web/src/components/issue/metadata-dialog.tsx :: read PARSERS[t] #1":
     "Closed client tabs: local Radix triggers emit browse/bulk/json; both parser lookups exclude browse before indexing the bulk/json parser table.",
@@ -234,8 +238,12 @@ const DECLARED: Readonly<Record<string, string>> = {
     "Configuration dictionary: saveCliConfig JSON-clones CliConfig, iterates Object.values(doc.servers ?? {}) to delete empty tokens/instead_of properties, then serializes doc with stringify. No enum discriminator indexes this object.",
   "projects/server/src/services/insights-settings.ts :: mapping nextRoles #1":
     "Status-id dictionary: routes/insights validates PutSettings, then validateCompleteMapping checks every current status id. nextRoles is persisted as insightsSettings.roles; rolesOf later indexes by status id and applies storedRole's literal allowlist plus defaultInsightsRole fallback.",
+  "projects/server/src/services/projects.ts :: mapping roles #1":
+    "Status-id dictionary: storedRoles keys a new project's chart roles by the ids its statuses were just inserted with, and seedProject persists it as insightsSettings.roles; rolesOf later indexes it by status id through storedRole's literal allowlist plus defaultInsightsRole fallback.",
   "projects/server/src/services/insights/aggregate.ts :: mapping result #1":
     "Closed server metric catalog: finishFlow maps local FLOW_KEYS literals to measured counts. Its result is spread into the Flow response, not indexed by an incoming enum discriminator.",
+  "projects/server/src/services/template-apply.ts :: mapping roles #1":
+    "Status-id dictionary: storedRoles keys the chart roles by the ids of the statuses the apply kept or inserted, and write persists it as insightsSettings.roles; rolesOf later indexes it by status id through storedRole's literal allowlist plus defaultInsightsRole fallback.",
   "projects/shared/src/permissions.ts :: read BY_ID[id] #1":
     "Closed capability catalog: BY_ID is built from local CAPABILITIES. capabilityOf is called with literal capability ids, and by ownOnly with ids from role-permissions-table's local DISPLAY_ROWS.caps; no wire role value supplies this key.",
   "projects/shared/src/permissions.ts :: read BY_ID[id] #2":

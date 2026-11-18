@@ -122,8 +122,8 @@ async function renderSection({
   line = SHIPPED as number | null,
   role = "admin" as Project["viewer_role"],
   roles = {} as Record<number, string>,
+  client = testQueryClient(),
 } = {}) {
-  const client = testQueryClient();
   client.setQueryData(statusesQuery("todou").queryKey, STATUSES);
   client.setQueryData(projectQuery("todou").queryKey, project(line, role));
   client.setQueryData(insightsSettingsQuery("todou").queryKey, settings(roles));
@@ -378,7 +378,6 @@ describe("Statuses settings (T-712)", () => {
   it.each([
     ["Next", "5 issues are in it — move them first."],
     ["Invalid", "2 trashed issues are still in it."],
-    ["Shipped", "Blocks clear here — move the line first."],
   ])("refuses to delete %s while the server would", async (name, reason) => {
     stubFetch();
     await renderSection();
@@ -404,6 +403,54 @@ describe("Statuses settings (T-712)", () => {
     await waitFor(() => expect(writes(calls)).toHaveLength(1));
     expect(writes(calls)[0]?.method).toBe("DELETE");
     expect(writes(calls)[0]?.url).toContain("/statuses/1");
+  });
+
+  it("deletes the line's status and says where the line moves", async () => {
+    const calls = stubFetch();
+    await renderSection();
+    fireEvent.click(screen.getByLabelText("edit status Shipped"));
+    const remove = screen.getByRole("button", { name: /Delete/ });
+    expect((remove as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(remove);
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toContain("The block clear line moves to Done.");
+    fireEvent.click(screen.getByRole("button", { name: "Delete status" }));
+    await waitFor(() => expect(writes(calls)).toHaveLength(1));
+    expect(writes(calls)[0]?.url).toContain(`/statuses/${SHIPPED}`);
+  });
+
+  it("refreshes the blocked badges after deleting the line's status, though the line has moved on", async () => {
+    stubFetch();
+    const answer = globalThis.fetch;
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.stubGlobal("fetch", (async (input: unknown, init?: RequestInit) => {
+      if (init?.method === "DELETE") await held;
+      return answer(input as RequestInfo, init);
+    }) as typeof fetch);
+    const client = testQueryClient();
+    const card = ["issue", "todou", 12];
+    client.setQueryData(card, { number: 12 });
+    await renderSection({ client });
+
+    fireEvent.click(screen.getByLabelText("edit status Shipped"));
+    fireEvent.click(screen.getByRole("button", { name: /Delete/ }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "Delete status" }));
+    // The project's own event lands before the DELETE's answer, the line
+    // already on Done.
+    act(() => {
+      client.setQueryData(projectQuery("todou").queryKey, project(DONE));
+    });
+    await waitFor(() =>
+      expect(dialog.textContent).not.toContain("The block clear line moves"),
+    );
+    await act(async () => release());
+    await waitFor(() =>
+      expect(client.getQueryState(card)?.isInvalidated).toBe(true),
+    );
   });
 
   it("creates with the default role, and sends a role only when picked otherwise", async () => {
