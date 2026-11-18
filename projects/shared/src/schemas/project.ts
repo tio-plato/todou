@@ -113,15 +113,58 @@ export const ProjectBrief = Project.pick({
 });
 export type ProjectBrief = z.infer<typeof ProjectBrief>;
 
-export const ProjectCreateInput = z.object({
-  slug: ProjectSlugInput,
-  name: z.string().min(1).max(200),
-  description: z.string().max(4000).default(""),
-  // Omitted and null both mean `#N`: no format history row is written, so
-  // the project claims nothing in the cross-project prefix directory.
-  ref_prefix: InternalRefPrefix.optional(),
-  reclaim: z.boolean().optional(),
-});
+/**
+ * The keys of the templates that ship with todou, each one an entry
+ * of `BUILTIN_TEMPLATES` in project-template.ts. Here rather than there
+ * because `TemplateRef` needs them and project creation takes one, and
+ * project-template.ts imports this file — the other direction would cycle.
+ *
+ * `"default"` is what a project is created from when no template is named,
+ * whatever else this list grows to hold.
+ */
+export const BUILTIN_TEMPLATE_KEYS = ["default"] as const;
+export const BuiltinTemplateKey = z.enum(BUILTIN_TEMPLATE_KEYS);
+export type BuiltinTemplateKey = z.infer<typeof BuiltinTemplateKey>;
+
+/** A built-in template's key, or the id of one of the caller's own. */
+export const TemplateRef = z.union([BuiltinTemplateKey, Id]);
+export type TemplateRef = z.infer<typeof TemplateRef>;
+
+export const ProjectCreateInput = z
+  .object({
+    slug: ProjectSlugInput,
+    name: z.string().min(1).max(200),
+    description: z.string().max(4000).default(""),
+    // Omitted and null both mean `#N`: no format history row is written, so
+    // the project claims nothing in the cross-project prefix directory.
+    ref_prefix: InternalRefPrefix.optional(),
+    reclaim: z.boolean().optional(),
+    /**
+     * What the project's statuses and labels start as. Omitted means
+     * the built-in `"default"`, never the caller's own default template: the
+     * same request then creates the same project whoever sends it.
+     */
+    template: TemplateRef.optional(),
+    /** Start from another project's current statuses and labels instead. */
+    from_project: ProjectRef.optional(),
+    /**
+     * The caller's agents to add, exactly these; an empty list adds none.
+     * Omitted means every agent of theirs that has a join role set.
+     */
+    agents: z
+      .array(z.object({ login: Login, role: MemberRole }))
+      .max(50)
+      .optional(),
+  })
+  .superRefine((input, ctx) => {
+    if (input.template !== undefined && input.from_project !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["from_project"],
+        message: "give template or from_project, not both",
+      });
+    }
+  });
 export type ProjectCreateInput = z.infer<typeof ProjectCreateInput>;
 
 export const ProjectUpdateInput = z.object({
@@ -182,7 +225,7 @@ export type MemberSetInput = z.infer<typeof MemberSetInput>;
 export const StatusCategory = z.enum(["open", "closed"]);
 export type StatusCategory = z.infer<typeof StatusCategory>;
 
-const ColorHex = z.string().regex(/^#[0-9a-f]{6}$/i);
+export const ColorHex = z.string().regex(/^#[0-9a-f]{6}$/i);
 
 export const Status = z.object({
   id: Id,

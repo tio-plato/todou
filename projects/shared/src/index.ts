@@ -34,6 +34,7 @@ export * from "./schemas/move.ts";
 export * from "./schemas/mute.ts";
 export * from "./schemas/prefs.ts";
 export * from "./schemas/project.ts";
+export * from "./schemas/project-template.ts";
 export * from "./schemas/references.ts";
 export * from "./schemas/revision.ts";
 export * from "./schemas/search.ts";

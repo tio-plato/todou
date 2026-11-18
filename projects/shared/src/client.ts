@@ -69,6 +69,9 @@ import type {
   MuteList,
   Project,
   ProjectCreateInput,
+  ProjectTemplate,
+  ProjectTemplateCreateInput,
+  ProjectTemplateUpdateInput,
   ProjectUpdateInput,
   ProjectWatchers,
   PublicUser,
@@ -99,6 +102,10 @@ import type {
   StatusOrderInput,
   StatusUpdateInput,
   StatusUsage,
+  TemplateApplyInput,
+  TemplateApplyPlan,
+  TemplateApplyResult,
+  TemplateRef,
   TimelineComment,
   TimelineEvent,
   TimelinePage,
@@ -634,6 +641,19 @@ export class TodouClient {
   getMyPrefs = () => this.request<MePrefs>("GET", "/me/prefs");
   patchMyPrefs = (input: MePrefsPatch) =>
     this.request<MePrefs>("PATCH", "/me/prefs", { json: input });
+  // — project templates —
+  listProjectTemplates = () =>
+    this.request<ProjectTemplate[]>("GET", "/me/project-templates");
+  createProjectTemplate = (input: ProjectTemplateCreateInput) =>
+    this.request<ProjectTemplate>("POST", "/me/project-templates", {
+      json: input,
+    });
+  updateProjectTemplate = (id: number, input: ProjectTemplateUpdateInput) =>
+    this.request<ProjectTemplate>("PUT", `/me/project-templates/${id}`, {
+      json: input,
+    });
+  deleteProjectTemplate = (id: number) =>
+    this.request<void>("DELETE", `/me/project-templates/${id}`);
   getInbox = (query?: Query) =>
     this.request<InboxPage>("GET", "/me/inbox", { query });
   markAllRead = (input: BulkReadInput = {}) =>
@@ -816,6 +836,18 @@ export class TodouClient {
     });
   statusUsage = (slug: string) =>
     this.request<StatusUsage[]>("GET", `/projects/${slug}/statuses/usage`);
+  previewTemplateApply = (slug: string, template: TemplateRef) =>
+    this.request<TemplateApplyPlan>(
+      "POST",
+      `/projects/${slug}/template/preview`,
+      { json: { template } },
+    );
+  applyTemplate = (slug: string, input: TemplateApplyInput) =>
+    this.request<TemplateApplyResult>(
+      "POST",
+      `/projects/${slug}/template/apply`,
+      { json: input },
+    );
 
   getReferenceConfig = (slug: string) =>
     this.request<ReferenceConfig>("GET", `/projects/${slug}/references/config`);

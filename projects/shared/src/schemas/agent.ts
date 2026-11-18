@@ -7,6 +7,11 @@ import { UserMembership } from "./user-view.ts";
 /** A machine user. Owned by a human; authenticates only via PAT. */
 export const Agent = User.extend({
   disabled_at: Timestamp.nullable(),
+  /**
+   * The role this agent joins its owner's new projects with; null
+   * when it does not join them. Optional: a server predating it omits it.
+   */
+  new_project_role: MemberRole.nullable().optional(),
 });
 export type Agent = z.infer<typeof Agent>;
 
@@ -19,6 +24,8 @@ export type AgentCreateInput = z.infer<typeof AgentCreateInput>;
 export const AgentUpdateInput = z.object({
   login: LoginInput.optional(),
   display_name: z.string().trim().min(1).max(200).optional(),
+  /** Null stops the agent joining its owner's new projects. */
+  new_project_role: MemberRole.nullable().optional(),
 });
 export type AgentUpdateInput = z.infer<typeof AgentUpdateInput>;
 
