@@ -177,13 +177,12 @@ export function useAutoHideHeader(enabled: boolean, page?: string): void {
       if (now > readerUntil) {
         const height = header.offsetHeight;
         const top = Math.max(0, y);
-        // Carried by the page's start, it comes and goes with it, as a page
-        // header that does not stick would: never left half out on top.
-        if (carried(height, from)) publish(Math.min(height, top), false);
-        // Sticky already shows this much of the header near the top; the
-        // variable only catches up. The reader's own scroll is held to the
-        // same bound below, so it is not held here twice.
-        else if (hidden > top) publish(top, false);
+        // The variable follows what sticky shows: no more of the header out
+        // than the page above it, and one the page's start carries goes and
+        // comes with it, never left half out on top. The reader's own scroll
+        // is held to the same bound below, so it is not held here twice.
+        if (carried(height, from) || hidden > top)
+          publish(Math.min(height, top), false);
         return;
       }
       readerUntil = now + READER_WINDOW_MS;
