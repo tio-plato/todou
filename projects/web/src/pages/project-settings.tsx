@@ -24,6 +24,7 @@ import {
 import {
   CircleDotIcon,
   HashIcon,
+  LayoutTemplateIcon,
   PlusIcon,
   SettingsIcon,
   TagIcon,
@@ -128,6 +129,13 @@ export function ProjectSettingsLayout() {
               icon={TagIcon}
             >
               Labels
+            </SettingsNavLink>
+            <SettingsNavLink
+              to="/projects/$slug/settings/template"
+              params={{ slug }}
+              icon={LayoutTemplateIcon}
+            >
+              Template
             </SettingsNavLink>
             <SettingsNavLink
               to="/projects/$slug/settings/references"

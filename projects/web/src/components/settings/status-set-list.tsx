@@ -433,7 +433,11 @@ export const countLinkClass =
 export const plural = (n: number, noun: string) =>
   `${n} ${noun}${n === 1 ? "" : "s"}`;
 
-function exceptionText(category: string, role: string): string {
+/**
+ * What a row says of a status besides its name: that it is closed, and a
+ * chart role its category would not give it.
+ */
+export function exceptionText(category: string, role: string): string {
   const parts = category === "closed" ? ["closed"] : [];
   const exception = roleException(
     { category } as Pick<Status, "category">,
