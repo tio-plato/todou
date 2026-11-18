@@ -58,7 +58,8 @@ export function ProjectTemplateSection({ slug }: { slug: string }) {
   // without it there is nothing here to look at but the other section.
   const canApply = useCan(slug, "status.manage");
   return (
-    <div className="space-y-10">
+    // Keyed so what the reader set on one project never reaches another.
+    <div key={slug} className="space-y-10">
       {canApply && <ApplyTemplateSection slug={slug} />}
       <SaveAsTemplateSection slug={slug} />
     </div>

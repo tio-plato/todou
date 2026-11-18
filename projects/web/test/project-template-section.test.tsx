@@ -285,20 +285,29 @@ function fakeServer({
       init?.body === undefined ? undefined : JSON.parse(String(init.body));
     calls.push({ method, path, body });
 
-    if (path === PREVIEW) return json(200, plans[String(body.template)]);
-    if (path === APPLY) return apply();
+    if (path.endsWith("/template/preview")) {
+      return json(200, plans[String(body.template)]);
+    }
+    if (path.endsWith("/template/apply")) return apply();
     if (path === "/me/project-templates" && method === "POST") {
       return json(201, { ...KANBAN, ref: 12, name: body.name, revision: 0 });
     }
     if (path === "/me/project-templates") return json(200, TEMPLATES);
     if (path === "/projects/todou") return json(200, project(role));
-    if (path === "/projects/todou/statuses") return json(200, STATUSES);
+    if (path === "/projects/other") {
+      return json(200, { ...project(role, "Other"), id: 2, slug: "other" });
+    }
+    if (/^\/projects\/(todou|other)\/statuses$/.test(path)) {
+      return json(200, STATUSES);
+    }
     return json(404, { error: { code: "not_found", message: path } });
   }) as typeof fetch);
   return {
     calls,
     previews: () => calls.filter((c) => c.path === PREVIEW),
     applies: () => calls.filter((c) => c.path === APPLY),
+    previewsOf: (slug: string) =>
+      calls.filter((c) => c.path === `/projects/${slug}/template/preview`),
   };
 }
 
@@ -532,6 +541,28 @@ describe("applying a template", () => {
     expect(success).not.toHaveBeenCalled();
     // The project changed: what is left of the template is previewed again.
     await waitFor(() => expect(server.previews()).toHaveLength(2));
+  });
+
+  it("does not carry one project's choices to another's", async () => {
+    const server = fakeServer();
+    const router = renderPage();
+    await rowsOf7();
+    fireEvent.click(box("Change status Done"));
+    expect(box("Change status Done").checked).toBe(false);
+
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "Todou's flow" },
+    });
+
+    await router.navigate({
+      to: "/projects/$slug/settings/template",
+      params: { slug: "other" },
+    });
+    await waitFor(() => expect(server.previewsOf("other")).toHaveLength(1));
+    await waitFor(() => expect(box("Change status Done").checked).toBe(true));
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe(
+      "Other",
+    );
   });
 
   it("says the project already matches a template with no difference", async () => {
