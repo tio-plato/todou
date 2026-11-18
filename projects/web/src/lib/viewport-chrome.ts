@@ -36,9 +36,9 @@ const PAGE_LANDS_EVENT = "todou:page-lands";
 
 /**
  * Say that the page is about to place itself; a landing calls it before it
- * scrolls. The page's own scrolling never moves the auto-hiding header, so the
- * header settles where it stands, fully in or out, and the insets are measured
- * against it before the landing reads them.
+ * scrolls. The page's own scrolling never slides the auto-hiding header in or
+ * out, so the header settles where it stands, fully in or out, and the insets
+ * are measured against it before the landing reads them.
  */
 export function pageLands(): void {
   window.dispatchEvent(new Event(PAGE_LANDS_EVENT));
@@ -112,12 +112,13 @@ const READER_WINDOW_MS = 600;
  * Only the reader's own scrolling moves it: a finger dragging the page, with
  * the momentum after it, the wheel, the page keys, the scrollbar. Momentum
  * keeps counting, because each scroll it produces renews the window the drag
- * opened. Nothing else moves it: a jump, a landing, a keyboard opening and
- * the caret brought into view are the page placing itself, and a header that
- * moved with them would cover what was just put in view. A tap or a typed key
- * opens no window; a click or a landing shuts an open one, until the reader's
- * next scroll. Near the page's start, where sticky leaves the header in the
- * flow, the page's own scrolling carries it as it would any page header.
+ * opened. Nothing else slides it in or out: a jump, a landing, a keyboard
+ * opening and the caret brought into view are the page placing itself, and a
+ * header that slid with them would cover what was just put in view. A tap or
+ * a typed key opens no window; a click or a landing shuts an open one, until
+ * the reader's next scroll. Only near the page's start, where sticky leaves
+ * the header in the flow, does the page's own scrolling move it: there it is
+ * the page's top, and goes and comes with it as any page header would.
  *
  * Once scrolling stops the header settles fully in or fully out, as Safari's
  * does; a header left half-cut reads as broken.
