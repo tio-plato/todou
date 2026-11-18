@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   addUserWithToken,
   makeTestApp,
@@ -476,5 +476,79 @@ describe.each(PLACEMENTS)("applying a template (%s placement)", (placement) => {
       inProgress,
     );
     expect((await blockedBy()).cleared_at).not.toBeNull();
+  });
+});
+
+/**
+ * A status of the same name created between an apply's read and its insert
+ * reaches the insert as a unique violation, a race PGlite cannot stage: the
+ * hook raises one in its place, once.
+ */
+describe("applying a template into a name clash", () => {
+  let armed: string | null = null;
+  let t: TestApp;
+  let cookie: string;
+
+  beforeAll(async () => {
+    t = await makeTestApp("shared", undefined, {
+      onQuery: (sql: string) => {
+        if (armed !== null && /insert into "statuses"/.test(sql)) {
+          const constraint = armed;
+          armed = null;
+          throw Object.assign(
+            new Error(
+              `duplicate key value violates unique constraint "${constraint}"`,
+            ),
+            { code: "23505", constraint },
+          );
+        }
+      },
+    });
+    cookie = await t.login();
+  });
+
+  afterAll(async () => {
+    await t.cleanup();
+  });
+
+  afterEach(() => {
+    armed = null;
+  });
+
+  const call = (method: string, path: string, body?: unknown) =>
+    t.app.request(`/api${path}`, {
+      method,
+      headers: { "content-type": "application/json", cookie },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+
+  it("asks for a new preview on a name clash, and leaves any other duplicate a 500", async () => {
+    for (const [slug, index, status] of [
+      ["clash-name", "statuses_project_name_idx", 409],
+      ["clash-other", "some_other_idx", 500],
+    ] as const) {
+      expect(
+        (await call("POST", "/projects", { slug, name: slug })).status,
+      ).toBe(201);
+      const invalid = (
+        await json(await call("GET", `/projects/${slug}/statuses`))
+      ).find((s: { name: string }) => s.name === "Invalid");
+      expect(
+        (await call("DELETE", `/projects/${slug}/statuses/${invalid.id}`))
+          .status,
+      ).toBe(204);
+      const plan = await json(
+        await call("POST", `/projects/${slug}/template/preview`, {
+          template: "default",
+        }),
+      );
+      armed = index;
+      const res = await call("POST", `/projects/${slug}/template/apply`, {
+        template: "default",
+        expected: plan.expected,
+        selected: ["status.add:Invalid"],
+      });
+      expect(res.status, index).toBe(status);
+    }
   });
 });

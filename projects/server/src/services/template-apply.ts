@@ -20,8 +20,10 @@ import type { AppContext } from "../bootstrap.ts";
 import type { Db } from "../db/driver.ts";
 import {
   insightsSettings,
+  LABEL_NAME_INDEX,
   labels,
   projectMeta,
+  STATUS_NAME_INDEX,
   statuses,
 } from "../db/project-schema.ts";
 import { ConflictError, ValidationFailedError } from "../errors.ts";
@@ -649,7 +651,11 @@ export async function applyTemplate(
   ).catch((cause: unknown) => {
     // A status or label of the same name created since the read: outside
     // serializable, so it reaches the insert as a duplicate, not a conflict.
-    if (uniqueViolation(cause) === null) throw cause;
+    // Any other index refusing the write is a bug, and stays a 500.
+    const index = uniqueViolation(cause);
+    if (index !== STATUS_NAME_INDEX && index !== LABEL_NAME_INDEX) {
+      throw cause;
+    }
     throw new ConflictError("project or template changed — preview again");
   });
 
