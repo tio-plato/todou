@@ -332,6 +332,26 @@ describe("project templates", () => {
       list.find((x: { ref: unknown }) => x.ref === "default").body,
     ).not.toBeNull();
 
+    // A field this version does not know: dropped, it would be lost on the
+    // next save, so the template reads as incompatible too.
+    const extra = await t.ctx.router
+      .system()
+      .insert(projectTemplates)
+      .values({
+        ownerId: me,
+        name: "With a newer field",
+        body: {
+          ...BODY,
+          statuses: BODY.statuses.map((s) => ({ ...s, wip_limit: 3 })),
+        },
+      })
+      .returning({ id: projectTemplates.id });
+    const newer = (
+      await json(await request("/me/project-templates", "GET"))
+    ).find((x: { ref: unknown }) => x.ref === extra[0]?.id);
+    expect(newer.body).toBeNull();
+    expect(newer.problems[0].path).toBe("statuses.0");
+
     const slug = `tpl-future-${n++}`;
     const refused = await request("/projects", "POST", {
       slug,

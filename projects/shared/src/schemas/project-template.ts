@@ -39,45 +39,64 @@ export type TemplateLabel = z.infer<typeof TemplateLabel>;
  * `statuses_project_name_idx` compares them, so `Done` and `done` may both
  * be there while `Done` and `"Done "` may not.
  */
+/** The rules a body holds beyond each field's own. */
+function checkBody(
+  body: { statuses: TemplateStatus[]; labels: TemplateLabel[] },
+  ctx: z.RefinementCtx,
+) {
+  const seen = new Set<string>();
+  for (const [index, status] of body.statuses.entries()) {
+    if (seen.has(status.name)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["statuses", index, "name"],
+        message: `status "${status.name}" appears twice`,
+      });
+    }
+    seen.add(status.name);
+  }
+  for (const mark of ["is_default", "block_clear"] as const) {
+    if (body.statuses.filter((status) => status[mark]).length > 1) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["statuses"],
+        message: `only one status may be marked ${mark}`,
+      });
+    }
+  }
+  const labels = new Set<string>();
+  for (const [index, label] of body.labels.entries()) {
+    if (labels.has(label.name)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["labels", index, "name"],
+        message: `label "${label.name}" appears twice`,
+      });
+    }
+    labels.add(label.name);
+  }
+}
+
 export const TemplateBody = z
   .object({
     statuses: z.array(TemplateStatus).min(1).max(100),
     labels: z.array(TemplateLabel).max(500),
   })
-  .superRefine((body, ctx) => {
-    const seen = new Set<string>();
-    for (const [index, status] of body.statuses.entries()) {
-      if (seen.has(status.name)) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["statuses", index, "name"],
-          message: `status "${status.name}" appears twice`,
-        });
-      }
-      seen.add(status.name);
-    }
-    for (const mark of ["is_default", "block_clear"] as const) {
-      if (body.statuses.filter((status) => status[mark]).length > 1) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["statuses"],
-          message: `only one status may be marked ${mark}`,
-        });
-      }
-    }
-    const labels = new Set<string>();
-    for (const [index, label] of body.labels.entries()) {
-      if (labels.has(label.name)) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["labels", index, "name"],
-          message: `label "${label.name}" appears twice`,
-        });
-      }
-      labels.add(label.name);
-    }
-  });
+  .superRefine(checkBody);
 export type TemplateBody = z.infer<typeof TemplateBody>;
+
+/**
+ * A stored body as this version reads it: `TemplateBody`, except that a
+ * field this version does not know is a problem rather than dropped. A newer
+ * version may have written one; read as compatible, the template could be
+ * edited here and saved back without it.
+ */
+export const StoredTemplateBody = z
+  .strictObject({
+    statuses: z.array(z.strictObject(TemplateStatus.shape)).min(1).max(100),
+    labels: z.array(z.strictObject(TemplateLabel.shape)).max(500),
+  })
+  .superRefine(checkBody);
 
 /** A status of a built-in template, its chart role the default one. */
 function builtinStatus(

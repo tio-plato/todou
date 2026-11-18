@@ -6,6 +6,7 @@ import {
   type ProjectTemplate,
   type ProjectTemplateCreateInput,
   type ProjectTemplateUpdateInput,
+  StoredTemplateBody,
   TemplateBody,
   type TemplateProblem,
   type TemplateRef,
@@ -56,7 +57,7 @@ function normalized(body: TemplateBody): TemplateBody {
 function readBody(
   row: TemplateRow,
 ): { body: TemplateBody } | { problems: TemplateProblem[] } {
-  const parsed = TemplateBody.safeParse(row.body);
+  const parsed = StoredTemplateBody.safeParse(row.body);
   if (parsed.success) return { body: parsed.data };
   return {
     problems: parsed.error.issues.map((issue) => ({
