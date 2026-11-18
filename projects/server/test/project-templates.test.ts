@@ -59,7 +59,7 @@ describe("project templates", () => {
   async function createTemplate(
     body: unknown,
     who?: Record<string, string>,
-  ): Promise<{ status: number; data: any }> {
+  ): Promise<{ status: number; data: Awaited<ReturnType<typeof json>> }> {
     const res = await request("/me/project-templates", "POST", body, who);
     return { status: res.status, data: await json(res) };
   }

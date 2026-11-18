@@ -39,7 +39,7 @@ describe.each(PLACEMENTS)("applying a template (%s placement)", (placement) => {
     });
   const get = async (path: string) => json(await call("GET", path));
 
-  async function created(path: string, body: unknown): Promise<any> {
+  async function created(path: string, body: unknown): ReturnType<typeof json> {
     const res = await call("POST", path, body);
     expect(res.status, path).toBe(201);
     return json(res);
