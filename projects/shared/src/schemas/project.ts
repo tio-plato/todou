@@ -237,8 +237,26 @@ export const Status = z.object({
 });
 export type Status = z.infer<typeof Status>;
 
+/**
+ * A writable status name: canonical by the rule label names follow
+ * (`canonicalizeLabelName`), since `issue list --status` trims each name it
+ * is given and could never select a stored `"Done "`. Blank and length are
+ * checked on the canonical form, so a padded 60-character name fits, while
+ * the messages speak of what the caller sent. Read schemas stay loose: the
+ * API lists whatever name is stored.
+ */
+export const StatusName = z
+  .string()
+  .transform(canonicalizeLabelName)
+  .pipe(
+    z
+      .string()
+      .min(1, { error: "status names cannot be blank (whitespace is trimmed)" })
+      .max(60, { error: "status names are at most 60 characters" }),
+  );
+
 export const StatusCreateInput = z.object({
-  name: z.string().min(1).max(60),
+  name: StatusName,
   category: StatusCategory,
   color: ColorHex.default("#6b7280"),
   position: Int4.optional(),
@@ -246,7 +264,7 @@ export const StatusCreateInput = z.object({
 export type StatusCreateInput = z.infer<typeof StatusCreateInput>;
 
 export const StatusUpdateInput = z.object({
-  name: z.string().min(1).max(60).optional(),
+  name: StatusName.optional(),
   category: StatusCategory.optional(),
   color: ColorHex.optional(),
   position: Int4.optional(),
@@ -283,7 +301,10 @@ export const StatusUsage = z.object({
 });
 export type StatusUsage = z.infer<typeof StatusUsage>;
 
-/** The name a label is actually stored under: trimmed, spaces collapsed. */
+/**
+ * The name a label or a status is actually stored under: trimmed, spaces
+ * collapsed.
+ */
 export function canonicalizeLabelName(input: string): string {
   return input.trim().replace(/\s+/g, " ");
 }

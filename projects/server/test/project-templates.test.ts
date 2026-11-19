@@ -1,5 +1,7 @@
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { projectTemplates } from "../src/db/system-schema.ts";
+import { statuses as statusRows } from "../src/db/project-schema.ts";
+import { projects, projectTemplates } from "../src/db/system-schema.ts";
 import { addUserWithToken, makeTestApp, type TestApp } from "./helpers.ts";
 
 // biome-ignore lint/suspicious/noExplicitAny: test-side response poking
@@ -267,13 +269,25 @@ describe("project templates", () => {
   it("stores a status name trimmed, and refuses two that become one", async () => {
     const slug = await createProject();
     const done = await idOf(slug, "Done");
-    expect(
-      (
-        await request(`/projects/${slug}/statuses/${done}`, "PATCH", {
-          name: "Done ",
-        })
-      ).status,
-    ).toBe(200);
+    // The API no longer stores a name like this: the row stands for one
+    // stored before status names were kept canonical.
+    const row = (
+      await t.ctx.router
+        .system()
+        .select()
+        .from(projects)
+        .where(eq(projects.slug, slug))
+    )[0];
+    if (!row) throw new Error("project row missing");
+    const db = await t.ctx.router.forProject({
+      id: row.id,
+      slug,
+      database_url: row.databaseUrl,
+    });
+    await db
+      .update(statusRows)
+      .set({ name: "Done " })
+      .where(eq(statusRows.id, done));
     const { status, data } = await createTemplate({
       name: "Trimmed",
       from_project: slug,
