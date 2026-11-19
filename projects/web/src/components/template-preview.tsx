@@ -201,7 +201,10 @@ function PreviewHoverCard({
       openDelay={OPEN_DELAY_MS}
       closeDelay={CLOSE_DELAY_MS}
       onOpenChange={(open) => {
-        if (open) setOffset(offsetFrom(trigger.current, sideOffset));
+        // Only beside a dialog: below one, the distance would be vertical.
+        if (open && side === "right") {
+          setOffset(offsetFrom(trigger.current, sideOffset));
+        }
       }}
     >
       <HoverCardTrigger asChild ref={triggerRef}>
