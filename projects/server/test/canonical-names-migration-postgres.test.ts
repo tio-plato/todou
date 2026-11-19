@@ -101,7 +101,7 @@ describe.skipIf(!PG_URL)("canonical_names migration on postgres", () => {
       const database = await createTestDatabase(
         PG_URL as string,
         "canonical_names",
-        `ENCODING '${encoding}' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0`,
+        `ENCODING '${encoding}' LOCALE_PROVIDER libc LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0`,
       );
       const client = new pg.Client({ connectionString: database.url });
       try {
