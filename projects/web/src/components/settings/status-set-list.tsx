@@ -21,6 +21,7 @@ import {
   enumValue,
   lineAfterDeleting,
   Role,
+  type Settings,
   type Status,
   type StatusOrderInput,
   type StatusUsage,
@@ -70,6 +71,23 @@ export type StatusSetEntry = Pick<
   Status,
   "id" | "name" | "category" | "color" | "is_default"
 > & { role: string };
+
+/**
+ * A project's statuses with their chart roles: the one its insights settings
+ * store for a status, or else the one its name and category give it.
+ */
+export function withChartRoles(
+  statuses: readonly Status[],
+  settings: Pick<Settings, "roles">,
+): Array<Status & { role: Role }> {
+  const roleById = new Map(
+    settings.roles.map((entry) => [entry.status_id, entry.role]),
+  );
+  return statuses.map((status) => ({
+    ...status,
+    role: roleById.get(status.id) ?? defaultInsightsRole(status),
+  }));
+}
 
 const ROLE_LABELS: Record<Role, string> = {
   remaining: "Remaining",
