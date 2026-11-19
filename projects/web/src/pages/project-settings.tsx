@@ -1524,7 +1524,7 @@ function LabelEditor({
         <div className="text-sm leading-none font-medium">Color</div>
         <ColorSwatches name={preview} color={color} onPick={onColor} />
         {/* Each option is drawn as the chip it gives: no words needed. */}
-        <fieldset className="min-w-0 space-y-1.5 pt-2.5">
+        <fieldset className="mt-4 min-w-0 space-y-1.5">
           <legend className="text-sm leading-none font-medium">Style</legend>
           <div className="flex flex-wrap gap-2">
             {LABEL_STYLES.map(([value, title]) => (
