@@ -20,13 +20,19 @@ import {
   type MePrefs,
   type Project,
   type ProjectTemplate,
+  type TemplateStatus,
 } from "@todou/shared";
 import { useState } from "react";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { prefsQuery } from "../src/api/prefs.ts";
-import { projectsQuery, projectTemplatesQuery } from "../src/api/queries.ts";
+import {
+  labelsQuery,
+  projectsQuery,
+  projectTemplatesQuery,
+} from "../src/api/queries.ts";
 import { referenceDirectoryQuery } from "../src/api/references.ts";
+import { StatusPill } from "../src/components/issue/status-pill.tsx";
 import {
   type StartFrom,
   StartFromPicker,
@@ -123,6 +129,39 @@ const project = (slug: string): Project => ({
 });
 const PROJECTS = [project("todou"), project("homelab")];
 
+/**
+ * What the `todou` project holds, as its four reads answer. The line and the
+ * stored chart role are not what the defaults would give, so a preview that
+ * fell back to them shows.
+ */
+const TODOU_STATUSES = [
+  { name: "Todo", category: "open", color: "#6b7280", is_default: true },
+  { name: "Doing", category: "open", color: "#3b82f6", is_default: false },
+  { name: "Done", category: "closed", color: "#22c55e", is_default: false },
+].map((status, i) => ({ ...status, id: i + 1, position: i }));
+const TODOU_READS: Record<string, unknown> = {
+  "/projects/todou/statuses": TODOU_STATUSES,
+  "/projects/todou": { ...project("todou"), block_clear_status_id: 2 },
+  "/projects/todou/insights/settings": {
+    version: "1",
+    source: "saved",
+    roles: [
+      {
+        status_id: 2,
+        name: "Doing",
+        category: "open",
+        color: "#3b82f6",
+        position: 1,
+        role: "excluded",
+      },
+    ],
+  },
+  "/projects/todou/labels": [
+    { id: 4, name: "area:web", color: "#0ea5e9" },
+    { id: 5, name: "kind:bug", color: "#ef4444" },
+  ],
+};
+
 type Call = { method: string; path: string; body: unknown };
 
 const json = (status: number, payload: unknown) =>
@@ -141,6 +180,7 @@ function fakeServer({
   templates = TEMPLATES as ProjectTemplate[],
 } = {}) {
   const calls: Call[] = [];
+  const failing = new Set<string>();
   const stored = new Map(templates.map((t) => [t.ref, structuredClone(t)]));
   const waiting: Array<() => void> = [];
 
@@ -193,6 +233,11 @@ function fakeServer({
     if (path === "/me/prefs" && method === "PATCH") {
       return json(200, { ...PREFS, ...body });
     }
+    if (failing.has(path)) {
+      return json(500, { error: { code: "internal", message: "read failed" } });
+    }
+    const read = TODOU_READS[path];
+    if (read !== undefined && method === "GET") return json(200, read);
     return json(404, { error: { code: "not_found", message: path } });
   }) as typeof fetch);
 
@@ -211,6 +256,8 @@ function fakeServer({
     },
     /** The templates as a GET would answer now. */
     list: () => [...stored.values()],
+    /** From now on, answer `path` with a 500. */
+    fail: (path: string) => failing.add(path),
   };
 }
 
@@ -301,6 +348,23 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+const hover = (el: Element) =>
+  fireEvent.pointerOver(el, { pointerType: "mouse", bubbles: true });
+/** The one preview open, once its delay has run. */
+const previewCard = () =>
+  waitFor(() => {
+    const cards = document.querySelectorAll<HTMLElement>(
+      "[data-slot='hover-card-content']",
+    );
+    expect(cards).toHaveLength(1);
+    return cards[0] as HTMLElement;
+  });
+/** Longer than a preview waits before it opens. */
+const pastOpenDelay = () =>
+  act(() => new Promise<void>((resolve) => setTimeout(resolve, 600)));
+const follows = (a: Element, b: Element) =>
+  Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+
 describe("the project templates list", () => {
   it("lists Default first and sets another template as the default", async () => {
     const server = fakeServer();
@@ -325,6 +389,83 @@ describe("the project templates list", () => {
         },
       ]),
     );
+  });
+
+  it("says in each row where the template's blocks clear", async () => {
+    fakeServer();
+    renderAt("/settings/templates");
+    const rows = await screen.findAllByRole("listitem");
+    const note = (name: string) => {
+      const row = rows.find((r) => within(r).queryByRole("link", { name }));
+      return within(row as HTMLElement).getByText(/Blocks clear at/);
+    };
+    const shipped = DEFAULT.body.statuses.find((s) => s.name === "Shipped");
+    expect(note("Default").innerHTML).toContain(
+      render(<StatusPill status={shipped as TemplateStatus} />, {
+        container: document.createElement("div"),
+      }).container.innerHTML,
+    );
+    expect(note("Default").textContent).toMatch(/Blocks clear at\s*Shipped$/);
+    expect(note("Bugs").textContent).toMatch(
+      /Blocks clear at any closed status$/,
+    );
+  });
+
+  it("opens no preview from a row's buttons, or under its delete confirmation", async () => {
+    fakeServer();
+    renderAt("/settings/templates");
+    const rows = await screen.findAllByRole("listitem");
+    const kanban = within(
+      rows.find((r) =>
+        within(r).queryByRole("link", { name: "Kanban" }),
+      ) as HTMLElement,
+    );
+    hover(kanban.getByRole("button", { name: "Set as default" }));
+    fireEvent.click(kanban.getByRole("button", { name: "Delete Kanban" }));
+    expect(
+      await screen.findByRole("dialog", { name: "Delete this template?" }),
+    ).toBeTruthy();
+    await pastOpenDelay();
+    expect(
+      document.querySelectorAll("[data-slot='hover-card-content']"),
+    ).toHaveLength(0);
+  });
+
+  it("previews a template's default status, line, chart roles and labels on hover", async () => {
+    fakeServer();
+    renderAt("/settings/templates");
+    hover(await screen.findByRole("link", { name: "Default" }));
+    const card = await previewCard();
+    const statuses = within(
+      within(card)
+        .getByRole("heading", { name: "Statuses" })
+        .closest("section") as HTMLElement,
+    );
+    // Each mark between its own status and the next: Todo is the default,
+    // the line sits on Shipped, which is open but counts as completed.
+    const marks = [
+      "Todo",
+      "default",
+      "Next",
+      "Ready to Ship",
+      "Blocks clear below",
+      "Shipped",
+      "completed in charts",
+      "Done",
+    ].map((text) => statuses.getByText(text));
+    marks.slice(1).forEach((mark, i) => {
+      expect(follows(marks[i] as Element, mark), mark.textContent ?? "").toBe(
+        true,
+      );
+    });
+    const labels = within(card)
+      .getByRole("heading", { name: "Labels" })
+      .closest("section") as HTMLElement;
+    expect(
+      [...labels.querySelectorAll("[title]")].map((chip) =>
+        chip.getAttribute("title"),
+      ),
+    ).toEqual(["kind:bug", "kind:chore", "kind:feature", "needs-brainstorm"]);
   });
 });
 
@@ -566,8 +707,8 @@ describe("StartFromPicker", () => {
 });
 
 describe("the New template dialog", () => {
-  async function openDialog() {
-    const router = renderAt("/settings/templates");
+  async function openDialog(client = testQueryClient()) {
+    const router = renderAt("/settings/templates", client);
     fireEvent.click(
       await screen.findByRole("button", { name: /New template/ }),
     );
@@ -591,6 +732,165 @@ describe("the New template dialog", () => {
       path: "/me/project-templates",
       body: { name: "Copy", body: KANBAN.body },
     });
+  });
+
+  it("previews a template on hover; a press in the preview picks nothing and keeps the dialog", async () => {
+    fakeServer();
+    const { dialog } = await openDialog();
+    const kanban = dialog.getByRole("option", { name: "Kanban" });
+    hover(within(kanban).getByText("Kanban"));
+    const card = await previewCard();
+    const doing = within(card).getByText("Doing");
+    fireEvent.pointerDown(doing, { pointerType: "mouse" });
+    fireEvent.mouseDown(doing);
+    fireEvent.pointerUp(doing, { pointerType: "mouse" });
+    fireEvent.mouseUp(doing);
+    fireEvent.click(doing);
+    await settle();
+    expect(screen.getByRole("dialog", { name: "New template" })).toBeTruthy();
+    const selected = (name: string) =>
+      dialog.getByRole("option", { name }).getAttribute("aria-selected");
+    expect(selected("Default")).toBe("true");
+    expect(selected("Kanban")).toBe("false");
+  });
+
+  it("lets a wheel over the preview scroll it, until it has no room left", async () => {
+    fakeServer();
+    const { dialog } = await openDialog();
+    hover(
+      within(dialog.getByRole("option", { name: "Kanban" })).getByText(
+        "Kanban",
+      ),
+    );
+    const card = await previewCard();
+    // happy-dom lays nothing out: the card is handed the room its
+    // `overflow-y-auto` and height cap give it in a browser.
+    card.style.overflowY = "auto";
+    for (const [property, value] of [
+      ["scrollHeight", 1000],
+      ["clientHeight", 400],
+      ["scrollTop", 0],
+    ] as const) {
+      Object.defineProperty(card, property, {
+        value,
+        configurable: true,
+        writable: true,
+      });
+    }
+    const wheel = new WheelEvent("wheel", {
+      deltaY: 100,
+      bubbles: true,
+      cancelable: true,
+    });
+    within(card).getByText("Doing").dispatchEvent(wheel);
+    expect(wheel.defaultPrevented).toBe(false);
+
+    // At its end the card has no room left, and the lock keeps the page
+    // behind the dialog where it is.
+    card.scrollTop = 600;
+    const past = new WheelEvent("wheel", {
+      deltaY: 100,
+      bubbles: true,
+      cancelable: true,
+    });
+    within(card).getByText("Doing").dispatchEvent(past);
+    expect(past.defaultPrevented).toBe(true);
+  });
+
+  it("previews a project on hover, reading it only once the card opens", async () => {
+    const server = fakeServer();
+    const { dialog } = await openDialog();
+    fireEvent.click(dialog.getByRole("button", { name: "Project" }));
+    const reads = () =>
+      server.calls
+        .filter((c) => c.path.startsWith("/projects/todou"))
+        .map((c) => c.path)
+        .sort();
+    const todou = dialog.getByRole("option", { name: /todou/ });
+    await settle();
+    expect(reads()).toEqual([]);
+
+    hover(within(todou).getAllByText("todou")[0] as HTMLElement);
+    const card = await previewCard();
+    await within(card).findByText("Doing");
+    expect(reads()).toEqual(Object.keys(TODOU_READS).sort());
+    // Todo is the default, the line sits on Doing, which is open but counts
+    // as excluded; Done is closed.
+    const marks = [
+      "Todo",
+      "default",
+      "Blocks clear below",
+      "Doing",
+      "excluded from charts",
+      "Done",
+      "closed",
+    ].map((text) => within(card).getByText(text));
+    marks.slice(1).forEach((mark, i) => {
+      expect(follows(marks[i] as Element, mark), mark.textContent ?? "").toBe(
+        true,
+      );
+    });
+    expect(
+      [...card.querySelectorAll("[title]")].map((chip) =>
+        chip.getAttribute("title"),
+      ),
+    ).toEqual(["area:web", "kind:bug"]);
+
+    // A press in it neither picks the project nor closes the dialog.
+    const doing = within(card).getByText("Doing");
+    fireEvent.pointerDown(doing, { pointerType: "mouse" });
+    fireEvent.mouseDown(doing);
+    fireEvent.pointerUp(doing, { pointerType: "mouse" });
+    fireEvent.mouseUp(doing);
+    fireEvent.click(doing);
+    await settle();
+    expect(screen.getByRole("dialog", { name: "New template" })).toBeTruthy();
+    expect(todou.getAttribute("aria-selected")).toBe("false");
+  });
+
+  it("keeps a project's preview when a reread of it fails", async () => {
+    const server = fakeServer();
+    const client = testQueryClient();
+    const { dialog } = await openDialog(client);
+    fireEvent.click(dialog.getByRole("button", { name: "Project" }));
+    const name = within(
+      dialog.getByRole("option", { name: /todou/ }),
+    ).getAllByText("todou")[0] as HTMLElement;
+    hover(name);
+    await within(await previewCard()).findByText("kind:", { exact: false });
+    fireEvent.pointerOut(name, {
+      pointerType: "mouse",
+      bubbles: true,
+      relatedTarget: document.body,
+    });
+    await waitFor(() =>
+      expect(
+        document.querySelectorAll("[data-slot='hover-card-content']"),
+      ).toHaveLength(0),
+    );
+
+    // The labels are reread as the card opens again, and the reread fails.
+    server.fail("/projects/todou/labels");
+    await act(() =>
+      client.invalidateQueries({ queryKey: labelsQuery("todou").queryKey }),
+    );
+    hover(name);
+    const card = await previewCard();
+    await waitFor(() =>
+      expect(client.getQueryState(labelsQuery("todou").queryKey)?.status).toBe(
+        "error",
+      ),
+    );
+    expect(
+      server.calls.filter((c) => c.path === "/projects/todou/labels"),
+    ).toHaveLength(2);
+    expect(within(card).getByText("Doing")).toBeTruthy();
+    expect(
+      [...card.querySelectorAll("[title]")].map((chip) =>
+        chip.getAttribute("title"),
+      ),
+    ).toEqual(["area:web", "kind:bug"]);
+    expect(within(card).queryByText("read failed")).toBeNull();
   });
 
   it("names the project it starts from, then opens the new template", async () => {

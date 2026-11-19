@@ -1,6 +1,6 @@
 import type { LinkProps } from "@tanstack/react-router";
 import type { Project } from "@todou/shared";
-import { type ReactNode, useCallback, useMemo } from "react";
+import { type ReactElement, type ReactNode, useCallback, useMemo } from "react";
 import {
   SearchableListbox,
   type SearchableListboxHandle,
@@ -35,11 +35,15 @@ export type ProjectListboxHandle = SearchableListboxHandle;
  */
 export function ProjectListbox({
   options,
+  wrapRow,
   ...props
 }: Omit<
   SearchableListboxProps<ProjectListboxOption, ProjectMatch>,
   "optionKey" | "match" | "renderOption" | "optionLink" | "optionAriaLabel"
->) {
+> & {
+  /** Hangs something on a row as drawn — the Start from picker's preview. */
+  wrapRow?: (row: ReactElement, option: ProjectListboxOption) => ReactNode;
+}) {
   const projects = useMemo(() => options.map((o) => o.project), [options]);
   const refs = useProjectRefs(projects);
 
@@ -64,7 +68,7 @@ export function ProjectListbox({
       match={match}
       renderOption={(option, hit) => {
         const prefix = refs.get(option.project.slug)?.prefix ?? null;
-        return (
+        const row = (
           <ProjectRow
             project={{
               name: option.project.name,
@@ -89,6 +93,7 @@ export function ProjectListbox({
             trailing={option.trailing}
           />
         );
+        return wrapRow ? wrapRow(row, option) : row;
       }}
       optionLink={(option) => option.link}
       optionAriaLabel={(option) => option.ariaLabel}

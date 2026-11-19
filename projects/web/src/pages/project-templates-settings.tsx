@@ -18,10 +18,11 @@ import {
   TodouError,
 } from "@todou/shared";
 import { ArrowLeftIcon, PlusIcon, Trash2Icon } from "lucide-react";
-import { useRef, useState } from "react";
+import { type ReactElement, useRef, useState } from "react";
 import { toast } from "sonner";
 import { prefsQuery, usePatchPrefs } from "@/api/prefs.ts";
 import { api, projectsQuery, projectTemplatesQuery } from "@/api/queries.ts";
+import { StatusPill } from "@/components/issue/status-pill.tsx";
 import { LabelSetList } from "@/components/settings/label-set-list.tsx";
 import {
   isRole,
@@ -34,6 +35,10 @@ import {
   type UsableTemplate,
   usable,
 } from "@/components/start-from-picker.tsx";
+import {
+  TemplateHoverCard,
+  templateStatusSet,
+} from "@/components/template-preview.tsx";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -80,31 +85,29 @@ export function ProjectTemplatesSettingsPage() {
             key={String(template.ref)}
             className="flex min-h-14 items-center gap-3 py-2 pr-2 pl-3"
           >
-            <div className="min-w-0 flex-1 space-y-0.5">
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                <Link
-                  to="/settings/templates/$template"
-                  params={{ template: String(template.ref) }}
-                  className="truncate font-medium underline-offset-3 hover:underline"
-                >
-                  {template.name}
-                </Link>
-                {template.builtin && <Badge variant="outline">Built in</Badge>}
-                {template.ref === current && (
-                  <span className={DEFAULT_PILL}>default</span>
-                )}
-                {template.body === null && (
-                  <span className={INCOMPATIBLE_PILL}>Incompatible</span>
-                )}
-              </div>
-              {template.body !== null && (
-                <div className="text-sm text-muted-foreground">
-                  {counted(template.body.statuses.length, "status", "statuses")}
-                  {" · "}
-                  {counted(template.body.labels.length, "label", "labels")}
+            <PreviewOnHover template={template}>
+              <div className="min-w-0 flex-1 space-y-0.5">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <Link
+                    to="/settings/templates/$template"
+                    params={{ template: String(template.ref) }}
+                    className="truncate font-medium underline-offset-3 hover:underline"
+                  >
+                    {template.name}
+                  </Link>
+                  {template.builtin && (
+                    <Badge variant="outline">Built in</Badge>
+                  )}
+                  {template.ref === current && (
+                    <span className={DEFAULT_PILL}>default</span>
+                  )}
+                  {template.body === null && (
+                    <span className={INCOMPATIBLE_PILL}>Incompatible</span>
+                  )}
                 </div>
-              )}
-            </div>
+                {template.body !== null && <Summary body={template.body} />}
+              </div>
+            </PreviewOnHover>
             {template.ref !== current && template.body !== null && (
               <Button
                 variant="outline"
@@ -121,6 +124,41 @@ export function ProjectTemplatesSettingsPage() {
         ))}
       </ul>
     </div>
+  );
+}
+
+/** What a row says of a template: its size, and where its blocks clear. */
+function Summary({ body }: { body: TemplateBody }) {
+  const line = body.statuses.find((status) => status.block_clear);
+  return (
+    <div className="flex flex-wrap items-center gap-x-1 text-sm text-muted-foreground">
+      {counted(body.statuses.length, "status", "statuses")}
+      {" · "}
+      {counted(body.labels.length, "label", "labels")}
+      {" · Blocks clear at"}
+      {line ? <StatusPill status={line} /> : " any closed status"}
+    </div>
+  );
+}
+
+/**
+ * A row's text, which previews the template when it can be read. The
+ * buttons stay outside: the delete button's confirmation is in this row's
+ * React tree, and its focus would bubble into a trigger around it and open
+ * the preview over the dialog.
+ */
+function PreviewOnHover({
+  template,
+  children,
+}: {
+  template: ProjectTemplate;
+  children: ReactElement;
+}) {
+  if (!usable(template)) return children;
+  return (
+    <TemplateHoverCard template={template} side="bottom" align="end">
+      {children}
+    </TemplateHoverCard>
   );
 }
 
@@ -541,14 +579,10 @@ function TemplateEditor({ template }: { template: UsableTemplate }) {
     });
   }
 
-  const statuses = template.body.statuses.map((status) => ({
-    ...status,
-    id: statusIds.of(status.name),
-    is_default: status.is_default === true,
-    role: status.chart_role,
-  }));
-  const lineStatusId =
-    statuses.find((status) => status.block_clear === true)?.id ?? null;
+  const { statuses, lineStatusId } = templateStatusSet(
+    template.body.statuses,
+    (status) => statusIds.of(status.name),
+  );
   const labels = template.body.labels.map((label) => ({
     ...label,
     id: labelIds.of(label.name),
