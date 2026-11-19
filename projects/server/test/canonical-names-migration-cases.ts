@@ -84,16 +84,23 @@ const TABLES: Table[] = [
   },
 ];
 
-/** Every code point JavaScript's `\s` (and so `trim()`) counts as space. */
-function jsWhitespace(): string[] {
-  const found: string[] = [];
+/**
+ * The code points of the Basic Multilingual Plane past NUL, split by whether
+ * JavaScript's `\s` (and so `trim()`) counts them as space.
+ */
+function codePoints(): { space: string[]; other: string[] } {
+  const space: string[] = [];
+  const other: string[] = [];
   for (let code = 1; code <= 0xffff; code++) {
     if (code >= 0xd800 && code <= 0xdfff) continue;
     const c = String.fromCharCode(code);
-    if (/\s/.test(c)) found.push(c);
+    (/\s/.test(c) ? space : other).push(c);
   }
-  return found;
+  return { space, other };
 }
+
+/** Short enough that a name of them fits in a unique index entry. */
+const CHUNK = 800;
 
 const hex = (c: string) =>
   (c.codePointAt(0) as number).toString(16).padStart(4, "0");
@@ -128,13 +135,16 @@ async function scenario(db: Db, ids: ProjectIds): Promise<void> {
     const add = (projectId: number, name: string) =>
       table.insert(db, projectId, name);
 
-    // M1: every whitespace JS knows is trimmed and collapsed, nothing else.
+    // M1: every whitespace JS knows is trimmed and collapsed, and every
+    // other code point (U+200B, U+0085, U+180E among them) stays as it is.
+    const { space, other: plain } = codePoints();
     const spaced = new Map<number, string>();
-    for (const c of jsWhitespace()) {
+    for (const c of space) {
       const h = hex(c);
       spaced.set(await add(a, `${c}w${h}${c}${c}end${c}`), `w${h} end`);
     }
-    for (const name of ["a\u200bb", "a\u0085b", "a\u180eb", "plain name"]) {
+    for (let at = 0; at < plain.length; at += CHUNK) {
+      const name = plain.slice(at, at + CHUNK).join("");
       spaced.set(await add(a, name), name);
     }
 
