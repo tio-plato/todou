@@ -51,6 +51,32 @@ function oklchToLinearSrgb(l: number, c: number, hue: number): Rgb {
   ];
 }
 
+/**
+ * The inverse of `oklchToLinearSrgb` for an sRGB `#rrggbb`: Björn Ottosson's
+ * forward OKLab matrices, then lightness, chroma and hue in degrees. `null`
+ * for anything that is not `#rrggbb`.
+ */
+export function hexToOklch(
+  hex: string,
+): { l: number; c: number; h: number } | null {
+  const rgb = parseHex(hex);
+  if (rgb === null) return null;
+  const [r, g, b] = rgb.map(decode) as unknown as Rgb;
+  const lms = [
+    Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b),
+    Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b),
+    Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b),
+  ] as const;
+  const l =
+    0.2104542553 * lms[0] + 0.793617785 * lms[1] - 0.0040720468 * lms[2];
+  const a =
+    1.9779984951 * lms[0] - 2.428592205 * lms[1] + 0.4505937099 * lms[2];
+  const bb =
+    0.0259040371 * lms[0] + 0.7827717662 * lms[1] - 0.808675766 * lms[2];
+  const h = (Math.atan2(bb, a) * 180) / Math.PI;
+  return { l, c: Math.hypot(a, bb), h: h < 0 ? h + 360 : h };
+}
+
 const inGamut = (rgb: Rgb) => rgb.every((v) => v >= -1e-6 && v <= 1 + 1e-6);
 
 const encode = (v: number) => {
@@ -68,7 +94,7 @@ const decode = (channel: number) => {
   return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
 };
 
-function toSrgb(l: number, c: number, hue: number): Rgb {
+export function toSrgb(l: number, c: number, hue: number): Rgb {
   let chroma = c;
   if (!inGamut(oklchToLinearSrgb(l, chroma, hue))) {
     let low = 0;
@@ -87,15 +113,22 @@ function toSrgb(l: number, c: number, hue: number): Rgb {
 const relativeLuminance = ([r, g, b]: Rgb) =>
   0.2126 * decode(r) + 0.7152 * decode(g) + 0.0722 * decode(b);
 
-/** WCAG contrast of white text on an sRGB `#rrggbb` colour. */
-export function whiteTextContrast(hex: string): number {
-  const rgb = [1, 3, 5].map((at) =>
+/** The 0–255 channels of an sRGB `#rrggbb`, either case; `null` otherwise. */
+export function parseHex(hex: string): Rgb | null {
+  if (!/^#[0-9a-f]{6}$/i.test(hex)) return null;
+  return [1, 3, 5].map((at) =>
     Number.parseInt(hex.slice(at, at + 2), 16),
   ) as unknown as Rgb;
+}
+
+/** WCAG contrast of white text on an sRGB `#rrggbb` colour. */
+export function whiteTextContrast(hex: string): number {
+  const rgb = parseHex(hex);
+  if (rgb === null) throw new Error(`not a #rrggbb colour: ${hex}`);
   return 1.05 / (relativeLuminance(rgb) + 0.05);
 }
 
-const toHex = (rgb: Rgb) =>
+export const toHex = (rgb: Rgb) =>
   `#${rgb.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
 
 /**

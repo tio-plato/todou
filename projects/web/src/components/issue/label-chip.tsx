@@ -1,7 +1,8 @@
 import type { Label } from "@todou/shared";
 import { XIcon } from "lucide-react";
 import { Fragment } from "react";
-import { groupLabelsByPrefix, splitLabelName } from "@/lib/labels.ts";
+import { groupLabelsByPrefix, labelInk, splitLabelName } from "@/lib/labels.ts";
+import { useThemeKind } from "@/lib/theme.ts";
 
 /**
  * The only two ways a label reaches the screen (T-715): one label, or a list
@@ -97,20 +98,26 @@ function LabelGroup({
 }
 
 /**
- * Tinted chip (T-90): a `${color}22` background with same-color text and no
- * dot, so it reads differently from a status pill at a glance.
+ * Tinted chip (T-90): a `${color}22` background and a `${color}55` border
+ * with no dot, so it reads differently from a status pill at a glance. The
+ * text keeps the label's hue, its lightness on the side the current theme
+ * reads (`labelInk`): the label colour itself is unreadable in a light theme
+ * when it is light, and in a dark one when it is dark.
  *
  * Vertical metrics (text-xs, py-0.5, border) must equal StatusPill's: the two
  * share the list's meta line and the board card, and any difference shows up
  * as misaligned boxes and baselines (T-98).
  */
 function Chip({ label, text }: { label: Label; text: string }) {
+  // Not derived from the preference: under "system" an OS switch changes
+  // the kind and leaves the preference as it was (see useThemeKind).
+  const kind = useThemeKind();
   return (
     <span
       className="inline-flex min-w-0 items-center rounded-full border px-2 py-0.5 text-xs font-medium whitespace-nowrap"
       style={{
         backgroundColor: `${label.color}22`,
-        color: label.color,
+        color: labelInk(label.color, kind),
         borderColor: `${label.color}55`,
       }}
       title={label.name}
