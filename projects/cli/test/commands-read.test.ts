@@ -2805,7 +2805,7 @@ describe("status/label list", () => {
       fetchImpl,
       env: loggedInEnv("todou"),
     });
-    expect(result.stdout).toBe("bug  #ef4444\n");
+    expect(result.stdout).toBe("bug  #ef4444  tint\n");
   });
 });
 
