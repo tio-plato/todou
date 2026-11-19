@@ -9,16 +9,20 @@ export type TestDatabase = { url: string; drop: () => Promise<void> };
  * needs one nothing else has written to. Only the generated name enters
  * CREATE/DROP DATABASE; never print the returned URL or put it in an
  * assertion. The role behind `adminUrl` needs CREATEDB.
+ *
+ * `options` is appended to CREATE DATABASE as it is (`ENCODING 'LATIN1' …`):
+ * only ever a clause written into a test, never outside input.
  */
 export async function createTestDatabase(
   adminUrl: string,
   prefix: string,
+  options = "",
 ): Promise<TestDatabase> {
   const name = `${prefix}_${randomUUID().replaceAll("-", "")}`;
   const admin = new pg.Client({ connectionString: adminUrl });
   try {
     await admin.connect();
-    await admin.query(`CREATE DATABASE "${name}"`);
+    await admin.query(`CREATE DATABASE "${name}" ${options}`);
   } catch (err) {
     await admin.end();
     throw err;

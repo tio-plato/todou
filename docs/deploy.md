@@ -75,10 +75,22 @@ transaction-pooling proxy such as PgBouncer: `database.system` and, under
 dedicated placement, every project database, which todou also migrates when
 it creates a project.
 
-Migration 0013 is the one that changes existing data rather than only its
-shape: it renames stored attachment filenames so that no two on one card
-collide. See [Relabelling attachment links after the filename
+Two project migrations change existing data rather than only its shape.
+Migration 0013 renames stored attachment filenames so that no two on one card
+collide; see [Relabelling attachment links after the filename
 migration](#relabelling-attachment-links-after-the-filename-migration).
+
+The `canonical_names` migration rewrites every status and label name into the
+form the API stores: trimmed, runs of whitespace collapsed to one space. A
+name whose canonical form another status (or label) of the same project
+already holds becomes `<name> (<id>)`, and that suffix may take it past 60
+characters: until it is shortened, the project can be neither saved as a
+template nor copied into a new project. A name that is all whitespace becomes
+`Status <id>` or `Label <id>`. Cards refer to statuses and labels by id, so no
+link goes stale and there is nothing to run. A status whose chart role was
+never chosen takes the default for its new name, so one that becomes `Done`,
+`Shipped` or `Invalid` counts as such in the charts from then on. On a
+database whose encoding is not UTF-8, only ASCII whitespace is trimmed.
 
 ### What project search needs from PostgreSQL
 
