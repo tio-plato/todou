@@ -20,6 +20,20 @@ const json = (res: Response) => res.json() as Promise<{ id: number }>;
  */
 const PG_URL = process.env.TODOU_TEST_POSTGRES_URL;
 
+/** The two tables the migration touches, with their unique name index. */
+async function createNameTables(client: pg.Client): Promise<void> {
+  for (const table of ["statuses", "labels"]) {
+    await client.query(
+      `CREATE TABLE ${table} (id serial PRIMARY KEY, ` +
+        "project_id int NOT NULL, name text NOT NULL)",
+    );
+    await client.query(
+      `CREATE UNIQUE INDEX ${table}_project_name_idx ` +
+        `ON ${table} (project_id, name)`,
+    );
+  }
+}
+
 describe.skipIf(!PG_URL)("canonical_names migration on postgres", () => {
   let t: TestApp;
   // The database persists across runs; unique slugs isolate each one.
@@ -111,16 +125,9 @@ describe.skipIf(!PG_URL)("canonical_names migration on postgres", () => {
           await client.query("SET client_encoding = 'SQL_ASCII'");
         }
         await client.query(`SET standard_conforming_strings = ${conforming}`);
+        await createNameTables(client);
         const ids: Record<string, number[]> = {};
         for (const table of ["statuses", "labels"]) {
-          await client.query(
-            `CREATE TABLE ${table} (id serial PRIMARY KEY, ` +
-              "project_id int NOT NULL, name text NOT NULL)",
-          );
-          await client.query(
-            `CREATE UNIQUE INDEX ${table}_project_name_idx ` +
-              `ON ${table} (project_id, name)`,
-          );
           ids[table] = [];
           for (const name of seed) {
             const { rows } = await client.query<{ id: number }>(
@@ -161,10 +168,10 @@ describe.skipIf(!PG_URL)("canonical_names migration on postgres", () => {
     }
   });
 
-  // An older server can still be writing while the migration runs: a name it
-  // writes mid-run must be seen before the rename that would clash with it,
-  // not trip the unique index and abort the upgrade.
-  it("waits for a concurrent write of the canonical name instead of failing on it", async () => {
+  // An older server can still be writing while the migration runs, which
+  // drizzle does in one transaction: a name it commits after the clash check
+  // must not abort the upgrade, and a rename it commits must not be undone.
+  it("works around names another session writes while it runs", async () => {
     const database = await createTestDatabase(
       PG_URL as string,
       "canonical_names",
@@ -178,21 +185,15 @@ describe.skipIf(!PG_URL)("canonical_names migration on postgres", () => {
     const migrator = await connect();
     const watcher = await connect();
     try {
-      const stale: Record<string, number> = {};
+      await createNameTables(writer);
+      const seeded: Record<string, { zed: number; yak: number }> = {};
       for (const table of ["statuses", "labels"]) {
-        await writer.query(
-          `CREATE TABLE ${table} (id serial PRIMARY KEY, ` +
-            "project_id int NOT NULL, name text NOT NULL)",
-        );
-        await writer.query(
-          `CREATE UNIQUE INDEX ${table}_project_name_idx ` +
-            `ON ${table} (project_id, name)`,
-        );
         const { rows } = await writer.query<{ id: number }>(
-          `INSERT INTO ${table} (project_id, name) VALUES (1, 'Zed ') ` +
-            "RETURNING id",
+          `INSERT INTO ${table} (project_id, name) ` +
+            "VALUES (1, 'Zed '), (1, 'Yak ') RETURNING id",
         );
-        stale[table] = (rows[0] as { id: number }).id;
+        const [zed, yak] = rows.map((row) => row.id) as [number, number];
+        seeded[table] = { zed, yak };
       }
 
       await writer.query("BEGIN");
@@ -200,20 +201,30 @@ describe.skipIf(!PG_URL)("canonical_names migration on postgres", () => {
         await writer.query(
           `INSERT INTO ${table} (project_id, name) VALUES (1, 'Zed')`,
         );
+        await writer.query(
+          `UPDATE ${table} SET name = 'Yam' WHERE name = 'Yak '`,
+        );
       }
       const { rows: me } = await migrator.query<{ pid: number }>(
         "SELECT pg_backend_pid() AS pid",
       );
+      let settled = false;
       const migrated = (async () => {
+        await migrator.query("BEGIN");
         for (const statement of await migrationStatements()) {
           await migrator.query(statement);
         }
+        await migrator.query("COMMIT");
       })().then(
         () => null,
         (err: unknown) => err,
       );
-      // Commit only once the migration waits on the writer.
-      for (let tries = 0; ; tries++) {
+      void migrated.then(() => {
+        settled = true;
+      });
+      // Commit only once the migration waits on the writer; a migration
+      // that ends first is reported below as it ended.
+      for (let tries = 0; !settled; tries++) {
         const { rows } = await watcher.query<{ wait: string | null }>(
           "SELECT wait_event_type AS wait FROM pg_stat_activity WHERE pid = $1",
           [me[0]?.pid],
@@ -230,10 +241,11 @@ describe.skipIf(!PG_URL)("canonical_names migration on postgres", () => {
         const { rows } = await watcher.query<{ id: number; name: string }>(
           `SELECT id, name FROM ${table} ORDER BY id`,
         );
-        const id = stale[table] as number;
+        const { zed, yak } = seeded[table] as { zed: number; yak: number };
         expect(rows, table).toEqual([
-          { id, name: `Zed (${id})` },
-          { id: id + 1, name: "Zed" },
+          { id: zed, name: `Zed (${zed})` },
+          { id: yak, name: "Yam" },
+          { id: yak + 1, name: "Zed" },
         ]);
       }
     } finally {

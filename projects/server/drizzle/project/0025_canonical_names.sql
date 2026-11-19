@@ -22,9 +22,12 @@
 -- lists, works and can be renamed, and docs/deploy.md says what it holds up
 -- until then.
 --
--- Each block first locks its table against writes, so a name an older server
--- writes while this runs is either seen by the clash check or waits for the
--- rename, rather than tripping the unique index and aborting the upgrade.
+-- An older server may still be writing while this runs. A name another
+-- session commits after the clash check saw it free makes the rename trip
+-- the unique index; the rename is then worked out again, now that the other
+-- row is visible, up to three times before the error stands. A row another
+-- session renamed meanwhile keeps the name that session gave it. A write of
+-- the canonical name that races a rename can fail on the writer's side.
 DO $$
 DECLARE
   utf8 CONSTANT boolean := current_setting('server_encoding') = 'UTF8';
@@ -34,8 +37,8 @@ DECLARE
   suffix text;
   candidate text;
   n int;
+  tries int;
 BEGIN
-  LOCK TABLE statuses IN SHARE ROW EXCLUSIVE MODE;
   IF utf8 THEN
     ws := E'[\\u0009-\\u000d\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]';
   ELSE
@@ -47,18 +50,27 @@ BEGIN
       ws || '+', ' ', 'g');
     CONTINUE WHEN target = r.name;
     IF target = '' THEN target := 'Status ' || r.id; END IF;
-    candidate := target;
-    n := 1;
-    WHILE EXISTS (SELECT 1 FROM statuses o
-                   WHERE o.project_id = r.project_id
-                     AND o.id <> r.id
-                     AND o.name = candidate) LOOP
-      suffix := ' (' || r.id
-                || CASE WHEN n > 1 THEN '-' || n ELSE '' END || ')';
-      candidate := target || suffix;
-      n := n + 1;
+    tries := 0;
+    LOOP
+      candidate := target;
+      n := 1;
+      WHILE EXISTS (SELECT 1 FROM statuses o
+                     WHERE o.project_id = r.project_id
+                       AND o.id <> r.id
+                       AND o.name = candidate) LOOP
+        suffix := ' (' || r.id
+                  || CASE WHEN n > 1 THEN '-' || n ELSE '' END || ')';
+        candidate := target || suffix;
+        n := n + 1;
+      END LOOP;
+      BEGIN
+        UPDATE statuses SET name = candidate WHERE id = r.id AND name = r.name;
+        EXIT;
+      EXCEPTION WHEN unique_violation THEN
+        tries := tries + 1;
+        IF tries >= 3 THEN RAISE; END IF;
+      END;
     END LOOP;
-    UPDATE statuses SET name = candidate WHERE id = r.id;
   END LOOP;
 END $$;
 --> statement-breakpoint
@@ -71,8 +83,8 @@ DECLARE
   suffix text;
   candidate text;
   n int;
+  tries int;
 BEGIN
-  LOCK TABLE labels IN SHARE ROW EXCLUSIVE MODE;
   IF utf8 THEN
     ws := E'[\\u0009-\\u000d\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]';
   ELSE
@@ -84,17 +96,26 @@ BEGIN
       ws || '+', ' ', 'g');
     CONTINUE WHEN target = r.name;
     IF target = '' THEN target := 'Label ' || r.id; END IF;
-    candidate := target;
-    n := 1;
-    WHILE EXISTS (SELECT 1 FROM labels o
-                   WHERE o.project_id = r.project_id
-                     AND o.id <> r.id
-                     AND o.name = candidate) LOOP
-      suffix := ' (' || r.id
-                || CASE WHEN n > 1 THEN '-' || n ELSE '' END || ')';
-      candidate := target || suffix;
-      n := n + 1;
+    tries := 0;
+    LOOP
+      candidate := target;
+      n := 1;
+      WHILE EXISTS (SELECT 1 FROM labels o
+                     WHERE o.project_id = r.project_id
+                       AND o.id <> r.id
+                       AND o.name = candidate) LOOP
+        suffix := ' (' || r.id
+                  || CASE WHEN n > 1 THEN '-' || n ELSE '' END || ')';
+        candidate := target || suffix;
+        n := n + 1;
+      END LOOP;
+      BEGIN
+        UPDATE labels SET name = candidate WHERE id = r.id AND name = r.name;
+        EXIT;
+      EXCEPTION WHEN unique_violation THEN
+        tries := tries + 1;
+        IF tries >= 3 THEN RAISE; END IF;
+      END;
     END LOOP;
-    UPDATE labels SET name = candidate WHERE id = r.id;
   END LOOP;
 END $$;
