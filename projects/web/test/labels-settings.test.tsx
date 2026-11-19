@@ -9,6 +9,7 @@ import { renderWithProviders, testQueryClient } from "./render.tsx";
 const LABELS: Label[] = [
   { id: 1, name: "area:web", color: "#3b82f6" },
   { id: 2, name: "kind:bug", color: "#ef4444" },
+  { id: 3, name: "release", color: "#10b981", style: "solid" },
 ];
 const USAGE: LabelUsage[] = [
   { id: 1, open_issues: 2, issues: 3 },
@@ -161,6 +162,24 @@ describe("Labels settings (T-713)", () => {
     expect(JSON.parse(writes(calls)[0]?.body ?? "{}")).toEqual({
       style: "solid",
     });
+  });
+
+  it("opens a label on its own style, and a new label on Tint", async () => {
+    stubFetch();
+    await renderSection();
+    fireEvent.click(screen.getByLabelText("edit label release"));
+    expect((screen.getByLabelText("Solid") as HTMLInputElement).checked).toBe(
+      true,
+    );
+    expect(
+      (screen.getByRole("button", { name: "Save" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: /New label/ }));
+    expect((screen.getByLabelText("Tint") as HTMLInputElement).checked).toBe(
+      true,
+    );
   });
 
   it("creates a label with the chosen style", async () => {
