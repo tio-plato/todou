@@ -67,8 +67,9 @@ export function TemplateListbox({
       optionKey={(template) => String(template.ref)}
       match={match}
       renderOption={(template, hit) => (
-        // Clear of the option's padding, the list's, its scrollbar and its
-        // border, so the card covers none of them.
+        // Outside a dialog: clear of the option's padding, the list's, its
+        // scrollbar and its border, so the card covers none of them. In one,
+        // the card starts past the dialog instead.
         <TemplateHoverCard
           template={template}
           side="right"

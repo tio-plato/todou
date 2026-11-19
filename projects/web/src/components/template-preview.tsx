@@ -1,5 +1,5 @@
 import type { TemplateStatus } from "@todou/shared";
-import type { ReactNode } from "react";
+import { type ReactNode, useCallback, useRef, useState } from "react";
 import { LabelRows } from "@/components/issue/label-chip.tsx";
 import { StatusSetList } from "@/components/settings/status-set-list.tsx";
 import {
@@ -78,10 +78,29 @@ export function TemplatePreview({ template }: { template: UsableTemplate }) {
   );
 }
 
+/** How far past the dialog's edge a card beside one starts. */
+const PAST_DIALOG = 8;
+
+/** `sideOffset`, or the distance from `trigger` to past its dialog's edge. */
+function offsetFrom(trigger: Element | null, sideOffset?: number) {
+  const dialog = trigger?.closest("[data-slot='dialog-content']");
+  if (!trigger || !dialog) return sideOffset;
+  return (
+    dialog.getBoundingClientRect().right -
+    trigger.getBoundingClientRect().right +
+    PAST_DIALOG
+  );
+}
+
 /**
  * A template's preview, opened by hovering `children`. 320px wide, narrower
  * than other hover cards, so that beside a 512px dialog it still fits on the
  * right of a 1280px window instead of flipping over the list it came from.
+ *
+ * `sideOffset` is measured from the trigger. In a dialog the card starts past
+ * the dialog's own edge instead, measured as it opens, so that it covers
+ * neither the dialog's padding nor the scrollbar of a dialog taller than the
+ * window.
  *
  * The card is portalled to `body` but stays in its trigger's React tree,
  * which in a picker is a dialog's and an option's:
@@ -103,13 +122,27 @@ export function TemplateHoverCard({
   sideOffset?: number;
   children: ReactNode;
 }) {
+  const trigger = useRef<Element | null>(null);
+  // The trigger is the caller's element, not the anchor the ref is typed for.
+  const triggerRef = useCallback((node: Element | null) => {
+    trigger.current = node;
+  }, []);
+  const [offset, setOffset] = useState(sideOffset);
   return (
-    <HoverCard openDelay={OPEN_DELAY_MS} closeDelay={CLOSE_DELAY_MS}>
-      <HoverCardTrigger asChild>{children}</HoverCardTrigger>
+    <HoverCard
+      openDelay={OPEN_DELAY_MS}
+      closeDelay={CLOSE_DELAY_MS}
+      onOpenChange={(open) => {
+        if (open) setOffset(offsetFrom(trigger.current, sideOffset));
+      }}
+    >
+      <HoverCardTrigger asChild ref={triggerRef}>
+        {children}
+      </HoverCardTrigger>
       <HoverCardContent
         side={side}
         align={align}
-        sideOffset={sideOffset}
+        sideOffset={offset}
         className="max-h-(--radix-hover-card-content-available-height) w-80 overflow-y-auto overscroll-contain"
         onWheel={(event) => {
           const horizontal = Math.abs(event.deltaX) > Math.abs(event.deltaY);
