@@ -119,37 +119,32 @@ function nestingCycleError(source: string, db: object): string | null {
     }
     return null;
   };
-  // The first loop an edge runs into, and whether the edge's own line is
-  // the one that closed it.
-  const find = (): { loop: string[]; known: boolean } | null => {
+  // The first loop an edge runs into.
+  const find = (): string[] | null => {
     for (const { start, end } of edges) {
       if (start === end) continue;
       const ends = [start, end].filter((id) => id !== undefined);
-      // An end on the loop itself first. When both ends share a block, the
-      // edge was written in it, and that line is what put this end there.
+      // An end on the loop itself first, so the error starts at the name
+      // the edge touches.
       for (const id of ends) {
         const loop = loopAbove(id);
-        if (loop?.[0] !== id) continue;
-        const other = ends.find((each) => each !== id);
-        const known =
-          other !== undefined && parent.get(other) === parent.get(id);
-        return { loop, known };
+        if (loop?.[0] === id) return loop;
       }
       for (const id of ends) {
         const loop = loopAbove(id);
-        if (loop !== null) return { loop, known: false };
+        if (loop !== null) return loop;
       }
     }
     return null;
   };
-  const found = find();
-  if (found === null) return null;
+  const loop = find();
+  if (loop === null) return null;
 
   const byId = new Map(nodes.map((node) => [node.id, node]));
   // A concurrent region is nameless, and its composite's block is all
-  // regions: a line moved to another region stays in that block, so the
-  // region counts as its composite.
-  const blocks = found.loop.filter((id) => byId.get(id)?.shape !== "divider");
+  // regions: a line in any of them is a line in that block, so the region
+  // counts as its composite.
+  const blocks = loop.filter((id) => byId.get(id)?.shape !== "divider");
   // A generated id (a subgraph titled with spaces gets `subGraph0`) is
   // nowhere in the source, but its title is.
   const names = blocks.map((id) => {
@@ -157,18 +152,15 @@ function nestingCycleError(source: string, db: object): string | null {
     return source.includes(id) || !label ? id : `"${label}"`;
   });
   const ring = [...names, names[0]];
-  const cycle = `Nesting cycle: ${ring.join(" inside ")}.`;
-  if (found.known || names.length === 1) {
-    return `${cycle} Move the lines in ${ring[1]}'s block that name ${ring[0]} out of that block.`;
-  }
-  // The table cannot tell a block's own declaration from a mention of it,
-  // so each step of the loop is offered; any one of them breaks or
-  // shortens it.
-  const moves = names.map(
-    (child, i) => `the lines in ${ring[i + 1]}'s block that name ${child}`,
-  );
-  const last = moves.pop();
-  return `${cycle} Move one of these out of its block: ${moves.join(", ")}${moves.length > 1 ? "," : ""} or ${last}.`;
+  // Each name sits inside the next because the next one's block names it,
+  // by declaring it or by mentioning it.
+  const why = names.map((child, i) => `${ring[i + 1]}'s block names ${child}`);
+  const last = why.pop();
+  const reason =
+    why.length === 0
+      ? last
+      : `${why.join(", ")}${why.length > 1 ? "," : ""} and ${last}`;
+  return `Nesting cycle: ${ring.join(" inside ")} (${reason}).`;
 }
 
 /**
