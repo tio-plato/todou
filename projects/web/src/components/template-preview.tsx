@@ -117,31 +117,33 @@ function ProjectPreview({ slug }: { slug: string }) {
   const project = useQuery(projectQuery(slug));
   const settings = useQuery(insightsSettingsQuery(slug));
   const labels = useQuery(labelsQuery(slug));
+  if (
+    statuses.data !== undefined &&
+    project.data !== undefined &&
+    settings.data !== undefined &&
+    labels.data !== undefined
+  ) {
+    return (
+      <SetPreview
+        statuses={withChartRoles(statuses.data, settings.data)}
+        lineStatusId={project.data.block_clear_status_id ?? null}
+        labels={labels.data}
+      />
+    );
+  }
+  // Only a read with nothing to show: a cached one whose reread failed still
+  // has its data, and an error then would hide a preview it can draw.
   const failed = [statuses, project, settings, labels].find(
-    (read) => read.error !== null,
+    (read) => read.data === undefined && read.error !== null,
   );
   if (failed?.error) {
     return <p className="text-sm text-destructive">{failed.error.message}</p>;
   }
-  if (
-    statuses.data === undefined ||
-    project.data === undefined ||
-    settings.data === undefined ||
-    labels.data === undefined
-  ) {
-    return (
-      <div className="space-y-1.5">
-        <Skeleton className="h-3 w-full" />
-        <Skeleton className="h-3 w-4/5" />
-      </div>
-    );
-  }
   return (
-    <SetPreview
-      statuses={withChartRoles(statuses.data, settings.data)}
-      lineStatusId={project.data.block_clear_status_id ?? null}
-      labels={labels.data}
-    />
+    <div className="space-y-1.5">
+      <Skeleton className="h-3 w-full" />
+      <Skeleton className="h-3 w-4/5" />
+    </div>
   );
 }
 

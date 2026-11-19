@@ -26,7 +26,11 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { prefsQuery } from "../src/api/prefs.ts";
-import { projectsQuery, projectTemplatesQuery } from "../src/api/queries.ts";
+import {
+  labelsQuery,
+  projectsQuery,
+  projectTemplatesQuery,
+} from "../src/api/queries.ts";
 import { referenceDirectoryQuery } from "../src/api/references.ts";
 import { StatusPill } from "../src/components/issue/status-pill.tsx";
 import {
@@ -167,6 +171,7 @@ function fakeServer({
   templates = TEMPLATES as ProjectTemplate[],
 } = {}) {
   const calls: Call[] = [];
+  const failing = new Set<string>();
   const stored = new Map(templates.map((t) => [t.ref, structuredClone(t)]));
   const waiting: Array<() => void> = [];
 
@@ -219,6 +224,9 @@ function fakeServer({
     if (path === "/me/prefs" && method === "PATCH") {
       return json(200, { ...PREFS, ...body });
     }
+    if (failing.has(path)) {
+      return json(500, { error: { code: "internal", message: "read failed" } });
+    }
     const read = TODOU_READS[path];
     if (read !== undefined && method === "GET") return json(200, read);
     return json(404, { error: { code: "not_found", message: path } });
@@ -239,6 +247,8 @@ function fakeServer({
     },
     /** The templates as a GET would answer now. */
     list: () => [...stored.values()],
+    /** From now on, answer `path` with a 500. */
+    fail: (path: string) => failing.add(path),
   };
 }
 
@@ -688,8 +698,8 @@ describe("StartFromPicker", () => {
 });
 
 describe("the New template dialog", () => {
-  async function openDialog() {
-    const router = renderAt("/settings/templates");
+  async function openDialog(client = testQueryClient()) {
+    const router = renderAt("/settings/templates", client);
     fireEvent.click(
       await screen.findByRole("button", { name: /New template/ }),
     );
@@ -816,6 +826,49 @@ describe("the New template dialog", () => {
         chip.getAttribute("title"),
       ),
     ).toEqual(["area:web", "kind:bug"]);
+  });
+
+  it("keeps a project's preview when a reread of it fails", async () => {
+    const server = fakeServer();
+    const client = testQueryClient();
+    const { dialog } = await openDialog(client);
+    fireEvent.click(dialog.getByRole("button", { name: "Project" }));
+    const name = within(
+      dialog.getByRole("option", { name: /todou/ }),
+    ).getAllByText("todou")[0] as HTMLElement;
+    hover(name);
+    await within(await previewCard()).findByText("kind:", { exact: false });
+    fireEvent.pointerOut(name, {
+      pointerType: "mouse",
+      bubbles: true,
+      relatedTarget: document.body,
+    });
+    await waitFor(() =>
+      expect(
+        document.querySelectorAll("[data-slot='hover-card-content']"),
+      ).toHaveLength(0),
+    );
+
+    // The labels are reread as the card opens again, and the reread fails.
+    server.fail("/projects/todou/labels");
+    await act(() =>
+      client.invalidateQueries({ queryKey: labelsQuery("todou").queryKey }),
+    );
+    hover(name);
+    const card = await previewCard();
+    await waitFor(() =>
+      expect(
+        server.calls.filter((c) => c.path === "/projects/todou/labels"),
+      ).toHaveLength(2),
+    );
+    await settle();
+    expect(within(card).getByText("Doing")).toBeTruthy();
+    expect(
+      [...card.querySelectorAll("[title]")].map((chip) =>
+        chip.getAttribute("title"),
+      ),
+    ).toEqual(["area:web", "kind:bug"]);
+    expect(within(card).queryByText("read failed")).toBeNull();
   });
 
   it("names the project it starts from, then opens the new template", async () => {
