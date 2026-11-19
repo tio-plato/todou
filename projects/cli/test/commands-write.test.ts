@@ -879,6 +879,62 @@ describe("label create/edit/delete", () => {
     expect(calls.some((c) => c.url.includes("/labels/7"))).toBe(true);
   });
 
+  it("sets the chip style with --style", async () => {
+    let posted: Record<string, unknown> | undefined;
+    let patched: Record<string, unknown> | undefined;
+    const { fetchImpl } = fakeFetch([
+      [
+        "POST",
+        "/api/projects/todou/labels",
+        (init: RequestInit) => {
+          posted = jsonBody(init);
+          return { id: 9, name: "urgent", color: "#ef4444", style: "solid" };
+        },
+      ],
+      ["GET", "/api/projects/todou/labels", labels],
+      [
+        "PATCH",
+        "/api/projects/todou/labels/7",
+        (init: RequestInit) => {
+          patched = jsonBody(init);
+          return { id: 7, name: "bug", color: "#ef4444", style: "tint" };
+        },
+      ],
+    ]);
+    const created = await runCli(
+      ["label", "create", "--name", "urgent", "--style", "solid"],
+      { fetchImpl, env: loggedInEnv("todou") },
+    );
+    expect(created.exitCode).toBe(0);
+    expect(posted).toMatchObject({ name: "urgent", style: "solid" });
+
+    const edited = await runCli(["label", "edit", "bug", "--style", "tint"], {
+      fetchImpl,
+      env: loggedInEnv("todou"),
+    });
+    expect(edited.exitCode).toBe(0);
+    expect(patched).toEqual({ style: "tint" });
+  });
+
+  it("rejects an unknown --style", async () => {
+    const { fetchImpl, calls } = fakeFetch([
+      ["GET", "/api/projects/todou/labels", labels],
+    ]);
+    for (const argv of [
+      ["label", "create", "--name", "urgent", "--style", "bold"],
+      ["label", "edit", "bug", "--style", "bold"],
+    ]) {
+      const result = await runCli(argv, {
+        fetchImpl,
+        env: loggedInEnv("todou"),
+      });
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain("tint");
+      expect(result.stderr).toContain("solid");
+    }
+    expect(calls).toEqual([]);
+  });
+
   it("deletes by resolved id and keeps stdout clean", async () => {
     const { fetchImpl, calls } = fakeFetch([
       ["GET", "/api/projects/todou/labels", labels],
