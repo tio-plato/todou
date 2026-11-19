@@ -14,7 +14,7 @@ import { requireCapability, routeInfoOf } from "./access.ts";
 type LabelRow = typeof labels.$inferSelect;
 
 export function toLabel(row: LabelRow): Label {
-  return { id: row.id, name: row.name, color: row.color };
+  return { id: row.id, name: row.name, color: row.color, style: row.style };
 }
 
 export async function listLabels(
@@ -76,7 +76,13 @@ export async function createLabel(
   }
   const inserted = await db
     .insert(labels)
-    .values({ projectId: project.id, name: input.name, color: input.color })
+    .values({
+      projectId: project.id,
+      name: input.name,
+      color: input.color,
+      // Left out, the column default makes it `tint`.
+      style: input.style,
+    })
     .returning();
   const row = inserted[0];
   if (!row) throw new Error("label insert returned no row");
@@ -100,7 +106,11 @@ export async function updateLabel(
   const where = and(eq(labels.id, labelId), eq(labels.projectId, project.id));
 
   // An UPDATE with no assignments is a driver error, not a no-op (T-730).
-  if (input.name === undefined && input.color === undefined) {
+  if (
+    input.name === undefined &&
+    input.color === undefined &&
+    input.style === undefined
+  ) {
     const rows = await db.select().from(labels).where(where);
     const row = rows[0];
     if (!row) throw new NotFoundError("label not found");
@@ -123,6 +133,7 @@ export async function updateLabel(
     .set({
       ...(input.name === undefined ? {} : { name: input.name }),
       ...(input.color === undefined ? {} : { color: input.color }),
+      ...(input.style === undefined ? {} : { style: input.style }),
     })
     .where(where)
     .returning();
