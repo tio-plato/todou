@@ -22,6 +22,7 @@ import { type ReactElement, useRef, useState } from "react";
 import { toast } from "sonner";
 import { prefsQuery, usePatchPrefs } from "@/api/prefs.ts";
 import { api, projectsQuery, projectTemplatesQuery } from "@/api/queries.ts";
+import { StatusPill } from "@/components/issue/status-pill.tsx";
 import { LabelSetList } from "@/components/settings/label-set-list.tsx";
 import {
   isRole,
@@ -104,17 +105,7 @@ export function ProjectTemplatesSettingsPage() {
                     <span className={INCOMPATIBLE_PILL}>Incompatible</span>
                   )}
                 </div>
-                {template.body !== null && (
-                  <div className="text-sm text-muted-foreground">
-                    {counted(
-                      template.body.statuses.length,
-                      "status",
-                      "statuses",
-                    )}
-                    {" · "}
-                    {counted(template.body.labels.length, "label", "labels")}
-                  </div>
-                )}
+                {template.body !== null && <Summary body={template.body} />}
               </div>
             </PreviewOnHover>
             {template.ref !== current && template.body !== null && (
@@ -132,6 +123,20 @@ export function ProjectTemplatesSettingsPage() {
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/** What a row says of a template: its size, and where its blocks clear. */
+function Summary({ body }: { body: TemplateBody }) {
+  const line = body.statuses.find((status) => status.block_clear);
+  return (
+    <div className="flex flex-wrap items-center gap-x-1 text-sm text-muted-foreground">
+      {counted(body.statuses.length, "status", "statuses")}
+      {" · "}
+      {counted(body.labels.length, "label", "labels")}
+      {" · Blocks clear at"}
+      {line ? <StatusPill status={line} /> : " any closed status"}
     </div>
   );
 }

@@ -20,6 +20,7 @@ import {
   type MePrefs,
   type Project,
   type ProjectTemplate,
+  type TemplateStatus,
 } from "@todou/shared";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -27,6 +28,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { prefsQuery } from "../src/api/prefs.ts";
 import { projectsQuery, projectTemplatesQuery } from "../src/api/queries.ts";
 import { referenceDirectoryQuery } from "../src/api/references.ts";
+import { StatusPill } from "../src/components/issue/status-pill.tsx";
 import {
   type StartFrom,
   StartFromPicker,
@@ -338,6 +340,26 @@ describe("the project templates list", () => {
           body: { new_project_template: 7 },
         },
       ]),
+    );
+  });
+
+  it("says in each row where the template's blocks clear", async () => {
+    fakeServer();
+    renderAt("/settings/templates");
+    const rows = await screen.findAllByRole("listitem");
+    const note = (name: string) => {
+      const row = rows.find((r) => within(r).queryByRole("link", { name }));
+      return within(row as HTMLElement).getByText(/Blocks clear at/);
+    };
+    const shipped = DEFAULT.body.statuses.find((s) => s.name === "Shipped");
+    expect(note("Default").innerHTML).toContain(
+      render(<StatusPill status={shipped as TemplateStatus} />, {
+        container: document.createElement("div"),
+      }).container.innerHTML,
+    );
+    expect(note("Default").textContent).toMatch(/Blocks clear at\s*Shipped$/);
+    expect(note("Bugs").textContent).toMatch(
+      /Blocks clear at any closed status$/,
     );
   });
 
