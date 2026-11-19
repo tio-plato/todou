@@ -314,6 +314,9 @@ const previewCard = () =>
     expect(cards).toHaveLength(1);
     return cards[0] as HTMLElement;
   });
+/** Longer than a preview waits before it opens. */
+const pastOpenDelay = () =>
+  act(() => new Promise<void>((resolve) => setTimeout(resolve, 600)));
 const follows = (a: Element, b: Element) =>
   Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
 
@@ -361,6 +364,26 @@ describe("the project templates list", () => {
     expect(note("Bugs").textContent).toMatch(
       /Blocks clear at any closed status$/,
     );
+  });
+
+  it("opens no preview from a row's buttons, or under its delete confirmation", async () => {
+    fakeServer();
+    renderAt("/settings/templates");
+    const rows = await screen.findAllByRole("listitem");
+    const kanban = within(
+      rows.find((r) =>
+        within(r).queryByRole("link", { name: "Kanban" }),
+      ) as HTMLElement,
+    );
+    hover(kanban.getByRole("button", { name: "Set as default" }));
+    fireEvent.click(kanban.getByRole("button", { name: "Delete Kanban" }));
+    expect(
+      await screen.findByRole("dialog", { name: "Delete this template?" }),
+    ).toBeTruthy();
+    await pastOpenDelay();
+    expect(
+      document.querySelectorAll("[data-slot='hover-card-content']"),
+    ).toHaveLength(0);
   });
 
   it("previews a template's default status, line, chart roles and labels on hover", async () => {
@@ -666,20 +689,27 @@ describe("the New template dialog", () => {
     });
   });
 
-  it("previews a template on hover, and a click in the preview picks nothing", async () => {
+  it("previews a template on hover; a press in the preview picks nothing and keeps the dialog", async () => {
     fakeServer();
     const { dialog } = await openDialog();
     const kanban = dialog.getByRole("option", { name: "Kanban" });
     hover(within(kanban).getByText("Kanban"));
     const card = await previewCard();
-    fireEvent.click(within(card).getByText("Doing"));
+    const doing = within(card).getByText("Doing");
+    fireEvent.pointerDown(doing, { pointerType: "mouse" });
+    fireEvent.mouseDown(doing);
+    fireEvent.pointerUp(doing, { pointerType: "mouse" });
+    fireEvent.mouseUp(doing);
+    fireEvent.click(doing);
+    await settle();
+    expect(screen.getByRole("dialog", { name: "New template" })).toBeTruthy();
     const selected = (name: string) =>
       dialog.getByRole("option", { name }).getAttribute("aria-selected");
     expect(selected("Default")).toBe("true");
     expect(selected("Kanban")).toBe("false");
   });
 
-  it("lets a wheel over the preview scroll it", async () => {
+  it("lets a wheel over the preview scroll it, until it has no room left", async () => {
     fakeServer();
     const { dialog } = await openDialog();
     hover(
@@ -709,6 +739,17 @@ describe("the New template dialog", () => {
     });
     within(card).getByText("Doing").dispatchEvent(wheel);
     expect(wheel.defaultPrevented).toBe(false);
+
+    // At its end the card has no room left, and the lock keeps the page
+    // behind the dialog where it is.
+    card.scrollTop = 600;
+    const past = new WheelEvent("wheel", {
+      deltaY: 100,
+      bubbles: true,
+      cancelable: true,
+    });
+    within(card).getByText("Doing").dispatchEvent(past);
+    expect(past.defaultPrevented).toBe(true);
   });
 
   it("names the project it starts from, then opens the new template", async () => {
