@@ -223,4 +223,13 @@ describe("renderDiagram on a nesting cycle", () => {
     expect(result.ok).toBe(true);
     expect(render).toHaveBeenCalledTimes(1);
   });
+
+  it("hands a self-loop on a cycle to mermaid", async () => {
+    // mermaid skips an edge from a name to itself and so does the check;
+    // mermaid then fails on this one in layout, without hanging.
+    const source = ["stateDiagram-v2", "  state A {", "    A --> A", "  }"];
+    const result = await renderDiagram(source.join("\n"), PALETTE, "serif");
+    expect(result.ok).toBe(true);
+    expect(render).toHaveBeenCalledTimes(1);
+  });
 });
