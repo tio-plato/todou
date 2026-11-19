@@ -98,7 +98,7 @@ const ME: Me = {
 };
 
 /** The new-issue page as seen by someone holding `role` here. */
-function renderAs(role: MemberRole) {
+function renderAs(role: MemberRole, extra: Partial<Project> = {}) {
   const project: Project = {
     id: 1,
     slug: SLUG,
@@ -106,6 +106,7 @@ function renderAs(role: MemberRole) {
     description: "",
     created_at: "2026-08-01T00:00:00.000Z",
     viewer_role: role,
+    ...extra,
   };
   const client = testQueryClient();
   client.setQueryData(projectQuery(SLUG).queryKey, project);
@@ -455,8 +456,31 @@ describe("the new-issue page's Ctrl-Enter", () => {
     });
   });
 
-  it("creates nothing when the title is empty", async () => {
+  it("creates an untitled issue from a body alone (T-785)", async () => {
     const { view, createIssue } = start();
+    await screen.findByLabelText("Title");
+    cmSetValue(view.container, "a body with no title");
+    cmPressKey(view.container, "Enter", { ctrlKey: true });
+
+    await waitFor(() => expect(createIssue).toHaveBeenCalledOnce());
+    expect(createIssue.mock.calls[0]?.[1]).toMatchObject({
+      title: "",
+      body: "a body with no title",
+    });
+  });
+
+  it("creates nothing with neither a title nor a body", async () => {
+    const { view, createIssue } = start();
+    await screen.findByLabelText("Title");
+    cmPressKey(view.container, "Enter", { ctrlKey: true });
+
+    await act(async () => {});
+    expect(createIssue).not.toHaveBeenCalled();
+  });
+
+  it("creates nothing without a title where the project requires one", async () => {
+    const createIssue = vi.spyOn(api, "createIssue").mockResolvedValue(created);
+    const view = renderAs("admin", { require_title: true });
     await screen.findByLabelText("Title");
     cmSetValue(view.container, "a body with no title");
     cmPressKey(view.container, "Enter", { ctrlKey: true });
@@ -736,6 +760,7 @@ describe("the new-issue page's edited retries (T-477)", () => {
     id: 1,
     number: 12,
     title: "Teh potatos",
+    body_preview: null,
     body: "",
     status: STATUSES[0] as Status,
     author: ME,
@@ -1450,5 +1475,43 @@ describe("the new-issue page's staged files", () => {
       SLUG,
       expect.objectContaining({ body: linked }),
     );
+  });
+});
+
+describe("the new-issue page without a title (T-785)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const submit = () =>
+    screen.getByRole("button", { name: /Create/ }) as HTMLButtonElement;
+
+  it("submits a body alone and sends an empty title", async () => {
+    const createIssue = vi
+      .spyOn(api, "createIssue")
+      .mockResolvedValue({ id: 1, number: 12, body: "" } as Issue);
+    const { container } = renderAs("admin");
+    const title = (await screen.findByLabelText("Title")) as HTMLInputElement;
+    expect(title.required).toBe(false);
+    expect(submit().disabled).toBe(true);
+    cmSetValue(container, "the potatoes sprouted");
+    await waitFor(() => expect(submit().disabled).toBe(false));
+    submit().click();
+    await waitFor(() => expect(createIssue).toHaveBeenCalled());
+    expect(createIssue.mock.calls[0]?.[1]).toMatchObject({
+      title: "",
+      body: "the potatoes sprouted",
+    });
+  });
+
+  it("holds the button until there is a title where the project requires one", async () => {
+    const { container } = renderAs("admin", { require_title: true });
+    const title = (await screen.findByLabelText("Title")) as HTMLInputElement;
+    expect(title.required).toBe(true);
+    cmSetValue(container, "the potatoes sprouted");
+    await waitFor(() => expect(cmGetValue(container)).toContain("sprouted"));
+    expect(submit().disabled).toBe(true);
+    fireEvent.change(title, { target: { value: "Dig up the potatoes" } });
+    await waitFor(() => expect(submit().disabled).toBe(false));
   });
 });

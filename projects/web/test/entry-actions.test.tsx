@@ -41,6 +41,7 @@ const refItem = (number: number): IssueListItem => ({
   id: number,
   number,
   title: "A referenced issue",
+  body_preview: null,
   status: {
     id: 1,
     name: "In Progress",
@@ -1072,6 +1073,7 @@ const ISSUE: Issue = {
   id: 11,
   number: 7,
   title: "Fix the potato",
+  body_preview: null,
   body: BODY,
   status: {
     id: 1,

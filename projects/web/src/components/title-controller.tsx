@@ -6,6 +6,7 @@ import { issueQuery } from "@/api/issues.ts";
 import { useRefPlacement } from "@/api/prefs.ts";
 import { projectQuery, projectTemplatesQuery } from "@/api/queries.ts";
 import { useRefPrefix } from "@/api/references.ts";
+import { issueTitleText } from "@/components/shared/issue-title.tsx";
 
 const FALLBACK = "todou 🥔";
 
@@ -124,7 +125,7 @@ export function TitleController() {
   const title = titleFor(match?.routeId, {
     projectName: project.data?.name ?? slug ?? "",
     issueNumber,
-    issueTitle: issue.data?.title,
+    issueTitle: issue.data && issueTitleText(issue.data),
     refPrefix,
     refLeads,
     login,

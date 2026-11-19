@@ -68,6 +68,7 @@ import {
   CommentHeaderLine,
   CommentHeaderMeta,
 } from "@/components/shared/comment-header-meta.tsx";
+import { issueTitleText } from "@/components/shared/issue-title.tsx";
 import {
   PIERRE_HIGHLIGHTER,
   PIERRE_THEME_TYPE,
@@ -1521,7 +1522,8 @@ function SpecViewBody({
     <CompactIssueIdentity
       slug={slug}
       number={issueNumber}
-      title={issue.data?.title}
+      title={issue.data && issueTitleText(issue.data)}
+      untitled={issue.data?.title === ""}
       slot="title"
       className="truncate"
       omitRef={mergedBack}

@@ -180,8 +180,15 @@
     {
       "idx": 25,
       "version": "7",
+      "when": 1795092903938,
+      "tag": "0025_require-title",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
       "when": 1794118893313,
-      "tag": "0025_tombstones_out_of_trash",
+      "tag": "0026_tombstones_out_of_trash",
       "breakpoints": true
     }
   ]

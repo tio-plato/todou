@@ -7,6 +7,7 @@ import type {
   ProjectUpdateInput,
   TemplateBody,
 } from "@todou/shared";
+import { parseRefLocator } from "@todou/shared";
 import {
   and,
   asc,
@@ -16,6 +17,7 @@ import {
   inArray,
   isNotNull,
   isNull,
+  like,
   ne,
   or,
 } from "drizzle-orm";
@@ -573,7 +575,8 @@ export async function listProjects(
 }
 
 /**
- * `todou#` autolinks and the slug `todou` claim the same tokens, and the
+ * `todou#` autolinks — and `todou/`, `todou/#`, `todou/T-` — claim the
+ * same tokens as the slug `todou`, and the
  * qualified form wins — so a rename into a slug some project already
  * autolinks would silently kill that rule. The mirror check lives in
  * reference-config.ts, which refuses the autolink when the slug exists
@@ -591,17 +594,26 @@ async function assertNoAutolinkShadow(
   ctx: AppContext,
   newSlug: string,
 ): Promise<void> {
-  const prefix = `${newSlug}#`;
   const rows = await ctx.router.system().select().from(projects);
   const verdicts = await ctx.router
     .perDatabase(rows, routeInfoOf, async (db, group) => {
       try {
         const hits = await db
-          .select({ id: autolinks.id })
+          .select({ prefix: autolinks.prefix })
           .from(autolinks)
           .where(
             and(
-              eq(autolinks.prefix, prefix),
+              or(
+                inArray(autolinks.prefix, [
+                  `${newSlug}#`,
+                  `${newSlug}/`,
+                  `${newSlug}/#`,
+                ]),
+                // A slug is `[a-z0-9-]` only, so nothing in it needs
+                // escaping. The LIKE is wider than the shape — `todou/x-`
+                // matches too — and the grammar below narrows it.
+                like(autolinks.prefix, `${newSlug}/%-`),
+              ),
               // Narrowing to the group's own projects is not redundant with
               // asking their database: `deleteProject` leaves autolinks
               // behind, and an orphan row must not block somebody else's
@@ -612,9 +624,12 @@ async function assertNoAutolinkShadow(
                 group.map((row) => row.id),
               ),
             ),
-          )
-          .limit(1);
-        return hits.length > 0;
+          );
+        const shadowed = hits.find((hit) => {
+          const locator = parseRefLocator(`${hit.prefix}1`);
+          return locator?.kind === "qualified" && locator.slug === newSlug;
+        });
+        return shadowed?.prefix ?? null;
       } catch (cause) {
         // With the default configuration a postgres project database that
         // cannot be reached does not fail in `openDb` — the pool is lazy —
@@ -625,7 +640,7 @@ async function assertNoAutolinkShadow(
           `autolink shadow check skipped for ${group.map((row) => row.slug).join(", ")}`,
           cause,
         );
-        return false;
+        return null;
       }
     })
     .catch((cause: unknown) => {
@@ -638,7 +653,8 @@ async function assertNoAutolinkShadow(
   // Outside both catches. Thrown from the callback it would be swallowed by
   // the one above; thrown inside the `.catch` chain it would be reported as
   // an unopenable database. Either way a real shadow would answer 200.
-  if (verdicts.some(Boolean)) {
+  const prefix = verdicts.find((hit): hit is string => hit !== null);
+  if (prefix !== undefined) {
     throw new ValidationFailedError(
       `slug "${newSlug}" would shadow the autolink prefix "${prefix}" ` +
         "configured in this deployment — remove that autolink first",
@@ -721,6 +737,13 @@ export async function updateProject(
     const changes = await reevaluateProjectBlocks(ctx, project, db);
     await announceBlockChanges(ctx, changes, actor.id);
   }
+  if (input.require_title !== undefined) {
+    const db = await ctx.router.forProject(routeInfoOf(project));
+    await db
+      .update(projectMeta)
+      .set({ requireTitle: input.require_title })
+      .where(eq(projectMeta.projectId, project.id));
+  }
 
   const registryPatch = {
     ...(input.name === undefined ? {} : { name: input.name }),
@@ -768,26 +791,32 @@ export async function updateProject(
   ctx.bus.publish(row.id, { entity: "project", id: row.id, action: "updated" });
   return {
     ...toProject(row),
-    block_clear_status_id: await blockClearStatusOf(ctx, row),
+    ...(await projectMetaSettingsOf(ctx, row)),
   };
 }
 
 /**
- * The project's clear line (T-377). Read on demand rather than carried by
- * `toProject`, which works off the registry row: this one lives in the
- * project's own database, so a list of projects would pay a query per row —
- * the same reason `former_slugs` is only on the single-project GET.
+ * The project's clear line (T-377) and title rule (T-785). Read on demand
+ * rather than carried by `toProject`, which works off the registry row: these
+ * live in the project's own database, so a list of projects would pay a query
+ * per row — the same reason `former_slugs` is only on the single-project GET.
  */
-export async function blockClearStatusOf(
+export async function projectMetaSettingsOf(
   ctx: AppContext,
   project: ProjectRow,
-): Promise<number | null> {
+): Promise<{ block_clear_status_id: number | null; require_title: boolean }> {
   const db = await ctx.router.forProject(routeInfoOf(project));
   const rows = await db
-    .select({ id: projectMeta.blockClearStatusId })
+    .select({
+      id: projectMeta.blockClearStatusId,
+      requireTitle: projectMeta.requireTitle,
+    })
     .from(projectMeta)
     .where(eq(projectMeta.projectId, project.id));
-  return rows[0]?.id ?? null;
+  return {
+    block_clear_status_id: rows[0]?.id ?? null,
+    require_title: rows[0]?.requireTitle ?? false,
+  };
 }
 
 export async function deleteProject(

@@ -1,5 +1,5 @@
 {
-  "id": "4dda73a6-03b2-4301-93c2-6c54c0f405cb",
+  "id": "f9120400-c340-46d1-aa8b-8302ae9255ce",
   "prevId": "9a233b7c-535d-4fae-887f-3ec72e1788a3",
   "version": "7",
   "dialect": "postgresql",
@@ -1651,6 +1651,13 @@
           "type": "bigint",
           "primaryKey": false,
           "notNull": false
+        },
+        "require_title": {
+          "name": "require_title",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         }
       },
       "indexes": {},

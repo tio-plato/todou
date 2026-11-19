@@ -5,8 +5,10 @@
  * with the zoom up to its cap (T-548), tweened, and paging tweened too
  * (T-551), the height held while the pointer rests on ‹ › (T-556) and
  * for a moment after it leaves (T-559), widening with the zoom up to
- * the viewport (T-774), and the image holding still while the dialog
- * tweens (T-781).
+ * the viewport (T-774), the image holding still while the dialog
+ * tweens (T-781) and while the canvas lands at once, with the dialog's
+ * size still easing around it (T-782), and the dialog's width landing at
+ * once under reduced motion (T-783).
  * Usage: node scripts/image-zoom-smoke.mjs [--keep] [--cpu-throttle=N] [--help]
  * Requires the same installed dependencies, Node 24+, flock and CHROMIUM
  * (default /usr/bin/chromium) as the other browser smokes.
@@ -204,6 +206,10 @@ const FAULTS = {
   // The tween plays to its end, but the canvas is pinned at its final
   // height, so the dialog jumps while the animation's clock says otherwise.
   "tween-overridden": `{ const animate = Element.prototype.animate; Element.prototype.animate = function (keyframes, options) { this.style.setProperty("height", keyframes.at(-1).height, "important"); return animate.call(this, keyframes, options); }; }`,
+  // The dialog's size keeps easing under reduced motion, so the canvas is
+  // resized frame by frame, which is when a measure's own commit can carry a
+  // wheel step that had not rendered yet (T-782).
+  "width-transition": `addEventListener("DOMContentLoaded", () => document.head.append(Object.assign(document.createElement("style"), { textContent: "[role=dialog] { transition: min-width 100ms ease !important; }" })));`,
 };
 
 async function openViewer(context, fixture, screen, fault, name) {
@@ -325,6 +331,7 @@ async function startSampling(page) {
       samples.push({
         h: dialog.getBoundingClientRect().height,
         canvas: img?.parentElement.getBoundingClientRect().height ?? null,
+        cw: img?.parentElement.getBoundingClientRect().width ?? null,
         imageMid: r ? r.y + r.height / 2 : null,
         image: r ? { x: r.x, y: r.y, w: r.width } : null,
         t: Math.round(performance.now()),
@@ -367,22 +374,41 @@ async function startSampling(page) {
 /**
  * Log, in page time, the pointer entering and leaving the controls whose
  * hover holds the height (− 100%▾ + ‹ ›).
+ *
+ * Each leave also starts a probe: a timer of the viewer's own delay, set in
+ * the same dispatch as the viewer's, so it queues behind the same tasks.
+ * A loaded page makes both late by the same amount, which the probe's
+ * firing time measures (T-786). Probes go in their own log because
+ * round-trip-over-image-holds-height expects only crossings in this one.
  */
 async function trackHoldRegion(page) {
-  await evaluate(page, () => {
-    const region = document.querySelector(
-      '[role=dialog] button[aria-label="previous attachment"]',
-    ).parentElement;
-    const log = [];
-    for (const type of ["pointerenter", "pointerleave"])
-      region.addEventListener(type, () =>
-        log.push({ type, t: Math.round(performance.now()) }),
-      );
-    window.__holdRegion = log;
-  });
+  await evaluate(
+    page,
+    (delay) => {
+      const region = document.querySelector(
+        '[role=dialog] button[aria-label="previous attachment"]',
+      ).parentElement;
+      const log = [];
+      const probes = [];
+      for (const type of ["pointerenter", "pointerleave"])
+        region.addEventListener(type, () => {
+          log.push({ type, t: Math.round(performance.now()) });
+          if (type === "pointerleave")
+            setTimeout(
+              () => probes.push({ t: Math.round(performance.now()) }),
+              delay,
+            );
+        });
+      window.__holdRegion = log;
+      window.__holdProbe = probes;
+    },
+    RELEASE_DELAY,
+  );
 }
 const readHoldRegion = (page) =>
   evaluate(page, () => window.__holdRegion.splice(0));
+const readHoldProbe = (page) =>
+  evaluate(page, () => window.__holdProbe.splice(0));
 
 /**
  * Log, in page time, the canvas being handed a new height and the first key
@@ -1013,7 +1039,7 @@ async function desktopCases(page, fixture) {
  * T-548, on the wide image: zooming in grows the canvas, and the dialog with
  * it, to the image's own height until the 75vh cap, and only then pans.
  */
-async function growCases(page, { reduced = false } = {}) {
+async function growCases(page, { reduced = false, widthLands = false } = {}) {
   const io = input(page);
   const out = [];
   const check = (name, ok, detail) =>
@@ -1103,6 +1129,35 @@ async function growCases(page, { reduced = false } = {}) {
   // it while the canvas tweens, however many steps arrive mid-tween (T-781).
   const offX = s3.rect.x + s3.rect.w * 0.2;
   const offY = s3.rect.y + s3.rect.h * 0.3;
+  // Under reduced motion one step widens the dialog in a single jump. A step
+  // from fit cannot show an eased width: min-width goes from unset to a
+  // length there, which never interpolates (T-783).
+  if (widthLands) {
+    await io.wheel(offX, offY, -20, 1);
+    await sleep(300);
+    const steps = [];
+    for (const dy of [-20, 20]) {
+      await startSampling(page);
+      await io.wheel(offX, offY, dy, 1);
+      await sleep(300);
+      const { samples } = await stopSampling(page);
+      steps.push({
+        dy,
+        widths: [...new Set(samples.map((x) => Math.round(x.cw)))],
+        transition: await evaluate(page, () => {
+          const cs = getComputedStyle(document.querySelector("[role=dialog]"));
+          return `${cs.transitionProperty} ${cs.transitionDuration}`;
+        }),
+      });
+    }
+    check(
+      "zoom-step-widens-at-once",
+      steps.every((x) => x.widths.length <= 2),
+      { steps },
+    );
+    await io.wheel(offX, offY, 20, 1);
+    await sleep(300);
+  }
   const still = [];
   const zooms = [s3.view.z];
   for (const dy of [-20, 20]) {
@@ -1124,16 +1179,16 @@ async function growCases(page, { reduced = false } = {}) {
       });
     }
   }
-  // Reduced motion has no tween to hold still through, only the landing.
+  // Reduced motion has no tween to hold still through, but the canvas lands
+  // inside the measure's own commit, and the image must not sit a frame off
+  // at the zoom it lands on (T-782).
   check(
     reduced ? "zoom-off-centre-lands" : "image-still-while-frame-tweens",
     zooms[1] > zooms[0] * 1.5 &&
       zooms[2] < zooms[1] &&
+      still.every((x) => x.move <= 1) &&
       (reduced ||
-        (still.every((x) => x.move <= 1) &&
-          [-20, 20].every((dy) =>
-            still.some((x) => x.dy === dy && x.tweening),
-          ))),
+        [-20, 20].every((dy) => still.some((x) => x.dy === dy && x.tweening))),
     {
       zooms,
       worst: Math.max(0, ...still.map((x) => x.move)),
@@ -1265,21 +1320,27 @@ async function growCases(page, { reduced = false } = {}) {
   const grew = await stopSampling(page);
   const grewTarget = await readHeightTarget(page);
   const [left] = await readHoldRegion(page);
+  const [probe] = await readHoldProbe(page);
   const { s: s8, d: d8 } = await sample();
   const grown = tweenVerdict(grew, dHeld.h, d8.h, reduced);
-  const after =
-    left && grewTarget.heights.length > 0
-      ? grewTarget.heights[0].t - left.t
-      : null;
+  const resized = grewTarget.heights[0]?.t;
+  const after = left && resized !== undefined ? resized - left.t : null;
+  const afterProbe = probe && resized !== undefined ? resized - probe.t : null;
   check(
     "leave-waits-before-resizing",
     left?.type === "pointerleave" &&
       after !== null &&
       after >= RELEASE_DELAY &&
-      // The timer running late under load, not a second hold.
-      after < 2 * RELEASE_DELAY,
+      afterProbe !== null &&
+      // Judged from the probe, not the leave: a loaded host makes the timer
+      // fire hundreds of milliseconds late, while a second hold commits a
+      // whole RELEASE_DELAY after it does. On a quick page a second hold
+      // commits after heights are read, and `after` is null instead.
+      afterProbe < RELEASE_DELAY / 2,
     {
       resizedAfterLeaveMs: after,
+      probeFiredAfterLeaveMs: left && probe ? probe.t - left.t : null,
+      resizedAfterProbeMs: afterProbe,
       paintedAfterLeaveMs: left ? firstMove(grew, dHeld.h, left.t) : null,
       delay: RELEASE_DELAY,
     },
@@ -1707,8 +1768,18 @@ async function main() {
     await runOne(
       "desktop-grow-reduced-motion",
       { ...DESKTOP, reducedMotion: true },
-      (p) => growCases(p, { reduced: true }),
+      (p) => growCases(p, { reduced: true, widthLands: true }),
       null,
+      [],
+      "wide.png",
+    );
+    // T-782: with the dialog's size easing, the image still holds still at
+    // each zoom it lands on.
+    await runOne(
+      "desktop-grow-reduced-motion-width-transition",
+      { ...DESKTOP, reducedMotion: true },
+      (p) => growCases(p, { reduced: true }),
+      "width-transition",
       [],
       "wide.png",
     );
