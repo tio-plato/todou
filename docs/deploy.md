@@ -90,7 +90,11 @@ template nor copied into a new project. A name that is all whitespace becomes
 link goes stale and there is nothing to run. A status whose chart role was
 never chosen takes the default for its new name, so one that becomes `Done`,
 `Shipped` or `Invalid` counts as such in the charts from then on. On a
-database whose encoding is not UTF-8, only ASCII whitespace is trimmed.
+database whose encoding is not UTF-8, only ASCII whitespace is trimmed. The
+old spellings are kept nowhere, so take a backup first if you may want them
+back. The migration runs once: a name an older version writes after it,
+during a rolling deploy or after a rollback, keeps its whitespace through the
+next upgrade, so rename such a name by hand.
 
 ### What project search needs from PostgreSQL
 
