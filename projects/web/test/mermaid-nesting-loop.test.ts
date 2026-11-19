@@ -150,6 +150,19 @@ describe("renderDiagram on a nesting cycle", () => {
       error:
         "Nesting cycle: C inside B inside A inside C (B's block names C, A's block names B, and C's block names A).",
     },
+    {
+      shape: "an edge mermaid walks into the cycle",
+      source: [
+        "classDiagram",
+        "  namespace Animal {",
+        "    class Animal",
+        "    class Dog",
+        "  }",
+        "  Animal <|-- Dog",
+      ],
+      error:
+        "Nesting cycle: Animal inside Animal (Animal's block names Animal).",
+    },
   ])("refuses $shape before drawing it", async ({ source, error }) => {
     const result = await renderDiagram(source.join("\n"), PALETTE, "serif");
     expect(result).toEqual({ ok: false, error });
@@ -192,6 +205,17 @@ describe("renderDiagram on a nesting cycle", () => {
         "    D --> E",
         "  }",
         "  X --> A",
+      ],
+    },
+    {
+      shape: "an edge mermaid lays out",
+      source: [
+        "classDiagram",
+        "  namespace Animal {",
+        "    class Animal",
+        "    class Dog",
+        "  }",
+        "  Dog --|> Animal",
       ],
     },
   ])("draws $shape", async ({ source }) => {

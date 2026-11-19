@@ -119,10 +119,44 @@ function nestingCycleError(source: string, db: object): string | null {
     }
     return null;
   };
+  // The ids mermaid's layout places, the way it places them: from the top
+  // down, every child of a group already placed.
+  let placed: Set<string> | undefined;
+  const isPlaced = (id: string): boolean => {
+    if (placed === undefined) {
+      const seen = new Set<string>();
+      const place = (under: string | undefined) => {
+        for (const node of nodes) {
+          if (node.parentId !== under || seen.has(node.id)) continue;
+          seen.add(node.id);
+          if (node.isGroup) place(node.id);
+        }
+      };
+      place(undefined);
+      placed = seen;
+    }
+    return placed.has(id);
+  };
+  // mermaid walks up from an edge's start and stops at its end, so an edge
+  // whose end is above its start never reaches a loop past the end, and
+  // with both ends placed it is drawn.
+  const drawn = (start: string, end: string): boolean => {
+    const seen = new Set<string>();
+    for (let at: string | undefined = start; at !== undefined; ) {
+      if (at === end) return isPlaced(start) && isPlaced(end);
+      if (seen.has(at)) return false;
+      seen.add(at);
+      at = parent.get(at);
+    }
+    return false;
+  };
   // The first loop an edge runs into.
   const find = (): string[] | null => {
     for (const { start, end } of edges) {
       if (start === end) continue;
+      if (start !== undefined && end !== undefined && drawn(start, end)) {
+        continue;
+      }
       const ends = [start, end].filter((id) => id !== undefined);
       // An end on the loop itself first, so the error starts at the name
       // the edge touches.
