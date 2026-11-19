@@ -145,7 +145,16 @@ const TODOU_READS: Record<string, unknown> = {
   "/projects/todou/insights/settings": {
     version: "1",
     source: "saved",
-    roles: [{ ...TODOU_STATUSES[1], status_id: 2, role: "excluded" }],
+    roles: [
+      {
+        status_id: 2,
+        name: "Doing",
+        category: "open",
+        color: "#3b82f6",
+        position: 1,
+        role: "excluded",
+      },
+    ],
   },
   "/projects/todou/labels": [
     { id: 4, name: "area:web", color: "#0ea5e9" },
@@ -826,6 +835,17 @@ describe("the New template dialog", () => {
         chip.getAttribute("title"),
       ),
     ).toEqual(["area:web", "kind:bug"]);
+
+    // A press in it neither picks the project nor closes the dialog.
+    const doing = within(card).getByText("Doing");
+    fireEvent.pointerDown(doing, { pointerType: "mouse" });
+    fireEvent.mouseDown(doing);
+    fireEvent.pointerUp(doing, { pointerType: "mouse" });
+    fireEvent.mouseUp(doing);
+    fireEvent.click(doing);
+    await settle();
+    expect(screen.getByRole("dialog", { name: "New template" })).toBeTruthy();
+    expect(todou.getAttribute("aria-selected")).toBe("false");
   });
 
   it("keeps a project's preview when a reread of it fails", async () => {
