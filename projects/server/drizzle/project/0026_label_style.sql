@@ -1,0 +1,1 @@
+ALTER TABLE "labels" ADD COLUMN "style" text DEFAULT 'tint' NOT NULL;
