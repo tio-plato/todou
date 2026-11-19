@@ -1,8 +1,8 @@
 -- Status and label names stored before they were kept canonical (trimmed,
 -- runs of whitespace collapsed to one space) may still hold " Done" or
--- "In  Review": the CLI trims every name it is given and can never select
--- them, and they sit beside names the API now treats as the same one. This
--- rewrites each such name to its canonical form.
+-- "In  Review": the CLI's list filters trim each name they are given and can
+-- never select the first, and both sit beside names the API now treats as
+-- the same one. This rewrites each such name to its canonical form.
 --
 -- Whitespace is the explicit set JavaScript's \s and trim() match, not
 -- PostgreSQL's \s, which follows the database locale. Outside UTF8 only the
@@ -18,8 +18,9 @@
 -- row of the same project already holds becomes "<name> (<id>)", then
 -- "<name> (<id>-2)" and so on; a name that is all whitespace becomes
 -- "Status <id>" or "Label <id>". The suffix is not cut back to fit the
--- 60-character limit: the name stays listable, usable and renameable, and
--- cutting it could make another clash.
+-- 60-character limit, as 0013 does not cut its own: a longer name still
+-- lists, works and can be renamed, and docs/deploy.md says what it holds up
+-- until then.
 --
 -- Each block first locks its table against writes, so a name an older server
 -- writes while this runs is either seen by the clash check or waits for the
