@@ -301,6 +301,20 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+const hover = (el: Element) =>
+  fireEvent.pointerOver(el, { pointerType: "mouse", bubbles: true });
+/** The one preview open, once its delay has run. */
+const previewCard = () =>
+  waitFor(() => {
+    const cards = document.querySelectorAll<HTMLElement>(
+      "[data-slot='hover-card-content']",
+    );
+    expect(cards).toHaveLength(1);
+    return cards[0] as HTMLElement;
+  });
+const follows = (a: Element, b: Element) =>
+  Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+
 describe("the project templates list", () => {
   it("lists Default first and sets another template as the default", async () => {
     const server = fakeServer();
@@ -325,6 +339,43 @@ describe("the project templates list", () => {
         },
       ]),
     );
+  });
+
+  it("previews a template's default status, line, chart roles and labels on hover", async () => {
+    fakeServer();
+    renderAt("/settings/templates");
+    hover(await screen.findByRole("link", { name: "Default" }));
+    const card = await previewCard();
+    const statuses = within(
+      within(card)
+        .getByRole("heading", { name: "Statuses" })
+        .closest("section") as HTMLElement,
+    );
+    // Each mark between its own status and the next: Todo is the default,
+    // the line sits on Shipped, which is open but counts as completed.
+    const marks = [
+      "Todo",
+      "default",
+      "Next",
+      "Ready to Ship",
+      "Blocks clear below",
+      "Shipped",
+      "completed in charts",
+      "Done",
+    ].map((text) => statuses.getByText(text));
+    marks.slice(1).forEach((mark, i) => {
+      expect(follows(marks[i] as Element, mark), mark.textContent ?? "").toBe(
+        true,
+      );
+    });
+    const labels = within(card)
+      .getByRole("heading", { name: "Labels" })
+      .closest("section") as HTMLElement;
+    expect(
+      [...labels.querySelectorAll("[title]")].map((chip) =>
+        chip.getAttribute("title"),
+      ),
+    ).toEqual(["kind:bug", "kind:chore", "kind:feature", "needs-brainstorm"]);
   });
 });
 
