@@ -1,6 +1,5 @@
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { routeInfoOf } from "../src/services/access.ts";
 import {
   checkCanonicalNamesMigration,
   migrationStatements,
@@ -8,8 +7,7 @@ import {
 import { makeTestApp, type TestApp } from "./helpers.ts";
 import { createTestDatabase } from "./postgres-database.ts";
 
-// biome-ignore lint/suspicious/noExplicitAny: test-side response poking
-const json = (res: Response): Promise<any> => res.json() as Promise<any>;
+const json = (res: Response) => res.json() as Promise<{ id: number }>;
 
 /**
  * canonical_names is plpgsql with regular expressions whose character class
@@ -49,13 +47,11 @@ describe.skipIf(!PG_URL)("canonical_names migration on postgres", () => {
     const projectA = await create(`canon-a-${run}`);
     const projectB = await create(`canon-b-${run}`);
 
-    const db = await t.ctx.router.forProject(
-      routeInfoOf({
-        id: projectA.id,
-        slug: `canon-a-${run}`,
-        databaseUrl: null,
-      } as Parameters<typeof routeInfoOf>[0]),
-    );
+    const db = await t.ctx.router.forProject({
+      id: projectA.id,
+      slug: `canon-a-${run}`,
+      database_url: null,
+    });
     await checkCanonicalNamesMigration(db, {
       projectA: projectA.id,
       projectB: projectB.id,

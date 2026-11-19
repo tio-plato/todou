@@ -1,10 +1,8 @@
 import { afterAll, beforeAll, describe, it } from "vitest";
-import { routeInfoOf } from "../src/services/access.ts";
 import { checkCanonicalNamesMigration } from "./canonical-names-migration-cases.ts";
 import { makeTestApp, type TestApp } from "./helpers.ts";
 
-// biome-ignore lint/suspicious/noExplicitAny: test-side response poking
-const json = (res: Response): Promise<any> => res.json() as Promise<any>;
+const json = (res: Response) => res.json() as Promise<{ id: number }>;
 
 describe("canonical_names migration", () => {
   let t: TestApp;
@@ -33,13 +31,11 @@ describe("canonical_names migration", () => {
     const projectA = await create("canon-a");
     const projectB = await create("canon-b");
 
-    const db = await t.ctx.router.forProject(
-      routeInfoOf({
-        id: projectA.id,
-        slug: "canon-a",
-        databaseUrl: null,
-      } as Parameters<typeof routeInfoOf>[0]),
-    );
+    const db = await t.ctx.router.forProject({
+      id: projectA.id,
+      slug: "canon-a",
+      database_url: null,
+    });
     await checkCanonicalNamesMigration(db, {
       projectA: projectA.id,
       projectB: projectB.id,
