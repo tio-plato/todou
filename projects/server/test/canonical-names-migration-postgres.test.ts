@@ -95,7 +95,13 @@ describe.skipIf(!PG_URL)("canonical_names migration on postgres", () => {
         ],
       },
     };
-    for (const [encoding, { seed, expected }] of Object.entries(encodings)) {
+    // standard_conforming_strings = off has PostgreSQL decode \u escapes in
+    // a plain string literal itself, which fails outside UTF8 for any code
+    // point beyond ASCII; a deployment may still have it set.
+    const runs = Object.entries(encodings).flatMap(([encoding, names]) =>
+      ["on", "off"].map((conforming) => ({ encoding, conforming, ...names })),
+    );
+    for (const { encoding, conforming, seed, expected } of runs) {
       const database = await createTestDatabase(
         PG_URL as string,
         "canonical_names",
@@ -108,6 +114,7 @@ describe.skipIf(!PG_URL)("canonical_names migration on postgres", () => {
           // No conversion either way: the bytes sent are the bytes stored.
           await client.query("SET client_encoding = 'SQL_ASCII'");
         }
+        await client.query(`SET standard_conforming_strings = ${conforming}`);
         const ids: Record<string, number[]> = {};
         for (const table of ["statuses", "labels"]) {
           await client.query(
@@ -141,7 +148,7 @@ describe.skipIf(!PG_URL)("canonical_names migration on postgres", () => {
           const want = expected(tableIds.at(-1) as number);
           expect(
             rows.map((row) => row.name.toString("hex")),
-            `${encoding} ${table}`,
+            `${encoding}, standard_conforming_strings ${conforming}, ${table}`,
           ).toEqual(
             want.map((name) =>
               Buffer.from(
@@ -157,4 +164,5 @@ describe.skipIf(!PG_URL)("canonical_names migration on postgres", () => {
       }
     }
   });
+
 });

@@ -9,7 +9,10 @@
 -- ASCII part of it is used: there an escape such as \u00a0 matches a byte,
 -- and byte 0xA0 is part of a multi-byte character in SQL_ASCII (the "a" with
 -- a grave accent among them) or another character in an encoding such as
--- KOI8-R, so the wider class would garble the name.
+-- KOI8-R, so the wider class would garble the name. The classes are E''
+-- strings with doubled backslashes so that the regular expression engine
+-- reads the escapes whatever standard_conforming_strings says: with it off,
+-- a plain string would have them decoded first, which fails outside UTF8.
 --
 -- A canonical name always stays as it is. A row whose canonical name another
 -- row of the same project already holds becomes "<name> (<id>)", then
@@ -28,9 +31,9 @@ DECLARE
   n int;
 BEGIN
   IF utf8 THEN
-    ws := '[\u0009-\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]';
+    ws := E'[\\u0009-\\u000d\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]';
   ELSE
-    ws := '[\u0009-\u000d\u0020]';
+    ws := E'[\\u0009-\\u000d\\u0020]';
   END IF;
   FOR r IN SELECT id, project_id, name FROM statuses ORDER BY id LOOP
     target := regexp_replace(
@@ -64,9 +67,9 @@ DECLARE
   n int;
 BEGIN
   IF utf8 THEN
-    ws := '[\u0009-\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]';
+    ws := E'[\\u0009-\\u000d\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]';
   ELSE
-    ws := '[\u0009-\u000d\u0020]';
+    ws := E'[\\u0009-\\u000d\\u0020]';
   END IF;
   FOR r IN SELECT id, project_id, name FROM labels ORDER BY id LOOP
     target := regexp_replace(
