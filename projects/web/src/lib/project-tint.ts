@@ -110,7 +110,8 @@ export function toSrgb(l: number, c: number, hue: number): Rgb {
   return [encode(r), encode(g), encode(b)];
 }
 
-const relativeLuminance = ([r, g, b]: Rgb) =>
+/** WCAG 2's relative luminance of 0–255 sRGB channels. */
+export const relativeLuminance = ([r, g, b]: Rgb) =>
   0.2126 * decode(r) + 0.7152 * decode(g) + 0.0722 * decode(b);
 
 /** The 0–255 channels of an sRGB `#rrggbb`, either case; `null` otherwise. */

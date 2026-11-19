@@ -115,3 +115,45 @@ describe("tinted label chips", () => {
     expect(worstFirst(failures).slice(0, 10)).toEqual([]);
   });
 });
+
+describe("solid label chips", () => {
+  // Far enough from the black/white boundary that APCA and the luminance
+  // split the chip uses agree on them with room to spare.
+  const WHITE_TEXT = ["#3b82f6", "#8b5cf6", "#6b7280", "#000000"];
+  const BLACK_TEXT = ["#eab308", "#a2eeef", "#ffffff"];
+
+  it("fills with the label colour and writes in white or black, whichever APCA reads better, in any theme", () => {
+    const labels: Label[] = [...WHITE_TEXT, ...BLACK_TEXT].map((color, i) => ({
+      id: i + 1,
+      name: color,
+      color,
+      style: "solid",
+    }));
+    for (const theme of ["light", "dark"] as const) {
+      setThemePref(theme);
+      const view = render(<LabelChips labels={labels} />);
+      for (const label of labels) {
+        const chip = view.getByTitle(label.name);
+        expect(chip.style.backgroundColor.toLowerCase()).toBe(label.color);
+        expect(chip.style.borderColor.toLowerCase()).toBe(label.color);
+        expect(chip.style.color.toLowerCase(), `${theme} ${label.color}`).toBe(
+          WHITE_TEXT.includes(label.color) ? "#ffffff" : "#000000",
+        );
+      }
+      view.unmount();
+    }
+  });
+
+  it("draws a style it does not know as tinted", () => {
+    const label = {
+      id: 1,
+      name: "future",
+      color: "#ef4444",
+      style: "outline",
+    } as unknown as Label;
+    const view = render(<LabelChips labels={[label]} />);
+    const chip = view.getByTitle("future");
+    expect(chip.style.backgroundColor.toLowerCase()).toBe("#ef444422");
+    expect(chip.style.borderColor.toLowerCase()).toBe("#ef444455");
+  });
+});
