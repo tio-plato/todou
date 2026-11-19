@@ -164,7 +164,7 @@ function offsetFrom(trigger: Element | null, sideOffset?: number) {
 type Placement = {
   side: "bottom" | "right";
   align: "start" | "end";
-  /** From the trigger, outside a dialog. */
+  /** From the trigger, unless a `right` card sits beside a dialog. */
   sideOffset?: number;
 };
 
@@ -173,10 +173,10 @@ type Placement = {
  * hover cards, so that beside a 512px dialog it still fits on the right of a
  * 1280px window instead of flipping over the list it came from.
  *
- * `sideOffset` is measured from the trigger. In a dialog the card starts past
- * the dialog's own edge instead, measured as it opens, so that it covers
- * neither the dialog's padding nor the scrollbar of a dialog taller than the
- * window.
+ * `sideOffset` is measured from the trigger. A card to the right of a
+ * trigger in a dialog starts past the dialog's own edge instead, measured as
+ * it opens, so that it covers neither the dialog's padding nor the scrollbar
+ * of a dialog taller than the window.
  *
  * The card is portalled to `body` but stays in its trigger's React tree,
  * which in a picker is a dialog's and an option's:
