@@ -877,11 +877,13 @@ describe("the New template dialog", () => {
     hover(name);
     const card = await previewCard();
     await waitFor(() =>
-      expect(
-        server.calls.filter((c) => c.path === "/projects/todou/labels"),
-      ).toHaveLength(2),
+      expect(client.getQueryState(labelsQuery("todou").queryKey)?.status).toBe(
+        "error",
+      ),
     );
-    await settle();
+    expect(
+      server.calls.filter((c) => c.path === "/projects/todou/labels"),
+    ).toHaveLength(2);
     expect(within(card).getByText("Doing")).toBeTruthy();
     expect(
       [...card.querySelectorAll("[title]")].map((chip) =>
