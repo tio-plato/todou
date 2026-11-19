@@ -9,6 +9,7 @@ import { ProjectListbox } from "@/components/project-listbox.tsx";
 import { SearchableListbox } from "@/components/searchable-listbox.tsx";
 import { Segmented } from "@/components/settings/status-set-list.tsx";
 import { MatchHighlight } from "@/components/shared/match-highlight.tsx";
+import { TemplateHoverCard } from "@/components/template-preview.tsx";
 import { matchText, type ProjectMatch } from "@/lib/project-match.ts";
 
 /** A template this version can read, and so one something can be made from. */
@@ -61,18 +62,27 @@ export function TemplateListbox({
     return range === undefined ? null : { range };
   }, []);
   return (
-    <SearchableListbox<ProjectTemplate, { range: ProjectMatch["range"] }>
+    <SearchableListbox<UsableTemplate, { range: ProjectMatch["range"] }>
       options={options}
       optionKey={(template) => String(template.ref)}
       match={match}
       renderOption={(template, hit) => (
-        <span className="truncate">
-          {hit ? (
-            <MatchHighlight text={template.name} range={hit.range} />
-          ) : (
-            template.name
-          )}
-        </span>
+        // Clear of the option's padding, the list's, its scrollbar and its
+        // border, so the card covers none of them.
+        <TemplateHoverCard
+          template={template}
+          side="right"
+          align="start"
+          sideOffset={32}
+        >
+          <span className="min-w-0 flex-1 truncate">
+            {hit ? (
+              <MatchHighlight text={template.name} range={hit.range} />
+            ) : (
+              template.name
+            )}
+          </span>
+        </TemplateHoverCard>
       )}
       selected={String(value)}
       onSelect={(template) => onChange(template.ref)}

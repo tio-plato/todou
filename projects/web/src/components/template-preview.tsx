@@ -7,6 +7,7 @@ import {
   OPEN_DELAY_MS,
 } from "@/components/shared/hover-preview.ts";
 import type { UsableTemplate } from "@/components/start-from-picker.tsx";
+import { hasScrollRoom } from "@/components/ui/dialog";
 import {
   HoverCard,
   HoverCardContent,
@@ -81,6 +82,13 @@ export function TemplatePreview({ template }: { template: UsableTemplate }) {
  * A template's preview, opened by hovering `children`. 320px wide, narrower
  * than other hover cards, so that beside a 512px dialog it still fits on the
  * right of a 1280px window instead of flipping over the list it came from.
+ *
+ * The card is portalled to `body` but stays in its trigger's React tree,
+ * which in a picker is a dialog's and an option's:
+ * - A wheel the card has room for leaves before it reaches the document,
+ *   where the dialog's scroll lock would cancel it as falling outside the
+ *   dialog. With no room left it goes on, and the page behind stays put.
+ * - A click in it would bubble to the option and pick that template.
  */
 export function TemplateHoverCard({
   template,
@@ -103,6 +111,14 @@ export function TemplateHoverCard({
         align={align}
         sideOffset={sideOffset}
         className="max-h-(--radix-hover-card-content-available-height) w-80 overflow-y-auto overscroll-contain"
+        onWheel={(event) => {
+          const horizontal = Math.abs(event.deltaX) > Math.abs(event.deltaY);
+          const delta = horizontal ? event.deltaX : event.deltaY;
+          if (hasScrollRoom(event.currentTarget, horizontal, delta)) {
+            event.stopPropagation();
+          }
+        }}
+        onClick={(event) => event.stopPropagation()}
       >
         <TemplatePreview template={template} />
       </HoverCardContent>

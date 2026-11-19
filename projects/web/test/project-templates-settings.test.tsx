@@ -644,6 +644,51 @@ describe("the New template dialog", () => {
     });
   });
 
+  it("previews a template on hover, and a click in the preview picks nothing", async () => {
+    fakeServer();
+    const { dialog } = await openDialog();
+    const kanban = dialog.getByRole("option", { name: "Kanban" });
+    hover(within(kanban).getByText("Kanban"));
+    const card = await previewCard();
+    fireEvent.click(within(card).getByText("Doing"));
+    const selected = (name: string) =>
+      dialog.getByRole("option", { name }).getAttribute("aria-selected");
+    expect(selected("Default")).toBe("true");
+    expect(selected("Kanban")).toBe("false");
+  });
+
+  it("lets a wheel over the preview scroll it", async () => {
+    fakeServer();
+    const { dialog } = await openDialog();
+    hover(
+      within(dialog.getByRole("option", { name: "Kanban" })).getByText(
+        "Kanban",
+      ),
+    );
+    const card = await previewCard();
+    // happy-dom lays nothing out: the card is handed the room its
+    // `overflow-y-auto` and height cap give it in a browser.
+    card.style.overflowY = "auto";
+    for (const [property, value] of [
+      ["scrollHeight", 1000],
+      ["clientHeight", 400],
+      ["scrollTop", 0],
+    ] as const) {
+      Object.defineProperty(card, property, {
+        value,
+        configurable: true,
+        writable: true,
+      });
+    }
+    const wheel = new WheelEvent("wheel", {
+      deltaY: 100,
+      bubbles: true,
+      cancelable: true,
+    });
+    within(card).getByText("Doing").dispatchEvent(wheel);
+    expect(wheel.defaultPrevented).toBe(false);
+  });
+
   it("names the project it starts from, then opens the new template", async () => {
     const server = fakeServer();
     const { router, dialog } = await openDialog();
