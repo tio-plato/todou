@@ -165,4 +165,86 @@ describe.skipIf(!PG_URL)("canonical_names migration on postgres", () => {
     }
   });
 
+  // An older server can still be writing while the migration runs: a name it
+  // writes mid-run must be seen before the rename that would clash with it,
+  // not trip the unique index and abort the upgrade.
+  it("waits for a concurrent write of the canonical name instead of failing on it", async () => {
+    const database = await createTestDatabase(
+      PG_URL as string,
+      "canonical_names",
+    );
+    const connect = async () => {
+      const client = new pg.Client({ connectionString: database.url });
+      await client.connect();
+      return client;
+    };
+    const writer = await connect();
+    const migrator = await connect();
+    const watcher = await connect();
+    try {
+      const stale: Record<string, number> = {};
+      for (const table of ["statuses", "labels"]) {
+        await writer.query(
+          `CREATE TABLE ${table} (id serial PRIMARY KEY, ` +
+            "project_id int NOT NULL, name text NOT NULL)",
+        );
+        await writer.query(
+          `CREATE UNIQUE INDEX ${table}_project_name_idx ` +
+            `ON ${table} (project_id, name)`,
+        );
+        const { rows } = await writer.query<{ id: number }>(
+          `INSERT INTO ${table} (project_id, name) VALUES (1, 'Zed ') ` +
+            "RETURNING id",
+        );
+        stale[table] = (rows[0] as { id: number }).id;
+      }
+
+      await writer.query("BEGIN");
+      for (const table of ["statuses", "labels"]) {
+        await writer.query(
+          `INSERT INTO ${table} (project_id, name) VALUES (1, 'Zed')`,
+        );
+      }
+      const { rows: me } = await migrator.query<{ pid: number }>(
+        "SELECT pg_backend_pid() AS pid",
+      );
+      const migrated = (async () => {
+        for (const statement of await migrationStatements()) {
+          await migrator.query(statement);
+        }
+      })().then(
+        () => null,
+        (err: unknown) => err,
+      );
+      // Commit only once the migration waits on the writer.
+      for (let tries = 0; ; tries++) {
+        const { rows } = await watcher.query<{ wait: string | null }>(
+          "SELECT wait_event_type AS wait FROM pg_stat_activity WHERE pid = $1",
+          [me[0]?.pid],
+        );
+        if (rows[0]?.wait === "Lock") break;
+        if (tries > 200) throw new Error("the migration never waited");
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      await writer.query("COMMIT");
+      const failure = await migrated;
+      if (failure) throw failure;
+
+      for (const table of ["statuses", "labels"]) {
+        const { rows } = await watcher.query<{ id: number; name: string }>(
+          `SELECT id, name FROM ${table} ORDER BY id`,
+        );
+        const id = stale[table] as number;
+        expect(rows, table).toEqual([
+          { id, name: `Zed (${id})` },
+          { id: id + 1, name: "Zed" },
+        ]);
+      }
+    } finally {
+      await writer.end();
+      await migrator.end();
+      await watcher.end();
+      await database.drop();
+    }
+  });
 });

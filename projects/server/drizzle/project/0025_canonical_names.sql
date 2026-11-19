@@ -20,6 +20,10 @@
 -- "Status <id>" or "Label <id>". The suffix is not cut back to fit the
 -- 60-character limit: the name stays listable, usable and renameable, and
 -- cutting it could make another clash.
+--
+-- Each block first locks its table against writes, so a name an older server
+-- writes while this runs is either seen by the clash check or waits for the
+-- rename, rather than tripping the unique index and aborting the upgrade.
 DO $$
 DECLARE
   utf8 CONSTANT boolean := current_setting('server_encoding') = 'UTF8';
@@ -30,6 +34,7 @@ DECLARE
   candidate text;
   n int;
 BEGIN
+  LOCK TABLE statuses IN SHARE ROW EXCLUSIVE MODE;
   IF utf8 THEN
     ws := E'[\\u0009-\\u000d\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]';
   ELSE
@@ -66,6 +71,7 @@ DECLARE
   candidate text;
   n int;
 BEGIN
+  LOCK TABLE labels IN SHARE ROW EXCLUSIVE MODE;
   IF utf8 THEN
     ws := E'[\\u0009-\\u000d\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]';
   ELSE
