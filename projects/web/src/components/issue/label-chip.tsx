@@ -2,15 +2,17 @@ import type { Label } from "@todou/shared";
 import { XIcon } from "lucide-react";
 import { Fragment } from "react";
 import { groupLabelsByPrefix, splitLabelName } from "@/lib/labels.ts";
+import { cn } from "@/lib/utils";
 
 /**
- * The only two ways a label reaches the screen (T-715): one label, or a list
- * of them. Both draw the same atom — a `prefix:` in muted text beside a chip
- * holding the value, or the whole name in the chip when there is no prefix —
- * and a list only folds a repeated prefix. Neither takes styling props: a
- * second look for a label was how the sidebar and the timeline came to
- * disagree, and `label-status-rendering.test.ts` fails on any drawing that
- * goes around these two.
+ * The only three ways a label reaches the screen (T-715): one label, a list
+ * of them, or a list with one prefix to a row. All draw the same atom — a
+ * `prefix:` in muted text beside a chip holding the value, or the whole name
+ * in the chip when there is no prefix — and a list only folds a repeated
+ * prefix. None takes styling props: a second look for a label was how the
+ * sidebar and the timeline came to disagree, and
+ * `label-status-rendering.test.ts` fails on any drawing that goes around
+ * these three.
  */
 export function LabelChip({ label }: { label: Label }) {
   return (
@@ -56,21 +58,59 @@ export function LabelChips({
   );
 }
 
+/**
+ * A list read as a whole set, as a template's preview shows one: each prefix
+ * on a row of its own, its group free to wrap within that row, and the
+ * labels with no prefix together on the last row.
+ */
+export function LabelRows({ labels }: { labels: Label[] }) {
+  const { groups, plain } = groupLabelsByPrefix(labels);
+  return (
+    <div className="flex flex-col items-start gap-1.5">
+      {groups.map((group) => (
+        <LabelGroup
+          key={group.prefix}
+          prefix={group.prefix}
+          labels={group.labels}
+          wrap
+        />
+      ))}
+      {plain.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {plain.map((label) => (
+            <LabelGroup key={label.id} prefix={null} labels={[label]} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /*
  * `align-middle` only acts where a label sits in running text (a timeline
  * sentence); everywhere else the group is a flex item and ignores it.
+ *
+ * `wrap` lets a group that has a row to itself break inside it; elsewhere a
+ * group is one unit that its container wraps around.
  */
 function LabelGroup({
   prefix,
   labels,
   onRemove,
+  wrap = false,
 }: {
   prefix: string | null;
   labels: Label[];
   onRemove?: (label: Label) => void;
+  wrap?: boolean;
 }) {
   return (
-    <span className="inline-flex min-w-0 items-center gap-1 align-middle">
+    <span
+      className={cn(
+        "inline-flex min-w-0 items-center gap-1 align-middle",
+        wrap && "flex-wrap",
+      )}
+    >
       {prefix && (
         <span className="text-xs text-muted-foreground">{prefix}</span>
       )}

@@ -130,6 +130,7 @@ function prefixSplits(file: string, source: string): Hit[] {
 const ALLOWED_PROPS: Record<string, string[]> = {
   LabelChip: ["label"],
   LabelChips: ["labels", "onRemove"],
+  LabelRows: ["labels"],
   StatusPill: ["status"],
   // The dot's cell doubles as a board column's or list group's select-all
   // box (T-732, T-768).
@@ -281,13 +282,15 @@ describe("labels and statuses are drawn only by their components (T-715)", () =>
   it("gives the owner components no styling props", () => {
     const owners = all.filter(({ file }) => OWNERS.has(file));
     expect(owners.flatMap((s) => extraProps(s.file, s.source))).toEqual([]);
-    // The four entry points, so a fifth is a decision rather than a drift.
+    // The five entry points, so a sixth is a decision rather than a drift.
+    // LabelRows: a template's preview lists labels one prefix to a row.
     const exported = owners.flatMap((s) =>
       [...s.source.matchAll(/export function (\w+)/g)].map((m) => m[1]),
     );
     expect(exported.sort()).toEqual([
       "LabelChip",
       "LabelChips",
+      "LabelRows",
       "StatusHeading",
       "StatusPill",
     ]);
