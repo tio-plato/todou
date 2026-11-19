@@ -1,4 +1,4 @@
-import { render } from "@testing-library/react";
+import { act, render } from "@testing-library/react";
 import type { Label } from "@todou/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import { LabelChips } from "../src/components/issue/label-chip.tsx";
@@ -14,7 +14,21 @@ import {
   worstFirst,
 } from "./theme-tokens.ts";
 
+/** The OS colour scheme happy-dom answers `prefers-color-scheme` from. */
+const device = (
+  window as unknown as {
+    happyDOM: { settings: { device: { prefersColorScheme: string } } };
+  }
+).happyDOM.settings.device;
+
+/** Switch the OS scheme; happy-dom re-evaluates media queries on resize. */
+function setOsScheme(scheme: "light" | "dark") {
+  device.prefersColorScheme = scheme;
+  window.dispatchEvent(new Event("resize"));
+}
+
 afterEach(() => {
+  setOsScheme("light");
   setThemePref("system");
   localStorage.clear();
 });
@@ -114,13 +128,50 @@ describe("tinted label chips", () => {
     }
     expect(worstFirst(failures).slice(0, 10)).toEqual([]);
   });
+
+  it("follows the OS between light and dark under the system theme, while mounted", () => {
+    setThemePref("system");
+    setOsScheme("light");
+    const label: Label = { id: 1, name: "black", color: "#000000" };
+    const view = render(<LabelChips labels={[label]} />);
+    const onBackground = (kind: "light" | "dark") => {
+      const chip = view.getByTitle("black");
+      const text = parsePaint(chip.style.color);
+      const fill = parsePaint(chip.style.backgroundColor);
+      const background = oklch(tokensFor(kind, kind)["--background"]);
+      return contrast(text.rgb, over(fill.rgb, background, fill.alpha));
+    };
+    expect(onBackground("light")).toBeGreaterThanOrEqual(MIN_TEXT_CONTRAST);
+    act(() => setOsScheme("dark"));
+    expect(onBackground("dark")).toBeGreaterThanOrEqual(MIN_TEXT_CONTRAST);
+    act(() => setOsScheme("light"));
+    expect(onBackground("light")).toBeGreaterThanOrEqual(MIN_TEXT_CONTRAST);
+  });
 });
 
 describe("solid label chips", () => {
-  // Far enough from the black/white boundary that APCA and the luminance
-  // split the chip uses agree on them with room to spare.
-  const WHITE_TEXT = ["#3b82f6", "#8b5cf6", "#6b7280", "#000000"];
-  const BLACK_TEXT = ["#eab308", "#a2eeef", "#ffffff"];
+  // The ink APCA reads better on each fill, measured with apca-w3 outside
+  // the repository: every preset, emerald and teal among them although
+  // they sit just either side of the boundary, and the extremes.
+  const WHITE_TEXT = [
+    "#6b7280",
+    "#ef4444",
+    "#f97316",
+    "#0ea5e9",
+    "#3b82f6",
+    "#8b5cf6",
+    "#ec4899",
+    "#000000",
+  ];
+  const BLACK_TEXT = [
+    "#f59e0b",
+    "#eab308",
+    "#22c55e",
+    "#10b981",
+    "#14b8a6",
+    "#a2eeef",
+    "#ffffff",
+  ];
 
   it("fills with the label colour and writes in white or black, whichever APCA reads better, in any theme", () => {
     const labels: Label[] = [...WHITE_TEXT, ...BLACK_TEXT].map((color, i) => ({
