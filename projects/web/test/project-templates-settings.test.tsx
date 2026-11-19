@@ -125,6 +125,30 @@ const project = (slug: string): Project => ({
 });
 const PROJECTS = [project("todou"), project("homelab")];
 
+/**
+ * What the `todou` project holds, as its four reads answer. The line and the
+ * stored chart role are not what the defaults would give, so a preview that
+ * fell back to them shows.
+ */
+const TODOU_STATUSES = [
+  { name: "Todo", category: "open", color: "#6b7280", is_default: true },
+  { name: "Doing", category: "open", color: "#3b82f6", is_default: false },
+  { name: "Done", category: "closed", color: "#22c55e", is_default: false },
+].map((status, i) => ({ ...status, id: i + 1, position: i }));
+const TODOU_READS: Record<string, unknown> = {
+  "/projects/todou/statuses": TODOU_STATUSES,
+  "/projects/todou": { ...project("todou"), block_clear_status_id: 2 },
+  "/projects/todou/insights/settings": {
+    version: "1",
+    source: "saved",
+    roles: [{ ...TODOU_STATUSES[1], status_id: 2, role: "excluded" }],
+  },
+  "/projects/todou/labels": [
+    { id: 4, name: "area:web", color: "#0ea5e9" },
+    { id: 5, name: "kind:bug", color: "#ef4444" },
+  ],
+};
+
 type Call = { method: string; path: string; body: unknown };
 
 const json = (status: number, payload: unknown) =>
@@ -195,6 +219,8 @@ function fakeServer({
     if (path === "/me/prefs" && method === "PATCH") {
       return json(200, { ...PREFS, ...body });
     }
+    const read = TODOU_READS[path];
+    if (read !== undefined && method === "GET") return json(200, read);
     return json(404, { error: { code: "not_found", message: path } });
   }) as typeof fetch);
 
@@ -750,6 +776,46 @@ describe("the New template dialog", () => {
     });
     within(card).getByText("Doing").dispatchEvent(past);
     expect(past.defaultPrevented).toBe(true);
+  });
+
+  it("previews a project on hover, reading it only once the card opens", async () => {
+    const server = fakeServer();
+    const { dialog } = await openDialog();
+    fireEvent.click(dialog.getByRole("button", { name: "Project" }));
+    const reads = () =>
+      server.calls
+        .filter((c) => c.path.startsWith("/projects/todou"))
+        .map((c) => c.path)
+        .sort();
+    const todou = dialog.getByRole("option", { name: /todou/ });
+    await settle();
+    expect(reads()).toEqual([]);
+
+    hover(within(todou).getAllByText("todou")[0] as HTMLElement);
+    const card = await previewCard();
+    await within(card).findByText("Doing");
+    expect(reads()).toEqual(Object.keys(TODOU_READS).sort());
+    // Todo is the default, the line sits on Doing, which is open but counts
+    // as excluded; Done is closed.
+    const marks = [
+      "Todo",
+      "default",
+      "Blocks clear below",
+      "Doing",
+      "excluded from charts",
+      "Done",
+      "closed",
+    ].map((text) => within(card).getByText(text));
+    marks.slice(1).forEach((mark, i) => {
+      expect(follows(marks[i] as Element, mark), mark.textContent ?? "").toBe(
+        true,
+      );
+    });
+    expect(
+      [...card.querySelectorAll("[title]")].map((chip) =>
+        chip.getAttribute("title"),
+      ),
+    ).toEqual(["area:web", "kind:bug"]);
   });
 
   it("names the project it starts from, then opens the new template", async () => {

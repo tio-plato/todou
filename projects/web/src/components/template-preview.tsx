@@ -1,7 +1,14 @@
-import type { TemplateStatus } from "@todou/shared";
+import { useQuery } from "@tanstack/react-query";
+import type { Label, TemplateStatus } from "@todou/shared";
 import { type ReactNode, useCallback, useRef, useState } from "react";
+import { insightsSettingsQuery } from "@/api/insights.ts";
+import { labelsQuery, projectQuery, statusesQuery } from "@/api/queries.ts";
 import { LabelRows } from "@/components/issue/label-chip.tsx";
-import { StatusSetList } from "@/components/settings/status-set-list.tsx";
+import {
+  type StatusSetEntry,
+  StatusSetList,
+  withChartRoles,
+} from "@/components/settings/status-set-list.tsx";
 import {
   CLOSE_DELAY_MS,
   OPEN_DELAY_MS,
@@ -13,6 +20,7 @@ import {
   HoverCardContent,
   HoverCardTrigger,
 } from "@/components/ui/hover-card.tsx";
+import { Skeleton } from "@/components/ui/skeleton.tsx";
 
 /**
  * A template's statuses as the status list takes them. A template holds no
@@ -46,19 +54,19 @@ const READ_ONLY = {
 };
 
 /**
- * What a template holds, drawn by the lists its own page uses, read-only:
- * the statuses exactly as a status list shows them, then the labels one
- * prefix to a row.
+ * A status set and its labels, read-only, drawn by the lists a template's or
+ * a project's own pages use: the statuses exactly as a status list shows
+ * them, then the labels one prefix to a row.
  */
-export function TemplatePreview({ template }: { template: UsableTemplate }) {
-  const { statuses, lineStatusId } = templateStatusSet(
-    template.body.statuses,
-    (_, index) => index + 1,
-  );
-  const labels = template.body.labels.map((label, index) => ({
-    ...label,
-    id: index + 1,
-  }));
+function SetPreview({
+  statuses,
+  lineStatusId,
+  labels,
+}: {
+  statuses: readonly StatusSetEntry[];
+  lineStatusId: number | null;
+  labels: Label[];
+}) {
   return (
     <div className="space-y-4">
       <StatusSetList
@@ -78,6 +86,65 @@ export function TemplatePreview({ template }: { template: UsableTemplate }) {
   );
 }
 
+/** What a template holds. */
+export function TemplatePreview({ template }: { template: UsableTemplate }) {
+  const { statuses, lineStatusId } = templateStatusSet(
+    template.body.statuses,
+    (_, index) => index + 1,
+  );
+  const labels = template.body.labels.map((label, index) => ({
+    ...label,
+    id: index + 1,
+  }));
+  return (
+    <SetPreview
+      statuses={statuses}
+      lineStatusId={lineStatusId}
+      labels={labels}
+    />
+  );
+}
+
+/**
+ * What a project holds now, from the reads its own settings pages share. Its
+ * own component so that they mount with the card rather than with the row:
+ * `HoverCardContent` renders nothing until the card opens, so hooks out at
+ * the trigger would send four reads for every project the list draws. The
+ * line comes from the single-project read; listed projects do not carry it.
+ */
+function ProjectPreview({ slug }: { slug: string }) {
+  const statuses = useQuery(statusesQuery(slug));
+  const project = useQuery(projectQuery(slug));
+  const settings = useQuery(insightsSettingsQuery(slug));
+  const labels = useQuery(labelsQuery(slug));
+  const failed = [statuses, project, settings, labels].find(
+    (read) => read.error !== null,
+  );
+  if (failed?.error) {
+    return <p className="text-sm text-destructive">{failed.error.message}</p>;
+  }
+  if (
+    statuses.data === undefined ||
+    project.data === undefined ||
+    settings.data === undefined ||
+    labels.data === undefined
+  ) {
+    return (
+      <div className="space-y-1.5">
+        <Skeleton className="h-3 w-full" />
+        <Skeleton className="h-3 w-4/5" />
+      </div>
+    );
+  }
+  return (
+    <SetPreview
+      statuses={withChartRoles(statuses.data, settings.data)}
+      lineStatusId={project.data.block_clear_status_id ?? null}
+      labels={labels.data}
+    />
+  );
+}
+
 /** How far past the dialog's edge a card beside one starts. */
 const PAST_DIALOG = 8;
 
@@ -92,10 +159,17 @@ function offsetFrom(trigger: Element | null, sideOffset?: number) {
   );
 }
 
+type Placement = {
+  side: "bottom" | "right";
+  align: "start" | "end";
+  /** From the trigger, outside a dialog. */
+  sideOffset?: number;
+};
+
 /**
- * A template's preview, opened by hovering `children`. 320px wide, narrower
- * than other hover cards, so that beside a 512px dialog it still fits on the
- * right of a 1280px window instead of flipping over the list it came from.
+ * A preview, opened by hovering `children`. 320px wide, narrower than other
+ * hover cards, so that beside a 512px dialog it still fits on the right of a
+ * 1280px window instead of flipping over the list it came from.
  *
  * `sideOffset` is measured from the trigger. In a dialog the card starts past
  * the dialog's own edge instead, measured as it opens, so that it covers
@@ -107,21 +181,15 @@ function offsetFrom(trigger: Element | null, sideOffset?: number) {
  * - A wheel the card has room for leaves before it reaches the document,
  *   where the dialog's scroll lock would cancel it as falling outside the
  *   dialog. With no room left it goes on, and the page behind stays put.
- * - A click in it would bubble to the option and pick that template.
+ * - A click in it would bubble to the option and pick it.
  */
-export function TemplateHoverCard({
-  template,
+function PreviewHoverCard({
   side,
   align,
   sideOffset,
+  preview,
   children,
-}: {
-  template: UsableTemplate;
-  side: "bottom" | "right";
-  align: "start" | "end";
-  sideOffset?: number;
-  children: ReactNode;
-}) {
+}: Placement & { preview: ReactNode; children: ReactNode }) {
   const trigger = useRef<Element | null>(null);
   // The trigger is the caller's element, not the anchor the ref is typed for.
   const triggerRef = useCallback((node: Element | null) => {
@@ -153,8 +221,37 @@ export function TemplateHoverCard({
         }}
         onClick={(event) => event.stopPropagation()}
       >
-        <TemplatePreview template={template} />
+        {preview}
       </HoverCardContent>
     </HoverCard>
+  );
+}
+
+/** A template's preview, opened by hovering `children`. */
+export function TemplateHoverCard({
+  template,
+  children,
+  ...placement
+}: Placement & { template: UsableTemplate; children: ReactNode }) {
+  return (
+    <PreviewHoverCard
+      {...placement}
+      preview={<TemplatePreview template={template} />}
+    >
+      {children}
+    </PreviewHoverCard>
+  );
+}
+
+/** A project's preview, opened by hovering `children`. */
+export function ProjectHoverCard({
+  slug,
+  children,
+  ...placement
+}: Placement & { slug: string; children: ReactNode }) {
+  return (
+    <PreviewHoverCard {...placement} preview={<ProjectPreview slug={slug} />}>
+      {children}
+    </PreviewHoverCard>
   );
 }

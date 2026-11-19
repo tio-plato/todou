@@ -9,7 +9,10 @@ import { ProjectListbox } from "@/components/project-listbox.tsx";
 import { SearchableListbox } from "@/components/searchable-listbox.tsx";
 import { Segmented } from "@/components/settings/status-set-list.tsx";
 import { MatchHighlight } from "@/components/shared/match-highlight.tsx";
-import { TemplateHoverCard } from "@/components/template-preview.tsx";
+import {
+  ProjectHoverCard,
+  TemplateHoverCard,
+} from "@/components/template-preview.tsx";
 import { matchText, type ProjectMatch } from "@/lib/project-match.ts";
 
 /** A template this version can read, and so one something can be made from. */
@@ -156,6 +159,20 @@ export function StartFromPicker({
             onChange({ ...value, project: option.project.slug })
           }
           label="Projects"
+          wrapRow={(row, option) => (
+            <ProjectHoverCard
+              slug={option.project.slug}
+              side="right"
+              align="start"
+              sideOffset={32}
+            >
+              {/* One element to hover: the row is a run of siblings, laid out
+                  here as the option itself lays them out. */}
+              <span className="flex min-w-0 flex-1 items-center gap-2">
+                {row}
+              </span>
+            </ProjectHoverCard>
+          )}
           idPrefix={`${idPrefix}-project`}
           searchPlaceholder="Search projects…"
           emptyText="No project to start from."
