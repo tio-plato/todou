@@ -3,10 +3,10 @@ import { defaultInsightsRole, Role } from "./insights.ts";
 import {
   type BuiltinTemplateKey,
   ColorHex,
-  canonicalizeLabelName,
   LabelName,
   ProjectRef,
   StatusCategory,
+  StatusName,
   TemplateRef,
 } from "./project.ts";
 
@@ -14,14 +14,12 @@ import {
  * One status of a project template. It carries no id, since a
  * template belongs to no project: the default status and the block clear
  * line are marks on the status itself, matched to a project's statuses by
- * name. The name is stored canonical — trimmed, inner whitespace collapsed —
- * by the rule label names follow.
+ * name. The name goes through `StatusName`, the schema a project's own
+ * status names go through: stored canonical, trimmed and inner whitespace
+ * collapsed.
  */
 export const TemplateStatus = z.object({
-  name: z
-    .string()
-    .transform(canonicalizeLabelName)
-    .pipe(z.string().min(1).max(60)),
+  name: StatusName,
   category: StatusCategory,
   color: ColorHex,
   chart_role: Role,
