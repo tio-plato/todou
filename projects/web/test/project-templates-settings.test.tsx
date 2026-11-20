@@ -859,6 +859,16 @@ describe("StartFromPicker", () => {
     expect(screen.queryByRole("listbox", { name: "Templates" })).toBeNull();
   });
 
+  it("puts the keyboard cursor on the chosen project", async () => {
+    renderPicker();
+    await screen.findByRole("listbox", { name: "Templates" });
+    fireEvent.click(screen.getByRole("button", { name: "Project" }));
+    const list = screen.getByRole("listbox", { name: "Projects" });
+    const homelab = within(list).getByRole("option", { name: /homelab/ });
+    fireEvent.click(homelab);
+    expect(list.getAttribute("aria-activedescendant")).toBe(homelab.id);
+  });
+
   it("narrows the templates to those whose name holds the search", async () => {
     renderPicker();
     const list = await screen.findByRole("listbox", { name: "Templates" });
