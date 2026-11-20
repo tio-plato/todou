@@ -128,30 +128,38 @@ export function ProjectTemplatesSettingsPage() {
             key={String(template.ref)}
             className="flex min-h-14 items-center gap-3 py-2 pr-2 pl-3"
           >
-            <PreviewOnHover template={template}>
-              <div className="min-w-0 flex-1 space-y-0.5">
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <Link
-                    to="/settings/templates/$template"
-                    params={{ template: String(template.ref) }}
-                    className="truncate font-medium underline-offset-3 hover:underline"
-                  >
-                    {template.name}
-                  </Link>
-                  {template.builtin && (
-                    <Badge variant="outline">Built in</Badge>
-                  )}
-                  {template.ref === current && (
-                    <span className={DEFAULT_PILL}>default</span>
-                  )}
-                  {template.body === null && (
-                    <span className={INCOMPATIBLE_PILL}>Incompatible</span>
-                  )}
+            <div className="min-w-0 flex-1">
+              <PreviewOnHover template={template}>
+                <div className="w-fit max-w-full space-y-0.5">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <Link
+                      to="/settings/templates/$template"
+                      params={{ template: String(template.ref) }}
+                      className="truncate font-medium underline-offset-3 hover:underline"
+                    >
+                      {template.name}
+                    </Link>
+                    {template.builtin && (
+                      <Badge variant="outline">Built in</Badge>
+                    )}
+                    {template.ref === current && (
+                      <span className={DEFAULT_PILL}>default</span>
+                    )}
+                    {template.body === null && (
+                      <span className={INCOMPATIBLE_PILL}>Incompatible</span>
+                    )}
+                  </div>
+                  {template.body !== null && <Summary body={template.body} />}
                 </div>
-                {template.body !== null && <Summary body={template.body} />}
-              </div>
-            </PreviewOnHover>
-            {!template.builtin && <DeleteTemplateButton template={template} />}
+              </PreviewOnHover>
+            </div>
+            {/* In every row, so that each row's text ends where the others'
+                does: the previews line up on it. */}
+            <div className="flex w-7 shrink-0 justify-end">
+              {!template.builtin && (
+                <DeleteTemplateButton template={template} />
+              )}
+            </div>
           </li>
         ))}
       </ul>
@@ -174,10 +182,14 @@ function Summary({ body }: { body: TemplateBody }) {
 }
 
 /**
- * A row's text, which previews the template when it can be read. The
- * buttons stay outside: the delete button's confirmation is in this row's
- * React tree, and its focus would bubble into a trigger around it and open
- * the preview over the dialog.
+ * A row's text, which previews the template when it can be read. The card
+ * opens beside the row's text column, its right edge on the column's, which
+ * ends where the row's actions begin. The text itself is the trigger, so the
+ * empty run of the column after it opens nothing.
+ *
+ * The buttons stay outside: the delete button's confirmation is in this
+ * row's React tree, and its focus would bubble into a trigger around it and
+ * open the preview over the dialog.
  */
 function PreviewOnHover({
   template,
@@ -188,7 +200,12 @@ function PreviewOnHover({
 }) {
   if (!usable(template)) return children;
   return (
-    <TemplateHoverCard template={template} side="bottom" align="end">
+    <TemplateHoverCard
+      template={template}
+      side="right"
+      align="start"
+      endAt={(trigger) => trigger.parentElement}
+    >
       {children}
     </TemplateHoverCard>
   );

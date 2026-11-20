@@ -368,6 +368,54 @@ const pastOpenDelay = () =>
 const follows = (a: Element, b: Element) =>
   Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
 
+/**
+ * The list as a 1280×1000 window lays it out: each row's text from x 333 to
+ * its own `ends[name]`, 48px high from its own top, every row's text column
+ * running on to 1151, and its actions from 1163.
+ */
+function layOutRows(ends: Record<string, number>) {
+  const tops: Record<string, number> = { Default: 272, Bugs: 336, Kanban: 400 };
+  vi.spyOn(document.documentElement, "clientWidth", "get").mockReturnValue(
+    1280,
+  );
+  vi.spyOn(document.documentElement, "clientHeight", "get").mockReturnValue(
+    1000,
+  );
+  const original = Element.prototype.getBoundingClientRect;
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: Element) {
+      const row =
+        this.parentElement?.tagName === "LI" ? this.parentElement : null;
+      const name = (row ?? this).querySelector("a")?.textContent ?? "";
+      if (!(name in ends)) return original.call(this);
+      const top = tops[name] as number;
+      // The row's actions, 12px past its text column.
+      if (row?.lastElementChild === this) return new DOMRect(1163, top, 28, 48);
+      const text = this.matches("li [data-slot='hover-card-trigger']");
+      if (!(text || row)) return original.call(this);
+      const right = text ? (ends[name] as number) : 1151;
+      return new DOMRect(333, top, right - 333, 48);
+    },
+  );
+}
+
+/** Where the open preview's wrapper is put, once Radix has placed it. */
+const placedAt = (card: HTMLElement, x: number, y: number) =>
+  waitFor(() =>
+    expect(card.parentElement?.style.transform).toBe(
+      `translate(${x}px, ${y}px)`,
+    ),
+  );
+
+const closePreview = async () => {
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() =>
+    expect(
+      document.querySelectorAll("[data-slot='hover-card-content']"),
+    ).toHaveLength(0),
+  );
+};
+
 describe("the project templates list", () => {
   it("lists Default first and sets another template as the default", async () => {
     const server = fakeServer();
@@ -438,6 +486,42 @@ describe("the project templates list", () => {
     expect(
       await screen.findByRole("dialog", { name: "Delete this template?" }),
     ).toBeTruthy();
+    await pastOpenDelay();
+    expect(
+      document.querySelectorAll("[data-slot='hover-card-content']"),
+    ).toHaveLength(0);
+  });
+
+  it("opens every row's preview in one column, left of the row's actions", async () => {
+    fakeServer();
+    renderAt("/settings/templates");
+    // Default, built in, has no delete button; Kanban's text is longer.
+    layOutRows({ Default: 633, Kanban: 693 });
+    hover(await screen.findByRole("link", { name: "Default" }));
+    // 1151 − 320: the card's right edge on the text column's.
+    await placedAt(await previewCard(), 831, 272);
+    await closePreview();
+    hover(screen.getByRole("link", { name: "Kanban" }));
+    await placedAt(await previewCard(), 831, 400);
+  });
+
+  it("opens it past the row's own text when the column would cover it", async () => {
+    fakeServer();
+    renderAt("/settings/templates");
+    layOutRows({ Kanban: 900 });
+    hover(await screen.findByRole("link", { name: "Kanban" }));
+    await placedAt(await previewCard(), 908, 400);
+  });
+
+  it("opens no preview from a row's empty space", async () => {
+    fakeServer();
+    renderAt("/settings/templates");
+    const rows = await screen.findAllByRole("listitem");
+    const kanban = rows.find((r) =>
+      within(r).queryByRole("link", { name: "Kanban" }),
+    ) as HTMLElement;
+    // The column the row's text sits in, which runs on past it.
+    hover(kanban.firstElementChild as Element);
     await pastOpenDelay();
     expect(
       document.querySelectorAll("[data-slot='hover-card-content']"),
