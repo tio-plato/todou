@@ -406,9 +406,13 @@ function AnswerForm({
   );
   // Options and "decline" are not text and have no editor of their own, so
   // nothing else on this card would notice them going up in smoke. The Other
-  // box is a MarkdownEditor and registers itself.
+  // box is a MarkdownEditor and registers itself — but only while it is
+  // mounted, and a follow-up hidden again (T-22) takes its editor along and
+  // leaves its text in `drafts` alone.
   useDirtySource(() =>
-    Object.values(drafts).some((d) => d.selected.size > 0 || d.declined),
+    Object.values(drafts).some(
+      (d) => d.selected.size > 0 || d.declined || d.other.trim() !== "",
+    ),
   );
   const queryClient = useQueryClient();
   const target: Target = { slug, issueNumber, commentId };
