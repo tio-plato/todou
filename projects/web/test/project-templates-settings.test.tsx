@@ -1114,6 +1114,24 @@ describe("a template's page", () => {
     );
   });
 
+  it("a delete that lands once its page is left and opened again still leaves it for the list", async () => {
+    const server = fakeServer({ hold: true });
+    const router = renderAt("/settings/templates/7");
+    await screen.findByText("Doing");
+    await addStatus("Review");
+    await deleteFromPage();
+    await settle();
+    // Back, then Forward, before the delete has gone out.
+    await act(() => router.history.push(`/settings/templates/${BUGS.ref}`));
+    await act(() => router.history.push("/settings/templates/7"));
+    await screen.findByText("Doing");
+
+    await server.release();
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe("/settings/templates"),
+    );
+  });
+
   it("shows Default with nothing to change", async () => {
     fakeServer();
     renderAt("/settings/templates/default");

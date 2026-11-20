@@ -4,7 +4,12 @@ import {
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query";
-import { Link, useNavigate, useParams } from "@tanstack/react-router";
+import {
+  Link,
+  useNavigate,
+  useParams,
+  useRouter,
+} from "@tanstack/react-router";
 import {
   canonicalizeLabelName,
   defaultInsightsRole,
@@ -600,22 +605,20 @@ const writes = (ref: ProjectTemplate["ref"]) => `project-template-${ref}`;
 function DeleteTemplateRow({ template }: { template: ProjectTemplate }) {
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
+  const router = useRouter();
   const queryClient = useQueryClient();
-  // Whether the page is still open when the delete lands: one left while the
-  // delete waited is not brought back to the list.
-  const onPage = useRef(true);
-  useEffect(() => {
-    onPage.current = true;
-    return () => {
-      onPage.current = false;
-    };
-  }, []);
   const remove = useMutation({
     // Behind the edits still being saved, which would meet a 404 after it.
     scope: { id: writes(template.ref) },
     mutationFn: (id: number) => api.deleteProjectTemplate(id),
     onSuccess: async (_data, id) => {
-      if (onPage.current) await navigate({ to: "/settings/templates" });
+      // Only from the template's own page: one left while the delete waited
+      // is not brought back to the list.
+      const here = router.matchRoute({
+        to: "/settings/templates/$template",
+        params: { template: String(id) },
+      });
+      if (here) await navigate({ to: "/settings/templates" });
       queryClient.setQueryData(templatesKey, (list) =>
         list?.filter((t) => t.ref !== id),
       );
