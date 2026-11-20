@@ -15,6 +15,13 @@ import {
 } from "@/components/template-preview.tsx";
 import { matchText, type ProjectMatch } from "@/lib/project-match.ts";
 
+/**
+ * The frame of a list a choice is made in, lit as a field is when the
+ * keyboard is in it.
+ */
+export const PICKER_FRAME =
+  "rounded-md border has-[:focus-visible]:border-ring has-[:focus-visible]:ring-3 has-[:focus-visible]:ring-ring/50";
+
 /** A template this version can read, and so one something can be made from. */
 export type UsableTemplate = ProjectTemplate & { body: TemplateBody };
 export const usable = (template: ProjectTemplate): template is UsableTemplate =>
@@ -89,6 +96,7 @@ export function TemplateListbox({
         </TemplateHoverCard>
       )}
       selected={String(value)}
+      startAtSelected
       onSelect={(template) => onChange(template.ref)}
       label={label}
       idPrefix={idPrefix}
@@ -147,7 +155,7 @@ export function StartFromPicker({
           value={value.template}
           onChange={(template) => onChange({ ...value, template })}
           idPrefix={`${idPrefix}-template`}
-          className="rounded-md border"
+          className={PICKER_FRAME}
           listClassName="max-h-56"
         />
       ) : (
@@ -155,6 +163,7 @@ export function StartFromPicker({
           options={options}
           // Never undefined, so the check column stands before the first pick.
           selected={value.project ?? ""}
+          startAtSelected
           onSelect={(option) =>
             onChange({ ...value, project: option.project.slug })
           }
@@ -176,10 +185,18 @@ export function StartFromPicker({
           idPrefix={`${idPrefix}-project`}
           searchPlaceholder="Search projects…"
           emptyText="No project to start from."
-          className="rounded-md border"
+          className={PICKER_FRAME}
           listClassName="max-h-56"
         />
       )}
+      {value.kind === "project" &&
+        value.project === null &&
+        projects.length > 0 && (
+          // Create also waits for a name, and greyed it cannot say which.
+          <p className="text-sm text-muted-foreground">
+            Pick a project to start from.
+          </p>
+        )}
     </div>
   );
 }

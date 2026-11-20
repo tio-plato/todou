@@ -246,6 +246,29 @@ describe("New project: Start from", () => {
     expect(selectedTemplates(dialog)).toEqual(["Kanban"]);
   });
 
+  it("puts the keyboard cursor on the chosen template", async () => {
+    renderDialog({ preferred: 7 });
+    const dialog = await openDialog();
+    const list = dialog.getByRole("listbox", { name: "Templates" });
+    const option = (name: string) => dialog.getByRole("option", { name }).id;
+    act(() => list.focus());
+    expect(list.getAttribute("aria-activedescendant")).toBe(option("Kanban"));
+    fireEvent.keyDown(list, { key: "ArrowUp" });
+    expect(list.getAttribute("aria-activedescendant")).toBe(option("Bugs"));
+  });
+
+  it("moves the keyboard cursor to the template the prefs name once they are in", async () => {
+    const { releasePrefs } = renderDialog({ preferred: 7, prefs: "held" });
+    const dialog = await openDialog();
+    const list = dialog.getByRole("listbox", { name: "Templates" });
+    const option = (name: string) => dialog.getByRole("option", { name }).id;
+    expect(list.getAttribute("aria-activedescendant")).toBe(option("Default"));
+    await releasePrefs();
+    await waitFor(() =>
+      expect(list.getAttribute("aria-activedescendant")).toBe(option("Kanban")),
+    );
+  });
+
   it("starts from Default when the template the prefs name is gone", async () => {
     renderDialog({ preferred: 99 });
     const dialog = await openDialog();

@@ -183,6 +183,7 @@ function fakeServer({
   const failing = new Set<string>();
   const stored = new Map(templates.map((t) => [t.ref, structuredClone(t)]));
   const waiting: Array<() => void> = [];
+  let prefs = PREFS;
 
   vi.stubGlobal("fetch", (async (input: unknown, init?: RequestInit) => {
     const path = new URL(String(input), "http://test").pathname.replace(
@@ -230,9 +231,16 @@ function fakeServer({
       stored.set(saved.ref, saved);
       return json(200, saved);
     }
-    if (path === "/me/prefs" && method === "PATCH") {
-      return json(200, { ...PREFS, ...body });
+    const del = path.match(/^\/me\/project-templates\/(\d+)$/);
+    if (del && method === "DELETE") {
+      stored.delete(Number(del[1]));
+      return new Response(null, { status: 204 });
     }
+    if (path === "/me/prefs" && method === "PATCH") {
+      prefs = { ...prefs, ...body };
+      return json(200, prefs);
+    }
+    if (path === "/me/prefs" && method === "GET") return json(200, prefs);
     if (failing.has(path)) {
       return json(500, { error: { code: "internal", message: "read failed" } });
     }
@@ -365,6 +373,54 @@ const pastOpenDelay = () =>
 const follows = (a: Element, b: Element) =>
   Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
 
+/**
+ * The list as a 1280×1000 window lays it out: each row's text from x 333 to
+ * its own `ends[name]`, 48px high from its own top, every row's text column
+ * running on to 1151, and its actions from 1163.
+ */
+function layOutRows(ends: Record<string, number>) {
+  const tops: Record<string, number> = { Default: 272, Bugs: 336, Kanban: 400 };
+  vi.spyOn(document.documentElement, "clientWidth", "get").mockReturnValue(
+    1280,
+  );
+  vi.spyOn(document.documentElement, "clientHeight", "get").mockReturnValue(
+    1000,
+  );
+  const original = Element.prototype.getBoundingClientRect;
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: Element) {
+      const row =
+        this.parentElement?.tagName === "LI" ? this.parentElement : null;
+      const name = (row ?? this).querySelector("a")?.textContent ?? "";
+      if (!(name in ends)) return original.call(this);
+      const top = tops[name] as number;
+      // The row's actions, 12px past its text column.
+      if (row?.lastElementChild === this) return new DOMRect(1163, top, 28, 48);
+      const text = this.matches("li [data-slot='hover-card-trigger']");
+      if (!(text || row)) return original.call(this);
+      const right = text ? (ends[name] as number) : 1151;
+      return new DOMRect(333, top, right - 333, 48);
+    },
+  );
+}
+
+/** Where the open preview's wrapper is put, once Radix has placed it. */
+const placedAt = (card: HTMLElement, x: number, y: number) =>
+  waitFor(() =>
+    expect(card.parentElement?.style.transform).toBe(
+      `translate(${x}px, ${y}px)`,
+    ),
+  );
+
+const closePreview = async () => {
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() =>
+    expect(
+      document.querySelectorAll("[data-slot='hover-card-content']"),
+    ).toHaveLength(0),
+  );
+};
+
 describe("the project templates list", () => {
   it("lists Default first and sets another template as the default", async () => {
     const server = fakeServer();
@@ -374,12 +430,18 @@ describe("the project templates list", () => {
       rows.map((row) => within(row).getAllByRole("link")[0]?.textContent),
     ).toEqual(["Default", "Bugs", "Kanban"]);
     expect(within(rows[0] as HTMLElement).getByText("default")).toBeTruthy();
+    for (const row of rows) {
+      expect(
+        within(row).queryByRole("button", { name: "Set as default" }),
+      ).toBeNull();
+    }
 
-    fireEvent.click(
-      within(rows[2] as HTMLElement).getByRole("button", {
-        name: "Set as default",
-      }),
-    );
+    const select = screen.getByRole("combobox", {
+      name: "New projects start from",
+    });
+    expect(select.textContent).toBe("Default");
+    fireEvent.keyDown(select, { key: "ArrowDown" });
+    fireEvent.click(await screen.findByRole("option", { name: "Kanban" }));
     await waitFor(() =>
       expect(server.calls.filter((c) => c.method === "PATCH")).toEqual([
         {
@@ -389,6 +451,9 @@ describe("the project templates list", () => {
         },
       ]),
     );
+    expect(select.textContent).toBe("Kanban");
+    expect(within(rows[2] as HTMLElement).getByText("default")).toBeTruthy();
+    expect(within(rows[0] as HTMLElement).queryByText("default")).toBeNull();
   });
 
   it("says in each row where the template's blocks clear", async () => {
@@ -420,8 +485,9 @@ describe("the project templates list", () => {
         within(r).queryByRole("link", { name: "Kanban" }),
       ) as HTMLElement,
     );
-    hover(kanban.getByRole("button", { name: "Set as default" }));
-    fireEvent.click(kanban.getByRole("button", { name: "Delete Kanban" }));
+    const remove = kanban.getByRole("button", { name: "Delete Kanban" });
+    hover(remove);
+    fireEvent.click(remove);
     expect(
       await screen.findByRole("dialog", { name: "Delete this template?" }),
     ).toBeTruthy();
@@ -429,6 +495,95 @@ describe("the project templates list", () => {
     expect(
       document.querySelectorAll("[data-slot='hover-card-content']"),
     ).toHaveLength(0);
+  });
+
+  it("opens every row's preview in one column, left of the row's actions", async () => {
+    fakeServer();
+    renderAt("/settings/templates");
+    // Default, built in, has no delete button; Kanban's text is longer.
+    layOutRows({ Default: 633, Kanban: 693 });
+    hover(await screen.findByRole("link", { name: "Default" }));
+    // 1151 − 320: the card's right edge on the text column's.
+    await placedAt(await previewCard(), 831, 272);
+    await closePreview();
+    hover(screen.getByRole("link", { name: "Kanban" }));
+    await placedAt(await previewCard(), 831, 400);
+  });
+
+  it("opens it past the row's own text when the column would cover it", async () => {
+    fakeServer();
+    renderAt("/settings/templates");
+    layOutRows({ Kanban: 900 });
+    hover(await screen.findByRole("link", { name: "Kanban" }));
+    await placedAt(await previewCard(), 908, 400);
+  });
+
+  it("opens no preview from a row's empty space", async () => {
+    fakeServer();
+    renderAt("/settings/templates");
+    const rows = await screen.findAllByRole("listitem");
+    const kanban = rows.find((r) =>
+      within(r).queryByRole("link", { name: "Kanban" }),
+    ) as HTMLElement;
+    // The column the row's text sits in, which runs on past it.
+    hover(kanban.firstElementChild as Element);
+    await pastOpenDelay();
+    expect(
+      document.querySelectorAll("[data-slot='hover-card-content']"),
+    ).toHaveLength(0);
+  });
+
+  it("keeps focus on the list after a template is deleted", async () => {
+    fakeServer();
+    renderAt("/settings/templates");
+    fireEvent.click(await screen.findByRole("button", { name: "Delete Bugs" }));
+    fireEvent.click(
+      within(
+        await screen.findByRole("dialog", { name: "Delete this template?" }),
+      ).getByRole("button", { name: "Delete template" }),
+    );
+    await waitFor(() => {
+      expect(screen.queryByRole("link", { name: "Bugs" })).toBeNull();
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: "Delete Kanban" }),
+      ),
+    );
+  });
+
+  it("moves focus to the row before, then to New template, as the last rows go", async () => {
+    fakeServer();
+    renderAt("/settings/templates");
+    const remove = async (name: string) => {
+      fireEvent.click(
+        await screen.findByRole("button", { name: `Delete ${name}` }),
+      );
+      fireEvent.click(
+        within(
+          await screen.findByRole("dialog", { name: "Delete this template?" }),
+        ).getByRole("button", { name: "Delete template" }),
+      );
+      await waitFor(() => {
+        expect(screen.queryByRole("link", { name })).toBeNull();
+        expect(screen.queryByRole("dialog")).toBeNull();
+      });
+    };
+    // Kanban is the last row: no row after it.
+    await remove("Kanban");
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: "Delete Bugs" }),
+      ),
+    );
+    // Bugs is the only one left that can go: Default, before it, cannot.
+    await remove("Bugs");
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: /New template/ }),
+      ),
+    );
   });
 
   it("previews a template's default status, line, chart roles and labels on hover", async () => {
@@ -491,10 +646,18 @@ describe("a template this version cannot read", () => {
     const inRow = within(row as HTMLElement);
     expect(inRow.getByText("Incompatible")).toBeTruthy();
     expect(inRow.queryByText(/statuses/)).toBeNull();
-    expect(inRow.queryByRole("button", { name: "Set as default" })).toBeNull();
     expect(
       inRow.getByRole("button", { name: "Delete From the future" }),
     ).toBeTruthy();
+    fireEvent.keyDown(
+      screen.getByRole("combobox", { name: "New projects start from" }),
+      { key: "ArrowDown" },
+    );
+    expect(
+      (await screen.findAllByRole("option")).map((o) => o.textContent),
+    ).toEqual(["Default", "Bugs", "Kanban"]);
+    fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
+    await waitFor(() => expect(screen.queryAllByRole("option")).toEqual([]));
 
     fireEvent.click(screen.getByRole("button", { name: "New template" }));
     const dialog = within(await screen.findByRole("dialog"));
@@ -657,7 +820,7 @@ const MANY: ProjectTemplate[] = [
   ].map((name, i) => ({ ...BUGS, ref: 20 + i, name })),
 ];
 
-function Picker() {
+function Picker({ projects }: { projects: Project[] }) {
   const [value, setValue] = useState<StartFrom>({
     kind: "template",
     template: "default",
@@ -666,17 +829,17 @@ function Picker() {
   return (
     <StartFromPicker
       templates={MANY}
-      projects={PROJECTS}
+      projects={projects}
       value={value}
       onChange={setValue}
     />
   );
 }
 
-function renderPicker() {
+function renderPicker(projects = PROJECTS) {
   const client = testQueryClient();
   client.setQueryData(referenceDirectoryQuery.queryKey, null);
-  return renderWithProviders(<Picker />, client);
+  return renderWithProviders(<Picker projects={projects} />, client);
 }
 
 const optionNames = (list: HTMLElement) =>
@@ -694,6 +857,24 @@ describe("StartFromPicker", () => {
     expect(list.getByRole("option", { name: /todou/ })).toBeTruthy();
     expect(list.getByRole("option", { name: /homelab/ })).toBeTruthy();
     expect(screen.queryByRole("listbox", { name: "Templates" })).toBeNull();
+  });
+
+  it("puts the keyboard cursor on the chosen project", async () => {
+    renderPicker();
+    await screen.findByRole("listbox", { name: "Templates" });
+    fireEvent.click(screen.getByRole("button", { name: "Project" }));
+    const list = screen.getByRole("listbox", { name: "Projects" });
+    const homelab = within(list).getByRole("option", { name: /homelab/ });
+    fireEvent.click(homelab);
+    expect(list.getAttribute("aria-activedescendant")).toBe(homelab.id);
+  });
+
+  it("asks for no project when there is none to pick", async () => {
+    renderPicker([]);
+    await screen.findByRole("listbox", { name: "Templates" });
+    fireEvent.click(screen.getByRole("button", { name: "Project" }));
+    expect(screen.getByText("No project to start from.")).toBeTruthy();
+    expect(screen.queryByText("Pick a project to start from.")).toBeNull();
   });
 
   it("narrows the templates to those whose name holds the search", async () => {
@@ -891,6 +1072,20 @@ describe("the New template dialog", () => {
       ),
     ).toEqual(["area:web", "kind:bug"]);
     expect(within(card).queryByText("read failed")).toBeNull();
+  });
+
+  it("says a project must be picked before Create", async () => {
+    fakeServer();
+    const { dialog } = await openDialog();
+    const create = dialog.getByRole("button", {
+      name: "Create",
+    }) as HTMLButtonElement;
+    fireEvent.click(dialog.getByRole("button", { name: "Project" }));
+    expect(dialog.getByText("Pick a project to start from.")).toBeTruthy();
+    expect(create.disabled).toBe(true);
+    fireEvent.click(dialog.getByRole("option", { name: /todou/ }));
+    expect(dialog.queryByText("Pick a project to start from.")).toBeNull();
+    expect(create.disabled).toBe(false);
   });
 
   it("names the project it starts from, then opens the new template", async () => {

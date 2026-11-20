@@ -147,25 +147,43 @@ function ProjectPreview({ slug }: { slug: string }) {
   );
 }
 
-/** How far past the dialog's edge a card beside one starts. */
-const PAST_DIALOG = 8;
+/** How far past an edge a card beside it starts: a dialog's, or a row's text. */
+const PAST_EDGE = 8;
 
-/** `sideOffset`, or the distance from `trigger` to past its dialog's edge. */
-function offsetFrom(trigger: Element | null, sideOffset?: number) {
-  const dialog = trigger?.closest("[data-slot='dialog-content']");
-  if (!trigger || !dialog) return sideOffset;
-  return (
-    dialog.getBoundingClientRect().right -
-    trigger.getBoundingClientRect().right +
-    PAST_DIALOG
+/** A preview's width, here alone: placing one beside a column needs it. */
+const PREVIEW_WIDTH = 320;
+
+/**
+ * The `sideOffset` of a card to the right of `trigger`: past the edge of the
+ * dialog it is in; else with its right edge on `endAt`'s, but never over the
+ * trigger; else `sideOffset`.
+ */
+function offsetFrom(
+  trigger: Element | null,
+  { sideOffset, endAt }: Pick<Placement, "sideOffset" | "endAt">,
+) {
+  if (!trigger) return sideOffset;
+  const right = trigger.getBoundingClientRect().right;
+  const dialog = trigger.closest("[data-slot='dialog-content']");
+  if (dialog) return dialog.getBoundingClientRect().right - right + PAST_EDGE;
+  const end = endAt?.(trigger);
+  if (!end) return sideOffset;
+  return Math.max(
+    PAST_EDGE,
+    end.getBoundingClientRect().right - PREVIEW_WIDTH - right,
   );
 }
 
 type Placement = {
   side: "bottom" | "right";
   align: "start" | "end";
-  /** From the trigger, unless a `right` card sits beside a dialog. */
+  /**
+   * From the trigger, unless a `right` card sits beside a dialog or has
+   * `endAt`.
+   */
   sideOffset?: number;
+  /** For a `right` card: the element its right edge lines up with. */
+  endAt?: (trigger: Element) => Element | null;
 };
 
 /**
@@ -176,7 +194,9 @@ type Placement = {
  * `sideOffset` is measured from the trigger. A card to the right of a
  * trigger in a dialog starts past the dialog's own edge instead, measured as
  * it opens, so that it covers neither the dialog's padding nor the scrollbar
- * of a dialog taller than the window.
+ * of a dialog taller than the window. One with `endAt` ends where that
+ * element does, so that every row of a list opens it in one column; where
+ * the column has no room beside the trigger, it starts past the trigger.
  *
  * The card is portalled to `body` but stays in its trigger's React tree,
  * which in a picker is a dialog's and an option's:
@@ -189,6 +209,7 @@ function PreviewHoverCard({
   side,
   align,
   sideOffset,
+  endAt,
   preview,
   children,
 }: Placement & { preview: ReactNode; children: ReactNode }) {
@@ -203,9 +224,9 @@ function PreviewHoverCard({
       openDelay={OPEN_DELAY_MS}
       closeDelay={CLOSE_DELAY_MS}
       onOpenChange={(open) => {
-        // Only beside a dialog: below one, the distance would be vertical.
+        // Only on the right: below, the distance would be vertical.
         if (open && side === "right") {
-          setOffset(offsetFrom(trigger.current, sideOffset));
+          setOffset(offsetFrom(trigger.current, { sideOffset, endAt }));
         }
       }}
     >
@@ -216,7 +237,10 @@ function PreviewHoverCard({
         side={side}
         align={align}
         sideOffset={offset}
-        className="max-h-(--radix-hover-card-content-available-height) w-80 overflow-y-auto overscroll-contain"
+        // Capped below the room Radix leaves it, so that a template with
+        // many statuses, opened beside its row, does not fill the window.
+        className="max-h-[min(var(--radix-hover-card-content-available-height),70dvh)] overflow-y-auto overscroll-contain"
+        style={{ width: PREVIEW_WIDTH }}
         onWheel={(event) => {
           const horizontal = Math.abs(event.deltaX) > Math.abs(event.deltaY);
           const delta = horizontal ? event.deltaX : event.deltaY;

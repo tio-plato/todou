@@ -33,6 +33,7 @@ import {
   plural,
 } from "@/components/settings/status-set-list.tsx";
 import {
+  PICKER_FRAME,
   preferredTemplate,
   TemplateListbox,
 } from "@/components/start-from-picker.tsx";
@@ -258,7 +259,7 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
         value={template}
         onChange={setTemplate}
         idPrefix="apply-template"
-        className="max-w-xl rounded-md border"
+        className={cn("max-w-xl", PICKER_FRAME)}
         listClassName="max-h-56"
       />
       {preview.isError ? (

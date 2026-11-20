@@ -18,7 +18,7 @@ import {
   TodouError,
 } from "@todou/shared";
 import { ArrowLeftIcon, PlusIcon, Trash2Icon } from "lucide-react";
-import { type ReactElement, useRef, useState } from "react";
+import { type ReactElement, type RefObject, useRef, useState } from "react";
 import { toast } from "sonner";
 import { prefsQuery, usePatchPrefs } from "@/api/prefs.ts";
 import { api, projectsQuery, projectTemplatesQuery } from "@/api/queries.ts";
@@ -52,6 +52,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 const templatesKey = projectTemplatesQuery.queryKey;
 
@@ -72,12 +79,52 @@ export function ProjectTemplatesSettingsPage() {
     templates.data,
     prefs.data.new_project_template,
   );
+  const newTemplate = useRef<HTMLButtonElement>(null);
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-3">
         <h1 className="text-xl font-semibold">Project templates</h1>
-        <NewTemplateDialog templates={templates.data} />
+        <NewTemplateDialog
+          templates={templates.data}
+          triggerRef={newTemplate}
+        />
+      </div>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <Label
+          htmlFor="new-project-template"
+          className="font-normal text-muted-foreground"
+        >
+          New projects start from
+        </Label>
+        <Select
+          value={String(current)}
+          onValueChange={(value) => {
+            // The ref as the prefs take it: a number for one of the
+            // account's own, not the string the select keys it by.
+            const picked = templates.data.find(
+              (template) => String(template.ref) === value,
+            );
+            if (picked) patch.mutate({ new_project_template: picked.ref });
+          }}
+        >
+          <SelectTrigger
+            id="new-project-template"
+            className="max-w-full min-w-0"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {templates.data.filter(usable).map((template) => (
+              <SelectItem
+                key={String(template.ref)}
+                value={String(template.ref)}
+              >
+                {template.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
       <ul className="divide-y rounded-lg border">
         {templates.data.map((template) => (
@@ -85,41 +132,41 @@ export function ProjectTemplatesSettingsPage() {
             key={String(template.ref)}
             className="flex min-h-14 items-center gap-3 py-2 pr-2 pl-3"
           >
-            <PreviewOnHover template={template}>
-              <div className="min-w-0 flex-1 space-y-0.5">
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <Link
-                    to="/settings/templates/$template"
-                    params={{ template: String(template.ref) }}
-                    className="truncate font-medium underline-offset-3 hover:underline"
-                  >
-                    {template.name}
-                  </Link>
-                  {template.builtin && (
-                    <Badge variant="outline">Built in</Badge>
-                  )}
-                  {template.ref === current && (
-                    <span className={DEFAULT_PILL}>default</span>
-                  )}
-                  {template.body === null && (
-                    <span className={INCOMPATIBLE_PILL}>Incompatible</span>
-                  )}
+            <div className="min-w-0 flex-1">
+              <PreviewOnHover template={template}>
+                <div className="w-fit max-w-full space-y-0.5">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <Link
+                      to="/settings/templates/$template"
+                      params={{ template: String(template.ref) }}
+                      className="truncate font-medium underline-offset-3 hover:underline"
+                    >
+                      {template.name}
+                    </Link>
+                    {template.builtin && (
+                      <Badge variant="outline">Built in</Badge>
+                    )}
+                    {template.ref === current && (
+                      <span className={DEFAULT_PILL}>default</span>
+                    )}
+                    {template.body === null && (
+                      <span className={INCOMPATIBLE_PILL}>Incompatible</span>
+                    )}
+                  </div>
+                  {template.body !== null && <Summary body={template.body} />}
                 </div>
-                {template.body !== null && <Summary body={template.body} />}
-              </div>
-            </PreviewOnHover>
-            {template.ref !== current && template.body !== null && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  patch.mutate({ new_project_template: template.ref })
-                }
-              >
-                Set as default
-              </Button>
-            )}
-            {!template.builtin && <DeleteTemplateButton template={template} />}
+              </PreviewOnHover>
+            </div>
+            {/* In every row, so that each row's text ends where the others'
+                does: the previews line up on it. */}
+            <div className="flex w-7 shrink-0 justify-end">
+              {!template.builtin && (
+                <DeleteTemplateButton
+                  template={template}
+                  lastFocus={newTemplate}
+                />
+              )}
+            </div>
           </li>
         ))}
       </ul>
@@ -142,10 +189,14 @@ function Summary({ body }: { body: TemplateBody }) {
 }
 
 /**
- * A row's text, which previews the template when it can be read. The
- * buttons stay outside: the delete button's confirmation is in this row's
- * React tree, and its focus would bubble into a trigger around it and open
- * the preview over the dialog.
+ * A row's text, which previews the template when it can be read. The card
+ * opens beside the row's text column, its right edge on the column's, which
+ * ends where the row's actions begin. The text itself is the trigger, so the
+ * empty run of the column after it opens nothing.
+ *
+ * The buttons stay outside: the delete button's confirmation is in this
+ * row's React tree, and its focus would bubble into a trigger around it and
+ * open the preview over the dialog.
  */
 function PreviewOnHover({
   template,
@@ -156,18 +207,56 @@ function PreviewOnHover({
 }) {
   if (!usable(template)) return children;
   return (
-    <TemplateHoverCard template={template} side="bottom" align="end">
+    <TemplateHoverCard
+      template={template}
+      side="right"
+      align="start"
+      endAt={(trigger) => trigger.parentElement}
+    >
       {children}
     </TemplateHoverCard>
   );
 }
 
-function DeleteTemplateButton({ template }: { template: ProjectTemplate }) {
+/**
+ * Where focus goes once the row of `button` is deleted: the next row's
+ * delete button, else the one before, else `last`. Null outside a list.
+ */
+function focusAfterDeleting(
+  button: HTMLElement | null,
+  last: HTMLElement | null,
+): HTMLElement | null {
+  const list = button?.closest("ul");
+  if (!button || !list) return null;
+  const buttons = [
+    ...list.querySelectorAll<HTMLElement>("[data-delete-template]"),
+  ];
+  const at = buttons.indexOf(button);
+  return buttons[at + 1] ?? buttons[at - 1] ?? last;
+}
+
+function DeleteTemplateButton({
+  template,
+  lastFocus,
+}: {
+  template: ProjectTemplate;
+  /** Where focus goes once no row is left with a delete button. */
+  lastFocus?: RefObject<HTMLElement | null>;
+}) {
   const [open, setOpen] = useState(false);
+  const button = useRef<HTMLButtonElement>(null);
+  // Set once the template is gone. The confirmation, with no trigger to
+  // hand focus back to, would leave it on the page's body.
+  const landing = useRef<HTMLElement | null>(null);
   const queryClient = useQueryClient();
   const remove = useMutation({
     mutationFn: (id: number) => api.deleteProjectTemplate(id),
     onSuccess: (_data, id) => {
+      // Before the row goes, while there is a row to count from.
+      landing.current = focusAfterDeleting(
+        button.current,
+        lastFocus?.current ?? null,
+      );
       // The default pill falls back to Default by itself when this was it.
       queryClient.setQueryData(templatesKey, (list) =>
         list?.filter((t) => t.ref !== id),
@@ -182,6 +271,8 @@ function DeleteTemplateButton({ template }: { template: ProjectTemplate }) {
   return (
     <>
       <Button
+        ref={button}
+        data-delete-template
         variant="ghost"
         size="icon-sm"
         aria-label={`Delete ${template.name}`}
@@ -204,6 +295,12 @@ function DeleteTemplateButton({ template }: { template: ProjectTemplate }) {
         destructive
         pending={remove.isPending}
         onConfirm={() => remove.mutate(ref)}
+        onCloseAutoFocus={(event) => {
+          if (landing.current === null) return;
+          event.preventDefault();
+          landing.current.focus();
+          landing.current = null;
+        }}
       />
     </>
   );
@@ -244,8 +341,10 @@ const START: StartFrom = {
 
 function NewTemplateDialog({
   templates,
+  triggerRef,
 }: {
   templates: readonly ProjectTemplate[];
+  triggerRef?: RefObject<HTMLButtonElement | null>;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -281,16 +380,19 @@ function NewTemplateDialog({
       }}
     >
       <DialogTrigger asChild>
-        <Button size="sm">
+        <Button ref={triggerRef} size="sm">
           <PlusIcon /> New template
         </Button>
       </DialogTrigger>
-      <DialogContent aria-describedby={undefined} className="sm:max-w-lg">
+      <DialogContent
+        aria-describedby={undefined}
+        className="grid-cols-1 sm:max-w-lg"
+      >
         <DialogHeader>
           <DialogTitle>New template</DialogTitle>
         </DialogHeader>
         <form
-          className="space-y-4"
+          className="min-w-0 space-y-4"
           onSubmit={(e) => {
             e.preventDefault();
             if (input !== null) create.mutate(input);
