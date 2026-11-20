@@ -248,7 +248,8 @@ async function mapLabels(
   const targetLabels = await targetDb
     .select({ id: labels.id, name: labels.name })
     .from(labels)
-    .where(eq(labels.projectId, targetId));
+    .where(eq(labels.projectId, targetId))
+    .orderBy(asc(labels.id));
   const ids = new Set<number>();
   const dropped: string[] = [];
   for (const name of names) {
