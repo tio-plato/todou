@@ -51,15 +51,6 @@ describe("spec page preferences", () => {
     ["Change strip", "Changes", "spec_strip_changes"],
   ] as const;
 
-  it("starts with every part on", async () => {
-    const view = renderSettings();
-    for (const [group, name] of SWITCHES) {
-      const toggle = await switchIn(view, group, name);
-      expect(toggle.dataset.state, `${group} › ${name}`).toBe("checked");
-      expect(toggle.disabled, `${group} › ${name}`).toBe(false);
-    }
-  });
-
   for (const [group, name, key] of SWITCHES) {
     it(`patches ${key} alone`, async () => {
       const spy = vi

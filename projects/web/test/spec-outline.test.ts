@@ -269,7 +269,7 @@ function comment(
     outdated: false,
     current_line_start: start,
     current_line_end: start,
-  } as unknown as SpecCommentItem;
+  } satisfies SpecCommentItem;
   return { key, kind: "comment", item, start, end: start };
 }
 
