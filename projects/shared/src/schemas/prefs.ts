@@ -84,6 +84,17 @@ export const MePrefs = z.strictObject({
    */
   project_icon_fallback: ProjectIconFallback.default("colorful_text"),
   user_avatar_fallback: UserAvatarFallback.default("monochrome_text"),
+  /*
+   * The spec page's outline beside the document and the change strip along
+   * its right edge, each with its own comments and changes (T-234).
+   * Display-only: the spec page reads them, no server code does.
+   */
+  spec_outline: z.boolean().default(true),
+  spec_outline_comments: z.boolean().default(true),
+  spec_outline_changes: z.boolean().default(true),
+  spec_strip: z.boolean().default(true),
+  spec_strip_comments: z.boolean().default(true),
+  spec_strip_changes: z.boolean().default(true),
 });
 export type MePrefs = z.infer<typeof MePrefs>;
 
@@ -104,5 +115,11 @@ export const MePrefsPatch = z.strictObject({
   open_external_links_in_new_tab: z.boolean().optional(),
   project_icon_fallback: ProjectIconFallback.optional(),
   user_avatar_fallback: UserAvatarFallback.optional(),
+  spec_outline: z.boolean().optional(),
+  spec_outline_comments: z.boolean().optional(),
+  spec_outline_changes: z.boolean().optional(),
+  spec_strip: z.boolean().optional(),
+  spec_strip_comments: z.boolean().optional(),
+  spec_strip_changes: z.boolean().optional(),
 });
 export type MePrefsPatch = z.infer<typeof MePrefsPatch>;

@@ -43,6 +43,12 @@ const DEFAULT_PREFS: MePrefs = {
   open_external_links_in_new_tab: false,
   project_icon_fallback: "colorful_text",
   user_avatar_fallback: "monochrome_text",
+  spec_outline: true,
+  spec_outline_comments: true,
+  spec_outline_changes: true,
+  spec_strip: true,
+  spec_strip_comments: true,
+  spec_strip_changes: true,
 };
 
 /**
@@ -125,6 +131,7 @@ describe("preferences split into categories (T-557)", () => {
       "Issue number placement",
       "References in text",
       "Icons without an image",
+      "Spec page",
     ]);
     expect(view.getAllByRole("combobox")).toHaveLength(6);
     expect(

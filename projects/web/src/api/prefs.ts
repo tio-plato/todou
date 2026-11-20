@@ -67,6 +67,36 @@ export function useOpenExternalLinksInNewTab(): boolean {
   return useBooleanPref("open_external_links_in_new_tab");
 }
 
+/** Whether the spec page lists the file's headings beside it (T-234). */
+export function useSpecOutline(): boolean {
+  return useBooleanPref("spec_outline");
+}
+
+/** Whether each outline row counts its section's open comments and drafts. */
+export function useSpecOutlineComments(): boolean {
+  return useBooleanPref("spec_outline_comments");
+}
+
+/** Whether each outline row counts its section's added and removed lines. */
+export function useSpecOutlineChanges(): boolean {
+  return useBooleanPref("spec_outline_changes");
+}
+
+/** Whether the spec page draws the change strip along its right edge. */
+export function useSpecStrip(): boolean {
+  return useBooleanPref("spec_strip");
+}
+
+/** Whether the change strip marks open comments and drafts. */
+export function useSpecStripComments(): boolean {
+  return useBooleanPref("spec_strip_comments");
+}
+
+/** Whether the change strip marks changes and counts them in its tooltip. */
+export function useSpecStripChanges(): boolean {
+  return useBooleanPref("spec_strip_changes");
+}
+
 /** What a project without an uploaded icon draws (T-555). */
 export function useProjectIconFallback(): MePrefs["project_icon_fallback"] {
   const prefs = useQuery(prefsQuery).data;
