@@ -25,6 +25,7 @@ import type {
 import { MePrefs } from "@todou/shared";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { api } from "../src/api/queries.ts";
+import { DELETION_CLASSES } from "../src/lib/rehype-fold-unchanged.ts";
 import { parseSpecSearch } from "../src/lib/spec-search.ts";
 import { SpecViewPage } from "../src/pages/spec-view.tsx";
 import { testQueryClient } from "./render.tsx";
@@ -77,15 +78,18 @@ const AUTHOR = {
 const lines = (...rows: string[]) => `${rows.join("\n")}\n`;
 
 /**
- * v2 rewrites a paragraph under Alpha and the end of Gamma, and the reader has
- * a comment and a draft under Delta. A comparison keeps what changed, what is
- * annotated and the headings over the changes, and folds the rest of Beta and
- * Delta's heading into one placeholder, from Beta's line to Delta's.
+ * v2 drops a note under the title, rewrites a paragraph under Alpha and the
+ * end of Gamma, and the reader has a comment and a draft under Delta. A
+ * comparison keeps what changed, what is annotated and the headings over the
+ * changes, and folds the rest of Beta and Delta's heading into one
+ * placeholder, from Beta's line to Delta's.
  */
 const V1 = lines(
   "# Design",
   "",
   "Intro.",
+  "",
+  "Old note.",
   "",
   "## Alpha",
   "",
@@ -115,15 +119,14 @@ const V1 = lines(
   "",
   "gamma two.",
 );
-const V2 = V1.replace("alpha two.", "alpha two, edited.").replace(
-  "gamma two.\n",
-  "gamma two, rewritten.\n\ngamma three.\n",
-);
+const V2 = V1.replace("Intro.\n\nOld note.\n", "Intro.\n")
+  .replace("alpha two.", "alpha two, edited.")
+  .replace("gamma two.\n", "gamma two, rewritten.\n\ngamma three.\n");
 const BODIES: Record<number, Record<string, string>> = {
   1: { "design.md": V1, "notes.md": "plain\n" },
   2: { "design.md": V2, "notes.md": "plain\n" },
 };
-/** Each heading's line, the same in both versions. */
+/** Each heading's line in v2. */
 const LINE = { Design: 1, Alpha: 5, Beta: 13, Delta: 19, Gamma: 27 } as const;
 
 /** A comment on v2's design.md, on one line. */
@@ -456,8 +459,9 @@ describe("following the reader through the sections (T-234)", () => {
       .map(named);
 
   it("moves the current row without re-rendering the document", async () => {
-    // v1 compares against nothing, so nothing folds and every heading has a box.
-    const view = await renderSpec("?v=1&file=design.md");
+    // Nothing folds, so every heading has a box of its own.
+    localStorage.setItem("todou-spec-fold", "off");
+    const view = await renderSpec("?v=2&file=design.md");
     await waitFor(() => expect(rows(rail(view)).length).toBe(5));
     await place(view, [-900, -200, 900, 1200, 1400]);
     expect(current(view)).toEqual(["Alpha"]);
@@ -477,13 +481,15 @@ describe("what each section holds (T-234)", () => {
   it("counts each section's changed lines while comparing, and none otherwise", async () => {
     const view = await renderSpec("?v=2&file=design.md");
     const aside = rail(view);
-    // Alpha's paragraph reworded; Gamma's last one reworded, and a blank line
-    // and a paragraph added after it.
+    // The note and its blank line gone from under the title; Alpha's
+    // paragraph reworded; Gamma's last one reworded, and a blank line and a
+    // paragraph added after it.
     await waitFor(() =>
       expect(cells(rowFor(aside, "Alpha")).changes).toBe("+1 −1"),
     );
+    expect(cells(rowFor(aside, "Design")).changes).toBe("−2");
     expect(cells(rowFor(aside, "Gamma")).changes).toBe("+3 −1");
-    for (const name of ["Design", "Beta", "Delta"]) {
+    for (const name of ["Beta", "Delta"]) {
       expect(cells(rowFor(aside, name)).changes, name).toBe("");
     }
     view.unmount();
@@ -535,5 +541,150 @@ describe("what each section holds (T-234)", () => {
     for (const row of rows(rail(still))) {
       expect(cells(row).changes, named(row) ?? "").toBe("");
     }
+  });
+});
+
+describe("the change strip (T-234)", () => {
+  const strip = (view: { container: HTMLElement }) =>
+    view.container.querySelector<HTMLElement>("[data-spec-strip]");
+  const card = (view: { container: HTMLElement }) =>
+    view.container.querySelector<HTMLElement>(
+      '[data-testid="annotated-markdown"]',
+    )?.parentElement ?? null;
+  const kinds = (view: { container: HTMLElement }) =>
+    [
+      ...new Set(
+        [...(strip(view)?.querySelectorAll("[data-kind]") ?? [])].map((tick) =>
+          tick.getAttribute("data-kind"),
+        ),
+      ),
+    ].sort();
+
+  it("stays off a phone, where the chips ride on the card's border", async () => {
+    setViewportWidth(390);
+    onTestFinished(() => setViewportWidth(1024));
+    const view = await renderSpec("?v=2&file=design.md");
+    expect(strip(view)).toBeNull();
+    expect(card(view)?.className).not.toContain("border-r-transparent");
+  });
+
+  it("takes the card's right border from lg up, hidden from assistive tech", async () => {
+    const view = await renderSpec("?v=2&file=design.md");
+    await waitFor(() => expect(strip(view)).not.toBeNull());
+    expect(strip(view)?.getAttribute("aria-hidden")).toBe("true");
+    expect(card(view)?.className).toContain("border-r-transparent");
+    await waitFor(() =>
+      expect(kinds(view)).toEqual([
+        "comment",
+        "del",
+        "draft",
+        "heading",
+        "stop",
+      ]),
+    );
+  });
+
+  it("leaves the card's border alone when switched off", async () => {
+    const view = await renderSpec("?v=2&file=design.md", { spec_strip: false });
+    expect(strip(view)).toBeNull();
+    expect(card(view)?.className).not.toContain("border-r-transparent");
+  });
+
+  it("draws no comment ticks, or no change ticks, when those are off", async () => {
+    const quiet = await renderSpec("?v=2&file=design.md", {
+      spec_strip_comments: false,
+    });
+    await waitFor(() =>
+      expect(kinds(quiet)).toEqual(["del", "heading", "stop"]),
+    );
+    quiet.unmount();
+
+    const still = await renderSpec("?v=2&file=design.md", {
+      spec_strip_changes: false,
+    });
+    await waitFor(() =>
+      expect(kinds(still)).toEqual(["comment", "draft", "heading"]),
+    );
+  });
+
+  it("lands a click on a tick where ↓ lands, a removal's tick on the removal", async () => {
+    const view = await renderSpec("?v=2&file=design.md");
+    await waitFor(() => expect(strip(view)).not.toBeNull());
+    const box = card(view) as HTMLElement;
+    const bar = strip(view)?.firstElementChild as HTMLElement;
+    const doc = box.querySelector('[data-testid="annotated-markdown"]');
+    const removal = doc?.querySelector<HTMLElement>(
+      [...DELETION_CLASSES].map((name) => `.${name}`).join(", "),
+    );
+    const stops = [
+      ...(doc?.querySelectorAll<HTMLElement>(
+        ".spec-changed, .spec-ins-block",
+      ) ?? []),
+    ];
+    expect(removal).not.toBeNull();
+    expect(stops.length).toBeGreaterThan(1);
+    // A 1000px card at the top of a 768px window: the bar is 752px tall, so
+    // the card is drawn at 0.752 of its size. The removal sits above every
+    // stop, the way the note above Alpha does.
+    const place = (el: Element, top: number) => {
+      el.getBoundingClientRect = () =>
+        ({ top, height: 20, bottom: top + 20, left: 0, right: 0 }) as DOMRect;
+    };
+    box.getBoundingClientRect = () =>
+      ({ top: 0, height: 1000, bottom: 1000, left: 0, right: 900 }) as DOMRect;
+    bar.getBoundingClientRect = () =>
+      ({ top: 0, height: 752, bottom: 752, left: 893, right: 907 }) as DOMRect;
+    place(removal as HTMLElement, 100);
+    stops.forEach((stop, i) => {
+      place(stop, 300 + i * 200);
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event("scroll"));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    const ticks = [...bar.querySelectorAll<HTMLElement>("[data-stop-index]")];
+    expect(ticks.map((tick) => tick.dataset.stopIndex)).toEqual(
+      stops.map((_, i) => String(i)),
+    );
+    expect(
+      bar.querySelector('[data-kind="del"]')?.hasAttribute("data-stop-index"),
+    ).toBe(false);
+
+    const reveals = watchReveals();
+    const clickAt = (y: number) => {
+      fireEvent.pointerDown(bar, { button: 0, pointerId: 1, clientY: y });
+      fireEvent.pointerUp(bar, { button: 0, pointerId: 1, clientY: y });
+    };
+    // The second stop's tick, 1px into it.
+    clickAt((300 + 200) * 0.752 + 1);
+    expect(reveals.map((r) => r.el)).toEqual([stops[1]]);
+    clickAt(100 * 0.752 + 1);
+    expect(reveals.map((r) => r.el)).toEqual([stops[1], removal]);
+  });
+
+  it("keeps dragging while the button is down, even when the browser drops its capture", async () => {
+    const view = await renderSpec("?v=2&file=design.md");
+    await waitFor(() => expect(strip(view)).not.toBeNull());
+    const bar = strip(view)?.firstElementChild as HTMLElement;
+    const scrolls = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    const move = (y: number, buttons: number) =>
+      fireEvent.pointerMove(bar, { pointerId: 1, clientY: y, buttons });
+
+    fireEvent.pointerDown(bar, {
+      button: 0,
+      buttons: 1,
+      pointerId: 1,
+      clientY: 10,
+    });
+    // Chromium can take a capture back the moment it grants it; the press goes on.
+    fireEvent(bar, new Event("lostpointercapture", { bubbles: true }));
+    move(60, 1);
+    move(120, 1);
+    expect(scrolls).toHaveBeenCalledTimes(2);
+
+    // Released somewhere the bar never heard of: the next pass over it is a hover.
+    move(200, 0);
+    move(260, 0);
+    expect(scrolls).toHaveBeenCalledTimes(2);
   });
 });
