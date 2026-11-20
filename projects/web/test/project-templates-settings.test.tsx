@@ -820,7 +820,7 @@ const MANY: ProjectTemplate[] = [
   ].map((name, i) => ({ ...BUGS, ref: 20 + i, name })),
 ];
 
-function Picker() {
+function Picker({ projects }: { projects: Project[] }) {
   const [value, setValue] = useState<StartFrom>({
     kind: "template",
     template: "default",
@@ -829,17 +829,17 @@ function Picker() {
   return (
     <StartFromPicker
       templates={MANY}
-      projects={PROJECTS}
+      projects={projects}
       value={value}
       onChange={setValue}
     />
   );
 }
 
-function renderPicker() {
+function renderPicker(projects = PROJECTS) {
   const client = testQueryClient();
   client.setQueryData(referenceDirectoryQuery.queryKey, null);
-  return renderWithProviders(<Picker />, client);
+  return renderWithProviders(<Picker projects={projects} />, client);
 }
 
 const optionNames = (list: HTMLElement) =>
@@ -867,6 +867,14 @@ describe("StartFromPicker", () => {
     const homelab = within(list).getByRole("option", { name: /homelab/ });
     fireEvent.click(homelab);
     expect(list.getAttribute("aria-activedescendant")).toBe(homelab.id);
+  });
+
+  it("asks for no project when there is none to pick", async () => {
+    renderPicker([]);
+    await screen.findByRole("listbox", { name: "Templates" });
+    fireEvent.click(screen.getByRole("button", { name: "Project" }));
+    expect(screen.getByText("No project to start from.")).toBeTruthy();
+    expect(screen.queryByText("Pick a project to start from.")).toBeNull();
   });
 
   it("narrows the templates to those whose name holds the search", async () => {
@@ -1064,6 +1072,20 @@ describe("the New template dialog", () => {
       ),
     ).toEqual(["area:web", "kind:bug"]);
     expect(within(card).queryByText("read failed")).toBeNull();
+  });
+
+  it("says a project must be picked before Create", async () => {
+    fakeServer();
+    const { dialog } = await openDialog();
+    const create = dialog.getByRole("button", {
+      name: "Create",
+    }) as HTMLButtonElement;
+    fireEvent.click(dialog.getByRole("button", { name: "Project" }));
+    expect(dialog.getByText("Pick a project to start from.")).toBeTruthy();
+    expect(create.disabled).toBe(true);
+    fireEvent.click(dialog.getByRole("option", { name: /todou/ }));
+    expect(dialog.queryByText("Pick a project to start from.")).toBeNull();
+    expect(create.disabled).toBe(false);
   });
 
   it("names the project it starts from, then opens the new template", async () => {

@@ -189,6 +189,14 @@ export function StartFromPicker({
           listClassName="max-h-56"
         />
       )}
+      {value.kind === "project" &&
+        value.project === null &&
+        projects.length > 0 && (
+          // Create also waits for a name, and greyed it cannot say which.
+          <p className="text-sm text-muted-foreground">
+            Pick a project to start from.
+          </p>
+        )}
     </div>
   );
 }
