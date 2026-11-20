@@ -612,12 +612,16 @@ function DeleteTemplateRow({ template }: { template: ProjectTemplate }) {
     scope: { id: writes(template.ref) },
     mutationFn: (id: number) => api.deleteProjectTemplate(id),
     onSuccess: async (_data, id) => {
-      // Only from the template's own page: one left while the delete waited
+      // Only from the template's own page, as the address now reads, a
+      // navigation still loading included: one left while the delete waited
       // is not brought back to the list.
-      const here = router.matchRoute({
-        to: "/settings/templates/$template",
-        params: { template: String(id) },
-      });
+      const here = router
+        .matchRoutes(router.latestLocation)
+        .some(
+          (match) =>
+            match.routeId === "/authed/settings/templates/$template" &&
+            match.params.template === String(id),
+        );
       if (here) await navigate({ to: "/settings/templates" });
       queryClient.setQueryData(templatesKey, (list) =>
         list?.filter((t) => t.ref !== id),
