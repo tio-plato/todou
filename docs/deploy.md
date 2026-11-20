@@ -113,9 +113,11 @@ stored before the upgrade both stay, though the API refuses a new such pair.
 On a database whose encoding is not UTF-8, or on PostgreSQL 12 or older,
 names are not composed, and two that differ only in composition both stay.
 The API compares names by lowercasing each letter on its own, as `lower()`
-does, and also takes a final sigma as a sigma, so an upper-case `ΤΕΛΟΣ` and
-a lower-case `τελος` stored before the upgrade both stay, though the API
-refuses a new such pair. Under a Turkish ctype `lower()` takes `I` as `ı`,
+does, and also takes a final sigma as a sigma, so where `lower()` goes
+letter by letter (a libc or builtin locale) an upper-case `ΤΕΛΟΣ` and a
+lower-case `τελος` stored before the upgrade both stay, though the API
+refuses a new such pair; under an ICU locale `lower()` knows the final sigma
+too, and the later of the two is renamed. Under a Turkish ctype `lower()` takes `I` as `ı`,
 which the API does not: a name differing from another only there passes the
 API's check and is refused by the unique index instead. A status whose
 chart role was never chosen takes the default for its name as the charts

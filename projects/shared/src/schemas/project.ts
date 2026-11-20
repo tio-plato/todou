@@ -313,11 +313,12 @@ export function canonicalizeLabelName(input: string): string {
 /**
  * The yardstick two status or label names are compared with: one name
  * whatever its case or Unicode composition. Each code point is lowercased
- * on its own, the way the database's lower() does, so the API never takes
- * a name the unique index refuses: a capital dotted I is plain i, and so
- * is i with a combining dot above, a word-final capital sigma is σ, and
- * ς counts as σ. Whitespace is left as it is: a lookup does not respace
- * what it is given.
+ * on its own, the way the database's lower() does, and the letters
+ * databases fold differently count as one: a capital dotted I is plain i,
+ * and so is i with a combining dot above, a word-final capital sigma is σ,
+ * and ς counts as σ. The API so refuses whatever the unique index on
+ * lower() would under the usual locales; a Turkish one still folds I to ı.
+ * Whitespace is left as it is: a lookup does not respace what it is given.
  */
 export function nameKey(name: string): string {
   let key = "";
