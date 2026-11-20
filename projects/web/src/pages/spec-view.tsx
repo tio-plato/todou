@@ -61,6 +61,9 @@ import {
   useSpecOutline,
   useSpecOutlineChanges,
   useSpecOutlineComments,
+  useSpecStrip,
+  useSpecStripChanges,
+  useSpecStripComments,
 } from "@/api/prefs.ts";
 import { api } from "@/api/queries.ts";
 import { specCommentsQuery, specFilesQuery, specQuery } from "@/api/spec.ts";
@@ -111,6 +114,7 @@ import {
   sourceHighlightRanges,
 } from "@/components/spec/source-selection.ts";
 import { SpecBaselinePicker } from "@/components/spec/spec-baseline-picker.tsx";
+import { SpecChangeStrip } from "@/components/spec/spec-change-strip.tsx";
 import { SpecCompareToggle } from "@/components/spec/spec-compare-toggle.tsx";
 import {
   type ComposerStaging,
@@ -230,8 +234,14 @@ function stopsFor(els: HTMLElement[], sourceDiff: boolean): Stops {
 /** Two toolbar rows, until the measurement lands. */
 const TOOLBAR_FALLBACK_HEIGHT = 78;
 
-/** How far below the toolbar the rail's top edge stays, and above the window's bottom. */
+/**
+ * How far below the toolbar the rail's top edge stays, and above the window's
+ * bottom; the change strip stops as far below it.
+ */
 const RAIL_GAP = 12;
+
+/** A line taken to itself, where no comparison moved any. */
+const SAME_LINE = (line: number) => line;
 
 /**
  * The one content slot in the toolbar's second row: `fold`, `wrap` and the
@@ -772,15 +782,21 @@ function SpecViewBody({
   const selected = files.data.files.find((f) => f.path === selectedPath);
   const params = { slug, number: String(issueNumber) };
 
-  // The rendered file's headings (T-234). The source views have none: their
-  // rail lists files alone.
+  // The rendered file's headings, for the outline and the change strip
+  // (T-234). The source views have neither: their rail lists files alone.
   const outlineOn = useSpecOutline();
-  const selectedBody =
-    outlineOn && view === "rendered" ? selected?.body : undefined;
-  const outline = useMemo(
-    () => (selectedBody === undefined ? null : outlineOf(selectedBody)),
-    [selectedBody],
+  const showsStrip =
+    useSpecStrip() && wide && view === "rendered" && selected !== undefined;
+  const renderedBody =
+    view === "rendered" && (outlineOn || showsStrip)
+      ? selected?.body
+      : undefined;
+  const sections = useMemo(
+    () => (renderedBody === undefined ? null : outlineOf(renderedBody)),
+    [renderedBody],
   );
+  const outline = outlineOn ? sections : null;
+  const cardRef = useRef<HTMLDivElement>(null);
 
   const fileSearch = (path: string): SpecSearch =>
     specSearchFor({ file: path, version, baseline, view });
@@ -1501,7 +1517,7 @@ function SpecViewBody({
   // notes on the baseline (T-234).
   const sectionDiff = useMemo(() => {
     if (
-      outline === null ||
+      sections === null ||
       !renderedCompare ||
       baselineFiles === undefined ||
       selected === undefined
@@ -1509,12 +1525,12 @@ function SpecViewBody({
       return null;
     }
     return sectionDiffstat(
-      outline,
+      sections,
       baselineBody ?? "",
       selected.body,
       diffLines,
     );
-  }, [outline, renderedCompare, baselineFiles, selected, baselineBody]);
+  }, [sections, renderedCompare, baselineFiles, selected, baselineBody]);
   const sectionNotes = useMemo(
     () =>
       outline === null
@@ -1523,7 +1539,7 @@ function SpecViewBody({
             outline,
             displayed,
             baselineDisplayed,
-            sectionDiff?.oldToNew ?? ((line) => line),
+            sectionDiff?.oldToNew ?? SAME_LINE,
           ),
     [outline, displayed, baselineDisplayed, sectionDiff],
   );
@@ -1531,6 +1547,8 @@ function SpecViewBody({
   const outlineChanges = useSpecOutlineChanges();
   const outlineNotes = outlineComments ? sectionNotes : null;
   const outlineStats = outlineChanges ? (sectionDiff?.stats ?? null) : null;
+  const stripComments = useSpecStripComments();
+  const stripChanges = useSpecStripChanges();
 
   const backControl = mergedBack ? (
     <SpecIssueReturnLink
@@ -2214,7 +2232,15 @@ function SpecViewBody({
               ) : (
                 // The inset is the card's padding and how far past the text
                 // AnnotatedMarkdown's chips reach on a phone, onto the border.
-                <div className="rounded-lg border px-(--spec-card-inset) py-4 [--spec-card-inset:--spacing(5)]">
+                // From lg up the change strip takes the right border's place
+                // (T-234); below it the chips ride on that border.
+                <div
+                  ref={cardRef}
+                  className={cn(
+                    "relative rounded-lg border px-(--spec-card-inset) py-4 [--spec-card-inset:--spacing(5)]",
+                    showsStrip && "border-r-transparent",
+                  )}
+                >
                   {selected === undefined ? (
                     selectedPath !== undefined &&
                     baseline !== null &&
@@ -2253,6 +2279,32 @@ function SpecViewBody({
                       compareLabels={compareLabels}
                     />
                   )}
+                  {showsStrip &&
+                    sections !== null &&
+                    selected !== undefined && (
+                      <SpecChangeStrip
+                        cardRef={cardRef}
+                        contentRef={contentRef}
+                        stickyTop={stickyTop}
+                        gap={RAIL_GAP}
+                        headings={sections}
+                        stats={
+                          stripChanges ? (sectionDiff?.stats ?? null) : null
+                        }
+                        annotations={displayed}
+                        baselineAnnotations={baselineDisplayed}
+                        oldToNew={sectionDiff?.oldToNew ?? SAME_LINE}
+                        showComments={stripComments}
+                        showChanges={stripChanges}
+                        land={flashTo}
+                        deps={[
+                          selected.body,
+                          baselineBody,
+                          changedRanges,
+                          foldUnchanged,
+                        ]}
+                      />
+                    )}
                 </div>
               )}
               <UnplacedNotes
