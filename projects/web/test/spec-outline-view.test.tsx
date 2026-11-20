@@ -643,6 +643,7 @@ describe("the change strip", () => {
     };
     box.getBoundingClientRect = () =>
       ({ top: 0, height: 1000, bottom: 1000, left: 0, right: 900 }) as DOMRect;
+    Object.defineProperty(box, "clientHeight", { value: 1000 });
     bar.getBoundingClientRect = () =>
       ({ top: 0, height: 752, bottom: 752, left: 893, right: 907 }) as DOMRect;
     place(removal as HTMLElement, 100);
@@ -652,8 +653,9 @@ describe("the change strip", () => {
     stops.forEach((stop, i) => {
       place(stop, tops[i] ?? 0);
     });
+    // Laid out anew, as a resize would have it.
     await act(async () => {
-      window.dispatchEvent(new Event("scroll"));
+      window.dispatchEvent(new Event("resize"));
       await new Promise((resolve) => setTimeout(resolve, 50));
     });
     const ticks = [...bar.querySelectorAll<HTMLElement>("[data-stop-index]")];
@@ -704,5 +706,51 @@ describe("the change strip", () => {
     move(200, 0);
     move(260, 0);
     expect(scrolls).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a bar to click on however far down the page the card starts", async () => {
+    const view = await renderSpec("?v=2&file=design.md");
+    await waitFor(() => expect(strip(view)).not.toBeNull());
+    const box = card(view) as HTMLElement;
+    const bar = strip(view)?.firstElementChild as HTMLElement;
+    // A pile of file comments above it: the card starts below a 768px
+    // window, at the top of the page.
+    box.getBoundingClientRect = () =>
+      ({
+        top: 1200,
+        height: 3000,
+        bottom: 4200,
+        left: 0,
+        right: 900,
+      }) as DOMRect;
+    Object.defineProperty(box, "clientHeight", { value: 2998 });
+    await act(async () => {
+      window.dispatchEvent(new Event("resize"));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(Number.parseFloat(bar.style.height)).toBeGreaterThan(100);
+  });
+
+  it("takes the tooltip down when a press that left the bar ends off it", async () => {
+    const view = await renderSpec("?v=2&file=design.md");
+    await waitFor(() => expect(strip(view)).not.toBeNull());
+    const bar = strip(view)?.firstElementChild as HTMLElement;
+    const tooltip = () => document.querySelector("[data-spec-strip-tooltip]");
+
+    fireEvent.pointerDown(bar, {
+      button: 0,
+      buttons: 1,
+      pointerId: 1,
+      clientY: 10,
+    });
+    fireEvent.pointerMove(bar, { pointerId: 1, clientY: 12, buttons: 1 });
+    expect(tooltip()).not.toBeNull();
+    // The capture gone, the pointer leaves the bar still pressed and lets go
+    // over the document, where the bar hears nothing of it.
+    fireEvent(bar, new Event("lostpointercapture", { bubbles: true }));
+    fireEvent.pointerLeave(bar, { pointerId: 1, buttons: 1 });
+    expect(tooltip()).not.toBeNull();
+    fireEvent.pointerUp(document.body, { pointerId: 1, button: 0, buttons: 0 });
+    await waitFor(() => expect(tooltip()).toBeNull());
   });
 });

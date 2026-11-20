@@ -364,7 +364,11 @@ function ReviewCallToAction({
   );
 }
 
-export function StatNumbers({ stat }: { stat: SpecFileStat }) {
+export function StatNumbers({
+  stat,
+}: {
+  stat: Pick<SpecFileStat, "plus" | "minus">;
+}) {
   return (
     <span className="font-mono group-hover:underline">
       {stat.plus > 0 && (

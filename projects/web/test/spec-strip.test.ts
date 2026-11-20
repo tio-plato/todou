@@ -4,6 +4,7 @@ import {
   layoutTicks,
   type Mark,
   stripToDocument,
+  tickAt,
 } from "../src/lib/spec-strip.ts";
 
 // The change strip's geometry: a 2000px card drawn on a 500px bar,
@@ -79,5 +80,29 @@ describe("the change strip's ticks", () => {
     }
     expect(stripToDocument(125, CARD, BAR)).toBe(500);
     expect(documentToStrip(500, CARD, BAR)).toBe(125);
+  });
+});
+
+describe("where a press on the strip lands", () => {
+  // Two stops 2px apart on the bar, too far to join, and a removal.
+  const ticks = [
+    { kind: "stop", top: 100, height: 3, target: "upper" },
+    { kind: "stop", top: 105, height: 3, target: "lower" },
+    { kind: "del", top: 140, height: 3, target: "removal" },
+  ] as const;
+  const kinds = ["stop", "del"] as const;
+
+  it("takes the tick under the press, not the one above whose slop reaches it", () => {
+    expect(tickAt([...ticks], 105.5, kinds, 3)?.target).toBe("lower");
+    expect(tickAt([...ticks], 101, kinds, 3)?.target).toBe("upper");
+  });
+
+  it("takes the nearest within the slop, and nothing past it", () => {
+    expect(tickAt([...ticks], 138, kinds, 3)?.target).toBe("removal");
+    expect(tickAt([...ticks], 120, kinds, 3)).toBeUndefined();
+  });
+
+  it("looks only at the kinds it is asked about", () => {
+    expect(tickAt([...ticks], 141, ["stop"], 3)).toBeUndefined();
   });
 });

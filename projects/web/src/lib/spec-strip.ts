@@ -83,3 +83,28 @@ export function layoutTicks<T>(
   }
   return ticks;
 }
+
+/**
+ * The tick of one of `kinds` a press at `y` on the bar is on: the nearest one
+ * within `slop` of it, so that a press on a tick lands on that tick even
+ * where a neighbour's slop reaches it.
+ */
+export function tickAt<T>(
+  ticks: Tick<T>[],
+  y: number,
+  kinds: readonly TickKind[],
+  slop: number,
+): Tick<T> | undefined {
+  let nearest: Tick<T> | undefined;
+  let best = Number.POSITIVE_INFINITY;
+  for (const tick of ticks) {
+    if (!kinds.includes(tick.kind)) continue;
+    const bottom = tick.top + tick.height;
+    const distance = y < tick.top ? tick.top - y : y > bottom ? y - bottom : 0;
+    if (distance <= slop && distance < best) {
+      nearest = tick;
+      best = distance;
+    }
+  }
+  return nearest;
+}

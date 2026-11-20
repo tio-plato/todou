@@ -11,6 +11,7 @@ import {
   renderedDocumentIn,
   shownFor,
 } from "@/components/spec/spec-outline.tsx";
+import { StatNumbers } from "@/components/timeline/spec-version-card.tsx";
 import { DELETION_CLASSES } from "@/lib/rehype-fold-unchanged.ts";
 import { parseSourceLoc, SOURCE_LINE_ATTR } from "@/lib/rehype-source-lines.ts";
 import { usableViewport } from "@/lib/scroll-insets.ts";
@@ -22,6 +23,7 @@ import {
   stripToDocument,
   type Tick,
   type TickKind,
+  tickAt,
 } from "@/lib/spec-strip.ts";
 import { useLayoutTick } from "@/lib/use-layout-tick.ts";
 import { cn } from "@/lib/utils.ts";
@@ -34,6 +36,20 @@ const HIT_SLOP = 3;
 
 /** How far the pointer moves before a press on the strip is a drag. */
 const DRAG_SLOP = 3;
+
+/** The ticks a press lands on; elsewhere it scrolls that point into view. */
+const LANDING_KINDS: readonly TickKind[] = ["stop", "del"];
+
+/**
+ * The card's padding box in the viewport: what the strip's column spans, and
+ * so what its scale maps onto the bar.
+ */
+function paddingBoxOf(card: HTMLElement): { top: number; height: number } {
+  return {
+    top: card.getBoundingClientRect().top + card.clientTop,
+    height: card.clientHeight,
+  };
+}
 
 const DELETION_SELECTOR = [...DELETION_CLASSES]
   .map((name) => `.${name}`)
@@ -240,55 +256,68 @@ export function SpecChangeStrip({
     section: number;
   } | null>(null);
   const drag = useRef<{ startY: number; moved: boolean } | null>(null);
+  /** The bar's height as last measured, for the frame between measurements. */
+  const stripHeightRef = useRef(0);
 
-  useLayoutTick(contentRef, () => {
-    const card = cardRef.current;
-    const doc = renderedDocumentIn(card);
-    if (card === null || doc === null) return;
-    const rect = card.getBoundingClientRect();
-    const cardDocTop = rect.top + window.scrollY;
-    // Fixed for a given window and toolbar: the bar's height when the card
-    // sits as low as it ever does, at the top of the page, so that the
-    // whole bar shows there too. Never taller than the card it runs down.
-    const stripHeight = Math.max(
-      0,
-      Math.min(window.innerHeight - cardDocTop - gap, rect.height),
-    );
-    const { marks, stopIndex } = collectMarks(
-      doc,
-      rect.top,
+  useLayoutTick(
+    contentRef,
+    (resized) => {
+      const card = cardRef.current;
+      const doc = renderedDocumentIn(card);
+      if (card === null || doc === null) return;
+      const box = paddingBoxOf(card);
+      // Where things lie down the card only changes when something changes
+      // size; a scroll alone moves the frame and nothing else.
+      if (resized) {
+        // Fixed for a given window and toolbar: the bar's height when the card
+        // sits as low as it ever does, at the top of the page, so that the
+        // whole bar shows there too; but never less than half the height it
+        // has once stuck, however far down the page the card starts, and never
+        // taller than the card it runs down.
+        const stuck = window.innerHeight - stickyTop - 2 * gap;
+        const fits = window.innerHeight - (box.top + window.scrollY) - gap;
+        const stripHeight = Math.max(
+          0,
+          Math.min(Math.max(fits, stuck / 2), box.height),
+        );
+        stripHeightRef.current = stripHeight;
+        const { marks, stopIndex } = collectMarks(
+          doc,
+          box.top,
+          annotations,
+          baselineAnnotations,
+          oldToNew,
+          { changes: showChanges, comments: showComments },
+        );
+        const next: Layout = {
+          ticks: layoutTicks(marks, box.height, stripHeight),
+          stopIndex,
+          sections: sectionTops(doc, box.top, headings),
+          cardHeight: box.height,
+          stripHeight,
+        };
+        setLayout((prev) => (sameLayout(prev, next) ? prev : next));
+      }
+      const frame = frameRef.current;
+      if (frame !== null && box.height > 0) {
+        const from = Math.max(0, stickyTop - box.top);
+        const to = Math.min(box.height, window.innerHeight - box.top);
+        const scale = stripHeightRef.current / box.height;
+        frame.style.top = `${from * scale}px`;
+        frame.style.height = `${Math.max(0, to - from) * scale}px`;
+      }
+    },
+    [
+      ...deps,
       annotations,
       baselineAnnotations,
-      oldToNew,
-      { changes: showChanges, comments: showComments },
-    );
-    const next: Layout = {
-      ticks: layoutTicks(marks, rect.height, stripHeight),
-      stopIndex,
-      sections: sectionTops(doc, rect.top, headings),
-      cardHeight: rect.height,
-      stripHeight,
-    };
-    setLayout((prev) => (sameLayout(prev, next) ? prev : next));
-    // What is on screen moves with every scroll; only the frame follows it.
-    const frame = frameRef.current;
-    if (frame !== null && rect.height > 0) {
-      const from = Math.max(0, stickyTop - rect.top);
-      const to = Math.min(rect.height, window.innerHeight - rect.top);
-      const scale = stripHeight / rect.height;
-      frame.style.top = `${from * scale}px`;
-      frame.style.height = `${Math.max(0, to - from) * scale}px`;
-    }
-  }, [
-    ...deps,
-    annotations,
-    baselineAnnotations,
-    headings,
-    showComments,
-    showChanges,
-    stickyTop,
-    gap,
-  ]);
+      headings,
+      showComments,
+      showChanges,
+      stickyTop,
+      gap,
+    ],
+  );
 
   /** The bar's y under the pointer, and the section it falls in. */
   const pointAt = (clientY: number) => {
@@ -309,25 +338,17 @@ export function SpecChangeStrip({
     const card = cardRef.current;
     if (card === null) return;
     const usable = usableViewport();
-    const pageY = card.getBoundingClientRect().top + window.scrollY + down;
+    const pageY = paddingBoxOf(card).top + window.scrollY + down;
     window.scrollTo({
       top: pageY - (usable.top + usable.height / 2),
       behavior,
     });
   };
 
-  const hitTick = (y: number, kind: TickKind) =>
-    layout.ticks.find(
-      (tick) =>
-        tick.kind === kind &&
-        y >= tick.top - HIT_SLOP &&
-        y <= tick.top + tick.height + HIT_SLOP,
-    );
-
   const click = (clientY: number) => {
     const at = pointAt(clientY);
     if (at === null) return;
-    const tick = hitTick(at.y, "stop") ?? hitTick(at.y, "del");
+    const tick = tickAt(layout.ticks, at.y, LANDING_KINDS, HIT_SLOP);
     if (tick !== undefined) land(tick.target);
     else scrollToPoint(at.down, "smooth");
   };
@@ -350,8 +371,20 @@ export function SpecChangeStrip({
           if (event.button !== 0) return;
           // No text selection starts on the strip, and the drag keeps it.
           event.preventDefault();
-          event.currentTarget.setPointerCapture(event.pointerId);
+          const bar = event.currentTarget;
+          bar.setPointerCapture(event.pointerId);
           drag.current = { startY: event.clientY, moved: false };
+          // Without the capture, a release off the bar never reaches it, and
+          // the tooltip would stay up until the pointer came back.
+          window.addEventListener(
+            "pointerup",
+            (up) => {
+              if (up.target instanceof Node && bar.contains(up.target)) return;
+              drag.current = null;
+              setHover(null);
+            },
+            { once: true },
+          );
         }}
         onPointerMove={(event) => {
           const at = pointAt(event.clientY);
@@ -360,7 +393,9 @@ export function SpecChangeStrip({
               ? null
               : {
                   y: event.clientY,
-                  right: window.innerWidth - at.left + 6,
+                  // From the edge a fixed box's `right` counts from, which
+                  // leaves a classic scrollbar out.
+                  right: document.documentElement.clientWidth - at.left + 6,
                   section: at.section,
                 },
           );
@@ -425,14 +460,8 @@ export function SpecChangeStrip({
           >
             <div className="truncate font-medium">{heading.text}</div>
             {stat !== undefined && (stat.plus > 0 || stat.minus > 0) && (
-              <div className="font-mono text-[11px]">
-                {stat.plus > 0 && (
-                  <span className="diff-addition-text">+{stat.plus}</span>
-                )}
-                {stat.plus > 0 && stat.minus > 0 && " "}
-                {stat.minus > 0 && (
-                  <span className="diff-deletion-text">−{stat.minus}</span>
-                )}
+              <div className="text-[11px]">
+                <StatNumbers stat={stat} />
               </div>
             )}
           </div>,
