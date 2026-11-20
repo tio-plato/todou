@@ -1044,6 +1044,29 @@ describe("a template's page", () => {
     expect(error).not.toHaveBeenCalled();
   });
 
+  it("a delete that lands once its page is left keeps the user where they went", async () => {
+    const server = fakeServer({ hold: true });
+    const router = renderAt("/settings/templates/7");
+    await screen.findByText("Doing");
+    await addStatus("Review");
+    await deleteFromPage();
+    await settle();
+    // Back, say, which no dialog holds off.
+    await act(() => router.history.push(`/settings/templates/${BUGS.ref}`));
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(
+        BUGS.name,
+      ),
+    );
+
+    await server.release();
+    await waitFor(() => expect(deletes(server.calls)).toHaveLength(1));
+    await settle();
+    expect(router.state.location.pathname).toBe(
+      `/settings/templates/${BUGS.ref}`,
+    );
+  });
+
   it("shows Default with nothing to change", async () => {
     fakeServer();
     renderAt("/settings/templates/default");
