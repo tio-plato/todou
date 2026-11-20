@@ -9,7 +9,12 @@ import {
 import { parseSourceLoc, SOURCE_LINE_ATTR } from "@/lib/rehype-source-lines.ts";
 import type { RevealMode } from "@/lib/scroll-insets.ts";
 import { usableViewport } from "@/lib/scroll-insets.ts";
-import { activeHeading, type OutlineHeading } from "@/lib/spec-outline.ts";
+import {
+  activeHeading,
+  type OutlineHeading,
+  type SectionNotes,
+  type SectionStat,
+} from "@/lib/spec-outline.ts";
 import { useLayoutTick } from "@/lib/use-layout-tick.ts";
 import { cn } from "@/lib/utils.ts";
 
@@ -172,10 +177,16 @@ function keepInView(row: HTMLElement): void {
  */
 export function SpecOutline({
   headings,
+  notes,
+  stats,
   contentRef,
   onJump,
 }: {
   headings: OutlineHeading[];
+  /** Each section's open comments and drafts; null leaves both columns out. */
+  notes: SectionNotes[] | null;
+  /** Each section's changed lines while comparing; null leaves them out. */
+  stats: SectionStat[] | null;
   contentRef: RefObject<HTMLElement | null>;
   onJump: (line: number) => void;
 }) {
@@ -221,8 +232,77 @@ export function SpecOutline({
           >
             {heading.text}
           </span>
+          <SectionCounts note={notes?.[i]} stat={stats?.[i]} />
         </button>
       ))}
     </div>
+  );
+}
+
+/** The file rail's amber circle for comments, the draft chip's indigo. */
+const COUNT_BADGE =
+  "inline-block min-w-5 rounded-full border px-1.5 text-center text-xs font-normal";
+const COMMENT_BADGE =
+  "border-amber-500/60 bg-amber-500/10 text-amber-700 dark:text-amber-400";
+const DRAFT_BADGE =
+  "border-indigo-500/60 bg-indigo-500/10 text-indigo-700 dark:text-indigo-400";
+
+/**
+ * A row's last three cells, each present whether or not it holds anything,
+ * so that every count stays in its own column. Only a cell with something in
+ * it takes the space before it, so a column empty on every row takes none.
+ */
+function SectionCounts({
+  note,
+  stat,
+}: {
+  note: SectionNotes | undefined;
+  stat: SectionStat | undefined;
+}) {
+  const comments = note?.comments ?? 0;
+  const drafts = note?.drafts ?? 0;
+  const plus = stat?.plus ?? 0;
+  const minus = stat?.minus ?? 0;
+  const changed = plus > 0 || minus > 0;
+  return (
+    <>
+      <span
+        data-outline-cell="comments"
+        className={cn("justify-self-center", comments > 0 && "pl-1.5")}
+      >
+        {comments > 0 && (
+          <span
+            className={cn(COUNT_BADGE, COMMENT_BADGE)}
+            title={`${comments} open ${comments === 1 ? "comment" : "comments"}`}
+          >
+            {comments}
+          </span>
+        )}
+      </span>
+      <span
+        data-outline-cell="drafts"
+        className={cn("justify-self-center", drafts > 0 && "pl-1.5")}
+      >
+        {drafts > 0 && (
+          <span
+            className={cn(COUNT_BADGE, DRAFT_BADGE)}
+            title={`${drafts} ${drafts === 1 ? "draft" : "drafts"}`}
+          >
+            {drafts}
+          </span>
+        )}
+      </span>
+      <span
+        data-outline-cell="changes"
+        className={cn(
+          "justify-self-end font-mono text-[11px] font-normal",
+          changed && "pl-1.5",
+        )}
+      >
+        {plus > 0 && <span className="diff-addition-text">+{plus}</span>}
+        {plus > 0 && minus > 0 && " "}
+        {minus > 0 && <span className="diff-deletion-text">−{minus}</span>}
+      </span>
+    </>
   );
 }

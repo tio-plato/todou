@@ -17,6 +17,7 @@ import {
 import type {
   Issue,
   MePrefs as MePrefsShape,
+  SpecCommentItem,
   SpecComments,
   SpecFiles,
   SpecInfo,
@@ -76,9 +77,10 @@ const AUTHOR = {
 const lines = (...rows: string[]) => `${rows.join("\n")}\n`;
 
 /**
- * v2 rewrites the last paragraph only, so a comparison folds everything from
- * the intro to the end of Beta into one placeholder: Alpha and Beta are
- * folded, Gamma heads the change and stays.
+ * v2 rewrites a paragraph under Alpha and the end of Gamma, and the reader has
+ * a comment and a draft under Delta. A comparison keeps what changed, what is
+ * annotated and the headings over the changes, and folds the rest of Beta and
+ * Delta's heading into one placeholder, from Beta's line to Delta's.
  */
 const V1 = lines(
   "# Design",
@@ -99,7 +101,13 @@ const V1 = lines(
   "",
   "beta two.",
   "",
-  "beta three.",
+  "## Delta",
+  "",
+  "delta one.",
+  "",
+  "delta two.",
+  "",
+  "delta three.",
   "",
   "## Gamma",
   "",
@@ -107,11 +115,60 @@ const V1 = lines(
   "",
   "gamma two.",
 );
-const V2 = V1.replace("gamma two.", "gamma two, rewritten.");
+const V2 = V1.replace("alpha two.", "alpha two, edited.").replace(
+  "gamma two.\n",
+  "gamma two, rewritten.\n\ngamma three.\n",
+);
 const BODIES: Record<number, Record<string, string>> = {
   1: { "design.md": V1, "notes.md": "plain\n" },
   2: { "design.md": V2, "notes.md": "plain\n" },
 };
+/** Each heading's line, the same in both versions. */
+const LINE = { Design: 1, Alpha: 5, Beta: 13, Delta: 19, Gamma: 27 } as const;
+
+/** A comment on v2's design.md, on one line. */
+function comment(id: number, line: number, resolved: boolean): SpecCommentItem {
+  return {
+    comment_id: id,
+    author: AUTHOR,
+    created_at: "2026-01-02T00:00:00Z",
+    body: `note ${id}`,
+    anchor: {
+      path: "design.md",
+      version: 2,
+      line_start: line,
+      line_end: line,
+      col_start: null,
+      col_end: null,
+      quote: "",
+    },
+    resolved: resolved ? { by: AUTHOR, at: "2026-01-03T00:00:00Z" } : null,
+    outdated: false,
+    current_line_start: line,
+    current_line_end: line,
+  };
+}
+
+/** One open and one resolved comment on "delta one.", a draft on "delta two.". */
+const COMMENTS: SpecComments = {
+  current_version: 2,
+  items: [comment(41, 21, false), comment(42, 21, true)],
+};
+const DRAFTS = [
+  {
+    id: "draft-1",
+    anchor: {
+      path: "design.md",
+      version: 2,
+      line_start: 23,
+      line_end: 23,
+      col_start: null,
+      col_end: null,
+    },
+    quote: "delta two.",
+    body: "a draft",
+  },
+];
 
 const ISSUE = {
   id: 234,
@@ -180,8 +237,8 @@ function mockSpec(prefs: Partial<MePrefsShape> = {}) {
       });
     },
   );
-  const comments: SpecComments = { current_version: 2, items: [] };
-  vi.spyOn(api, "getSpecComments").mockResolvedValue(comments);
+  vi.spyOn(api, "getSpecComments").mockResolvedValue(COMMENTS);
+  localStorage.setItem("todou-spec-review:demo:1", JSON.stringify(DRAFTS));
   vi.spyOn(api, "getReferenceConfig").mockResolvedValue({
     format: { prefix: "T", history: [] },
     autolinks: [],
@@ -254,11 +311,29 @@ const rail = (view: { container: HTMLElement }) => {
   return aside;
 };
 
-/** The outline's rows, by what they read. */
+/** The outline's rows. */
 const rows = (box: HTMLElement) =>
   within(box)
     .queryAllByRole("button")
     .filter((el) => el.closest("[data-spec-outline]") !== null);
+
+/** The heading a row names: its title, whatever its counts read. */
+const named = (row: HTMLElement) => row.getAttribute("title");
+
+const rowFor = (box: HTMLElement, name: string) => {
+  const row = rows(box).find((el) => named(el) === name);
+  if (row === undefined) throw new Error(`no outline row ${name}`);
+  return row;
+};
+
+/** What a row's count cells read, by column. */
+const cells = (row: HTMLElement) =>
+  Object.fromEntries(
+    [...row.querySelectorAll("[data-outline-cell]")].map((cell) => [
+      cell.getAttribute("data-outline-cell"),
+      cell.textContent,
+    ]),
+  );
 
 /** The rendered heading on a line, as the document draws it. */
 const headingAt = (view: { container: HTMLElement }, line: number) =>
@@ -286,10 +361,11 @@ describe("the outline in the rail (T-234)", () => {
     const view = await renderSpec("?v=2&file=design.md");
     const aside = rail(view);
     await waitFor(() => expect(rows(aside).length).toBeGreaterThan(0));
-    expect(rows(aside).map((row) => row.textContent)).toEqual([
+    expect(rows(aside).map(named)).toEqual([
       "Design",
       "Alpha",
       "Beta",
+      "Delta",
       "Gamma",
     ]);
     expect(
@@ -318,17 +394,19 @@ describe("the outline in the rail (T-234)", () => {
 
   it("opens the fold over a heading it jumps to, and lands on the heading", async () => {
     const view = await renderSpec("?v=2&file=design.md");
-    const beta = headingAt(view, 13);
-    expect(beta?.closest(".spec-folded")).not.toBeNull();
-    expect(view.container.querySelectorAll(".spec-fold")).toHaveLength(1);
+    // Delta is the fold's last block, so its line is the end of the fold's key.
+    expect(headingAt(view, LINE.Delta)?.closest(".spec-folded")).not.toBeNull();
+    const folds = [...view.container.querySelectorAll(".spec-fold")];
+    expect(folds.map((fold) => fold.getAttribute("data-fold-key"))).toEqual([
+      `${LINE.Beta}-${LINE.Delta}`,
+    ]);
     const reveals = watchReveals();
 
-    const row = rows(rail(view)).find((el) => el.textContent === "Beta");
-    fireEvent.click(row as HTMLElement);
+    fireEvent.click(rowFor(rail(view), "Delta"));
 
     await waitFor(() => expect(reveals).toHaveLength(1));
     expect(view.container.querySelectorAll(".spec-fold")).toHaveLength(0);
-    const opened = headingAt(view, 13);
+    const opened = headingAt(view, LINE.Delta);
     expect(opened?.closest(".spec-folded")).toBeNull();
     expect(reveals[0]?.el).toBe(opened);
     expect(reveals[0]?.block).toBe("start");
@@ -347,12 +425,11 @@ describe("the outline in the Files popover (T-234)", () => {
     ).toBeTruthy();
     const reveals = watchReveals();
 
-    const row = rows(popover).find((el) => el.textContent === "Gamma");
-    fireEvent.click(row as HTMLElement);
+    fireEvent.click(rowFor(popover, "Gamma"));
 
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await waitFor(() => expect(reveals).toHaveLength(1));
-    expect(reveals[0]?.el).toBe(headingAt(view, 21));
+    expect(reveals[0]?.el).toBe(headingAt(view, LINE.Gamma));
     expect(reveals[0]?.block).toBe("start");
   });
 });
@@ -360,15 +437,12 @@ describe("the outline in the Files popover (T-234)", () => {
 describe("following the reader through the sections (T-234)", () => {
   /** Put each heading's top where the reader would see it, then scroll. */
   async function place(view: { container: HTMLElement }, tops: number[]) {
-    [1, 5, 13, 21].forEach((line, i) => {
+    Object.values(LINE).forEach((line, i) => {
       const el = headingAt(view, line);
       if (el === null) throw new Error(`no heading on line ${line}`);
+      const top = tops[i] ?? 0;
       el.getBoundingClientRect = () =>
-        ({
-          top: tops[i] ?? 0,
-          height: 30,
-          bottom: (tops[i] ?? 0) + 30,
-        }) as DOMRect;
+        ({ top, height: 30, bottom: top + 30 }) as DOMRect;
     });
     await act(async () => {
       window.dispatchEvent(new Event("scroll"));
@@ -379,22 +453,87 @@ describe("following the reader through the sections (T-234)", () => {
   const current = (view: { container: HTMLElement }) =>
     rows(rail(view))
       .filter((row) => row.getAttribute("aria-current") === "location")
-      .map((row) => row.textContent);
+      .map(named);
 
   it("moves the current row without re-rendering the document", async () => {
     // v1 compares against nothing, so nothing folds and every heading has a box.
     const view = await renderSpec("?v=1&file=design.md");
-    await waitFor(() => expect(rows(rail(view)).length).toBe(4));
-    await place(view, [-900, -200, 900, 1400]);
+    await waitFor(() => expect(rows(rail(view)).length).toBe(5));
+    await place(view, [-900, -200, 900, 1200, 1400]);
     expect(current(view)).toEqual(["Alpha"]);
 
     const before = counts.annotated;
     for (const round of [0, 1, 2]) {
-      await place(view, [-900, -600, -100, 1400]);
+      await place(view, [-900, -600, -100, 1200, 1400]);
       expect(current(view), `round ${round}`).toEqual(["Beta"]);
-      await place(view, [-900, -200, 900, 1400]);
+      await place(view, [-900, -200, 900, 1200, 1400]);
       expect(current(view), `round ${round}`).toEqual(["Alpha"]);
     }
     expect(counts.annotated).toBe(before);
+  });
+});
+
+describe("what each section holds (T-234)", () => {
+  it("counts each section's changed lines while comparing, and none otherwise", async () => {
+    const view = await renderSpec("?v=2&file=design.md");
+    const aside = rail(view);
+    // Alpha's paragraph reworded; Gamma's last one reworded, and a blank line
+    // and a paragraph added after it.
+    await waitFor(() =>
+      expect(cells(rowFor(aside, "Alpha")).changes).toBe("+1 −1"),
+    );
+    expect(cells(rowFor(aside, "Gamma")).changes).toBe("+3 −1");
+    for (const name of ["Design", "Beta", "Delta"]) {
+      expect(cells(rowFor(aside, name)).changes, name).toBe("");
+    }
+    view.unmount();
+
+    const plain = await renderSpec("?v=1&file=design.md");
+    await waitFor(() => expect(rows(rail(plain)).length).toBe(5));
+    for (const row of rows(rail(plain))) {
+      expect(cells(row).changes, named(row) ?? "").toBe("");
+    }
+  });
+
+  it("counts open comments and drafts in their own columns", async () => {
+    const view = await renderSpec("?v=2&file=design.md");
+    const aside = rail(view);
+    // One open comment, one resolved and one draft under Delta.
+    await waitFor(() =>
+      expect(cells(rowFor(aside, "Delta"))).toMatchObject({
+        comments: "1",
+        drafts: "1",
+      }),
+    );
+    for (const name of ["Design", "Alpha", "Beta", "Gamma"]) {
+      expect(cells(rowFor(aside, name)), name).toMatchObject({
+        comments: "",
+        drafts: "",
+      });
+    }
+  });
+
+  it("drops a column when its switch is off", async () => {
+    const quiet = await renderSpec("?v=2&file=design.md", {
+      spec_outline_comments: false,
+    });
+    await waitFor(() =>
+      expect(cells(rowFor(rail(quiet), "Gamma")).changes).toBe("+3 −1"),
+    );
+    expect(cells(rowFor(rail(quiet), "Delta"))).toMatchObject({
+      comments: "",
+      drafts: "",
+    });
+    quiet.unmount();
+
+    const still = await renderSpec("?v=2&file=design.md", {
+      spec_outline_changes: false,
+    });
+    await waitFor(() =>
+      expect(cells(rowFor(rail(still), "Delta")).comments).toBe("1"),
+    );
+    for (const row of rows(rail(still))) {
+      expect(cells(row).changes, named(row) ?? "").toBe("");
+    }
   });
 });
