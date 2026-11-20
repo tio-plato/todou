@@ -55,6 +55,16 @@ describe("TemplateBody", () => {
     ).toBe(true);
   });
 
+  it("refuses a status name blank once trimmed or longer than 60 once canonical", () => {
+    expect(TemplateBody.safeParse(body([status("   ")])).success).toBe(false);
+    expect(TemplateBody.safeParse(body([status("x".repeat(61))])).success).toBe(
+      false,
+    );
+    expect(
+      TemplateBody.safeParse(body([status(`  ${"x".repeat(60)}  `)])).success,
+    ).toBe(true);
+  });
+
   it("refuses two labels that are one name once canonical", () => {
     expect(
       TemplateBody.safeParse(

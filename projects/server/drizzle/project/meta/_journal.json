@@ -197,6 +197,13 @@
       "when": 1795130565350,
       "tag": "0027_label_style",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1795130565351,
+      "tag": "0028_canonical_names",
+      "breakpoints": true
     }
   ]
 }
