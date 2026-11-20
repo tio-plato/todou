@@ -796,9 +796,16 @@ function TemplateEditor({ template }: { template: UsableTemplate }) {
             onSave={(name) => queue({ name })}
           />
         ) : (
-          <div className="flex min-w-0 items-center gap-2">
-            <h1 className="truncate text-xl font-semibold">{template.name}</h1>
-            <Badge variant="outline">Built in</Badge>
+          <div className="space-y-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <h1 className="truncate text-xl font-semibold">
+                {template.name}
+              </h1>
+              <Badge variant="outline">Built in</Badge>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Comes with todou: an update can change it, but not your copies.
+            </p>
           </div>
         )}
         <div className="flex flex-wrap items-center gap-2">
