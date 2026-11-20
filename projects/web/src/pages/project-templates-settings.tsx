@@ -640,7 +640,11 @@ function DeleteTemplateRow({ template }: { template: ProjectTemplate }) {
       </Button>
       <ConfirmDialog
         open={open}
-        onOpenChange={setOpen}
+        // Kept open while the delete waits its turn: closed, it would read
+        // as called off, and an edit made then would queue behind it.
+        onOpenChange={(next) => {
+          if (!remove.isPending) setOpen(next);
+        }}
         title="Delete this template?"
         description={
           <>

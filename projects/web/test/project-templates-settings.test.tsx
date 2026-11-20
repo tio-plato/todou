@@ -1037,6 +1037,13 @@ describe("a template's page", () => {
     await settle();
     expect(server.puts()).toHaveLength(1);
     expect(deletes(server.calls)).toEqual([]);
+    // Closed, it would read as called off, and an edit made then would be
+    // queued behind the delete.
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    await settle();
+    expect(
+      screen.getByRole("dialog", { name: "Delete this template?" }),
+    ).toBeTruthy();
 
     await server.release();
     await waitFor(() => expect(deletes(server.calls)).toHaveLength(1));
