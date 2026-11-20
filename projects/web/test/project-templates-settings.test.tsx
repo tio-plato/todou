@@ -837,6 +837,11 @@ describe("a template's page", () => {
       name: "Template name",
     }) as HTMLInputElement;
     expect(field.value).toBe(KANBAN.name);
+    expect(document.activeElement).toBe(field);
+    expect([field.selectionStart, field.selectionEnd]).toEqual([
+      0,
+      KANBAN.name.length,
+    ]);
     fireEvent.change(field, { target: { value: "Board" } });
     // What Enter does in a browser: happy-dom submits no form on a key.
     fireEvent.submit(field);
@@ -895,10 +900,12 @@ describe("a template's page", () => {
       name: "Use for new projects",
     });
     expect(use.getAttribute("aria-pressed")).toBe("false");
+    expect(use.getAttribute("aria-disabled")).toBeNull();
     const patches = () => server.calls.filter((c) => c.method === "PATCH");
 
     fireEvent.click(use);
     await waitFor(() => expect(use.getAttribute("aria-pressed")).toBe("true"));
+    expect(use.getAttribute("aria-disabled")).toBe("true");
     expect(patches()).toEqual([
       {
         method: "PATCH",
@@ -944,11 +951,25 @@ describe("a template's page", () => {
     const dialog = within(
       await screen.findByRole("dialog", { name: `Duplicate ${DEFAULT.name}` }),
     );
-    const field = dialog.getByLabelText("Name") as HTMLInputElement;
+    let field = dialog.getByLabelText("Name") as HTMLInputElement;
+    expect(field.value).toBe(`${DEFAULT.name} copy`);
+    await waitFor(() => expect(document.activeElement).toBe(field));
+    expect([field.selectionStart, field.selectionEnd]).toEqual([
+      0,
+      field.value.length,
+    ]);
+
+    // Closed with a name typed, it offers the copy's name again when reopened.
+    fireEvent.change(field, { target: { value: "Abandoned" } });
+    fireEvent.keyDown(field, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate" }));
+    const reopened = within(await screen.findByRole("dialog"));
+    field = reopened.getByLabelText("Name") as HTMLInputElement;
     expect(field.value).toBe(`${DEFAULT.name} copy`);
 
     fireEvent.change(field, { target: { value: "Mine" } });
-    fireEvent.click(dialog.getByRole("button", { name: "Duplicate" }));
+    fireEvent.click(reopened.getByRole("button", { name: "Duplicate" }));
     await waitFor(() =>
       expect(router.state.location.pathname).toBe("/settings/templates/12"),
     );
@@ -973,14 +994,31 @@ describe("a template's page", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Duplicate" }));
     const dialog = within(await screen.findByRole("dialog"));
     const suggested = (dialog.getByLabelText("Name") as HTMLInputElement).value;
-    expect(suggested.length).toBeLessThanOrEqual(100);
-    expect(suggested).toMatch(/ copy$/);
+    // As much of the name as fits beside " copy" in 100 characters.
+    expect(suggested).toBe(`${"x".repeat(95)} copy`);
 
     fireEvent.click(dialog.getByRole("button", { name: "Duplicate" }));
     await waitFor(() =>
       expect(
         server.calls.filter((c) => c.method === "POST").map((c) => c.body),
       ).toEqual([{ name: suggested, body: long.body }]),
+    );
+  });
+
+  it("cuts a name for its copy between characters, never inside one", async () => {
+    // The emoji's two UTF-16 halves are the 95th and 96th code units.
+    const long: UsableTemplate = {
+      ...KANBAN,
+      ref: 8,
+      name: `${"x".repeat(94)}😀xxxx`,
+    };
+    const templates = [...TEMPLATES, long];
+    fakeServer({ templates });
+    renderAt("/settings/templates/8", undefined, templates);
+    fireEvent.click(await screen.findByRole("button", { name: "Duplicate" }));
+    const dialog = within(await screen.findByRole("dialog"));
+    expect((dialog.getByLabelText("Name") as HTMLInputElement).value).toBe(
+      `${"x".repeat(94)} copy`,
     );
   });
 
