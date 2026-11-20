@@ -6,6 +6,7 @@ import type {
 } from "@todou/shared";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
+import { uniqueViolation } from "../auth/provision.ts";
 import type { AppContext } from "../bootstrap.ts";
 import type { Db } from "../db/driver.ts";
 import { issueLabels, issues, labels, statuses } from "../db/project-schema.ts";
@@ -16,6 +17,15 @@ type LabelRow = typeof labels.$inferSelect;
 
 export function toLabel(row: LabelRow): Label {
   return { id: row.id, name: row.name, color: row.color, style: row.style };
+}
+
+/**
+ * The name check and the write are two statements, so a concurrent create or
+ * rename of the same name can still win the unique index between them; the
+ * loser gets this same 409 rather than a 500.
+ */
+function labelNameTaken(name: string): ConflictError {
+  return new ConflictError(`label "${name}" already exists`);
 }
 
 export async function listLabels(
@@ -81,7 +91,7 @@ export async function createLabel(
     .from(labels)
     .where(and(eq(labels.projectId, project.id), eq(labels.name, input.name)));
   if (clash.length > 0) {
-    throw new ConflictError(`label "${input.name}" already exists`);
+    throw labelNameTaken(input.name);
   }
   const inserted = await db
     .insert(labels)
@@ -92,7 +102,11 @@ export async function createLabel(
       // Left out, the column default makes it `tint`.
       style: input.style,
     })
-    .returning();
+    .returning()
+    .catch((cause: unknown) => {
+      if (uniqueViolation(cause) !== "labels_project_name_idx") throw cause;
+      throw labelNameTaken(input.name);
+    });
   const row = inserted[0];
   if (!row) throw new Error("label insert returned no row");
   ctx.bus.publish(project.id, {
@@ -134,7 +148,7 @@ export async function updateLabel(
         and(eq(labels.projectId, project.id), eq(labels.name, input.name)),
       );
     if (clash.some((r) => r.id !== labelId)) {
-      throw new ConflictError(`label "${input.name}" already exists`);
+      throw labelNameTaken(input.name);
     }
   }
   const updated = await db
@@ -145,7 +159,16 @@ export async function updateLabel(
       ...(input.style === undefined ? {} : { style: input.style }),
     })
     .where(where)
-    .returning();
+    .returning()
+    .catch((cause: unknown) => {
+      if (
+        input.name === undefined ||
+        uniqueViolation(cause) !== "labels_project_name_idx"
+      ) {
+        throw cause;
+      }
+      throw labelNameTaken(input.name);
+    });
   const row = updated[0];
   if (!row) throw new NotFoundError("label not found");
   ctx.bus.publish(project.id, {
