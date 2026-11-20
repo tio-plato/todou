@@ -913,7 +913,7 @@ describe("a template's page", () => {
   it("marks the built-in template as in use only when no other usable template is", async () => {
     fakeServer();
     const client = testQueryClient();
-    renderAt("/settings/templates/default", client);
+    renderAt(`/settings/templates/${DEFAULT.ref}`, client);
     act(() => {
       client.setQueryData(prefsQuery.queryKey, {
         ...PREFS,
@@ -937,7 +937,7 @@ describe("a template's page", () => {
 
   it("duplicates the built-in template under a name typed in the dialog, then opens the copy", async () => {
     const server = fakeServer();
-    const router = renderAt("/settings/templates/default");
+    const router = renderAt(`/settings/templates/${DEFAULT.ref}`);
     fireEvent.click(await screen.findByRole("button", { name: "Duplicate" }));
     const dialog = within(
       await screen.findByRole("dialog", { name: `Duplicate ${DEFAULT.name}` }),
