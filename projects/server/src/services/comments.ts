@@ -11,7 +11,7 @@ import type {
   SettledByHide,
   TimelineComment,
 } from "@todou/shared";
-import { actionTextProblem, formatRef } from "@todou/shared";
+import { actionTextProblem, formatRef, shownQuestions } from "@todou/shared";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import type { AppContext } from "../bootstrap.ts";
@@ -33,7 +33,7 @@ import { loadReferenceInputs } from "./cross-references.ts";
 import { encodeTimelineCursor } from "./cursor.ts";
 import {
   canonicalizeComponent,
-  questionCount,
+  openQuestionCount,
   settlementFor,
   settlingEvents,
 } from "./questions.ts";
@@ -148,7 +148,7 @@ export async function insertCommentInTx(
   const comment = inserted[0];
   if (!comment) throw new Error("comment insert returned no row");
 
-  const asked = questionCount(component);
+  const asked = openQuestionCount(component);
   await tx
     .update(issues)
     .set(
@@ -580,7 +580,7 @@ export async function deleteComment(
     }
     // A still-unanswered question comment gives its count back; an answered
     // one already surrendered it when the answer landed.
-    const asked = questionCount(locked.component);
+    const asked = openQuestionCount(locked.component);
     if (asked > 0) {
       const settled = settlementFor(
         await settlingEvents(tx, row.issueId),
@@ -683,12 +683,16 @@ export async function settleHiddenInTx(
       const component = row.component;
       if (component?.type !== "questions") continue;
       if (settlementFor(settling, row.id) !== undefined) continue;
-      const answers = component.questions.map((question) => ({
-        key: question.key,
-        selected: [],
-        other: null,
-        declined: true,
-      }));
+      // What the comment asks before any answer, as it counted: declining
+      // those leaves every follow-up unasked (T-22).
+      const answers = shownQuestions(component.questions, new Map()).map(
+        (question) => ({
+          key: question.key,
+          selected: [],
+          other: null,
+          declined: true,
+        }),
+      );
       const inserted = await tx
         .insert(issueEvents)
         .values({
@@ -703,7 +707,7 @@ export async function settleHiddenInTx(
       const event = inserted[0];
       if (!event) throw new Error("event insert returned no row");
       declined.push(row.id);
-      closed += answers.length;
+      closed += openQuestionCount(component);
       events.push({
         entity: "timeline",
         id: event.id,
