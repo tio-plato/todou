@@ -782,8 +782,8 @@ function SpecViewBody({
   const selected = files.data.files.find((f) => f.path === selectedPath);
   const params = { slug, number: String(issueNumber) };
 
-  // The rendered file's headings, for the outline and the change strip
-  // (T-234). The source views have neither: their rail lists files alone.
+  // The rendered file's headings, for the outline and the change strip. The
+  // source views have neither: their rail lists files alone.
   const outlineOn = useSpecOutline();
   const showsStrip =
     useSpecStrip() && wide && view === "rendered" && selected !== undefined;
@@ -1514,7 +1514,7 @@ function SpecViewBody({
 
   // Each section's share of the file's diffstat while comparing, against
   // nothing for a file the baseline lacks, and where its lines went, for the
-  // notes on the baseline (T-234).
+  // notes on the baseline.
   const sectionDiff = useMemo(() => {
     if (
       sections === null ||
@@ -2093,7 +2093,7 @@ function SpecViewBody({
           className={cn(
             "-m-1 hidden self-start overscroll-contain p-1 lg:sticky",
             // Two boxes that scroll on their own, so the outline never
-            // pushes the other files out of reach (T-234). The rail clips
+            // pushes the other files out of reach. The rail clips
             // neither: their focus rings reach past its edges.
             wide && outline !== null
               ? "lg:flex lg:flex-col"
@@ -2232,8 +2232,8 @@ function SpecViewBody({
               ) : (
                 // The inset is the card's padding and how far past the text
                 // AnnotatedMarkdown's chips reach on a phone, onto the border.
-                // From lg up the change strip takes the right border's place
-                // (T-234); below it the chips ride on that border.
+                // From lg up the change strip takes the right border's place;
+                // below it the chips ride on that border.
                 <div
                   ref={cardRef}
                   className={cn(

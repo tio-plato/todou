@@ -13,7 +13,7 @@ import { computeVersionStats } from "../src/lib/spec-version-stats.ts";
 
 const lines = (...rows: string[]) => `${rows.join("\n")}\n`;
 
-describe("a spec file's outline (T-234)", () => {
+describe("a spec file's outline", () => {
   it("lists the document's own h1 first, and every level down to h6", () => {
     const body = lines("# Title", "intro", "## A", "##### Five", "###### Six");
     expect(outlineOf(body)).toEqual([
@@ -94,7 +94,7 @@ function statsOf(before: string, after: string) {
   return sectionDiffstat(outlineOf(after), before, after, diffLines);
 }
 
-describe("each section's added and removed lines (T-234)", () => {
+describe("each section's added and removed lines", () => {
   it("counts an added line in the section it stands in", () => {
     const before = lines("# T", "", "## A", "a1", "", "## B", "b1");
     const after = lines("# T", "", "## A", "a1", "a2", "", "## B", "b1", "b2");
@@ -295,7 +295,7 @@ function draft(start: number): DisplayedAnnotation {
   };
 }
 
-describe("each section's open comments and drafts (T-234)", () => {
+describe("each section's open comments and drafts", () => {
   const before = lines("# T", "", "## A", "a1", "a2", "## B", "b1");
   const after = lines("# T", "", "## A", "a1", "## B", "b1");
   const headings = outlineOf(after);
@@ -340,7 +340,7 @@ describe("each section's open comments and drafts (T-234)", () => {
   });
 });
 
-describe("the section the reader is in (T-234)", () => {
+describe("the section the reader is in", () => {
   it("counts a heading whose top is right on the reading line", () => {
     expect(activeHeading([100, 300, 500], 300, null)).toBe(1);
     expect(activeHeading([100, 300, 500], 299, null)).toBe(0);

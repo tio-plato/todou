@@ -1,6 +1,6 @@
 /**
- * The geometry of the change strip along a rendered spec's right edge
- * (T-234): the whole card mapped onto one fixed-height bar, so a tick keeps
+ * The geometry of the change strip along a rendered spec's right edge:
+ * the whole card mapped onto one fixed-height bar, so a tick keeps
  * its place on the bar however far the page scrolls.
  */
 

@@ -590,7 +590,7 @@ function PreviewRow({
 }
 
 /**
- * The spec page's outline and change strip (T-234). Each part and what it
+ * The spec page's outline and change strip. Each part and what it
  * marks are separate switches; a part switched off keeps the stored values of
  * the two under it, so switching it back on brings them back as they were.
  */

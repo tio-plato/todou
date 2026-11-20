@@ -30,7 +30,7 @@ import { parseSpecSearch } from "../src/lib/spec-search.ts";
 import { SpecViewPage } from "../src/pages/spec-view.tsx";
 import { testQueryClient } from "./render.tsx";
 
-// The outline beside a rendered spec file and in the Files popover (T-234).
+// The outline beside a rendered spec file and in the Files popover.
 
 const counts = vi.hoisted(() => ({ annotated: 0 }));
 
@@ -367,7 +367,7 @@ function watchReveals() {
   return reveals;
 }
 
-describe("the outline in the rail (T-234)", () => {
+describe("the outline in the rail", () => {
   it("lists the file's headings under the file list, the title first", async () => {
     const view = await renderSpec("?v=2&file=design.md");
     const aside = rail(view);
@@ -426,7 +426,7 @@ describe("the outline in the rail (T-234)", () => {
   });
 });
 
-describe("the outline in the Files popover (T-234)", () => {
+describe("the outline in the Files popover", () => {
   it("closes the popover and lands on the heading picked in it", async () => {
     setViewportWidth(390);
     onTestFinished(() => setViewportWidth(1024));
@@ -447,7 +447,7 @@ describe("the outline in the Files popover (T-234)", () => {
   });
 });
 
-describe("following the reader through the sections (T-234)", () => {
+describe("following the reader through the sections", () => {
   /** Put each heading's top where the reader would see it, then scroll. */
   async function place(view: { container: HTMLElement }, tops: number[]) {
     Object.values(LINE).forEach((line, i) => {
@@ -487,7 +487,7 @@ describe("following the reader through the sections (T-234)", () => {
   });
 });
 
-describe("what each section holds (T-234)", () => {
+describe("what each section holds", () => {
   it("counts each section's changed lines while comparing, and none otherwise", async () => {
     const view = await renderSpec("?v=2&file=design.md");
     const aside = rail(view);
@@ -554,7 +554,7 @@ describe("what each section holds (T-234)", () => {
   });
 });
 
-describe("the change strip (T-234)", () => {
+describe("the change strip", () => {
   const strip = (view: { container: HTMLElement }) =>
     view.container.querySelector<HTMLElement>("[data-spec-strip]");
   const card = (view: { container: HTMLElement }) =>

@@ -189,8 +189,8 @@ const PAINT: ReadonlyArray<readonly [TickKind, string]> = [
 ];
 
 /**
- * The card's right border, drawn as a map of the whole file from lg up
- * (T-234): its changes, its open comments and drafts, its h2s and a frame
+ * The card's right border, drawn as a map of the whole file from lg up:
+ * its changes, its open comments and drafts, its h2s and a frame
  * around what is on screen, at their places down the file. The bar stays in
  * view while the card scrolls past, and a click on it goes where it points.
  *

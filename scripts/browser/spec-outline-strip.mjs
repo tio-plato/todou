@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { evaluate } from "../lib/browser-cdp.mjs";
 
-// The spec page's outline and change strip (T-234), where happy-dom cannot
+// The spec page's outline and change strip, where happy-dom cannot
 // look: the strip's place on the card's border and its scale while the page
 // scrolls, where a click on it lands, its tooltip over an open comment
 // popover, and the outline's landing on a folded heading and its current

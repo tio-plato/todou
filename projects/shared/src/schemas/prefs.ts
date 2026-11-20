@@ -94,7 +94,7 @@ export const MePrefs = z.strictObject({
   new_project_template: TemplateRef.default("basic"),
   /*
    * The spec page's outline beside the document and the change strip along
-   * its right edge, each with its own comments and changes (T-234).
+   * its right edge, each with its own comments and changes.
    * Display-only: the spec page reads them, no server code does.
    */
   spec_outline: z.boolean().default(true),
