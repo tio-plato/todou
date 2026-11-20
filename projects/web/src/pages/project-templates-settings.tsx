@@ -384,12 +384,15 @@ function NewTemplateDialog({
           <PlusIcon /> New template
         </Button>
       </DialogTrigger>
-      <DialogContent aria-describedby={undefined} className="sm:max-w-lg">
+      <DialogContent
+        aria-describedby={undefined}
+        className="grid-cols-1 sm:max-w-lg"
+      >
         <DialogHeader>
           <DialogTitle>New template</DialogTitle>
         </DialogHeader>
         <form
-          className="space-y-4"
+          className="min-w-0 space-y-4"
           onSubmit={(e) => {
             e.preventDefault();
             if (input !== null) create.mutate(input);
