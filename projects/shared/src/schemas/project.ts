@@ -119,10 +119,15 @@ export type ProjectBrief = z.infer<typeof ProjectBrief>;
  * because `TemplateRef` needs them and project creation takes one, and
  * project-template.ts imports this file — the other direction would cycle.
  *
- * `"default"` is what a project is created from when no template is named,
+ * `"basic"` is what a project is created from when no template is named,
  * whatever else this list grows to hold.
+ *
+ * A key is the template's identifier, not its display name: it is stored in
+ * prefs and written in URLs and requests, the way the caller's own templates
+ * are known by their row id (a built-in one has no row). Renaming a built-in
+ * template changes its `name` in `BUILTIN_TEMPLATES`, never its key.
  */
-export const BUILTIN_TEMPLATE_KEYS = ["default"] as const;
+export const BUILTIN_TEMPLATE_KEYS = ["basic"] as const;
 export const BuiltinTemplateKey = z.enum(BUILTIN_TEMPLATE_KEYS);
 export type BuiltinTemplateKey = z.infer<typeof BuiltinTemplateKey>;
 
@@ -141,8 +146,9 @@ export const ProjectCreateInput = z
     reclaim: z.boolean().optional(),
     /**
      * What the project's statuses and labels start as. Omitted means
-     * the built-in `"default"`, never the caller's own default template: the
-     * same request then creates the same project whoever sends it.
+     * the built-in `"basic"`, never the template the caller's new projects
+     * start from: the same request then creates the same project whoever
+     * sends it.
      */
     template: TemplateRef.optional(),
     /** Start from another project's current statuses and labels instead. */

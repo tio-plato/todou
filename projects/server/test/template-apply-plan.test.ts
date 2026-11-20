@@ -12,7 +12,7 @@ import {
   templateApplyDigest,
 } from "../src/services/template-apply.ts";
 
-const DEFAULT = BUILTIN_TEMPLATES.default.body;
+const BASIC = BUILTIN_TEMPLATES.basic.body;
 const colorIn = (body: TemplateBody, name: string) =>
   body.statuses.find((s) => s.name === name)?.color ?? "#6b7280";
 
@@ -42,13 +42,13 @@ function project(
   const statuses = specs.map((spec, i) => {
     const category =
       spec.category ??
-      DEFAULT.statuses.find((s) => s.name === spec.name.trim())?.category ??
+      BASIC.statuses.find((s) => s.name === spec.name.trim())?.category ??
       "open";
     return {
       id: i + 1,
       name: spec.name,
       category,
-      color: spec.color ?? colorIn(DEFAULT, spec.name),
+      color: spec.color ?? colorIn(BASIC, spec.name),
       position: i,
       isDefault: spec.isDefault ?? spec.name === "Todo",
       role: spec.role ?? defaultInsightsRole({ name: spec.name, category }),
@@ -71,7 +71,7 @@ function project(
   };
 }
 
-const DEFAULT_LABELS = [
+const BASIC_LABELS = [
   { name: "kind:bug", color: "#ef4444" },
   { name: "kind:chore", color: "#22c55e" },
   { name: "kind:feature", color: "#0ea5e9" },
@@ -116,7 +116,7 @@ const nameOf = (state: ProjectState, key: number | string) =>
 describe("planTemplateApply", () => {
   it("lists one row per difference, by project id for what the project has", () => {
     const state = drifted();
-    const rows = planTemplateApply(state, DEFAULT);
+    const rows = planTemplateApply(state, BASIC);
     const idOf = (name: string) =>
       [...state.statuses, ...state.labels].find((x) => x.name === name)?.id;
 
@@ -149,14 +149,14 @@ describe("planTemplateApply", () => {
       ],
       {
         labels: [
-          ...DEFAULT_LABELS,
+          ...BASIC_LABELS,
           { name: "area:old", color: "#14b8a6", trashed: 1 },
         ],
       },
     );
     const old = state.labels.find((l) => l.name === "area:old")?.id;
     expect(
-      row(planTemplateApply(state, DEFAULT), `label.delete:${old}`),
+      row(planTemplateApply(state, BASIC), `label.delete:${old}`),
     ).toMatchObject({
       issues: 0,
       trashed: 1,
@@ -172,7 +172,7 @@ describe("planTemplateApply", () => {
       { name: "Binned", trashed: 1 },
     ]);
     const rows = planTemplateApply(state, {
-      ...DEFAULT,
+      ...BASIC,
       labels: [],
     });
     expect(row(rows, "status.delete:9")).toMatchObject({
@@ -198,13 +198,13 @@ describe("planTemplateApply", () => {
         {
           name: "Todo",
           category: "open",
-          color: colorIn(DEFAULT, "Todo"),
+          color: colorIn(BASIC, "Todo"),
           chart_role: "remaining",
         },
         {
           name: "Done",
           category: "closed",
-          color: colorIn(DEFAULT, "Done"),
+          color: colorIn(BASIC, "Done"),
           chart_role: "completed",
           block_clear: true,
         },
@@ -229,9 +229,9 @@ describe("planTemplateApply", () => {
         { name: "Done" },
         { name: "Invalid" },
       ],
-      { labels: DEFAULT_LABELS },
+      { labels: BASIC_LABELS },
     );
-    const rows = planTemplateApply(state, DEFAULT);
+    const rows = planTemplateApply(state, BASIC);
     // Parked is left over, and where it sits is not an order difference.
     expect(ids(rows)).toEqual(["status.delete:2"]);
 
@@ -242,9 +242,9 @@ describe("planTemplateApply", () => {
         { name: "Done" },
         { name: "Invalid" },
       ],
-      { labels: DEFAULT_LABELS },
+      { labels: BASIC_LABELS },
     );
-    expect(planTemplateApply(exact, DEFAULT)).toEqual([]);
+    expect(planTemplateApply(exact, BASIC)).toEqual([]);
   });
 
   it("names two statuses that differ only in whitespace by their own ids", () => {
@@ -254,7 +254,7 @@ describe("planTemplateApply", () => {
       { name: "Done  ", category: "closed" },
     ]);
     const template: TemplateBody = {
-      statuses: [DEFAULT.statuses[1] as TemplateBody["statuses"][number]],
+      statuses: [BASIC.statuses[1] as TemplateBody["statuses"][number]],
       labels: [],
     };
     const rows = planTemplateApply(state, template);
@@ -271,20 +271,20 @@ describe("planTemplateApply", () => {
         { name: "Done ", color: "#000000" },
         { name: "Invalid" },
       ],
-      { labels: DEFAULT_LABELS },
+      { labels: BASIC_LABELS },
     );
-    const rows = planTemplateApply(state, DEFAULT);
+    const rows = planTemplateApply(state, BASIC);
     expect(ids(rows)).toEqual(["status.change:7"]);
     expect(row(rows, "status.change:7")).toMatchObject({
       name: "Done ",
-      color: { from: "#000000", to: colorIn(DEFAULT, "Done") },
+      color: { from: "#000000", to: colorIn(BASIC, "Done") },
     });
   });
 });
 
 describe("applySelection", () => {
   const apply = (state: ProjectState, selected: string[]) =>
-    applySelection(state, DEFAULT, planTemplateApply(state, DEFAULT), selected);
+    applySelection(state, BASIC, planTemplateApply(state, BASIC), selected);
 
   it("puts an added status after the one it follows in the template", () => {
     const state = drifted();
@@ -311,9 +311,9 @@ describe("applySelection", () => {
       { name: "Done" },
       { name: "Invalid" },
     ]);
-    const rows = planTemplateApply(state, DEFAULT);
+    const rows = planTemplateApply(state, BASIC);
     expect(row(rows, "status.order").type).toBe("status_order");
-    const outcome = applySelection(state, DEFAULT, rows, ["status.order"]);
+    const outcome = applySelection(state, BASIC, rows, ["status.order"]);
     expect(outcome.order.map((key) => nameOf(state, key))).toEqual([
       ...FLOW,
       "Shipped",
@@ -337,7 +337,7 @@ describe("applySelection", () => {
     ]);
     const outcome = apply(state, ["status.change:7"]);
     expect(outcome.updateStatuses).toEqual([
-      { id: 7, color: colorIn(DEFAULT, "Done"), category: "closed" },
+      { id: 7, color: colorIn(BASIC, "Done"), category: "closed" },
     ]);
     expect(outcome.roleChanges).toEqual([
       { kind: "edited", key: 7, role: "completed" },
@@ -354,7 +354,7 @@ describe("applySelection", () => {
         {
           name: "QA",
           category: "closed",
-          color: colorIn(DEFAULT, "QA"),
+          color: colorIn(BASIC, "QA"),
           chart_role: "remaining",
           block_clear: true,
         },
@@ -385,7 +385,7 @@ describe("applySelection", () => {
     );
     // A template whose line is on Next rather than Shipped.
     const template: TemplateBody = {
-      statuses: DEFAULT.statuses
+      statuses: BASIC.statuses
         .filter((s) => s.name !== "Shipped" && s.name !== "Invalid")
         .map(({ block_clear: _, ...s }) =>
           s.name === "Next" ? { ...s, block_clear: true as const } : s,
@@ -410,8 +410,8 @@ describe("applySelection", () => {
       { name: "Done" },
       { name: "Invalid" },
     ]);
-    const rows = planTemplateApply(state, DEFAULT);
-    const outcome = applySelection(state, DEFAULT, rows, ["status.delete:6"]);
+    const rows = planTemplateApply(state, BASIC);
+    const outcome = applySelection(state, BASIC, rows, ["status.delete:6"]);
     expect(outcome.deleteStatusIds).toEqual([6]);
     expect(outcome.defaultStatus).toBeUndefined();
   });
@@ -423,11 +423,11 @@ describe("templateApplyDigest", () => {
     // between a preview and its apply has to void the preview all the same.
     const state = drifted();
     const changed: TemplateBody = {
-      ...DEFAULT,
-      labels: DEFAULT.labels.filter((l) => l.name !== "kind:chore"),
+      ...BASIC,
+      labels: BASIC.labels.filter((l) => l.name !== "kind:chore"),
     };
     expect(templateApplyDigest(state, changed, 0)).not.toBe(
-      templateApplyDigest(state, DEFAULT, 0),
+      templateApplyDigest(state, BASIC, 0),
     );
   });
 });

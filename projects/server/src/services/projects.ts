@@ -427,11 +427,11 @@ export async function createProject(
   const system = ctx.router.system();
   // Before anything is written, so a template or source project that is not
   // there, or an agent that is not the caller's, leaves no half-made project
-  // behind. Naming neither template nor source means the built-in default,
+  // behind. Naming neither template nor source means the built-in Basic,
   // whoever asks.
   const template =
     input.from_project === undefined
-      ? (await resolveTemplate(ctx, actor, input.template ?? "default")).body
+      ? (await resolveTemplate(ctx, actor, input.template ?? "basic")).body
       : await templateBodyFromProject(ctx, actor, input.from_project);
   const agents = await resolveAgents(system, actor, input.agents);
 

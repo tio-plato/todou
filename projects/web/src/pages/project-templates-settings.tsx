@@ -257,7 +257,7 @@ function DeleteTemplateButton({
         button.current,
         lastFocus?.current ?? null,
       );
-      // The default pill falls back to Default by itself when this was it.
+      // The default pill falls back to Basic by itself when this was it.
       queryClient.setQueryData(templatesKey, (list) =>
         list?.filter((t) => t.ref !== id),
       );
@@ -335,7 +335,7 @@ export function useCreateTemplate(onCreated?: () => void) {
 
 const START: StartFrom = {
   kind: "template",
-  template: "default",
+  template: "basic",
   project: null,
 };
 
@@ -438,7 +438,7 @@ export function ProjectTemplateSettingsPage() {
 }
 
 /**
- * One template's page: `default` or an id. Read out of the list, which holds
+ * One template's page: `basic` or an id. Read out of the list, which holds
  * every template whole.
  */
 export function ProjectTemplateSettings({ template }: { template: string }) {

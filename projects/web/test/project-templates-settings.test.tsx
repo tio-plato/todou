@@ -44,18 +44,18 @@ import {
 } from "../src/pages/project-templates-settings.tsx";
 import { renderWithProviders, testQueryClient } from "./render.tsx";
 
-const DEFAULT: UsableTemplate = {
-  ref: "default",
-  name: "Default",
+const BASIC: UsableTemplate = {
+  ref: "basic",
+  name: "Basic",
   builtin: true,
   revision: 0,
-  body: BUILTIN_TEMPLATES.default.body,
+  body: BUILTIN_TEMPLATES.basic.body,
 };
 
-// Named to sort before Default, so a list ordered by name alone shows.
-const BUGS: UsableTemplate = {
+// Named to sort before Basic, so a list ordered by name alone shows.
+const AGILE: UsableTemplate = {
   ref: 9,
-  name: "Bugs",
+  name: "Agile",
   builtin: false,
   revision: 0,
   body: {
@@ -103,7 +103,7 @@ const KANBAN: UsableTemplate = {
   },
 };
 
-const TEMPLATES = [DEFAULT, BUGS, KANBAN];
+const TEMPLATES = [BASIC, AGILE, KANBAN];
 
 const PREFS: MePrefs = {
   show_weak_unread: true,
@@ -117,7 +117,7 @@ const PREFS: MePrefs = {
   open_external_links_in_new_tab: false,
   project_icon_fallback: "colorful_text",
   user_avatar_fallback: "monochrome_text",
-  new_project_template: "default",
+  new_project_template: "basic",
 };
 
 const project = (slug: string): Project => ({
@@ -379,7 +379,7 @@ const follows = (a: Element, b: Element) =>
  * running on to 1151, and its actions from 1163.
  */
 function layOutRows(ends: Record<string, number>) {
-  const tops: Record<string, number> = { Default: 272, Bugs: 336, Kanban: 400 };
+  const tops: Record<string, number> = { Basic: 272, Agile: 336, Kanban: 400 };
   vi.spyOn(document.documentElement, "clientWidth", "get").mockReturnValue(
     1280,
   );
@@ -422,13 +422,13 @@ const closePreview = async () => {
 };
 
 describe("the project templates list", () => {
-  it("lists Default first and sets another template as the default", async () => {
+  it("lists Basic first and sets another template for new projects", async () => {
     const server = fakeServer();
     renderAt("/settings/templates");
     const rows = await screen.findAllByRole("listitem");
     expect(
       rows.map((row) => within(row).getAllByRole("link")[0]?.textContent),
-    ).toEqual(["Default", "Bugs", "Kanban"]);
+    ).toEqual(["Basic", "Agile", "Kanban"]);
     expect(within(rows[0] as HTMLElement).getByText("default")).toBeTruthy();
     for (const row of rows) {
       expect(
@@ -439,7 +439,7 @@ describe("the project templates list", () => {
     const select = screen.getByRole("combobox", {
       name: "New projects start from",
     });
-    expect(select.textContent).toBe("Default");
+    expect(select.textContent).toBe("Basic");
     fireEvent.keyDown(select, { key: "ArrowDown" });
     fireEvent.click(await screen.findByRole("option", { name: "Kanban" }));
     await waitFor(() =>
@@ -464,14 +464,14 @@ describe("the project templates list", () => {
       const row = rows.find((r) => within(r).queryByRole("link", { name }));
       return within(row as HTMLElement).getByText(/Blocks clear at/);
     };
-    const shipped = DEFAULT.body.statuses.find((s) => s.name === "Shipped");
-    expect(note("Default").innerHTML).toContain(
+    const shipped = BASIC.body.statuses.find((s) => s.name === "Shipped");
+    expect(note("Basic").innerHTML).toContain(
       render(<StatusPill status={shipped as TemplateStatus} />, {
         container: document.createElement("div"),
       }).container.innerHTML,
     );
-    expect(note("Default").textContent).toMatch(/Blocks clear at\s*Shipped$/);
-    expect(note("Bugs").textContent).toMatch(
+    expect(note("Basic").textContent).toMatch(/Blocks clear at\s*Shipped$/);
+    expect(note("Agile").textContent).toMatch(
       /Blocks clear at any closed status$/,
     );
   });
@@ -500,9 +500,9 @@ describe("the project templates list", () => {
   it("opens every row's preview in one column, left of the row's actions", async () => {
     fakeServer();
     renderAt("/settings/templates");
-    // Default, built in, has no delete button; Kanban's text is longer.
-    layOutRows({ Default: 633, Kanban: 693 });
-    hover(await screen.findByRole("link", { name: "Default" }));
+    // Basic, built in, has no delete button; Kanban's text is longer.
+    layOutRows({ Basic: 633, Kanban: 693 });
+    hover(await screen.findByRole("link", { name: "Basic" }));
     // 1151 − 320: the card's right edge on the text column's.
     await placedAt(await previewCard(), 831, 272);
     await closePreview();
@@ -536,14 +536,16 @@ describe("the project templates list", () => {
   it("keeps focus on the list after a template is deleted", async () => {
     fakeServer();
     renderAt("/settings/templates");
-    fireEvent.click(await screen.findByRole("button", { name: "Delete Bugs" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Delete Agile" }),
+    );
     fireEvent.click(
       within(
         await screen.findByRole("dialog", { name: "Delete this template?" }),
       ).getByRole("button", { name: "Delete template" }),
     );
     await waitFor(() => {
-      expect(screen.queryByRole("link", { name: "Bugs" })).toBeNull();
+      expect(screen.queryByRole("link", { name: "Agile" })).toBeNull();
       expect(screen.queryByRole("dialog")).toBeNull();
     });
     await waitFor(() =>
@@ -574,11 +576,11 @@ describe("the project templates list", () => {
     await remove("Kanban");
     await waitFor(() =>
       expect(document.activeElement).toBe(
-        screen.getByRole("button", { name: "Delete Bugs" }),
+        screen.getByRole("button", { name: "Delete Agile" }),
       ),
     );
-    // Bugs is the only one left that can go: Default, before it, cannot.
-    await remove("Bugs");
+    // Agile is the only one left that can go: Basic, before it, cannot.
+    await remove("Agile");
     await waitFor(() =>
       expect(document.activeElement).toBe(
         screen.getByRole("button", { name: /New template/ }),
@@ -589,7 +591,7 @@ describe("the project templates list", () => {
   it("previews a template's default status, line, chart roles and labels on hover", async () => {
     fakeServer();
     renderAt("/settings/templates");
-    hover(await screen.findByRole("link", { name: "Default" }));
+    hover(await screen.findByRole("link", { name: "Basic" }));
     const card = await previewCard();
     const statuses = within(
       within(card)
@@ -655,7 +657,7 @@ describe("a template this version cannot read", () => {
     );
     expect(
       (await screen.findAllByRole("option")).map((o) => o.textContent),
-    ).toEqual(["Default", "Bugs", "Kanban"]);
+    ).toEqual(["Basic", "Agile", "Kanban"]);
     fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
     await waitFor(() => expect(screen.queryAllByRole("option")).toEqual([]));
 
@@ -796,9 +798,9 @@ describe("a template's page", () => {
     );
   });
 
-  it("shows Default with nothing to change", async () => {
+  it("shows Basic with nothing to change", async () => {
     fakeServer();
-    renderAt("/settings/templates/default");
+    renderAt("/settings/templates/basic");
     await screen.findByText("Backlog");
     expect(screen.queryByRole("button", { name: /New status/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /New label/ })).toBeNull();
@@ -807,9 +809,9 @@ describe("a template's page", () => {
 
 // Nine, past the count where the search box appears.
 const MANY: ProjectTemplate[] = [
-  DEFAULT,
+  BASIC,
   ...[
-    "Bugs",
+    "Agile",
     "Kanban",
     "Kanban lite",
     "Ops",
@@ -817,13 +819,13 @@ const MANY: ProjectTemplate[] = [
     "Scrum",
     "Support",
     "Writing",
-  ].map((name, i) => ({ ...BUGS, ref: 20 + i, name })),
+  ].map((name, i) => ({ ...AGILE, ref: 20 + i, name })),
 ];
 
 function Picker({ projects }: { projects: Project[] }) {
   const [value, setValue] = useState<StartFrom>({
     kind: "template",
-    template: "default",
+    template: "basic",
     project: null,
   });
   return (
@@ -931,7 +933,7 @@ describe("the New template dialog", () => {
     expect(screen.getByRole("dialog", { name: "New template" })).toBeTruthy();
     const selected = (name: string) =>
       dialog.getByRole("option", { name }).getAttribute("aria-selected");
-    expect(selected("Default")).toBe("true");
+    expect(selected("Basic")).toBe("true");
     expect(selected("Kanban")).toBe("false");
   });
 

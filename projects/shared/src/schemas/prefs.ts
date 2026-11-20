@@ -87,11 +87,11 @@ export const MePrefs = z.strictObject({
   user_avatar_fallback: UserAvatarFallback.default("monochrome_text"),
   /*
    * The template the New project dialog starts on. Read by the web
-   * only: a create that names no template gets the built-in default whoever
+   * only: a create that names no template gets the built-in Basic whoever
    * sends it. A deleted template is not cleaned out of here; the dialog
-   * falls back to the built-in default when it finds none by this id.
+   * falls back to the built-in Basic when it finds none by this id.
    */
-  new_project_template: TemplateRef.default("default"),
+  new_project_template: TemplateRef.default("basic"),
 });
 export type MePrefs = z.infer<typeof MePrefs>;
 

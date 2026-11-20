@@ -102,7 +102,7 @@ describe("ProjectCreateInput", () => {
   it("refuses a template and a source project together", () => {
     const base = { slug: "alpha", name: "Alpha" };
     expect(
-      ProjectCreateInput.safeParse({ ...base, template: "default" }).success,
+      ProjectCreateInput.safeParse({ ...base, template: "basic" }).success,
     ).toBe(true);
     expect(
       ProjectCreateInput.safeParse({ ...base, from_project: "todou" }).success,

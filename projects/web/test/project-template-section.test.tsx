@@ -37,12 +37,12 @@ import { StatusPill } from "../src/components/issue/status-pill.tsx";
 import { ProjectSettingsTemplatePage } from "../src/pages/project-settings-template.tsx";
 import { testQueryClient } from "./render.tsx";
 
-const DEFAULT: ProjectTemplate = {
-  ref: "default",
-  name: "Default",
+const BASIC: ProjectTemplate = {
+  ref: "basic",
+  name: "Basic",
   builtin: true,
   revision: 0,
-  body: BUILTIN_TEMPLATES.default.body,
+  body: BUILTIN_TEMPLATES.basic.body,
 };
 
 const KANBAN: ProjectTemplate = {
@@ -88,7 +88,7 @@ const KANBAN: ProjectTemplate = {
 // A template the project already matches.
 const SAME: ProjectTemplate = { ...KANBAN, ref: 8, name: "Same" };
 
-const TEMPLATES = [DEFAULT, KANBAN, SAME];
+const TEMPLATES = [BASIC, KANBAN, SAME];
 
 const PREFS: MePrefs = {
   show_weak_unread: true,
@@ -241,8 +241,8 @@ const DEFAULT_BOXES = [
   "Change label urgent",
 ];
 
-const PLAN_DEFAULT: TemplateApplyPlan = {
-  expected: "plan-default",
+const PLAN_BASIC: TemplateApplyPlan = {
+  expected: "plan-basic",
   changes: [
     {
       ...row("label.add:needs-brainstorm", "labels", "add"),
@@ -255,7 +255,7 @@ const PLAN_DEFAULT: TemplateApplyPlan = {
 
 const PLANS: Record<string, TemplateApplyPlan> = {
   "7": PLAN_7,
-  default: PLAN_DEFAULT,
+  basic: PLAN_BASIC,
   "8": { expected: "plan-8", changes: [] },
 };
 
@@ -496,19 +496,19 @@ describe("applying a template", () => {
     renderPage();
     await rowsOf7();
 
-    fireEvent.click(screen.getByRole("option", { name: "Default" }));
+    fireEvent.click(screen.getByRole("option", { name: "Basic" }));
     await screen.findByRole("checkbox", {
       name: "Add label needs-brainstorm",
     });
     expect(server.previews().map((c) => c.body)).toEqual([
       { template: 7 },
-      { template: "default" },
+      { template: "basic" },
     ]);
     fireEvent.click(screen.getByRole("button", { name: "Apply 1 change" }));
     await waitFor(() => expect(server.applies()).toHaveLength(1));
     expect(server.applies()[0]?.body).toEqual({
-      template: "default",
-      expected: "plan-default",
+      template: "basic",
+      expected: "plan-basic",
       selected: ["label.add:needs-brainstorm"],
     });
   });

@@ -46,7 +46,7 @@ describe.each(PLACEMENTS)("applying a template (%s placement)", (placement) => {
   }
 
   /**
-   * A project drifted from Default: Parked (empty) and Discard (one card)
+   * A project drifted from Basic: Parked (empty) and Discard (one card)
    * added, Invalid gone, kind:bug recoloured, kind:docs and area:web added
    * and each put on a card.
    */
@@ -104,7 +104,7 @@ describe.each(PLACEMENTS)("applying a template (%s placement)", (placement) => {
     };
   }
 
-  const preview = async (s: string, template: unknown = "default") => {
+  const preview = async (s: string, template: unknown = "basic") => {
     const res = await call("POST", `/projects/${s}/template/preview`, {
       template,
     });
@@ -115,7 +115,7 @@ describe.each(PLACEMENTS)("applying a template (%s placement)", (placement) => {
     s: string,
     expected: string,
     selected: string[],
-    template: unknown = "default",
+    template: unknown = "basic",
   ) =>
     call("POST", `/projects/${s}/template/apply`, {
       template,
@@ -339,7 +339,7 @@ describe.each(PLACEMENTS)("applying a template (%s placement)", (placement) => {
 
   it("refuses a row that is not in the plan, or one missing what it needs", async () => {
     const p = await drifted();
-    // Default's default status is Todo; renamed away, it has to be added.
+    // Basic's default status is Todo; renamed away, it has to be added.
     const todo = await p.statusId("Todo");
     expect(
       (
@@ -416,7 +416,7 @@ describe.each(PLACEMENTS)("applying a template (%s placement)", (placement) => {
         await call(
           "POST",
           `/projects/${p.s}/template/preview`,
-          { template: "default" },
+          { template: "basic" },
           who,
         )
       ).status,
@@ -428,7 +428,7 @@ describe.each(PLACEMENTS)("applying a template (%s placement)", (placement) => {
           "POST",
           `/projects/${p.s}/template/apply`,
           {
-            template: "default",
+            template: "basic",
             expected: plan.expected,
             selected: ["status.add:Invalid"],
           },
@@ -556,12 +556,12 @@ describe("applying a template into a name clash", () => {
       ).toBe(204);
       const plan = await json(
         await call("POST", `/projects/${slug}/template/preview`, {
-          template: "default",
+          template: "basic",
         }),
       );
       armed = index;
       const res = await call("POST", `/projects/${slug}/template/apply`, {
-        template: "default",
+        template: "basic",
         expected: plan.expected,
         selected: ["status.add:Invalid"],
       });
