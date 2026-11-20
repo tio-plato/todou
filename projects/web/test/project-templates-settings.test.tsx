@@ -1098,7 +1098,8 @@ describe("a template's page", () => {
     await addStatus("Review");
     await deleteFromPage();
     await settle();
-    // Back, say, which no dialog holds off.
+    // Away while the confirmation is open, as Back would go: no dialog
+    // holds history off.
     await act(() => router.history.push(`/settings/templates/${BUGS.ref}`));
     await waitFor(() =>
       expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(
@@ -1121,10 +1122,26 @@ describe("a template's page", () => {
     await addStatus("Review");
     await deleteFromPage();
     await settle();
-    // Back, then Forward, before the delete has gone out.
+    // Away, then Back, before the delete has gone out.
     await act(() => router.history.push(`/settings/templates/${BUGS.ref}`));
-    await act(() => router.history.push("/settings/templates/7"));
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(
+        BUGS.name,
+      ),
+    );
+    await act(() => router.history.back());
     await screen.findByText("Doing");
+    // Still on its way: the page says so, and takes no edit before it lands.
+    const waiting = await screen.findByRole("dialog", {
+      name: "Delete this template?",
+    });
+    expect(
+      (
+        within(waiting).getByRole("button", {
+          name: "Delete template",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
 
     await server.release();
     await waitFor(() =>

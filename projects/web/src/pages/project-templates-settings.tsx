@@ -1,4 +1,5 @@
 import {
+  useIsMutating,
   useMutation,
   useQuery,
   useQueryClient,
@@ -607,7 +608,9 @@ function DeleteTemplateRow({ template }: { template: ProjectTemplate }) {
   const navigate = useNavigate();
   const router = useRouter();
   const queryClient = useQueryClient();
+  const key = ["project-template-delete", template.ref];
   const remove = useMutation({
+    mutationKey: key,
     // Behind the edits still being saved, which would meet a 404 after it.
     scope: { id: writes(template.ref) },
     mutationFn: (id: number) => api.deleteProjectTemplate(id),
@@ -629,6 +632,9 @@ function DeleteTemplateRow({ template }: { template: ProjectTemplate }) {
     },
     onError: (error) => toast.error(error.message),
   });
+  // Also when this page was left and opened again while the delete waited:
+  // it is still on its way.
+  const deleting = useIsMutating({ mutationKey: key }) > 0 || remove.isPending;
   const { ref } = template;
   if (typeof ref !== "number") return null;
 
@@ -646,11 +652,11 @@ function DeleteTemplateRow({ template }: { template: ProjectTemplate }) {
         <Trash2Icon className="size-3.5" /> Delete template
       </Button>
       <ConfirmDialog
-        open={open}
+        open={open || deleting}
         // Kept open while the delete waits its turn: closed, it would read
         // as called off, and an edit made then would queue behind it.
         onOpenChange={(next) => {
-          if (!remove.isPending) setOpen(next);
+          if (!deleting) setOpen(next);
         }}
         title="Delete this template?"
         description={
@@ -661,8 +667,10 @@ function DeleteTemplateRow({ template }: { template: ProjectTemplate }) {
         }
         confirmLabel="Delete template"
         destructive
-        pending={remove.isPending}
-        onConfirm={() => remove.mutate(ref)}
+        pending={deleting}
+        onConfirm={() => {
+          if (!deleting) remove.mutate(ref);
+        }}
       />
     </div>
   );
