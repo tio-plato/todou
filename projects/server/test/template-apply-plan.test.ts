@@ -303,6 +303,24 @@ describe("planTemplateApply", () => {
       to: "#ef4444",
     });
   });
+
+  it("pairs a name the database folds alike, as a capital dotted I", () => {
+    const state = project(
+      [
+        ...FLOW.map((name) => ({ name })),
+        { name: "Shipped" },
+        { name: "Done" },
+        { name: "Invalid" },
+      ],
+      { labels: [...DEFAULT_LABELS, { name: "iptal", color: "#000000" }] },
+    );
+    const template: TemplateBody = {
+      ...DEFAULT,
+      labels: [...DEFAULT.labels, { name: "\u0130ptal", color: "#000000" }],
+    };
+    const rows = planTemplateApply(state, template);
+    expect(ids(rows).filter((id) => id.startsWith("label."))).toEqual([]);
+  });
 });
 
 describe("applySelection", () => {

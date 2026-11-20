@@ -12,6 +12,7 @@ import {
   LabelUpdateInput,
   Login,
   MeUpdateInput,
+  nameKey,
   ProjectSlug,
   StatusName,
   TimelineComment,
@@ -258,6 +259,21 @@ describe("AgentContext on timeline items", () => {
       TimelineComment.safeParse({ ...base, agent_context: { agent: "" } })
         .success,
     ).toBe(false);
+  });
+});
+
+describe("nameKey", () => {
+  it("folds each letter the way the database's lower() can", () => {
+    // A capital dotted I lowercases to i with a combining dot in JavaScript,
+    // but to plain i in lower() under libc; ICU keeps the dot.
+    expect(nameKey("\u0130ptal")).toBe(nameKey("iptal"));
+    expect(nameKey("i\u0307ptal")).toBe(nameKey("iptal"));
+    // A word-final capital sigma lowercases to final ς in JavaScript but to
+    // σ in lower() under libc; ICU gives ς.
+    expect(nameKey("\u03a3\u0391\u03a3")).toBe(nameKey("\u03c3\u03b1\u03c3"));
+    expect(nameKey("\u03a4\u0395\u039b\u039f\u03a3")).toBe(
+      nameKey("\u03c4\u03b5\u03bb\u03bf\u03c2"),
+    );
   });
 });
 

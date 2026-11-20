@@ -112,10 +112,14 @@ Which letters count as case is the database's ctype: under `C`, or in a
 stored before the upgrade both stay, though the API refuses a new such pair.
 On a database whose encoding is not UTF-8, or on PostgreSQL 12 or older,
 names are not composed, and two that differ only in composition both stay.
-`lower()` also folds a few letters the API does not, such as a final sigma
-or a dotted capital I: a name differing from another only there is refused
-as a duplicate. A status whose chart role was never chosen takes the
-default for its name as the charts now read it, over its whole history: one
+The API compares names by lowercasing each letter on its own, as `lower()`
+does, and also takes a final sigma as a sigma, so an upper-case `ΤΕΛΟΣ` and
+a lower-case `τελος` stored before the upgrade both stay, though the API
+refuses a new such pair. Under a Turkish ctype `lower()` takes `I` as `ı`,
+which the API does not: a name differing from another only there passes the
+API's check and is refused by the unique index instead. A status whose
+chart role was never chosen takes the default for its name as the charts
+now read it, over its whole history: one
 named `done`, `shipped` or `invalid` in any case now counts as such, and a
 `Done` renamed `Done (<id>)` no longer does. The old spellings are kept
 nowhere, so take a backup first if you may want them back, and do not

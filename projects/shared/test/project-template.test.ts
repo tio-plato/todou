@@ -92,6 +92,17 @@ describe("TemplateBody", () => {
         ),
       ).success,
     ).toBe(false);
+    expect(
+      TemplateBody.safeParse(
+        body(
+          [status("A")],
+          [
+            { name: "\u0130ptal", color: "#ef4444" },
+            { name: "iptal", color: "#22c55e" },
+          ],
+        ),
+      ).success,
+    ).toBe(false);
   });
 
   it("needs at least one status", () => {

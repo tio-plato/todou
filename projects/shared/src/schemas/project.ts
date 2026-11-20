@@ -312,11 +312,19 @@ export function canonicalizeLabelName(input: string): string {
 
 /**
  * The yardstick two status or label names are compared with: one name
- * whatever its case or Unicode composition. Whitespace is left as it is:
- * a lookup does not respace what it is given.
+ * whatever its case or Unicode composition. Each code point is lowercased
+ * on its own, the way the database's lower() does, so the API never takes
+ * a name the unique index refuses: a capital dotted I is plain i, and so
+ * is i with a combining dot above, a word-final capital sigma is σ, and
+ * ς counts as σ. Whitespace is left as it is: a lookup does not respace
+ * what it is given.
  */
 export function nameKey(name: string): string {
-  return name.normalize("NFC").toLowerCase();
+  let key = "";
+  for (const c of name.normalize("NFC")) {
+    key += c === "\u0130" ? "i" : c.toLowerCase();
+  }
+  return key.replaceAll("i\u0307", "i").replaceAll("\u03c2", "\u03c3");
 }
 
 /**
