@@ -55,7 +55,12 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { issueQuery } from "@/api/issues.ts";
-import { useRefPlacement, useSpecOutline } from "@/api/prefs.ts";
+import {
+  useRefPlacement,
+  useSpecOutline,
+  useSpecOutlineChanges,
+  useSpecOutlineComments,
+} from "@/api/prefs.ts";
 import { api } from "@/api/queries.ts";
 import { specCommentsQuery, specFilesQuery, specQuery } from "@/api/spec.ts";
 import { SpecStatusBadge } from "@/components/issue/spec-entry.tsx";
@@ -160,7 +165,11 @@ import {
   type SpecReviewDraft,
   useSpecReviewDrafts,
 } from "@/lib/spec-drafts.ts";
-import { outlineOf } from "@/lib/spec-outline.ts";
+import {
+  outlineOf,
+  sectionAnnotations,
+  sectionDiffstat,
+} from "@/lib/spec-outline.ts";
 import type { SpecReviewSession } from "@/lib/spec-review-session.ts";
 import {
   type SpecSearch,
@@ -1478,6 +1487,42 @@ function SpecViewBody({
     return counts;
   }, [comments.data]);
 
+  // Each section's share of the file's diffstat while comparing, against
+  // nothing for a file the baseline lacks, and where its lines went, for the
+  // notes on the baseline (T-234).
+  const sectionDiff = useMemo(() => {
+    if (
+      outline === null ||
+      !renderedCompare ||
+      baselineFiles === undefined ||
+      selected === undefined
+    ) {
+      return null;
+    }
+    return sectionDiffstat(
+      outline,
+      baselineBody ?? "",
+      selected.body,
+      diffLines,
+    );
+  }, [outline, renderedCompare, baselineFiles, selected, baselineBody]);
+  const sectionNotes = useMemo(
+    () =>
+      outline === null
+        ? null
+        : sectionAnnotations(
+            outline,
+            displayed,
+            baselineDisplayed,
+            sectionDiff?.oldToNew ?? ((line) => line),
+          ),
+    [outline, displayed, baselineDisplayed, sectionDiff],
+  );
+  const outlineComments = useSpecOutlineComments();
+  const outlineChanges = useSpecOutlineChanges();
+  const outlineNotes = outlineComments ? sectionNotes : null;
+  const outlineStats = outlineChanges ? (sectionDiff?.stats ?? null) : null;
+
   const backControl = mergedBack ? (
     <SpecIssueReturnLink
       slug={slug}
@@ -1598,6 +1643,8 @@ function SpecViewBody({
             <OutlineTitle />
             <SpecOutline
               headings={outline}
+              notes={outlineNotes}
+              stats={outlineStats}
               contentRef={contentRef}
               onJump={(line) => {
                 // The popover hands focus back to its trigger without
@@ -2033,6 +2080,8 @@ function SpecViewBody({
               <div className="-m-1 min-h-0 flex-1 overflow-y-auto overscroll-contain p-1">
                 <SpecOutline
                   headings={outline}
+                  notes={outlineNotes}
+                  stats={outlineStats}
                   contentRef={contentRef}
                   onJump={jumpToSection}
                 />
