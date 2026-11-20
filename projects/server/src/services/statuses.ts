@@ -390,6 +390,9 @@ async function ensureNameFree(
     .select({ id: statuses.id, name: statuses.name })
     .from(statuses)
     .where(eq(statuses.projectId, projectId));
+  // A status keeps the name it already has, even beside a twin an upgrade
+  // left (see the case_insensitive_names migration).
+  if (rows.some((r) => r.id === exceptId && r.name === name)) return;
   const key = nameKey(name);
   if (rows.some((r) => r.id !== exceptId && nameKey(r.name) === key)) {
     throw new ConflictError(`status "${name}" already exists`);

@@ -125,7 +125,15 @@ export async function updateLabel(
       .select({ id: labels.id, name: labels.name })
       .from(labels)
       .where(eq(labels.projectId, project.id));
-    if (existing.some((r) => r.id !== labelId && nameKey(r.name) === key)) {
+    // A label keeps the name it already has, even beside a twin an upgrade
+    // left (see the case_insensitive_names migration).
+    const kept = existing.some(
+      (r) => r.id === labelId && r.name === input.name,
+    );
+    if (
+      !kept &&
+      existing.some((r) => r.id !== labelId && nameKey(r.name) === key)
+    ) {
       throw new ConflictError(`label "${input.name}" already exists`);
     }
   }

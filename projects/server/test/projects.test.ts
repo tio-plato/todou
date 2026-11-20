@@ -1,6 +1,11 @@
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { insightsSettings, issues } from "../src/db/project-schema.ts";
+import {
+  insightsSettings,
+  issues,
+  labels,
+  statuses,
+} from "../src/db/project-schema.ts";
 import { projects } from "../src/db/system-schema.ts";
 import {
   addUserWithToken,
@@ -666,6 +671,40 @@ describe.each(PLACEMENTS)("projects domain (%s placement)", (placement) => {
       expect(recased.status).toBe(200);
       expect((await json(recased)).name).toBe("BUG");
     });
+
+    it("lets a label resend the name it has beside a twin the database kept", async () => {
+      const s = slug();
+      const project = await createProject(s);
+      await json(
+        await postLabel(s, { name: "\u03a4\u0395\u039b\u039f\u03a3" }),
+      );
+      // One name to the API, two to lower(): only an upgrade leaves the pair.
+      const db = await t.ctx.router.forProject({
+        id: project.id,
+        slug: s,
+        database_url: null,
+      });
+      const [lower] = await db
+        .insert(labels)
+        .values({
+          projectId: project.id,
+          name: "\u03c4\u03b5\u03bb\u03bf\u03c2",
+        })
+        .returning({ id: labels.id });
+      const resent = await t.app.request(
+        `/api/projects/${s}/labels/${(lower as { id: number }).id}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json", cookie },
+          body: JSON.stringify({
+            name: "\u03c4\u03b5\u03bb\u03bf\u03c2",
+            color: "#000000",
+          }),
+        },
+      );
+      expect(resent.status).toBe(200);
+      expect((await json(resent)).color).toBe("#000000");
+    });
   });
 
   // `issue list --status 'Done '` trims each name it is given, so a stored
@@ -765,6 +804,45 @@ describe.each(PLACEMENTS)("projects domain (%s placement)", (placement) => {
       const recased = await patchStatus(s, byName("Done").id, { name: "DONE" });
       expect(recased.status).toBe(200);
       expect((await json(recased)).name).toBe("DONE");
+    });
+
+    it("lets a status resend the name it has beside a twin the database kept", async () => {
+      const s = slug();
+      const project = await createProject(s);
+      const upper = await json(
+        await postStatus(s, {
+          name: "\u03a4\u0395\u039b\u039f\u03a3",
+          category: "open",
+        }),
+      );
+      // One name to the API, two to lower(): only an upgrade leaves the pair.
+      const db = await t.ctx.router.forProject({
+        id: project.id,
+        slug: s,
+        database_url: null,
+      });
+      const [lower] = await db
+        .insert(statuses)
+        .values({
+          projectId: project.id,
+          name: "\u03c4\u03b5\u03bb\u03bf\u03c2",
+          category: "open",
+          position: 99,
+        })
+        .returning({ id: statuses.id });
+      const resent = await patchStatus(s, (lower as { id: number }).id, {
+        name: "\u03c4\u03b5\u03bb\u03bf\u03c2",
+        color: "#000000",
+      });
+      expect(resent.status).toBe(200);
+      expect((await json(resent)).color).toBe("#000000");
+      expect(
+        (
+          await patchStatus(s, upper.id, {
+            name: "\u03c4\u03b5\u03bb\u03bf\u03c2",
+          })
+        ).status,
+      ).toBe(409);
     });
   });
 
