@@ -145,6 +145,11 @@ export const labels = pgTable(
     projectId: projectId(),
     name: text("name").notNull(),
     color: text("color").notNull().default("#3b82f6"),
+    // How the chip is drawn. The default is the look every label had before
+    // there was a choice, so rows that predate the column keep it.
+    style: text("style", { enum: ["tint", "solid"] })
+      .notNull()
+      .default("tint"),
   },
   (t) => [uniqueIndex(LABEL_NAME_INDEX).on(t.projectId, t.name)],
 );

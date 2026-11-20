@@ -9,6 +9,7 @@ import { renderWithProviders, testQueryClient } from "./render.tsx";
 const LABELS: Label[] = [
   { id: 1, name: "area:web", color: "#3b82f6" },
   { id: 2, name: "kind:bug", color: "#ef4444" },
+  { id: 3, name: "release", color: "#10b981", style: "solid" },
 ];
 const USAGE: LabelUsage[] = [
   { id: 1, open_issues: 2, issues: 3 },
@@ -144,6 +145,58 @@ describe("Labels settings (T-713)", () => {
     await waitFor(() => expect(writes(calls)).toHaveLength(1));
     expect(writes(calls)[0]?.method).toBe("DELETE");
     expect(writes(calls)[0]?.url).toContain("/labels/1");
+  });
+
+  it("saves a style change on its own", async () => {
+    const calls = stubFetch();
+    await renderSection();
+    const row = screen.getByLabelText("edit label kind:bug");
+    fireEvent.click(row);
+    fireEvent.click(screen.getByLabelText("Solid"));
+    const preview = row.querySelector<HTMLElement>("[title='kind:bug']");
+    expect(preview?.style.backgroundColor.toLowerCase()).toBe("#ef4444");
+    const save = screen.getByRole("button", { name: "Save" });
+    expect((save as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(save);
+    await waitFor(() => expect(writes(calls)).toHaveLength(1));
+    expect(JSON.parse(writes(calls)[0]?.body ?? "{}")).toEqual({
+      style: "solid",
+    });
+  });
+
+  it("opens a label on its own style, and a new label on Tint", async () => {
+    stubFetch();
+    await renderSection();
+    fireEvent.click(screen.getByLabelText("edit label release"));
+    expect((screen.getByLabelText("Solid") as HTMLInputElement).checked).toBe(
+      true,
+    );
+    expect(
+      (screen.getByRole("button", { name: "Save" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: /New label/ }));
+    expect((screen.getByLabelText("Tint") as HTMLInputElement).checked).toBe(
+      true,
+    );
+  });
+
+  it("creates a label with the chosen style", async () => {
+    const calls = stubFetch();
+    await renderSection();
+    fireEvent.click(screen.getByRole("button", { name: /New label/ }));
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "release" },
+    });
+    fireEvent.click(screen.getByLabelText("Solid"));
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(writes(calls)).toHaveLength(1));
+    expect(JSON.parse(writes(calls)[0]?.body ?? "{}")).toEqual({
+      name: "release",
+      color: labelColorFor("release"),
+      style: "solid",
+    });
   });
 
   it("gives a new label the picker's colour for its name until one is picked", async () => {

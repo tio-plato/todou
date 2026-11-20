@@ -1,9 +1,13 @@
-import type { LabelUpdateInput, TodouClient } from "@todou/shared";
+import {
+  LabelStyle,
+  type LabelUpdateInput,
+  type TodouClient,
+} from "@todou/shared";
 import { Command, Option } from "clipanion";
 import { ProjectCommand } from "../api-command.ts";
 import { CliError } from "../errors.ts";
 import { table } from "../format.ts";
-import { parseColor } from "../parse.ts";
+import { parseChoice, parseColor } from "../parse.ts";
 import { labelColorFor, resolveLabel, shellArg } from "../resolve.ts";
 
 export class LabelListCommand extends ProjectCommand {
@@ -12,7 +16,10 @@ export class LabelListCommand extends ProjectCommand {
 
   protected async run(client: TodouClient): Promise<void> {
     const labels = await client.listLabels(this.requireProject());
-    this.output(labels, () => table(labels.map((l) => [l.name, l.color])));
+    // A server from before chip styles sends none; its labels are tinted.
+    this.output(labels, () =>
+      table(labels.map((l) => [l.name, l.color, l.style ?? "tint"])),
+    );
   }
 }
 
@@ -35,6 +42,7 @@ export class LabelCreateCommand extends ProjectCommand {
   color = Option.String("--color", {
     description: "#rrggbb (derived from the name otherwise)",
   });
+  style = Option.String("--style", { description: "tint or solid" });
 
   protected async run(client: TodouClient): Promise<void> {
     const project = this.requireProject();
@@ -43,7 +51,12 @@ export class LabelCreateCommand extends ProjectCommand {
       this.color === undefined
         ? labelColorFor(name)
         : parseColor(this.color, "--color");
-    const label = await client.createLabel(project, { name, color });
+    // Left out, the server makes it tint.
+    const style =
+      this.style === undefined
+        ? undefined
+        : parseChoice(this.style, LabelStyle.options, "--style");
+    const label = await client.createLabel(project, { name, color, style });
     this.output(label, () => `created label ${label.name} (${label.color})`);
     if (this.color === undefined) {
       this.note(
@@ -77,11 +90,14 @@ export class LabelCreateCommand extends ProjectCommand {
 
 export class LabelEditCommand extends ProjectCommand {
   static paths = [["label", "edit"]];
-  static usage = Command.Usage({ description: "Rename or recolor a label" });
+  static usage = Command.Usage({
+    description: "Rename, recolor or restyle a label",
+  });
 
   labelName = Option.String({ required: true });
   name = Option.String("--name");
   color = Option.String("--color", { description: "#rrggbb" });
+  style = Option.String("--style", { description: "tint or solid" });
 
   protected async run(client: TodouClient): Promise<void> {
     const project = this.requireProject();
@@ -90,8 +106,14 @@ export class LabelEditCommand extends ProjectCommand {
     if (this.color !== undefined) {
       input.color = parseColor(this.color, "--color");
     }
+    if (this.style !== undefined) {
+      input.style = parseChoice(this.style, LabelStyle.options, "--style");
+    }
     if (Object.keys(input).length === 0) {
-      throw new CliError("nothing to change", "pass --name and/or --color");
+      throw new CliError(
+        "nothing to change",
+        "pass --name, --color and/or --style",
+      );
     }
     const target = await resolveLabel(client, project, this.labelName);
     const label = await client.updateLabel(project, target.id, input);

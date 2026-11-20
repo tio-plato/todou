@@ -325,10 +325,23 @@ export const LabelName = z
       }),
   );
 
+/**
+ * How a label's chip is drawn: `tint` is the label colour as a faint fill
+ * and border with text of the same hue, `solid` the colour itself as the
+ * fill, with white or black text.
+ */
+export const LabelStyle = z.enum(["tint", "solid"]);
+export type LabelStyle = z.infer<typeof LabelStyle>;
+
 export const Label = z.object({
   id: Id,
   name: z.string(),
   color: ColorHex,
+  // Absent means `tint`. The server always sends it; optional because a
+  // server from before styles sends none, and because a label is also put
+  // together where no style is stored (a timeline snapshot of a deleted
+  // label, a preview of one not yet created).
+  style: LabelStyle.optional(),
 });
 export type Label = z.infer<typeof Label>;
 
@@ -347,11 +360,14 @@ export type LabelUsage = z.infer<typeof LabelUsage>;
 export const LabelCreateInput = z.object({
   name: LabelName,
   color: ColorHex.default("#3b82f6"),
+  // No default here: left out, the column's own default makes it `tint`.
+  style: LabelStyle.optional(),
 });
 export type LabelCreateInput = z.infer<typeof LabelCreateInput>;
 
 export const LabelUpdateInput = z.object({
   name: LabelName.optional(),
   color: ColorHex.optional(),
+  style: LabelStyle.optional(),
 });
 export type LabelUpdateInput = z.infer<typeof LabelUpdateInput>;

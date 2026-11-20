@@ -2,6 +2,7 @@ import { Link, type LinkProps } from "@tanstack/react-router";
 import type {
   LabelCreateInput,
   Label as LabelEntity,
+  LabelStyle,
   LabelUpdateInput,
   LabelUsage,
 } from "@todou/shared";
@@ -59,6 +60,7 @@ export function LabelSetList({
   // Until one is picked, a new label's colour follows its name, the way the
   // label picker's on-the-fly create colours it.
   const [colorPicked, setColorPicked] = useState(false);
+  const [style, setStyle] = useState<LabelStyle>("tint");
   const [deleting, setDeleting] = useState<LabelEntity | null>(null);
 
   const closeOnDone = (write: Promise<boolean>) => {
@@ -71,12 +73,14 @@ export function LabelSetList({
     if (open === label.id) return setOpen(null);
     setName(label.name);
     setColor(label.color);
+    setStyle(label.style ?? "tint");
     setOpen(label.id);
   }
   function startNew() {
     setName("");
     setColor(labelColorFor(""));
     setColorPicked(false);
+    setStyle("tint");
     setOpen("new");
   }
 
@@ -103,7 +107,7 @@ export function LabelSetList({
             <div className="bg-muted/45">
               <div className="flex min-h-11 items-center pr-2 pl-3">
                 {trimmed ? (
-                  <LabelChip label={{ id: 0, name: trimmed, color }} />
+                  <LabelChip label={{ id: 0, name: trimmed, color, style }} />
                 ) : (
                   <span className="text-sm text-muted-foreground">
                     New label
@@ -113,6 +117,8 @@ export function LabelSetList({
               <LabelEditor
                 name={name}
                 color={color}
+                style={template ? null : style}
+                onStyle={setStyle}
                 onName={(next) => {
                   setName(next);
                   if (!colorPicked) setColor(labelColorFor(next.trim()));
@@ -125,7 +131,17 @@ export function LabelSetList({
                 canSubmit={trimmed !== ""}
                 pending={pending.create}
                 onCancel={() => setOpen(null)}
-                onSubmit={() => closeOnDone(onCreate({ name: trimmed, color }))}
+                onSubmit={() =>
+                  closeOnDone(
+                    onCreate({
+                      name: trimmed,
+                      color,
+                      // Tint is left to the server's default, as the label
+                      // picker and the CLI leave it.
+                      ...(style !== "tint" && { style }),
+                    }),
+                  )
+                }
               />
             </div>
           )}
@@ -135,6 +151,7 @@ export function LabelSetList({
             const link = issuesLink?.(label);
             const renamed = trimmed !== label.name;
             const recolored = color !== label.color;
+            const restyled = style !== (label.style ?? "tint");
             return (
               <div key={label.id} className={cn(isOpen && "bg-muted/45")}>
                 <div
@@ -154,7 +171,7 @@ export function LabelSetList({
                       <LabelChip
                         label={
                           isOpen && trimmed
-                            ? { id: label.id, name: trimmed, color }
+                            ? { id: label.id, name: trimmed, color, style }
                             : label
                         }
                       />
@@ -198,10 +215,14 @@ export function LabelSetList({
                   <LabelEditor
                     name={name}
                     color={color}
+                    style={template ? null : style}
                     onName={setName}
                     onColor={setColor}
+                    onStyle={setStyle}
                     submitLabel="Save"
-                    canSubmit={trimmed !== "" && (renamed || recolored)}
+                    canSubmit={
+                      trimmed !== "" && (renamed || recolored || restyled)
+                    }
                     pending={pending.update}
                     onCancel={() => setOpen(null)}
                     onDelete={() => setDeleting(label)}
@@ -210,6 +231,7 @@ export function LabelSetList({
                         onUpdate(label.id, {
                           ...(renamed && { name: trimmed }),
                           ...(recolored && { color }),
+                          ...(restyled && { style }),
                         }),
                       )
                     }
@@ -259,11 +281,18 @@ export function LabelSetList({
   );
 }
 
+const LABEL_STYLES: ReadonlyArray<[LabelStyle, string]> = [
+  ["tint", "Tint"],
+  ["solid", "Solid"],
+];
+
 function LabelEditor({
   name,
   color,
+  style,
   onName,
   onColor,
+  onStyle,
   submitLabel,
   canSubmit,
   pending,
@@ -273,8 +302,11 @@ function LabelEditor({
 }: {
   name: string;
   color: string;
+  /** Null where the labels cannot keep a style: a template stores none. */
+  style: LabelStyle | null;
   onName: (name: string) => void;
   onColor: (color: string) => void;
+  onStyle: (style: LabelStyle) => void;
   submitLabel: string;
   canSubmit: boolean;
   pending: boolean;
@@ -282,6 +314,7 @@ function LabelEditor({
   onDelete?: () => void;
   onSubmit: () => void;
 }) {
+  const preview = name.trim() || "new label";
   return (
     <form
       className="grid gap-4 px-3 pt-1 pb-3 @xl:grid-cols-[minmax(0,18rem)_auto] @xl:gap-x-8"
@@ -304,13 +337,37 @@ function LabelEditor({
           autoFocus
         />
       </div>
-      <div className="space-y-1.5">
+      {/* The style sits in the colour's cell rather than a cell of its own,
+          which the two-column layout would put under the name. */}
+      <div className="min-w-0 space-y-1.5">
         <div className="text-sm leading-none font-medium">Color</div>
-        <ColorSwatches
-          name={name.trim() || "new label"}
-          color={color}
-          onPick={onColor}
-        />
+        <ColorSwatches name={preview} color={color} onPick={onColor} />
+        {/* Each option is drawn as the chip it gives: no words needed. */}
+        {style !== null && (
+          <fieldset className="mt-4 min-w-0 space-y-1.5">
+            <legend className="text-sm leading-none font-medium">Style</legend>
+            <div className="flex flex-wrap gap-2">
+              {LABEL_STYLES.map(([value, title]) => (
+                <label
+                  key={value}
+                  className="flex min-w-0 cursor-pointer items-center gap-2 rounded-md border px-2.5 py-1.5 has-[:checked]:border-foreground has-[:checked]:ring-1 has-[:checked]:ring-foreground"
+                >
+                  <input
+                    type="radio"
+                    name="label-editor-style"
+                    className="accent-primary"
+                    aria-label={title}
+                    checked={style === value}
+                    onChange={() => onStyle(value)}
+                  />
+                  <LabelChip
+                    label={{ id: 0, name: preview, color, style: value }}
+                  />
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        )}
       </div>
       <div className="flex items-center gap-2 border-t pt-3 @xl:col-span-2">
         {onDelete && (

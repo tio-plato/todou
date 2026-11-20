@@ -198,3 +198,88 @@ describe("label usage", () => {
     );
   });
 });
+
+/**
+ * A label is drawn as a tinted or a solid chip. Tinted is what every label
+ * looked like before the choice existed, so it is what a label gets when
+ * none is given, and a row that predates the column reads as tinted.
+ */
+describe("label chip style", () => {
+  let t: TestApp;
+  let cookie: string;
+  const slug = "label-style";
+  const headers = () => ({ "content-type": "application/json", cookie });
+  const request = (path: string, method = "GET", body?: unknown) =>
+    t.app.request(`/api/projects/${slug}${path}`, {
+      method,
+      headers: headers(),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  const listed = async (id: number) => {
+    const res = await request("/labels");
+    expect(res.status).toBe(200);
+    // biome-ignore lint/suspicious/noExplicitAny: test-side response poking
+    return (await json(res)).find((l: any) => l.id === id);
+  };
+
+  beforeAll(async () => {
+    t = await makeTestApp("shared");
+    cookie = await t.login();
+    const created = await t.app.request("/api/projects", {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ slug, name: "Label style" }),
+    });
+    expect(created.status).toBe(201);
+  });
+
+  afterAll(async () => {
+    await t.cleanup();
+  });
+
+  it("stores a chip style, tint unless one is given", async () => {
+    const plain = await request("/labels", "POST", { name: "plain" });
+    expect(plain.status).toBe(201);
+    const tint = await json(plain);
+    expect(tint.style).toBe("tint");
+    expect((await listed(tint.id)).style).toBe("tint");
+
+    const bold = await request("/labels", "POST", {
+      name: "bold",
+      style: "solid",
+    });
+    expect(bold.status).toBe(201);
+    const solid = await json(bold);
+    expect(solid.style).toBe("solid");
+    expect((await listed(solid.id)).style).toBe("solid");
+
+    // Issue rows and board cards draw their chips from the issue's labels.
+    const issue = await request("/issues", "POST", {
+      title: "t",
+      label_ids: [solid.id],
+    });
+    expect(issue.status).toBe(201);
+    expect((await json(issue)).labels).toMatchObject([
+      { id: solid.id, style: "solid" },
+    ]);
+  });
+
+  it("changes the style on its own", async () => {
+    const created = await json(
+      await request("/labels", "POST", { name: "restyled", color: "#10b981" }),
+    );
+    expect(created.style).toBe("tint");
+
+    const res = await request(`/labels/${created.id}`, "PATCH", {
+      style: "solid",
+    });
+    expect(res.status).toBe(200);
+    expect(await json(res)).toEqual({
+      id: created.id,
+      name: "restyled",
+      color: "#10b981",
+      style: "solid",
+    });
+    expect((await listed(created.id)).style).toBe("solid");
+  });
+});
