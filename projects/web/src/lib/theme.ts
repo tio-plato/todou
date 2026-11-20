@@ -11,6 +11,22 @@ export interface ThemeDef {
   surface: string;
   accent: string;
   /**
+   * The OKLCH lightness a tinted label chip's text may reach (`labelInk`):
+   * at most this on a light theme, at least this on a dark one.
+   *
+   * Each value is the one nearest the theme's own end, on a 0.01 grid, at
+   * which the presets and `#a2eeef` read at APCA Lc 50 or more on every
+   * surface a chip is drawn on in this theme (measured outside the
+   * repository with apca-w3 0.1.9, with 0.5 to spare), and every colour at
+   * 3:1 or more by WCAG 2. The test holds the WCAG floor, as APCA's licence
+   * keeps its code out of this repository.
+   *
+   * A new theme is measured the same way; where APCA cannot be run, take the
+   * strictest value of its kind (0.47 light, 0.81 dark) and let the test
+   * hold WCAG's.
+   */
+  labelInkLimit: number;
+  /**
    * shiki theme carrying this theme's syntax token colors, from pierre's
    * bundled collection — an unlisted name throws at resolve time, so the
    * set is pinned by test. Omitted where no upstream theme matches; those
@@ -20,8 +36,9 @@ export interface ThemeDef {
 }
 
 // The todou defaults lead each group; the rest are the picotera ports (T-36).
-// Adding a theme = one entry here + one :root[data-theme='…'] block in
-// styles.css, plus `syntax` where an upstream shiki theme matches (T-144).
+// Adding a theme = one entry here, with its `labelInkLimit`, + one
+// :root[data-theme='…'] block in styles.css, plus `syntax` where an
+// upstream shiki theme matches (T-144).
 export const THEMES = [
   {
     value: "light",
@@ -29,6 +46,7 @@ export const THEMES = [
     kind: "light",
     surface: "oklch(1 0 0)",
     accent: "oklch(0.205 0 0)",
+    labelInkLimit: 0.54,
   },
   {
     value: "pico-light",
@@ -36,6 +54,7 @@ export const THEMES = [
     kind: "light",
     surface: "oklch(0.986 0.003 250)",
     accent: "oklch(0.54 0.19 262)",
+    labelInkLimit: 0.55,
   },
   {
     value: "solarized-light",
@@ -43,6 +62,7 @@ export const THEMES = [
     kind: "light",
     surface: "oklch(0.965 0.036 92)",
     accent: "oklch(0.72 0.15 85)",
+    labelInkLimit: 0.55,
     syntax: "solarized-light",
   },
   {
@@ -51,6 +71,7 @@ export const THEMES = [
     kind: "light",
     surface: "oklch(0.985 0.001 250)",
     accent: "oklch(0.5 0.16 250)",
+    labelInkLimit: 0.55,
     syntax: "light-plus",
   },
   {
@@ -59,6 +80,7 @@ export const THEMES = [
     kind: "light",
     surface: "oklch(0.985 0.002 250)",
     accent: "oklch(0.55 0.18 255)",
+    labelInkLimit: 0.55,
     syntax: "github-light",
   },
   {
@@ -67,6 +89,7 @@ export const THEMES = [
     kind: "light",
     surface: "oklch(0.97 0.005 280)",
     accent: "oklch(0.52 0.22 300)",
+    labelInkLimit: 0.51,
     syntax: "catppuccin-latte",
   },
   {
@@ -75,6 +98,7 @@ export const THEMES = [
     kind: "light",
     surface: "oklch(0.95 0.04 95)",
     accent: "oklch(0.48 0.09 220)",
+    labelInkLimit: 0.47,
     syntax: "gruvbox-light-medium",
   },
   {
@@ -83,6 +107,7 @@ export const THEMES = [
     kind: "dark",
     surface: "oklch(0.145 0 0)",
     accent: "oklch(0.922 0 0)",
+    labelInkLimit: 0.76,
   },
   {
     value: "tera-dark",
@@ -90,6 +115,7 @@ export const THEMES = [
     kind: "dark",
     surface: "oklch(0.22 0.02 255)",
     accent: "oklch(0.70 0.18 262)",
+    labelInkLimit: 0.77,
   },
   {
     value: "solarized-dark",
@@ -97,6 +123,7 @@ export const THEMES = [
     kind: "dark",
     surface: "oklch(0.30 0.035 210)",
     accent: "oklch(0.68 0.14 235)",
+    labelInkLimit: 0.79,
     syntax: "solarized-dark",
   },
   {
@@ -105,6 +132,7 @@ export const THEMES = [
     kind: "dark",
     surface: "oklch(0.26 0.004 250)",
     accent: "oklch(0.62 0.15 245)",
+    labelInkLimit: 0.78,
     syntax: "dark-plus",
   },
   {
@@ -113,6 +141,7 @@ export const THEMES = [
     kind: "dark",
     surface: "oklch(0.2 0.015 260)",
     accent: "oklch(0.65 0.17 255)",
+    labelInkLimit: 0.77,
     syntax: "github-dark",
   },
   {
@@ -121,6 +150,7 @@ export const THEMES = [
     kind: "dark",
     surface: "oklch(0.31 0.028 285)",
     accent: "oklch(0.74 0.16 300)",
+    labelInkLimit: 0.8,
     syntax: "dracula",
   },
   {
@@ -129,6 +159,7 @@ export const THEMES = [
     kind: "dark",
     surface: "oklch(0.33 0.022 250)",
     accent: "oklch(0.78 0.08 210)",
+    labelInkLimit: 0.81,
     syntax: "nord",
   },
   {
@@ -137,6 +168,7 @@ export const THEMES = [
     kind: "dark",
     surface: "oklch(0.24 0.025 270)",
     accent: "oklch(0.7 0.15 265)",
+    labelInkLimit: 0.78,
     syntax: "tokyo-night",
   },
   {
@@ -145,6 +177,7 @@ export const THEMES = [
     kind: "dark",
     surface: "oklch(0.31 0.012 265)",
     accent: "oklch(0.72 0.14 245)",
+    labelInkLimit: 0.79,
     syntax: "one-dark-pro",
   },
   {
@@ -153,6 +186,7 @@ export const THEMES = [
     kind: "dark",
     surface: "oklch(0.27 0.012 110)",
     accent: "oklch(0.78 0.13 195)",
+    labelInkLimit: 0.79,
     syntax: "monokai",
   },
   {
@@ -161,6 +195,7 @@ export const THEMES = [
     kind: "dark",
     surface: "oklch(0.26 0.03 285)",
     accent: "oklch(0.78 0.13 300)",
+    labelInkLimit: 0.8,
     syntax: "catppuccin-mocha",
   },
   {
@@ -169,6 +204,7 @@ export const THEMES = [
     kind: "dark",
     surface: "oklch(0.28 0.008 90)",
     accent: "oklch(0.74 0.13 60)",
+    labelInkLimit: 0.81,
     syntax: "gruvbox-dark-medium",
   },
 ] as const satisfies readonly ThemeDef[];
@@ -289,5 +325,17 @@ export function useThemeKind(): ThemeKind {
     subscribe,
     () => themeKind(resolveTheme(pref)),
     () => themeKind(resolveTheme(pref)),
+  );
+}
+
+/**
+ * The theme in effect. Like useThemeKind() it follows an OS switch under
+ * "system", and unlike it, it also changes between two themes of one kind.
+ */
+export function useResolvedTheme(): Theme {
+  return useSyncExternalStore(
+    subscribe,
+    () => resolveTheme(pref),
+    () => resolveTheme(pref),
   );
 }
