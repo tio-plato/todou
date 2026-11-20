@@ -185,19 +185,20 @@ function sameLayout(a: Layout, b: Layout): boolean {
 
 /**
  * How each kind of tick is drawn, in the order they are drawn, so a note's
- * tick shows over a change's.
+ * tick shows over a change's, and a change's over a removal it overlaps,
+ * which is where a press on the two lands (`LANDING_KINDS`).
  */
 const PAINT: ReadonlyArray<readonly [TickKind, string]> = [
   ["heading", "left-0 right-0 bg-foreground/30"],
-  // The green bar a changed block wears down its left edge, and the red one
-  // a removed block does.
-  [
-    "stop",
-    "left-0 right-0 bg-[color-mix(in_oklab,var(--diff-addition)_60%,transparent)]",
-  ],
+  // The red bar a removed block wears down its left edge, and the green one
+  // a changed block does.
   [
     "del",
     "left-0 right-0 bg-[color-mix(in_oklab,var(--diff-deletion)_60%,transparent)]",
+  ],
+  [
+    "stop",
+    "left-0 right-0 bg-[color-mix(in_oklab,var(--diff-addition)_60%,transparent)]",
   ],
   // The chips' amber and indigo, on the strip's right half.
   ["comment", "left-1/2 right-0 bg-amber-500"],
@@ -255,7 +256,11 @@ export function SpecChangeStrip({
     right: number;
     section: number;
   } | null>(null);
-  const drag = useRef<{ startY: number; moved: boolean } | null>(null);
+  const drag = useRef<{
+    pointer: number;
+    startY: number;
+    moved: boolean;
+  } | null>(null);
   /** The bar's height as last measured, for the frame between measurements. */
   const stripHeightRef = useRef(0);
   /** Where the card started down the page when last measured. */
@@ -385,15 +390,19 @@ export function SpecChangeStrip({
           event.preventDefault();
           const bar = event.currentTarget;
           bar.setPointerCapture(event.pointerId);
-          drag.current = { startY: event.clientY, moved: false };
+          const pointer = event.pointerId;
+          drag.current = { pointer, startY: event.clientY, moved: false };
           // Without the capture, a release off the bar never reaches it, and
-          // the tooltip would stay up until the pointer came back.
+          // the tooltip would stay up until the pointer came back; a cancel
+          // ends the press wherever it lands.
           pressWatch.current?.abort();
           const watch = new AbortController();
           pressWatch.current = watch;
           const end = (up: PointerEvent) => {
+            if (up.pointerId !== pointer) return;
             watch.abort();
-            if (up.target instanceof Node && bar.contains(up.target)) return;
+            const onBar = up.target instanceof Node && bar.contains(up.target);
+            if (up.type === "pointerup" && onBar) return;
             drag.current = null;
             setHover(null);
           };
@@ -417,9 +426,13 @@ export function SpecChangeStrip({
           // The press, not the capture, decides whether this is a drag:
           // Chromium can take a capture back the moment it grants it, and a
           // button released off the bar never says so here.
-          if ((event.buttons & 1) === 0) drag.current = null;
           const pressed = drag.current;
-          if (pressed === null || at === null) return;
+          if (pressed === null || pressed.pointer !== event.pointerId) return;
+          if ((event.buttons & 1) === 0) {
+            drag.current = null;
+            return;
+          }
+          if (at === null) return;
           if (
             !pressed.moved &&
             Math.abs(event.clientY - pressed.startY) < DRAG_SLOP
@@ -431,15 +444,12 @@ export function SpecChangeStrip({
         }}
         onPointerUp={(event) => {
           const pressed = drag.current;
+          if (pressed === null || pressed.pointer !== event.pointerId) return;
           drag.current = null;
-          if (pressed !== null && !pressed.moved) click(event.clientY);
+          if (!pressed.moved) click(event.clientY);
         }}
         onPointerLeave={() => {
           if (drag.current === null) setHover(null);
-        }}
-        onPointerCancel={() => {
-          drag.current = null;
-          setHover(null);
         }}
       >
         {PAINT.flatMap(([kind, colour]) =>
