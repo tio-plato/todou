@@ -75,7 +75,7 @@ transaction-pooling proxy such as PgBouncer: `database.system` and, under
 dedicated placement, every project database, which todou also migrates when
 it creates a project.
 
-Two project migrations change existing data rather than only its shape.
+Three project migrations change existing data rather than only its shape.
 Migration 0013 renames stored attachment filenames so that no two on one card
 collide; see [Relabelling attachment links after the filename
 migration](#relabelling-attachment-links-after-the-filename-migration).
@@ -99,6 +99,26 @@ older version still writing, the upgrade can also fail once, on a deadlock
 with those writes or on a database whose default isolation is repeatable
 read; all of it rolls back, and starting the server or `todou-server migrate`
 again runs it anew.
+
+The `case_insensitive_names` migration makes a status or label name one name
+whatever its case or Unicode composition, as the API now compares them. Of
+the names of one project that differ only that way, the first created keeps
+its name (of names that differ only in composition, the one already in NFC
+does) and each other one becomes `<name> (<id>)`, which may take it past 60
+characters as above. Every name is stored in Unicode NFC, and from then on
+the database refuses two names of a project that are equal under `lower()`.
+Which letters count as case is the database's ctype: under `C`, or in a
+`SQL_ASCII` database, only ASCII letters do, so an `État` and an `état`
+stored before the upgrade both stay, though the API refuses a new such pair.
+On a database whose encoding is not UTF-8, or on PostgreSQL 12 or older,
+names are not composed, and two that differ only in composition both stay.
+`lower()` also folds a few letters the API does not, such as a final sigma
+or a dotted capital I: a name differing from another only there is refused
+as a duplicate. A status whose chart role was never chosen and whose name is
+`done`, `shipped` or `invalid` in any case now counts as such in the charts,
+over its whole history. The old spellings are kept nowhere. With an older
+version still writing, the upgrade can fail once, as above, and runs anew
+when started again.
 
 ### What project search needs from PostgreSQL
 

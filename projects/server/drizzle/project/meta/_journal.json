@@ -183,6 +183,13 @@
       "when": 1795122698852,
       "tag": "0025_canonical_names",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1795186803007,
+      "tag": "0026_case_insensitive_names",
+      "breakpoints": true
     }
   ]
 }

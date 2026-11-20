@@ -115,7 +115,9 @@ export const autolinks = pgTable(
 
 /**
  * The unique indexes on a status's and a label's name, named once: applying
- * a template tells a name clash from any other refused write by them.
+ * a template tells a name clash from any other refused write by them. They
+ * compare `lower(name)`, a backstop to the API's `nameKey`, which they match
+ * only mostly (see the case_insensitive_names migration).
  */
 export const STATUS_NAME_INDEX = "statuses_project_name_idx";
 export const LABEL_NAME_INDEX = "labels_project_name_idx";
@@ -133,7 +135,9 @@ export const statuses = pgTable(
     // is set, new issues fall back to the first status by position.
     isDefault: boolean("is_default").notNull().default(false),
   },
-  (t) => [uniqueIndex(STATUS_NAME_INDEX).on(t.projectId, t.name)],
+  (t) => [
+    uniqueIndex(STATUS_NAME_INDEX).on(t.projectId, sql`lower(${t.name})`),
+  ],
 );
 
 export const labels = pgTable(
@@ -144,7 +148,7 @@ export const labels = pgTable(
     name: text("name").notNull(),
     color: text("color").notNull().default("#3b82f6"),
   },
-  (t) => [uniqueIndex(LABEL_NAME_INDEX).on(t.projectId, t.name)],
+  (t) => [uniqueIndex(LABEL_NAME_INDEX).on(t.projectId, sql`lower(${t.name})`)],
 );
 
 export const issues = pgTable(
