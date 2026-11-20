@@ -50,8 +50,38 @@ function client() {
 }
 
 describe("resolveStatus", () => {
+  const board = (...names: string[]) => {
+    const { fetchImpl } = fakeFetch([
+      [
+        "GET",
+        "/api/projects/todou/statuses",
+        names.map((name, i) => ({ ...statuses[0], id: i + 1, name })),
+      ],
+    ]);
+    return new TodouClient({ fetch: fetchImpl });
+  };
+
   it("matches case-insensitively", async () => {
     expect((await resolveStatus(client(), "todou", "done")).id).toBe(2);
+  });
+
+  it("matches whatever the Unicode composition", async () => {
+    expect(
+      (await resolveStatus(board("Todo", "Caf\u00e9"), "todou", "cafe\u0301"))
+        .id,
+    ).toBe(2);
+  });
+
+  it("prefers the exact spelling where two names differ only in case", async () => {
+    expect(
+      (
+        await resolveStatus(
+          board("\u00c9tat", "\u00e9tat"),
+          "todou",
+          "\u00e9tat",
+        )
+      ).id,
+    ).toBe(2);
   });
 
   it("lists alternatives on a miss", async () => {
