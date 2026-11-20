@@ -436,16 +436,11 @@ function AnswerForm({
   const [drafts, setDrafts] = useState<Record<string, Draft>>(() =>
     Object.fromEntries(component.questions.map((q) => [q.key, emptyDraft()])),
   );
-  // Options and "decline" are not text and have no editor of their own, so
-  // nothing else on this card would notice them going up in smoke. The Other
-  // box is a MarkdownEditor and registers itself — but only while it is
-  // mounted, and a follow-up hidden again takes its editor along and
-  // leaves its text in `drafts` alone.
-  useDirtySource(() =>
-    Object.values(drafts).some(
-      (d) => d.selected.size > 0 || d.declined || d.other.trim() !== "",
-    ),
-  );
+  // The one check for the whole form, Other text included: a follow-up
+  // hidden again unmounts its Other editor but leaves its text in `drafts`,
+  // and an editor remounted with that text would compare against it. The
+  // editors leave their own checks to this one (`ownerManagedDirty`).
+  useDirtySource(() => Object.values(drafts).some(resolved));
   const queryClient = useQueryClient();
   const target: Target = { slug, issueNumber, commentId };
   const submit = useMutation({
@@ -816,6 +811,7 @@ function QuestionForm({
           className="min-h-8"
           extensions={refCompletion}
           onSubmit={onSubmit}
+          ownerManagedDirty
         />
       </fieldset>
     </div>

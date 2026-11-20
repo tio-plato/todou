@@ -402,10 +402,7 @@ describe("the surfaces a form loses along with its text", () => {
     await screen.findByText("awaiting answer");
     fireEvent.click(optionButton("Way a"));
     await screen.findByText("After a?");
-    // The editors mount after the form does.
-    await waitFor(() => cmSetValue(view.container, "a thought on a", 1), {
-      timeout: 10_000,
-    });
+    cmSetValue(view.container, "a thought on a", 1);
 
     // Unpicking hides the follow-up, editor and all, and q1 holds nothing.
     fireEvent.click(optionButton("Way a"));
