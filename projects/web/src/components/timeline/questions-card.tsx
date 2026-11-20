@@ -44,6 +44,7 @@ import { holdRevealed, revealBlock, useOwnHold } from "@/lib/scroll-insets.ts";
 import { formatTimelineTime } from "@/lib/timeline-time.ts";
 import { useDirtySource } from "@/lib/unsaved-guard.ts";
 import { documentPip, useDocumentPip } from "@/lib/use-document-pip.ts";
+import { cn } from "@/lib/utils.ts";
 
 type Draft = { selected: Set<number>; other: string; declined: boolean };
 
@@ -698,7 +699,7 @@ function QuestionForm({
 
   return (
     <fieldset
-      className={`space-y-1.5 ${followUpFrame(question)}`}
+      className={cn("space-y-1.5", followUpFrame(question))}
       data-question-key={question.key}
     >
       <legend className="w-full space-y-1">
@@ -840,7 +841,7 @@ function AnsweredQuestion({
   const chosen = new Set(record?.selected.map((s) => s.index) ?? []);
   return (
     <div
-      className={`space-y-1.5 ${followUpFrame(question)}`}
+      className={cn("space-y-1.5", followUpFrame(question))}
       data-question-key={question.key}
     >
       <div className="space-y-1">
