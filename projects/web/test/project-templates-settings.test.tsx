@@ -902,6 +902,53 @@ describe("a template's page", () => {
     await waitFor(() => expect(use.getAttribute("aria-pressed")).toBe("true"));
   });
 
+  it("duplicates the built-in template under a name typed in the dialog, then opens the copy", async () => {
+    const server = fakeServer();
+    const router = renderAt("/settings/templates/default");
+    fireEvent.click(await screen.findByRole("button", { name: "Duplicate" }));
+    const dialog = within(
+      await screen.findByRole("dialog", { name: `Duplicate ${DEFAULT.name}` }),
+    );
+    const field = dialog.getByLabelText("Name") as HTMLInputElement;
+    expect(field.value).toBe(`${DEFAULT.name} copy`);
+
+    fireEvent.change(field, { target: { value: "Mine" } });
+    fireEvent.click(dialog.getByRole("button", { name: "Duplicate" }));
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe("/settings/templates/12"),
+    );
+    expect(server.calls.filter((c) => c.method === "POST")).toEqual([
+      {
+        method: "POST",
+        path: "/me/project-templates",
+        body: { name: "Mine", body: DEFAULT.body },
+      },
+    ]);
+    expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe(
+      "Mine",
+    );
+    expect(server.calls.filter((c) => c.method === "PATCH")).toEqual([]);
+  });
+
+  it("suggests a copy name within 100 characters", async () => {
+    const long: UsableTemplate = { ...KANBAN, ref: 8, name: "x".repeat(100) };
+    const templates = [...TEMPLATES, long];
+    const server = fakeServer({ templates });
+    renderAt("/settings/templates/8", undefined, templates);
+    fireEvent.click(await screen.findByRole("button", { name: "Duplicate" }));
+    const dialog = within(await screen.findByRole("dialog"));
+    const suggested = (dialog.getByLabelText("Name") as HTMLInputElement).value;
+    expect(suggested.length).toBeLessThanOrEqual(100);
+    expect(suggested).toMatch(/ copy$/);
+
+    fireEvent.click(dialog.getByRole("button", { name: "Duplicate" }));
+    await waitFor(() =>
+      expect(
+        server.calls.filter((c) => c.method === "POST").map((c) => c.body),
+      ).toEqual([{ name: suggested, body: long.body }]),
+    );
+  });
+
   it("shows Default with nothing to change", async () => {
     fakeServer();
     renderAt("/settings/templates/default");

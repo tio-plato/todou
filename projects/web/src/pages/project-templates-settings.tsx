@@ -22,6 +22,7 @@ import {
   CheckIcon,
   CircleCheckIcon,
   CircleIcon,
+  CopyIcon,
   PencilIcon,
   PlusIcon,
   Trash2Icon,
@@ -445,6 +446,86 @@ function NewTemplateDialog({
   );
 }
 
+const COPY = " copy";
+
+/**
+ * The name a copy of a template is offered: its own with " copy" after it,
+ * the name cut short where the two would run past the 100 characters a name
+ * may hold. Never cut between a surrogate pair's halves.
+ */
+function copyName(name: string): string {
+  let kept = name.slice(0, 100 - COPY.length);
+  if (/[\uD800-\uDBFF]$/.test(kept)) kept = kept.slice(0, -1);
+  return `${kept.trimEnd()}${COPY}`;
+}
+
+/** Names a copy of `template` as it is now, makes it, then opens it. */
+function DuplicateTemplateDialog({ template }: { template: UsableTemplate }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const field = useRef<HTMLInputElement>(null);
+  const create = useCreateTemplate(() => setOpen(false));
+  const trimmed = name.trim();
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (next) setName(copyName(template.name));
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm">
+          <CopyIcon /> Duplicate
+        </Button>
+      </DialogTrigger>
+      <DialogContent
+        aria-describedby={undefined}
+        className="grid-cols-1 sm:max-w-lg"
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          field.current?.focus();
+          field.current?.select();
+        }}
+      >
+        <DialogHeader className="min-w-0 pr-7">
+          <DialogTitle className="min-w-0 leading-normal wrap-anywhere">
+            Duplicate {template.name}
+          </DialogTitle>
+        </DialogHeader>
+        <form
+          className="min-w-0 space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (trimmed !== "" && !create.isPending) {
+              create.mutate({ name: trimmed, body: template.body });
+            }
+          }}
+        >
+          <div className="space-y-2">
+            <Label htmlFor="duplicate-template-name">Name</Label>
+            <Input
+              ref={field}
+              id="duplicate-template-name"
+              value={name}
+              maxLength={100}
+              onChange={(e) => setName(e.target.value)}
+              autoComplete="off"
+              required
+            />
+          </div>
+          <DialogFooter>
+            <Button type="submit" disabled={trimmed === "" || create.isPending}>
+              Duplicate
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function ProjectTemplateSettingsPage() {
   const { template } = useParams({
     from: "/authed/settings/templates/$template",
@@ -722,6 +803,7 @@ function TemplateEditor({ template }: { template: UsableTemplate }) {
         )}
         <div className="flex flex-wrap items-center gap-2">
           <UseForNewProjectsButton template={template} />
+          <DuplicateTemplateDialog template={template} />
         </div>
       </div>
       <StatusSetList
