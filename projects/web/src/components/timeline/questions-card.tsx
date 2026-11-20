@@ -669,105 +669,106 @@ function QuestionForm({
   const OffIcon = question.multiple ? SquareIcon : CircleIcon;
   const refCompletion = useRefCompletion(slug);
 
+  // The frame wraps the fieldset rather than styling it: a fieldset's
+  // border starts at its legend's middle, not at the top of the question.
   return (
-    <fieldset
-      className={cn("space-y-1.5", followUpFrame(question))}
-      data-question-key={question.key}
-    >
-      <legend className="w-full space-y-1">
-        {question.header !== undefined && (
-          <InlineMarkdown
-            slug={slug}
-            issueNumber={issueNumber}
-            className="text-xs font-semibold text-muted-foreground uppercase"
-          >
-            {question.header}
-          </InlineMarkdown>
-        )}
-        <InlineMarkdown slug={slug} issueNumber={issueNumber}>
-          {question.question}
-        </InlineMarkdown>
-      </legend>
-      <div className="space-y-1">
-        {question.options.map((option, index) => {
-          const active = draft.selected.has(index);
-          return (
-            <button
-              key={option.label}
-              type="button"
-              disabled={disabled}
-              onClick={(e) => {
-                if (selectingInside(e.currentTarget)) return;
-                toggleOption(index);
-              }}
-              aria-pressed={active}
-              className={`flex w-full items-start gap-2 rounded-md border px-2 py-1.5 text-left text-sm transition-colors select-text ${
-                active
-                  ? "border-primary bg-primary/10 enabled:hover:bg-primary/20"
-                  : "border-transparent enabled:hover:border-foreground/40 enabled:hover:bg-foreground/6"
-              }`}
+    <div className={followUpFrame(question)}>
+      <fieldset className="space-y-1.5" data-question-key={question.key}>
+        <legend className="w-full space-y-1">
+          {question.header !== undefined && (
+            <InlineMarkdown
+              slug={slug}
+              issueNumber={issueNumber}
+              className="text-xs font-semibold text-muted-foreground uppercase"
             >
-              <span className="mt-0.5 shrink-0 text-muted-foreground">
-                {active ? (
-                  <OnIcon className="size-4 text-primary" />
-                ) : (
-                  <OffIcon className="size-4" />
-                )}
-              </span>
-              <span className="min-w-0 flex-1 space-y-0.5">
-                <InlineMarkdown slug={slug} issueNumber={issueNumber}>
-                  {option.label}
-                </InlineMarkdown>
-                {option.description !== undefined && (
-                  <InlineMarkdown
-                    slug={slug}
-                    issueNumber={issueNumber}
-                    className="text-xs text-muted-foreground"
-                  >
-                    {option.description}
+              {question.header}
+            </InlineMarkdown>
+          )}
+          <InlineMarkdown slug={slug} issueNumber={issueNumber}>
+            {question.question}
+          </InlineMarkdown>
+        </legend>
+        <div className="space-y-1">
+          {question.options.map((option, index) => {
+            const active = draft.selected.has(index);
+            return (
+              <button
+                key={option.label}
+                type="button"
+                disabled={disabled}
+                onClick={(e) => {
+                  if (selectingInside(e.currentTarget)) return;
+                  toggleOption(index);
+                }}
+                aria-pressed={active}
+                className={`flex w-full items-start gap-2 rounded-md border px-2 py-1.5 text-left text-sm transition-colors select-text ${
+                  active
+                    ? "border-primary bg-primary/10 enabled:hover:bg-primary/20"
+                    : "border-transparent enabled:hover:border-foreground/40 enabled:hover:bg-foreground/6"
+                }`}
+              >
+                <span className="mt-0.5 shrink-0 text-muted-foreground">
+                  {active ? (
+                    <OnIcon className="size-4 text-primary" />
+                  ) : (
+                    <OffIcon className="size-4" />
+                  )}
+                </span>
+                <span className="min-w-0 flex-1 space-y-0.5">
+                  <InlineMarkdown slug={slug} issueNumber={issueNumber}>
+                    {option.label}
                   </InlineMarkdown>
-                )}
-              </span>
-            </button>
-          );
-        })}
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={(e) => {
-            if (selectingInside(e.currentTarget)) return;
-            toggleDecline();
+                  {option.description !== undefined && (
+                    <InlineMarkdown
+                      slug={slug}
+                      issueNumber={issueNumber}
+                      className="text-xs text-muted-foreground"
+                    >
+                      {option.description}
+                    </InlineMarkdown>
+                  )}
+                </span>
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={(e) => {
+              if (selectingInside(e.currentTarget)) return;
+              toggleDecline();
+            }}
+            aria-pressed={draft.declined}
+            className={`flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left text-sm transition-colors select-text ${
+              draft.declined
+                ? "border-destructive/60 bg-destructive/10 enabled:hover:bg-destructive/20"
+                : "border-transparent text-muted-foreground enabled:hover:border-foreground/40 enabled:hover:bg-foreground/6"
+            }`}
+          >
+            <CircleSlashIcon
+              className={`size-4 shrink-0 ${draft.declined ? "text-destructive" : ""}`}
+            />
+            Decline to answer
+          </button>
+        </div>
+        <MarkdownEditor
+          initialValue={draft.other}
+          readOnly={disabled}
+          ariaLabel="Other / additional thoughts"
+          onChange={(other) => {
+            onChange((d) => ({ ...d, other }));
           }}
-          aria-pressed={draft.declined}
-          className={`flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left text-sm transition-colors select-text ${
+          placeholder={
             draft.declined
-              ? "border-destructive/60 bg-destructive/10 enabled:hover:bg-destructive/20"
-              : "border-transparent text-muted-foreground enabled:hover:border-foreground/40 enabled:hover:bg-foreground/6"
-          }`}
-        >
-          <CircleSlashIcon
-            className={`size-4 shrink-0 ${draft.declined ? "text-destructive" : ""}`}
-          />
-          Decline to answer
-        </button>
-      </div>
-      <MarkdownEditor
-        initialValue={draft.other}
-        readOnly={disabled}
-        ariaLabel="Other / additional thoughts"
-        onChange={(other) => {
-          onChange((d) => ({ ...d, other }));
-        }}
-        placeholder={
-          draft.declined
-            ? "Why not? (optional, markdown)"
-            : "Other / additional thoughts… (optional, markdown; combines with selections)"
-        }
-        className="min-h-8"
-        extensions={refCompletion}
-        onSubmit={onSubmit}
-      />
-    </fieldset>
+              ? "Why not? (optional, markdown)"
+              : "Other / additional thoughts… (optional, markdown; combines with selections)"
+          }
+          className="min-h-8"
+          extensions={refCompletion}
+          onSubmit={onSubmit}
+        />
+      </fieldset>
+    </div>
   );
 }
 
