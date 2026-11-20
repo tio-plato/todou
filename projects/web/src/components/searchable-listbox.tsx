@@ -36,6 +36,11 @@ export type SearchableListboxProps<T, M> = {
   optionLink?: (option: T) => LinkProps | undefined;
   /** Announced in place of the row's own text. */
   optionAriaLabel?: (option: T) => string | undefined;
+  /**
+   * The id of an element in the row's body that describes it: announced
+   * after the name.
+   */
+  optionDescribedBy?: (option: T) => string | undefined;
   /** The key already in force; a check column appears alongside it. */
   selected?: string;
   /**
@@ -78,6 +83,7 @@ export function SearchableListbox<T, M>({
   renderOption,
   optionLink,
   optionAriaLabel,
+  optionDescribedBy,
   selected,
   startAtSelected = false,
   label,
@@ -220,6 +226,7 @@ export function SearchableListbox<T, M>({
                 checked={selected === undefined ? undefined : key === selected}
                 link={optionLink?.(item.option)}
                 ariaLabel={optionAriaLabel?.(item.option)}
+                describedBy={optionDescribedBy?.(item.option)}
                 onHover={() => setHighlight(idx)}
                 onClick={() => onSelect?.(item.option)}
                 onLinkClick={onLinkClick}
@@ -241,6 +248,7 @@ function Row({
   checked,
   link,
   ariaLabel,
+  describedBy,
   onHover,
   onClick,
   onLinkClick,
@@ -253,6 +261,7 @@ function Row({
   checked?: boolean;
   link?: LinkProps;
   ariaLabel?: string;
+  describedBy?: string;
   onHover: () => void;
   onClick: () => void;
   onLinkClick?: (event: ReactMouseEvent) => void;
@@ -265,6 +274,7 @@ function Row({
     tabIndex: -1,
     "aria-selected": checked ?? false,
     ...(ariaLabel === undefined ? {} : { "aria-label": ariaLabel }),
+    ...(describedBy === undefined ? {} : { "aria-describedby": describedBy }),
     className: cn(
       "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm",
       // A row whose preview is open keeps its highlight while the mouse is
@@ -278,7 +288,9 @@ function Row({
   const content = (
     <>
       {checked !== undefined && (
-        <span className="w-3.5 shrink-0">
+        // A cell one `text-sm` line high at the row's top: beside the first
+        // line of a row that runs to more, where a one-line row has it anyway.
+        <span className="flex h-5 w-3.5 shrink-0 items-center self-start">
           {checked && <CheckIcon className="size-3.5" />}
         </span>
       )}

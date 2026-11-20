@@ -356,6 +356,21 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/**
+ * The options' names as a screen reader gets them, not their text: a
+ * template's holds the summary under its name too.
+ */
+const optionNames = (scope: HTMLElement) => {
+  const names: string[] = [];
+  within(scope).getAllByRole("option", {
+    name: (name) => {
+      names.push(name);
+      return true;
+    },
+  });
+  return names;
+};
+
 const hover = (el: Element) =>
   fireEvent.pointerOver(el, { pointerType: "mouse", bubbles: true });
 /** The one preview open, once its delay has run. */
@@ -668,10 +683,8 @@ describe("a template this version cannot read", () => {
     await waitFor(() => expect(screen.queryAllByRole("option")).toEqual([]));
 
     fireEvent.click(screen.getByRole("button", { name: "New template" }));
-    const dialog = within(await screen.findByRole("dialog"));
-    expect(
-      dialog.getAllByRole("option").map((option) => option.textContent),
-    ).not.toContain("From the future");
+    const dialog = await screen.findByRole("dialog");
+    expect(optionNames(dialog)).not.toContain("From the future");
   });
 
   it("says on its page where it cannot be read", async () => {
@@ -850,11 +863,6 @@ function renderPicker(projects = PROJECTS) {
   return renderWithProviders(<Picker projects={projects} />, client);
 }
 
-const optionNames = (list: HTMLElement) =>
-  within(list)
-    .getAllByRole("option")
-    .map((option) => option.textContent);
-
 describe("StartFromPicker", () => {
   it("lists the viewer's projects once Project is picked", async () => {
     renderPicker();
@@ -941,6 +949,15 @@ describe("the New template dialog", () => {
       dialog.getByRole("option", { name }).getAttribute("aria-selected");
     expect(selected("Basic")).toBe("true");
     expect(selected("Kanban")).toBe("false");
+  });
+
+  it("previews a template from the summary under its name as well", async () => {
+    fakeServer();
+    const { dialog } = await openDialog();
+    const kanban = dialog.getByRole("option", { name: "Kanban" });
+    hover(within(kanban).getByText(/statuses/));
+    const card = await previewCard();
+    expect(within(card).getByText("Doing")).toBeTruthy();
   });
 
   it("lets a wheel over the preview scroll it, until it has no room left", async () => {

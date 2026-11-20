@@ -22,6 +22,7 @@ import {
   HoverCardTrigger,
 } from "@/components/ui/hover-card.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
+import { cn } from "@/lib/utils";
 
 /**
  * A template's statuses as the status list takes them. A template holds no
@@ -55,10 +56,25 @@ const counted = (n: number, one: string, many: string) =>
  * rather than pushing the row wide. The spaces between the parts are not
  * drawn, the gap is, but they keep the copied and announced text apart.
  */
-export function TemplateSummary({ body }: { body: TemplateBody }) {
+export function TemplateSummary({
+  body,
+  id,
+  className,
+}: {
+  body: TemplateBody;
+  id?: string;
+  className?: string;
+}) {
   const line = body.statuses.find((status) => status.block_clear);
   return (
-    <div className="flex flex-wrap items-center gap-x-1 overflow-hidden text-sm text-muted-foreground">
+    // A span: an option's button holds it, and takes phrasing content only.
+    <span
+      id={id}
+      className={cn(
+        "flex flex-wrap items-center gap-x-1 overflow-hidden text-sm text-muted-foreground",
+        className,
+      )}
+    >
       <span className="whitespace-nowrap">
         {counted(body.statuses.length, "status", "statuses")} ·
       </span>{" "}
@@ -75,7 +91,7 @@ export function TemplateSummary({ body }: { body: TemplateBody }) {
           Blocks clear at any closed status
         </span>
       )}
-    </div>
+    </span>
   );
 }
 

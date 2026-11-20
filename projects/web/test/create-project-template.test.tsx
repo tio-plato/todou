@@ -226,11 +226,24 @@ async function openDialog() {
 
 type Dialog = Awaited<ReturnType<typeof openDialog>>;
 
+/**
+ * The options' names as a screen reader gets them, not their text: a
+ * template's holds the summary under its name too.
+ */
+const optionNames = (list: HTMLElement, selected?: boolean) => {
+  const names: string[] = [];
+  within(list).getAllByRole("option", {
+    selected,
+    name: (name) => {
+      names.push(name);
+      return true;
+    },
+  });
+  return names;
+};
+
 const selectedTemplates = (dialog: Dialog) =>
-  within(dialog.getByRole("listbox", { name: "Templates" }))
-    .getAllByRole("option")
-    .filter((option) => option.getAttribute("aria-selected") === "true")
-    .map((option) => option.textContent);
+  optionNames(dialog.getByRole("listbox", { name: "Templates" }), true);
 
 const create = (dialog: Dialog) =>
   fireEvent.click(dialog.getByRole("button", { name: "Create" }));
@@ -270,6 +283,18 @@ describe("New project: Start from", () => {
     );
   });
 
+  it("describes each template option by what it holds, apart from its name", async () => {
+    renderDialog();
+    const dialog = await openDialog();
+    const { statuses, labels } = BUILTIN_TEMPLATES.basic.body;
+    expect(
+      dialog.getByRole("option", {
+        name: "Basic",
+        description: `${statuses.length} statuses · ${labels.length} labels · Blocks clear at Shipped`,
+      }),
+    ).toBeTruthy();
+  });
+
   it("starts from Basic when the template the prefs name is gone", async () => {
     renderDialog({ preferred: 99 });
     const dialog = await openDialog();
@@ -291,9 +316,7 @@ describe("New project: Start from", () => {
         .map((button) => button.textContent),
     ).toEqual(["Template", "Project"]);
     expect(
-      within(dialog.getByRole("listbox", { name: "Templates" }))
-        .getAllByRole("option")
-        .map((option) => option.textContent),
+      optionNames(dialog.getByRole("listbox", { name: "Templates" })),
     ).toEqual(["Basic", "Agile", "Kanban"]);
 
     fireEvent.click(dialog.getByRole("option", { name: "Agile" }));
