@@ -10,7 +10,7 @@ import { Window as HappyWindow } from "happy-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QuestionsCard } from "../src/components/timeline/questions-card.tsx";
 import { formatTimelineTime } from "../src/lib/timeline-time.ts";
-import { cmPressKey, cmSetValue } from "./cm.ts";
+import { cmPressKey, cmSetValue, cmView } from "./cm.ts";
 import { FakeResizeObserver, resizePage } from "./fake-resize-observer.ts";
 import { renderWithProviders } from "./render.tsx";
 
@@ -1049,6 +1049,8 @@ describe("QuestionsCard follow-up questions", () => {
     await view.findByText("After a?");
     expect(view.queryByText("After b?")).toBeNull();
     fireEvent.click(optionButton(view, "Yes after a"));
+    // q1's Other box is editor 0, q2's is editor 1.
+    cmSetValue(view.container, "a note on a", 1);
 
     fireEvent.click(optionButton(view, "Way b"));
     await view.findByText("After b?");
@@ -1059,6 +1061,7 @@ describe("QuestionsCard follow-up questions", () => {
     expect(optionButton(view, "Yes after a").getAttribute("aria-pressed")).toBe(
       "true",
     );
+    expect(cmView(view.container, 1).state.doc.toString()).toBe("a note on a");
   });
 
   it("gates and submits only the questions the picks ask", async () => {
