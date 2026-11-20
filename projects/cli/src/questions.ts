@@ -8,6 +8,7 @@ import type {
   TimelineEvent,
 } from "@todou/shared";
 import {
+  describeCondition,
   QuestionAnsweredPayload,
   QuestionsInput,
   QuestionWithdrawnPayload,
@@ -41,7 +42,7 @@ export async function readQuestionsInput(
   if (!result.success) {
     throw new CliError(
       `invalid questions:\n${z.prettifyError(result.error)}`,
-      'expected a JSON array: [{"question": "…", "options": [{"label": "…", "description": "…"}, …], "multiple": false, "key": "…", "header": "…"}, …] (key/header/multiple/description optional)',
+      'expected a JSON array: [{"question": "…", "options": [{"label": "…", "description": "…"}, …], "multiple": false, "key": "…", "header": "…", "when": {"key": "q1", "selected": [0]}}, …] (key/header/multiple/description/when optional)',
     );
   }
   return { type: "questions", questions: result.data };
@@ -97,6 +98,11 @@ export function withdrawalOf(item: {
  * numbering. `descriptions: false` is for the watch, where the question and
  * its option labels are what a reader needs to answer and the descriptions
  * would multiply the length of an entry nobody asked to read in full.
+ *
+ * Every question is listed, follow-ups too, each with the condition it is
+ * asked under (T-22): `--answers` has no form that unfolds as options are
+ * picked, so whoever answers needs to see which option brings which
+ * follow-up before writing it.
  */
 export function renderQuestions(
   component: QuestionsComponent,
@@ -108,7 +114,11 @@ export function renderQuestions(
   for (const q of component.questions) {
     const mode = q.multiple ? "multi-select" : "single-select";
     const head = q.header === undefined ? "" : ` ${q.header} ·`;
-    lines.push(paint("bold", `${indent}[${q.key}]${head} ${mode}`));
+    const when =
+      q.when === undefined
+        ? ""
+        : ` · when ${describeCondition(component.questions, q.when)}`;
+    lines.push(paint("bold", `${indent}[${q.key}]${head} ${mode}${when}`));
     for (const line of q.question.trimEnd().split("\n")) {
       lines.push(`${indent}${line}`);
     }
