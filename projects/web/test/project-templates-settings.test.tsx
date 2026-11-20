@@ -231,6 +231,11 @@ function fakeServer({
       stored.set(saved.ref, saved);
       return json(200, saved);
     }
+    const del = path.match(/^\/me\/project-templates\/(\d+)$/);
+    if (del && method === "DELETE") {
+      stored.delete(Number(del[1]));
+      return new Response(null, { status: 204 });
+    }
     if (path === "/me/prefs" && method === "PATCH") {
       prefs = { ...prefs, ...body };
       return json(200, prefs);
@@ -526,6 +531,59 @@ describe("the project templates list", () => {
     expect(
       document.querySelectorAll("[data-slot='hover-card-content']"),
     ).toHaveLength(0);
+  });
+
+  it("keeps focus on the list after a template is deleted", async () => {
+    fakeServer();
+    renderAt("/settings/templates");
+    fireEvent.click(await screen.findByRole("button", { name: "Delete Bugs" }));
+    fireEvent.click(
+      within(
+        await screen.findByRole("dialog", { name: "Delete this template?" }),
+      ).getByRole("button", { name: "Delete template" }),
+    );
+    await waitFor(() => {
+      expect(screen.queryByRole("link", { name: "Bugs" })).toBeNull();
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: "Delete Kanban" }),
+      ),
+    );
+  });
+
+  it("moves focus to the row before, then to New template, as the last rows go", async () => {
+    fakeServer();
+    renderAt("/settings/templates");
+    const remove = async (name: string) => {
+      fireEvent.click(
+        await screen.findByRole("button", { name: `Delete ${name}` }),
+      );
+      fireEvent.click(
+        within(
+          await screen.findByRole("dialog", { name: "Delete this template?" }),
+        ).getByRole("button", { name: "Delete template" }),
+      );
+      await waitFor(() => {
+        expect(screen.queryByRole("link", { name })).toBeNull();
+        expect(screen.queryByRole("dialog")).toBeNull();
+      });
+    };
+    // Kanban is the last row: no row after it.
+    await remove("Kanban");
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: "Delete Bugs" }),
+      ),
+    );
+    // Bugs is the only one left that can go: Default, before it, cannot.
+    await remove("Bugs");
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: /New template/ }),
+      ),
+    );
   });
 
   it("previews a template's default status, line, chart roles and labels on hover", async () => {

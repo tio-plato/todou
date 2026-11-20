@@ -18,7 +18,7 @@ import {
   TodouError,
 } from "@todou/shared";
 import { ArrowLeftIcon, PlusIcon, Trash2Icon } from "lucide-react";
-import { type ReactElement, useRef, useState } from "react";
+import { type ReactElement, type RefObject, useRef, useState } from "react";
 import { toast } from "sonner";
 import { prefsQuery, usePatchPrefs } from "@/api/prefs.ts";
 import { api, projectsQuery, projectTemplatesQuery } from "@/api/queries.ts";
@@ -79,12 +79,16 @@ export function ProjectTemplatesSettingsPage() {
     templates.data,
     prefs.data.new_project_template,
   );
+  const newTemplate = useRef<HTMLButtonElement>(null);
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-3">
         <h1 className="text-xl font-semibold">Project templates</h1>
-        <NewTemplateDialog templates={templates.data} />
+        <NewTemplateDialog
+          templates={templates.data}
+          triggerRef={newTemplate}
+        />
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <Label
@@ -157,7 +161,10 @@ export function ProjectTemplatesSettingsPage() {
                 does: the previews line up on it. */}
             <div className="flex w-7 shrink-0 justify-end">
               {!template.builtin && (
-                <DeleteTemplateButton template={template} />
+                <DeleteTemplateButton
+                  template={template}
+                  lastFocus={newTemplate}
+                />
               )}
             </div>
           </li>
@@ -211,12 +218,45 @@ function PreviewOnHover({
   );
 }
 
-function DeleteTemplateButton({ template }: { template: ProjectTemplate }) {
+/**
+ * Where focus goes once the row of `button` is deleted: the next row's
+ * delete button, else the one before, else `last`. Null outside a list.
+ */
+function focusAfterDeleting(
+  button: HTMLElement | null,
+  last: HTMLElement | null,
+): HTMLElement | null {
+  const list = button?.closest("ul");
+  if (!button || !list) return null;
+  const buttons = [
+    ...list.querySelectorAll<HTMLElement>("[data-delete-template]"),
+  ];
+  const at = buttons.indexOf(button);
+  return buttons[at + 1] ?? buttons[at - 1] ?? last;
+}
+
+function DeleteTemplateButton({
+  template,
+  lastFocus,
+}: {
+  template: ProjectTemplate;
+  /** Where focus goes once no row is left with a delete button. */
+  lastFocus?: RefObject<HTMLElement | null>;
+}) {
   const [open, setOpen] = useState(false);
+  const button = useRef<HTMLButtonElement>(null);
+  // Set once the template is gone. The confirmation, with no trigger to
+  // hand focus back to, would leave it on the page's body.
+  const landing = useRef<HTMLElement | null>(null);
   const queryClient = useQueryClient();
   const remove = useMutation({
     mutationFn: (id: number) => api.deleteProjectTemplate(id),
     onSuccess: (_data, id) => {
+      // Before the row goes, while there is a row to count from.
+      landing.current = focusAfterDeleting(
+        button.current,
+        lastFocus?.current ?? null,
+      );
       // The default pill falls back to Default by itself when this was it.
       queryClient.setQueryData(templatesKey, (list) =>
         list?.filter((t) => t.ref !== id),
@@ -231,6 +271,8 @@ function DeleteTemplateButton({ template }: { template: ProjectTemplate }) {
   return (
     <>
       <Button
+        ref={button}
+        data-delete-template
         variant="ghost"
         size="icon-sm"
         aria-label={`Delete ${template.name}`}
@@ -253,6 +295,12 @@ function DeleteTemplateButton({ template }: { template: ProjectTemplate }) {
         destructive
         pending={remove.isPending}
         onConfirm={() => remove.mutate(ref)}
+        onCloseAutoFocus={(event) => {
+          if (landing.current === null) return;
+          event.preventDefault();
+          landing.current.focus();
+          landing.current = null;
+        }}
       />
     </>
   );
@@ -293,8 +341,10 @@ const START: StartFrom = {
 
 function NewTemplateDialog({
   templates,
+  triggerRef,
 }: {
   templates: readonly ProjectTemplate[];
+  triggerRef?: RefObject<HTMLButtonElement | null>;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -330,7 +380,7 @@ function NewTemplateDialog({
       }}
     >
       <DialogTrigger asChild>
-        <Button size="sm">
+        <Button ref={triggerRef} size="sm">
           <PlusIcon /> New template
         </Button>
       </DialogTrigger>
