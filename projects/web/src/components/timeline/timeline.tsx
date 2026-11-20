@@ -337,7 +337,11 @@ export function Timeline({
   // leaves the page to the browser, so the entry it leaves is restored, and
   // Back returns to where the link was pressed. Set from a blocker that
   // never blocks: the history asks it before each push, while the entry
-  // being left is still the current one. Without `enableBeforeUnload: false`
+  // being left is still the current one. A link the router does not take, a
+  // footnote's or a bare `#anchor`, the browser follows past the blocker, so
+  // a click on one within the card sets the entry first, in the capture
+  // phase, ahead of the browser's own handling; a click with a modifier opens
+  // another tab and moves nothing here. Without `enableBeforeUnload: false`
   // the history takes it for a blocker that wants the browser to confirm
   // every reload and closing of the tab once the page had a click or a key.
   // A passive effect, as the list's restore sets the entry in one and hands
@@ -360,7 +364,35 @@ export function Timeline({
         return false;
       },
     });
+    const onClick = (event: MouseEvent) => {
+      if (
+        event.button !== 0 ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.altKey
+      )
+        return;
+      const link =
+        event.target instanceof Element
+          ? event.target.closest("a[href]")
+          : null;
+      if (
+        !(link instanceof HTMLAnchorElement) ||
+        (link.target !== "" && link.target !== "_self") ||
+        link.hasAttribute("download")
+      )
+        return;
+      const url = new URL(link.href);
+      if (
+        url.origin === window.location.origin &&
+        url.pathname === window.location.pathname
+      )
+        window.history.scrollRestoration = "auto";
+    };
+    document.addEventListener("click", onClick, true);
     return () => {
+      document.removeEventListener("click", onClick, true);
       unblock();
       window.history.scrollRestoration = "auto";
     };
