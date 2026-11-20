@@ -764,6 +764,7 @@ async function footnoteCase(context, fixture) {
       name: "footnote-desktop-back",
       ok:
         followed.hash !== "" &&
+        followed.scrollY > before + height / 2 &&
         back.hash === "" &&
         Math.abs(back.scrollY - before) <= 2,
       detail: { before, followed, back },

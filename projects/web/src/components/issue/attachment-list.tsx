@@ -44,7 +44,9 @@ import { SOURCE_SPAN_ATTR } from "@/lib/rehype-source-lines.ts";
 import { cn } from "@/lib/utils.ts";
 
 /** Modifier-clicks (new tab, forced download) keep native link behavior. */
-function isPlainLeftClick(e: MouseEvent): boolean {
+export function isPlainLeftClick(
+  e: Pick<MouseEvent, "altKey" | "ctrlKey" | "metaKey" | "shiftKey">,
+): boolean {
   return !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey;
 }
 
