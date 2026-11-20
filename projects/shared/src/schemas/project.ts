@@ -240,10 +240,10 @@ export type Status = z.infer<typeof Status>;
 /**
  * A writable status name: canonical by the rule label names follow
  * (`canonicalizeLabelName`), since `issue list --status` trims each name it
- * is given and could never select a stored `"Done "`. Blank and length are
- * checked on the canonical form, so a padded 60-character name fits, while
- * the messages speak of what the caller sent. Read schemas stay loose: the
- * API lists whatever name is stored.
+ * is given and could never select a stored `"Done "`; stored as NFC. Blank
+ * and length are checked on the canonical form, so a padded 60-character
+ * name fits, while the messages speak of what the caller sent. Read schemas
+ * stay loose: the API lists whatever name is stored.
  */
 export const StatusName = z
   .string()
@@ -302,11 +302,37 @@ export const StatusUsage = z.object({
 export type StatusUsage = z.infer<typeof StatusUsage>;
 
 /**
- * The name a label or a status is actually stored under: trimmed, spaces
- * collapsed.
+ * The name a label or a status is actually stored under: composed (Unicode
+ * NFC, so "e" plus a combining accent is stored as the one "é" it looks
+ * like), trimmed, spaces collapsed.
  */
 export function canonicalizeLabelName(input: string): string {
-  return input.trim().replace(/\s+/g, " ");
+  return input.normalize("NFC").trim().replace(/\s+/g, " ");
+}
+
+/**
+ * The yardstick two status or label names are compared with: one name
+ * whatever its case or Unicode composition. Whitespace is left as it is:
+ * a lookup does not respace what it is given.
+ */
+export function nameKey(name: string): string {
+  return name.normalize("NFC").toLowerCase();
+}
+
+/**
+ * The entry `name` names: its exact spelling first, else the one with the
+ * same `nameKey`. Two entries can share a key only where the database's
+ * `lower()` folds less than `nameKey` (see the migration).
+ */
+export function findByName<T extends { name: string }>(
+  items: readonly T[],
+  name: string,
+): T | undefined {
+  const key = nameKey(name);
+  return (
+    items.find((item) => item.name === name) ??
+    items.find((item) => nameKey(item.name) === key)
+  );
 }
 
 /**
@@ -318,7 +344,8 @@ export function canonicalizeLabelName(input: string): string {
  *   renamed or deleted from the CLI again.
  * - **Canonical whitespace.** The CLI trims each comma-separated piece, so
  *   `" bug "` would be just as unreachable. Collapsing runs of whitespace
- *   comes along for free and matches what the web already sent.
+ *   comes along for free and matches what the web already sent. The name
+ *   is stored as NFC.
  *
  * Read schemas stay unconstrained on purpose: rows that predate this rule
  * must remain listable and renameable — the point is to stop new ones, not

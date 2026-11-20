@@ -13,6 +13,7 @@ import {
   Login,
   MeUpdateInput,
   ProjectSlug,
+  StatusName,
   TimelineComment,
   TimelineEvent,
   TimelineItem,
@@ -281,5 +282,11 @@ describe("LabelName (T-136)", () => {
     const stored = Label.parse({ id: 1, name: "a,b", color: "#3b82f6" });
     expect(stored.name).toBe("a,b");
     expect(LabelUpdateInput.parse({ name: "a b" }).name).toBe("a b");
+  });
+
+  it("stores status and label names composed (NFC)", () => {
+    // "e" plus a combining acute accent looks like the single "é".
+    expect(StatusName.parse("Cafe\u0301 noir")).toBe("Caf\u00e9 noir");
+    expect(LabelName.parse("Cafe\u0301 noir")).toBe("Caf\u00e9 noir");
   });
 });

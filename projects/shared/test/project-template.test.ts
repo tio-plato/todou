@@ -44,7 +44,7 @@ describe("TemplateBody", () => {
     ).toBe(false);
   });
 
-  it("stores status names canonical and compares them that way, case-sensitively", () => {
+  it("stores status names canonical and compares them that way, whatever their case", () => {
     const parsed = TemplateBody.parse(body([status("  In  Review ")]));
     expect(parsed.statuses[0]?.name).toBe("In Review");
     expect(
@@ -52,7 +52,11 @@ describe("TemplateBody", () => {
     ).toBe(false);
     expect(
       TemplateBody.safeParse(body([status("Done"), status("done")])).success,
-    ).toBe(true);
+    ).toBe(false);
+    expect(
+      TemplateBody.safeParse(body([status("Caf\u00e9"), status("Cafe\u0301")]))
+        .success,
+    ).toBe(false);
   });
 
   it("refuses a status name blank once trimmed or longer than 60 once canonical", () => {
@@ -73,6 +77,17 @@ describe("TemplateBody", () => {
           [
             { name: "a  b", color: "#ef4444" },
             { name: "a b", color: "#22c55e" },
+          ],
+        ),
+      ).success,
+    ).toBe(false);
+    expect(
+      TemplateBody.safeParse(
+        body(
+          [status("A")],
+          [
+            { name: "bug", color: "#ef4444" },
+            { name: "Bug", color: "#22c55e" },
           ],
         ),
       ).success,
