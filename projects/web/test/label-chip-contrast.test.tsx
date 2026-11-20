@@ -49,9 +49,10 @@ const MIN_TEXT_CONTRAST = 3;
  * The surfaces a chip is actually drawn on, each translucent layer blended
  * over the one beneath at its exact alpha and rounded to 8-bit sRGB.
  * Browsers keep alpha in 8 bits and blend premultiplied, which can paint a
- * stack of layers one or two steps darker; that does not take any colour
- * here below 3:1, and the APCA floor, which it does move, is measured on
- * the surfaces browsers paint (see `labelInkLimit`). Every theme's
+ * stack of layers one or two steps darker. With today's themes that takes
+ * no colour here below 3:1 (measured outside the repository), and the APCA
+ * floor, which it does move, is measured on the surfaces browsers paint
+ * (see `labelInkLimit`). Every theme's
  * `--card` equals its `--popover`, and no chip sits on a card, so the card
  * is not listed on its own.
  */
