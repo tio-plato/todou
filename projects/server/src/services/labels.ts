@@ -1,4 +1,5 @@
 import {
+  canonicalizeLabelName,
   type Label,
   type LabelCreateInput,
   type LabelUpdateInput,
@@ -111,36 +112,43 @@ export async function updateLabel(
   const db = await ctx.router.forProject(routeInfoOf(project));
   const where = and(eq(labels.id, labelId), eq(labels.projectId, project.id));
 
+  let name = input.name;
+  if (name !== undefined) {
+    const wanted = name;
+    const key = nameKey(wanted);
+    const existing = await db
+      .select({ id: labels.id, name: labels.name })
+      .from(labels)
+      .where(eq(labels.projectId, project.id));
+    // A name the label already has, in a spelling that canonicalizes to it,
+    // is no rename: it is left as stored, so a twin an upgrade left beside
+    // the label (see the case_insensitive_names migration) cannot block its
+    // other edits.
+    if (
+      existing.some(
+        (r) => r.id === labelId && canonicalizeLabelName(r.name) === wanted,
+      )
+    ) {
+      name = undefined;
+    } else if (
+      existing.some((r) => r.id !== labelId && nameKey(r.name) === key)
+    ) {
+      throw new ConflictError(`label "${input.name}" already exists`);
+    }
+  }
+
   // An UPDATE with no assignments is a driver error, not a no-op (T-730).
-  if (input.name === undefined && input.color === undefined) {
+  if (name === undefined && input.color === undefined) {
     const rows = await db.select().from(labels).where(where);
     const row = rows[0];
     if (!row) throw new NotFoundError("label not found");
     return toLabel(row);
   }
 
-  if (input.name !== undefined) {
-    const key = nameKey(input.name);
-    const existing = await db
-      .select({ id: labels.id, name: labels.name })
-      .from(labels)
-      .where(eq(labels.projectId, project.id));
-    // A label keeps the name it already has, even beside a twin an upgrade
-    // left (see the case_insensitive_names migration).
-    const kept = existing.some(
-      (r) => r.id === labelId && r.name === input.name,
-    );
-    if (
-      !kept &&
-      existing.some((r) => r.id !== labelId && nameKey(r.name) === key)
-    ) {
-      throw new ConflictError(`label "${input.name}" already exists`);
-    }
-  }
   const updated = await db
     .update(labels)
     .set({
-      ...(input.name === undefined ? {} : { name: input.name }),
+      ...(name === undefined ? {} : { name }),
       ...(input.color === undefined ? {} : { color: input.color }),
     })
     .where(where)

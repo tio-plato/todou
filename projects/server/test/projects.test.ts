@@ -675,7 +675,7 @@ describe.each(PLACEMENTS)("projects domain (%s placement)", (placement) => {
     it("lets a label resend the name it has beside a twin the database kept", async () => {
       const s = slug();
       const project = await createProject(s);
-      await json(
+      const upper = await json(
         await postLabel(s, { name: "\u03a4\u0395\u039b\u039f\u03a3" }),
       );
       // One name to the API, two to lower(): only an upgrade leaves the pair.
@@ -684,26 +684,44 @@ describe.each(PLACEMENTS)("projects domain (%s placement)", (placement) => {
         slug: s,
         database_url: null,
       });
-      const [lower] = await db
-        .insert(labels)
-        .values({
-          projectId: project.id,
-          name: "\u03c4\u03b5\u03bb\u03bf\u03c2",
-        })
-        .returning({ id: labels.id });
-      const resent = await t.app.request(
-        `/api/projects/${s}/labels/${(lower as { id: number }).id}`,
-        {
+      const patchLabel = (id: number, body: unknown) =>
+        t.app.request(`/api/projects/${s}/labels/${id}`, {
           method: "PATCH",
           headers: { "content-type": "application/json", cookie },
-          body: JSON.stringify({
-            name: "\u03c4\u03b5\u03bb\u03bf\u03c2",
-            color: "#000000",
-          }),
-        },
-      );
+          body: JSON.stringify(body),
+        });
+      const insert = async (name: string) => {
+        const [row] = await db
+          .insert(labels)
+          .values({ projectId: project.id, name })
+          .returning({ id: labels.id });
+        return (row as { id: number }).id;
+      };
+      const lower = await insert("\u03c4\u03b5\u03bb\u03bf\u03c2");
+      const resent = await patchLabel(lower, {
+        name: "\u03c4\u03b5\u03bb\u03bf\u03c2",
+        color: "#000000",
+      });
       expect(resent.status).toBe(200);
       expect((await json(resent)).color).toBe("#000000");
+      expect(
+        (await patchLabel(upper.id, { name: "\u03c4\u03b5\u03bb\u03bf\u03c2" }))
+          .status,
+      ).toBe(409);
+
+      // A twin kept because only its composition differs (no NFC on the
+      // database) resends its own spelling, which the API composes.
+      await postLabel(s, { name: "\u00e9tat" });
+      const decomposed = await insert("e\u0301tat");
+      const recolored = await patchLabel(decomposed, {
+        name: "e\u0301tat",
+        color: "#000000",
+      });
+      expect(recolored.status).toBe(200);
+      expect(await json(recolored)).toMatchObject({
+        name: "e\u0301tat",
+        color: "#000000",
+      });
     });
   });
 
@@ -843,6 +861,29 @@ describe.each(PLACEMENTS)("projects domain (%s placement)", (placement) => {
           })
         ).status,
       ).toBe(409);
+
+      // A twin kept because only its composition differs (no NFC on the
+      // database) resends its own spelling, which the API composes.
+      await postStatus(s, { name: "\u00e9tat", category: "open" });
+      const [decomposed] = await db
+        .insert(statuses)
+        .values({
+          projectId: project.id,
+          name: "e\u0301tat",
+          category: "open",
+          position: 100,
+        })
+        .returning({ id: statuses.id });
+      const recolored = await patchStatus(
+        s,
+        (decomposed as { id: number }).id,
+        { name: "e\u0301tat", color: "#000000" },
+      );
+      expect(recolored.status).toBe(200);
+      expect(await json(recolored)).toMatchObject({
+        name: "e\u0301tat",
+        color: "#000000",
+      });
     });
   });
 

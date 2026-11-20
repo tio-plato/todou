@@ -1,4 +1,5 @@
 import {
+  canonicalizeLabelName,
   INT4_MAX,
   lineAfterDeleting,
   nameKey,
@@ -223,8 +224,15 @@ export async function updateStatus(
   );
   const db = await ctx.router.forProject(routeInfoOf(project));
 
+  // A name the status already has is no rename: it is left as stored.
+  const changes =
+    input.name !== undefined &&
+    (await ensureNameFree(db, project.id, input.name, statusId))
+      ? { ...input, name: undefined }
+      : input;
+
   // An UPDATE with no assignments is a driver error, not a no-op (T-730).
-  if (Object.values(input).every((v) => v === undefined)) {
+  if (Object.values(changes).every((v) => v === undefined)) {
     const rows = await db
       .select()
       .from(statuses)
@@ -236,9 +244,6 @@ export async function updateStatus(
     return toStatus(row);
   }
 
-  if (input.name !== undefined) {
-    await ensureNameFree(db, project.id, input.name, statusId);
-  }
   const row = await db.transaction(async (tx) => {
     if (input.is_default === true) {
       // Both rows first, by id: applying a template locks every status in
@@ -270,7 +275,7 @@ export async function updateStatus(
     const updated = await tx
       .update(statuses)
       .set({
-        ...(input.name === undefined ? {} : { name: input.name }),
+        ...(changes.name === undefined ? {} : { name: changes.name }),
         ...(input.category === undefined ? {} : { category: input.category }),
         ...(input.color === undefined ? {} : { color: input.color }),
         ...(input.position === undefined ? {} : { position: input.position }),
@@ -378,25 +383,37 @@ export async function deleteStatus(
   }
 }
 
+/**
+ * Refuses a name another status of the project holds in any case. Says
+ * whether status `exceptId` holds it already, in a spelling that
+ * canonicalizes to it: that is no rename, so a twin an upgrade left beside
+ * the status (see the case_insensitive_names migration) cannot block its
+ * other edits.
+ */
 async function ensureNameFree(
   db: Db,
   projectId: number,
   name: string,
   exceptId?: number,
-): Promise<void> {
+): Promise<boolean> {
   // Compared in JS by nameKey rather than by the database's lower(), so
   // the rule does not follow the database's locale.
   const rows = await db
     .select({ id: statuses.id, name: statuses.name })
     .from(statuses)
     .where(eq(statuses.projectId, projectId));
-  // A status keeps the name it already has, even beside a twin an upgrade
-  // left (see the case_insensitive_names migration).
-  if (rows.some((r) => r.id === exceptId && r.name === name)) return;
+  if (
+    rows.some(
+      (r) => r.id === exceptId && canonicalizeLabelName(r.name) === name,
+    )
+  ) {
+    return true;
+  }
   const key = nameKey(name);
   if (rows.some((r) => r.id !== exceptId && nameKey(r.name) === key)) {
     throw new ConflictError(`status "${name}" already exists`);
   }
+  return false;
 }
 
 async function nextPosition(db: Db, projectId: number): Promise<number> {
