@@ -19,7 +19,7 @@ const DEFAULTS = {
   open_external_links_in_new_tab: false,
   project_icon_fallback: "colorful_text",
   user_avatar_fallback: "monochrome_text",
-  new_project_template: "default",
+  new_project_template: "basic",
 };
 
 describe("user preferences", () => {

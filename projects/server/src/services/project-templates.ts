@@ -88,7 +88,7 @@ function builtinTemplates(): ProjectTemplate[] {
   }));
 }
 
-/** The built-in templates, `default` first, then the caller's by name. */
+/** The built-in templates, `basic` first, then the caller's by name. */
 export async function listProjectTemplates(
   ctx: AppContext,
   actor: UserRow,

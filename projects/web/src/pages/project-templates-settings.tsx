@@ -62,8 +62,6 @@ import {
 
 const templatesKey = projectTemplatesQuery.queryKey;
 
-const DEFAULT_PILL =
-  "rounded-full border px-2 py-0.5 text-xs text-muted-foreground";
 const INCOMPATIBLE_PILL =
   "rounded-full border border-destructive/40 px-2 py-0.5 text-xs text-destructive";
 
@@ -145,9 +143,6 @@ export function ProjectTemplatesSettingsPage() {
                     </Link>
                     {template.builtin && (
                       <Badge variant="outline">Built in</Badge>
-                    )}
-                    {template.ref === current && (
-                      <span className={DEFAULT_PILL}>default</span>
                     )}
                     {template.body === null && (
                       <span className={INCOMPATIBLE_PILL}>Incompatible</span>
@@ -257,7 +252,8 @@ function DeleteTemplateButton({
         button.current,
         lastFocus?.current ?? null,
       );
-      // The default pill falls back to Default by itself when this was it.
+      // "New projects start from" falls back to Basic by itself when this
+      // was it.
       queryClient.setQueryData(templatesKey, (list) =>
         list?.filter((t) => t.ref !== id),
       );
@@ -335,7 +331,7 @@ export function useCreateTemplate(onCreated?: () => void) {
 
 const START: StartFrom = {
   kind: "template",
-  template: "default",
+  template: "basic",
   project: null,
 };
 
@@ -438,7 +434,7 @@ export function ProjectTemplateSettingsPage() {
 }
 
 /**
- * One template's page: `default` or an id. Read out of the list, which holds
+ * One template's page: `basic` or an id. Read out of the list, which holds
  * every template whole.
  */
 export function ProjectTemplateSettings({ template }: { template: string }) {

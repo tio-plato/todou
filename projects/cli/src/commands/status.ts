@@ -266,7 +266,7 @@ export class StatusInitCommand extends ProjectCommand {
     const created: Status[] = [];
     const recolored: Status[] = [];
     let previous: Status | undefined;
-    const canonicalStatuses = BUILTIN_TEMPLATES.default.body.statuses;
+    const canonicalStatuses = BUILTIN_TEMPLATES.basic.body.statuses;
     for (const canonical of canonicalStatuses) {
       const existing = board.find(
         (s) => s.name.toLowerCase() === canonical.name.toLowerCase(),

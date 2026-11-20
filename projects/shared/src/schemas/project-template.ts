@@ -104,7 +104,7 @@ function builtinStatus(
 }
 
 /**
- * The templates that ship with todou, by key. `default` is what every new
+ * The templates that ship with todou, by key. `basic` is what every new
  * project starts as unless the request names another template, and the only
  * place the status flow new projects get is spelled out.
  *
@@ -133,8 +133,8 @@ export const BUILTIN_TEMPLATES: Record<
   BuiltinTemplateKey,
   { name: string; body: TemplateBody }
 > = {
-  default: {
-    name: "Default",
+  basic: {
+    name: "Basic",
     body: {
       statuses: [
         builtinStatus({ name: "Backlog", category: "open", color: "#9ca3af" }),

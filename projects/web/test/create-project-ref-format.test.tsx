@@ -41,11 +41,11 @@ function renderDialog() {
   // Create waits for both lists.
   const templates: ProjectTemplate[] = [
     {
-      ref: "default",
-      name: "Default",
+      ref: "basic",
+      name: "Basic",
       builtin: true,
       revision: 0,
-      body: BUILTIN_TEMPLATES.default.body,
+      body: BUILTIN_TEMPLATES.basic.body,
     },
   ];
   client.setQueryData(projectTemplatesQuery.queryKey, templates);

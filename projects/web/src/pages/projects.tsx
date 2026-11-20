@@ -177,11 +177,11 @@ function CreateProjectDialog() {
 
   const start: StartFrom = from ?? {
     kind: "template",
-    template: prefs.data?.new_project_template ?? "default",
+    template: prefs.data?.new_project_template ?? "basic",
     project: null,
   };
   // A template deleted since it was named, in the prefs or here, gives way
-  // to Default.
+  // to Basic.
   const startFrom: StartFrom = {
     ...start,
     template: preferredTemplate(templates.data ?? [], start.template),
@@ -206,7 +206,7 @@ function CreateProjectDialog() {
     );
   // Before both lists are in, the request could carry neither the template
   // the dialog would show nor the agents that join by default. Before the
-  // prefs are read, or fail to be, it would carry Default in place of the
+  // prefs are read, or fail to be, it would carry Basic in place of the
   // template they name, unless another start was picked here.
   const ready =
     templates.data !== undefined &&

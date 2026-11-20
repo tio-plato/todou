@@ -840,12 +840,12 @@ describe.each(PLACEMENTS)("projects domain (%s placement)", (placement) => {
       expect((await laidOut(s)).source).toBe("default");
     });
 
-    it("gives a project that names no template the built-in Default", async () => {
+    it("gives a project that names no template the built-in Basic", async () => {
       const plain = slug();
       await createProject(plain);
       const named = slug();
       expect(
-        (await postProject({ slug: named, name: named, template: "default" }))
+        (await postProject({ slug: named, name: named, template: "basic" }))
           .status,
       ).toBe(201);
 

@@ -42,11 +42,12 @@ const template = (
   name,
   builtin,
   revision: 0,
-  body: BUILTIN_TEMPLATES.default.body,
+  body: BUILTIN_TEMPLATES.basic.body,
 });
 const TEMPLATES: ProjectTemplate[] = [
-  template("default", "Default", true),
-  template(9, "Bugs"),
+  template("basic", "Basic", true),
+  // Named to sort before Basic, so a list ordered by name alone shows.
+  template(9, "Agile"),
   template(7, "Kanban"),
   // Written by a version that allows more than this one reads.
   {
@@ -123,7 +124,7 @@ const json = (status: number, payload: unknown) =>
  * `prefs: "failing"` they are not cached and their read fails.
  */
 function renderDialog({
-  preferred = "default",
+  preferred = "basic",
   holdAgents = false,
   prefs: prefsRead = "cached",
 }: {
@@ -254,7 +255,7 @@ describe("New project: Start from", () => {
     act(() => list.focus());
     expect(list.getAttribute("aria-activedescendant")).toBe(option("Kanban"));
     fireEvent.keyDown(list, { key: "ArrowUp" });
-    expect(list.getAttribute("aria-activedescendant")).toBe(option("Bugs"));
+    expect(list.getAttribute("aria-activedescendant")).toBe(option("Agile"));
   });
 
   it("moves the keyboard cursor to the template the prefs name once they are in", async () => {
@@ -262,23 +263,23 @@ describe("New project: Start from", () => {
     const dialog = await openDialog();
     const list = dialog.getByRole("listbox", { name: "Templates" });
     const option = (name: string) => dialog.getByRole("option", { name }).id;
-    expect(list.getAttribute("aria-activedescendant")).toBe(option("Default"));
+    expect(list.getAttribute("aria-activedescendant")).toBe(option("Basic"));
     await releasePrefs();
     await waitFor(() =>
       expect(list.getAttribute("aria-activedescendant")).toBe(option("Kanban")),
     );
   });
 
-  it("starts from Default when the template the prefs name is gone", async () => {
+  it("starts from Basic when the template the prefs name is gone", async () => {
     renderDialog({ preferred: 99 });
     const dialog = await openDialog();
-    expect(selectedTemplates(dialog)).toEqual(["Default"]);
+    expect(selectedTemplates(dialog)).toEqual(["Basic"]);
   });
 
-  it("starts from Default when the template the prefs name cannot be read", async () => {
+  it("starts from Basic when the template the prefs name cannot be read", async () => {
     renderDialog({ preferred: 11 });
     const dialog = await openDialog();
-    expect(selectedTemplates(dialog)).toEqual(["Default"]);
+    expect(selectedTemplates(dialog)).toEqual(["Basic"]);
   });
 
   it("offers templates or projects only, and sends the template chosen", async () => {
@@ -293,16 +294,16 @@ describe("New project: Start from", () => {
       within(dialog.getByRole("listbox", { name: "Templates" }))
         .getAllByRole("option")
         .map((option) => option.textContent),
-    ).toEqual(["Default", "Bugs", "Kanban"]);
+    ).toEqual(["Basic", "Agile", "Kanban"]);
 
-    fireEvent.click(dialog.getByRole("option", { name: "Bugs" }));
+    fireEvent.click(dialog.getByRole("option", { name: "Agile" }));
     create(dialog);
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]).toMatchObject({ slug: "potato", template: 9 });
     expect(posts[0]).not.toHaveProperty("from_project");
   });
 
-  // Sent before the prefs are in, the request would carry Default, which
+  // Sent before the prefs are in, the request would carry Basic, which
   // the dialog shows until then, and not the template they name.
   it("holds Create until the prefs are in", async () => {
     const { posts, releasePrefs } = renderDialog({
@@ -322,17 +323,17 @@ describe("New project: Start from", () => {
     expect(posts[0]).toMatchObject({ template: 7 });
   });
 
-  it("starts from Default when the prefs cannot be read", async () => {
+  it("starts from Basic when the prefs cannot be read", async () => {
     const { posts } = renderDialog({ preferred: 7, prefs: "failing" });
     const dialog = await openDialog();
     const button = dialog.getByRole("button", {
       name: "Create",
     }) as HTMLButtonElement;
     await waitFor(() => expect(button.disabled).toBe(false));
-    expect(selectedTemplates(dialog)).toEqual(["Default"]);
+    expect(selectedTemplates(dialog)).toEqual(["Basic"]);
     create(dialog);
     await waitFor(() => expect(posts).toHaveLength(1));
-    expect(posts[0]).toMatchObject({ template: "default" });
+    expect(posts[0]).toMatchObject({ template: "basic" });
   });
 
   it("sends the project chosen in place of a template", async () => {

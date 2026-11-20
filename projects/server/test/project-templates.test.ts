@@ -86,7 +86,7 @@ describe("project templates", () => {
   const idOf = async (slug: string, name: string): Promise<number> =>
     (await statuses(slug)).find((s: { name: string }) => s.name === name).id;
 
-  it("lists the built-in Default first, then my own by name, and nobody else's", async () => {
+  it("lists the built-in Basic first, then my own by name, and nobody else's", async () => {
     const other = await addUserWithToken(t.ctx, "tpl-other");
     expect(
       (await createTemplate({ name: "Theirs", body: BODY }, other.headers))
@@ -100,11 +100,11 @@ describe("project templates", () => {
     expect(
       list.map((x: { name: string; builtin: boolean }) => [x.name, x.builtin]),
     ).toEqual([
-      ["Default", true],
+      ["Basic", true],
       ["Alpha", false],
       ["Zeta", false],
     ]);
-    expect(list[0].ref).toBe("default");
+    expect(list[0].ref).toBe("basic");
   });
 
   it("reads back a created body at revision 0", async () => {
@@ -343,7 +343,7 @@ describe("project templates", () => {
       }),
     ]);
     expect(
-      list.find((x: { ref: unknown }) => x.ref === "default").body,
+      list.find((x: { ref: unknown }) => x.ref === "basic").body,
     ).not.toBeNull();
 
     // A field this version does not know: dropped, it would be lost on the

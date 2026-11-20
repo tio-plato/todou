@@ -29,7 +29,7 @@ export const usable = (template: ProjectTemplate): template is UsableTemplate =>
 
 /**
  * The template the account starts new projects from: the one its prefs
- * name, or Default once that one is gone or unreadable — a deleted template
+ * name, or Basic once that one is gone or unreadable — a deleted template
  * leaves the pref behind, and nothing on the server clears it.
  */
 export function preferredTemplate(
@@ -40,7 +40,7 @@ export function preferredTemplate(
     (template) => template.ref === preferred && usable(template),
   )
     ? preferred
-    : "default";
+    : "basic";
 }
 
 /**
