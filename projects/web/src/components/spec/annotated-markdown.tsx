@@ -569,7 +569,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
   );
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(NO_FOLDS);
   const wide = useMediaQuery(SM_UP);
-  const remarkPlugins = useMarkdownRemarkPlugins(slug);
+  const remarkPlugins = useMarkdownRemarkPlugins(slug, { document: true });
   const [popoverLayer, setPopoverLayer] = useState<HTMLElement | null>(null);
   // The ride-along layer the chips' popovers open in below `sm`: zero-sized
   // at the document's origin, so it scrolls with the page, and a containing
@@ -1398,6 +1398,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
             rehypePlugins={rehypePlugins}
             fenceBaselines={fenceBaselines}
             collapseLongFences={false}
+            document
             remarkPlugins={remarkPlugins}
           >
             {body}
