@@ -755,6 +755,61 @@ describe("baseline comments in the rendered comparison", () => {
       ).toEqual(["delta"]),
     );
   });
+
+  it("lists a resolved comment on a removed word instead of painting it", async () => {
+    // v2, the current version, drops "brown" (columns 11 to 15 of v1's line
+    // 1) and keeps line 3, where the server carries a comment on v1.
+    const resolved = { by: AUTHOR, at: "2026-01-07T00:00:00Z" };
+    const onBrown = onV1("words.md", 1, 11, 15);
+    mockSpec(
+      [
+        { ...onBrown, comment_id: 1, body: "still open" },
+        { ...onBrown, comment_id: 2, body: "settled on brown", resolved },
+        { ...comment("words.md", 1, 3, "settled on kept"), resolved },
+      ],
+      {
+        1: { "words.md": "The quick brown fox.\n\nKept line.\n" },
+        2: { "words.md": "The quick red fox.\n\nKept line.\n" },
+      },
+    );
+    const view = renderSpecView("?v=2&file=words.md&compare=1&view=rendered");
+    // The open one keeps its chip on the removed word, and the resolved one
+    // the server carried still hangs on the kept line.
+    await waitFor(() =>
+      expect(
+        view
+          .queryAllByRole("button", { name: /comment\(s\) on this block/ })
+          .map((chip) => chip.getAttribute("aria-label")),
+      ).toEqual(["1 comment(s) on this block", "1 comment(s) on this block"]),
+    );
+    expect(
+      view.getByText(/Comments without a place in v2/).parentElement
+        ?.textContent,
+    ).toContain("settled on brown");
+  });
+
+  it("leaves out a resolved comment under a renamed file's old path", async () => {
+    // drift.md in v1 ends "delta", columns 1 to 5 of line 4.
+    const onDelta = onV1("drift.md", 4, 1, 5);
+    mockSpec([
+      { ...onDelta, comment_id: 1, body: "still open" },
+      {
+        ...onDelta,
+        comment_id: 2,
+        body: "settled on delta",
+        resolved: { by: AUTHOR, at: "2026-01-07T00:00:00Z" },
+      },
+    ]);
+    const view = renderSpecView("?v=2&file=drifted.md&compare=1&view=rendered");
+    await waitFor(() =>
+      expect(
+        view
+          .queryAllByRole("button", { name: /comment\(s\) on this block/ })
+          .map((chip) => chip.getAttribute("aria-label")),
+      ).toEqual(["1 comment(s) on this block"]),
+    );
+    expect(view.queryByText("settled on delta")).toBeNull();
+  });
 });
 
 describe("baseline notes on text kept as it was", () => {
@@ -877,6 +932,32 @@ describe("baseline notes on text kept as it was", () => {
       ].find((el) => el.textContent?.startsWith("alpha"));
       expect(p?.classList).toContain("spec-annotated");
     });
+  });
+
+  it("lists a resolved comment on v1 instead of hanging it on kept text", async () => {
+    // The server maps v1's line 3 onto v3, the current version: line 4.
+    mockSpec(
+      [
+        {
+          ...comment("kept.md", 1, 3, "settled long ago"),
+          resolved: { by: AUTHOR, at: "2026-01-07T00:00:00Z" },
+          current_line_start: 4,
+          current_line_end: 4,
+        },
+      ],
+      KEPT,
+    );
+    const view = renderSpecView(COMPARE);
+    // Until v1 is put back ("brown" removed), nothing hangs on the baseline,
+    // so the list is only worth reading once the comparison stands.
+    await waitFor(() => {
+      expect(view.container.querySelector("del.spec-del")).not.toBeNull();
+      expect(
+        view.getByText(/Comments without a place in v2/).parentElement
+          ?.textContent,
+      ).toContain("settled long ago");
+    });
+    expect(classesOf(view, "Kept paragraph.")).not.toContain("spec-annotated");
   });
 });
 

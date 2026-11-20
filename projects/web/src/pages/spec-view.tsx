@@ -1384,6 +1384,11 @@ function SpecViewBody({
       anchor.version === baseline &&
       anchor.line_start !== null &&
       anchor.line_end !== null;
+    // A resolved comment hangs nothing from the baseline: on this file's own
+    // path it stays in the list, as any other the viewed version has no place
+    // for does, and under a renamed file's old path it is not on this page.
+    const openOnBaseline = (item: SpecCommentItem) =>
+      item.resolved === null && onBaseline(item.anchor);
     const onBaselineComment = (item: SpecCommentItem): DisplayedAnnotation => ({
       key: `c${item.comment_id}`,
       kind: "comment",
@@ -1419,7 +1424,7 @@ function SpecViewBody({
     for (const item of comments.data.items) {
       if (item.anchor.path !== selectedPath) {
         // A renamed file's comments on the baseline are under its old path.
-        if (onBaseline(item.anchor)) {
+        if (openOnBaseline(item)) {
           placeOnBaseline(onBaselineComment(item));
         }
         continue;
@@ -1448,7 +1453,7 @@ function SpecViewBody({
       } else {
         // One on the baseline may have a place on the viewed version still.
         const placed =
-          onBaseline(item.anchor) && placeOnBaseline(onBaselineComment(item));
+          openOnBaseline(item) && placeOnBaseline(onBaselineComment(item));
         if (!placed) unplaced.push(item);
       }
     }
