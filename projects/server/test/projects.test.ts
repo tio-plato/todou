@@ -635,6 +635,24 @@ describe.each(PLACEMENTS)("projects domain (%s placement)", (placement) => {
       await createProject(s);
       expect((await postLabel(s, { name: "   " })).status).toBe(422);
     });
+
+    it("treats a name differing only in case as the same, yet lets a label change its own case", async () => {
+      const s = slug();
+      await createProject(s);
+      const bug = await json(await postLabel(s, { name: "bug" }));
+      expect((await postLabel(s, { name: "Bug" })).status).toBe(409);
+
+      const recased = await t.app.request(
+        `/api/projects/${s}/labels/${bug.id}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json", cookie },
+          body: JSON.stringify({ name: "BUG" }),
+        },
+      );
+      expect(recased.status).toBe(200);
+      expect((await json(recased)).name).toBe("BUG");
+    });
   });
 
   // `issue list --status 'Done '` trims each name it is given, so a stored
@@ -706,6 +724,34 @@ describe.each(PLACEMENTS)("projects domain (%s placement)", (placement) => {
       expect((await patchStatus(s, long.id, { name: " \t " })).status).toBe(
         422,
       );
+    });
+
+    it("treats a name differing only in case as the same, yet lets a status change its own case", async () => {
+      const s = slug();
+      await createProject(s);
+      const board: { id: number; name: string }[] = await json(
+        await t.app.request(`/api/projects/${s}/statuses`, {
+          headers: { cookie },
+        }),
+      );
+      const byName = (name: string) => {
+        const found = board.find((x) => x.name === name);
+        if (!found) throw new Error(`no status ${name}`);
+        return found;
+      };
+
+      const created = await postStatus(s, { name: "done", category: "closed" });
+      expect(created.status).toBe(409);
+      expect((await json(created)).error.message).toContain(
+        'status "done" already exists',
+      );
+      expect(
+        (await patchStatus(s, byName("Todo").id, { name: "DONE" })).status,
+      ).toBe(409);
+
+      const recased = await patchStatus(s, byName("Done").id, { name: "DONE" });
+      expect(recased.status).toBe(200);
+      expect((await json(recased)).name).toBe("DONE");
     });
   });
 

@@ -1,6 +1,7 @@
 import {
   INT4_MAX,
   lineAfterDeleting,
+  nameKey,
   type Status,
   type StatusCreateInput,
   type StatusOrder,
@@ -383,11 +384,14 @@ async function ensureNameFree(
   name: string,
   exceptId?: number,
 ): Promise<void> {
+  // Compared in JS by nameKey rather than by the database's lower(), so
+  // the rule does not follow the database's locale.
   const rows = await db
-    .select({ id: statuses.id })
+    .select({ id: statuses.id, name: statuses.name })
     .from(statuses)
-    .where(and(eq(statuses.projectId, projectId), eq(statuses.name, name)));
-  if (rows.some((r) => r.id !== exceptId)) {
+    .where(eq(statuses.projectId, projectId));
+  const key = nameKey(name);
+  if (rows.some((r) => r.id !== exceptId && nameKey(r.name) === key)) {
     throw new ConflictError(`status "${name}" already exists`);
   }
 }

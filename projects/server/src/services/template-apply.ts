@@ -4,6 +4,7 @@ import {
   canonicalizeLabelName,
   defaultInsightsRole,
   lineAfterDeleting,
+  nameKey,
   type Role,
   type StatusRef,
   type TemplateApplyInput,
@@ -133,20 +134,21 @@ function mergeOrder<K>(base: readonly K[], incoming: readonly K[]): K[] {
 }
 
 /**
- * The project's entries paired with the template's by canonical name, case
- * kept. Where several entries are one name once canonical, the first one
- * pairs and the rest are left over.
+ * The project's entries paired with the template's by canonical name
+ * whatever its case (`nameKey`), keyed by the template's spelling. Where
+ * several entries are one name once canonical, the first one pairs and the
+ * rest are left over.
  */
 function pairByName<T extends { name: string }>(
   entries: readonly T[],
   names: readonly string[],
 ): { paired: Map<string, T>; leftover: T[] } {
-  const wanted = new Set(names);
+  const wanted = new Map(names.map((name) => [nameKey(name), name]));
   const paired = new Map<string, T>();
   const leftover: T[] = [];
   for (const entry of entries) {
-    const key = canonicalizeLabelName(entry.name);
-    if (wanted.has(key) && !paired.has(key)) paired.set(key, entry);
+    const name = wanted.get(nameKey(canonicalizeLabelName(entry.name)));
+    if (name !== undefined && !paired.has(name)) paired.set(name, entry);
     else leftover.push(entry);
   }
   return { paired, leftover };

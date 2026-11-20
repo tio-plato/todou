@@ -16,6 +16,7 @@ import {
   isSpecialQualifierValue,
   MetadataKey,
   MetadataNamespace,
+  nameKey,
   parseSearchQuery,
   SEARCH_DOMAINS,
   SEARCH_MAX_FILTERS,
@@ -478,7 +479,7 @@ async function planQualifiers(
         const ids: number[] = [];
         for (const value of filter.values) {
           const hit = statusRows.filter(
-            (s) => s.name.toLowerCase() === value.toLowerCase(),
+            (s) => nameKey(s.name) === nameKey(value),
           );
           if (hit.length === 0) {
             fail(
@@ -502,7 +503,7 @@ async function planQualifiers(
         const ids: number[] = [];
         for (const value of filter.values) {
           const hit = labelRows.filter(
-            (l) => l.name.toLowerCase() === value.toLowerCase(),
+            (l) => nameKey(l.name) === nameKey(value),
           );
           if (hit.length === 0) {
             fail(

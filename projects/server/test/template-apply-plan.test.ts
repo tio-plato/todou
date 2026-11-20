@@ -280,6 +280,29 @@ describe("planTemplateApply", () => {
       color: { from: "#000000", to: colorIn(DEFAULT, "Done") },
     });
   });
+
+  it("pairs a project's name with the template's whatever their case", () => {
+    const state = project(
+      [
+        ...FLOW.map((name) => ({ name })),
+        { name: "Shipped" },
+        { name: "done", category: "closed", color: "#000000" },
+        { name: "Invalid" },
+      ],
+      { labels: [...DEFAULT_LABELS, { name: "bug", color: "#000000" }] },
+    );
+    const template: TemplateBody = {
+      ...DEFAULT,
+      labels: [...DEFAULT.labels, { name: "Bug", color: "#ef4444" }],
+    };
+    const rows = planTemplateApply(state, template);
+    expect(ids(rows)).toEqual(["label.change:104", "status.change:7"]);
+    expect(row(rows, "status.change:7")).toMatchObject({ name: "done" });
+    expect(row(rows, "label.change:104")).toMatchObject({
+      name: "bug",
+      to: "#ef4444",
+    });
+  });
 });
 
 describe("applySelection", () => {

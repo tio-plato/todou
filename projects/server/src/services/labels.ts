@@ -1,8 +1,9 @@
-import type {
-  Label,
-  LabelCreateInput,
-  LabelUpdateInput,
-  LabelUsage,
+import {
+  type Label,
+  type LabelCreateInput,
+  type LabelUpdateInput,
+  type LabelUsage,
+  nameKey,
 } from "@todou/shared";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
@@ -76,11 +77,13 @@ export async function createLabel(
   const { project } = await requireCapability(ctx, actor, slug, "label.create");
   const db = await ctx.router.forProject(routeInfoOf(project));
 
-  const clash = await db
-    .select({ id: labels.id })
+  // One name whatever its case, compared in JS like a status name.
+  const key = nameKey(input.name);
+  const existing = await db
+    .select({ name: labels.name })
     .from(labels)
-    .where(and(eq(labels.projectId, project.id), eq(labels.name, input.name)));
-  if (clash.length > 0) {
+    .where(eq(labels.projectId, project.id));
+  if (existing.some((r) => nameKey(r.name) === key)) {
     throw new ConflictError(`label "${input.name}" already exists`);
   }
   const inserted = await db
@@ -117,13 +120,12 @@ export async function updateLabel(
   }
 
   if (input.name !== undefined) {
-    const clash = await db
-      .select({ id: labels.id })
+    const key = nameKey(input.name);
+    const existing = await db
+      .select({ id: labels.id, name: labels.name })
       .from(labels)
-      .where(
-        and(eq(labels.projectId, project.id), eq(labels.name, input.name)),
-      );
-    if (clash.some((r) => r.id !== labelId)) {
+      .where(eq(labels.projectId, project.id));
+    if (existing.some((r) => r.id !== labelId && nameKey(r.name) === key)) {
       throw new ConflictError(`label "${input.name}" already exists`);
     }
   }
