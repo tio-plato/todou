@@ -556,7 +556,8 @@ export function ProjectTemplateSettings({ template }: { template: string }) {
 
 /**
  * A template this version cannot read: what is wrong with it, place by
- * place. It can be deleted from the list; nothing can be made from it.
+ * place. It can be deleted, here or from the list; nothing can be made from
+ * it.
  */
 function IncompatibleTemplate({ template }: { template: ProjectTemplate }) {
   return (
@@ -583,6 +584,66 @@ function IncompatibleTemplate({ template }: { template: ProjectTemplate }) {
           </li>
         ))}
       </ul>
+      <DeleteTemplateRow template={template} />
+    </div>
+  );
+}
+
+/** Where a template's writes queue, so that each waits for the one before. */
+const writes = (ref: ProjectTemplate["ref"]) => `project-template-${ref}`;
+
+/**
+ * The account's own template deleted from its page, which is left before the
+ * template leaves the list: the other way round, the page would show it as
+ * missing first.
+ */
+function DeleteTemplateRow({ template }: { template: ProjectTemplate }) {
+  const [open, setOpen] = useState(false);
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const remove = useMutation({
+    // Behind the edits still being saved, which would meet a 404 after it.
+    scope: { id: writes(template.ref) },
+    mutationFn: (id: number) => api.deleteProjectTemplate(id),
+    onSuccess: async (_data, id) => {
+      await navigate({ to: "/settings/templates" });
+      queryClient.setQueryData(templatesKey, (list) =>
+        list?.filter((t) => t.ref !== id),
+      );
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const { ref } = template;
+  if (typeof ref !== "number") return null;
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg border border-destructive/35 py-3 pr-3 pl-4">
+      <p className="text-sm text-muted-foreground">
+        Projects made from it keep their statuses and labels.
+      </p>
+      <Button
+        variant="outline"
+        size="sm"
+        className="text-destructive"
+        onClick={() => setOpen(true)}
+      >
+        <Trash2Icon className="size-3.5" /> Delete template
+      </Button>
+      <ConfirmDialog
+        open={open}
+        onOpenChange={setOpen}
+        title="Delete this template?"
+        description={
+          <>
+            <span className="font-medium text-foreground">{template.name}</span>
+            {" — there is no undo."}
+          </>
+        }
+        confirmLabel="Delete template"
+        destructive
+        pending={remove.isPending}
+        onConfirm={() => remove.mutate(ref)}
+      />
     </div>
   );
 }
@@ -701,7 +762,7 @@ function TemplateEditor({ template }: { template: UsableTemplate }) {
   // one a refetch brings in mid-queue: the edits behind were made without
   // what it carries, and sent on it they would put that back.
   const base = useRef(template.revision);
-  const scope = `project-template-${ref}`;
+  const scope = writes(ref);
   const writing = () =>
     queryClient.isMutating({
       predicate: (m) => m.options.scope?.id === scope,
@@ -983,6 +1044,7 @@ function TemplateEditor({ template }: { template: UsableTemplate }) {
         }}
         pending={{ create: false, update: false, delete: false }}
       />
+      {canManage && <DeleteTemplateRow template={template} />}
     </div>
   );
 }

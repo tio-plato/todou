@@ -351,6 +351,20 @@ const added = (name: string) => ({
 const settle = () =>
   act(() => new Promise<void>((resolve) => setTimeout(resolve, 50)));
 
+/** Delete the template whose page is open, through its confirmation. */
+async function deleteFromPage() {
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Delete template" }),
+  );
+  fireEvent.click(
+    within(
+      await screen.findByRole("dialog", { name: "Delete this template?" }),
+    ).getByRole("button", { name: "Delete template" }),
+  );
+}
+
+const deletes = (calls: Call[]) => calls.filter((c) => c.method === "DELETE");
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -666,6 +680,25 @@ describe("a template this version cannot read", () => {
     ).not.toContain("From the future");
   });
 
+  it("can be deleted from its page", async () => {
+    const server = fakeServer({ templates });
+    const router = renderAt("/settings/templates/11", undefined, templates);
+    expect(await screen.findByText("Incompatible")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Duplicate" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Use for new projects" }),
+    ).toBeNull();
+
+    await deleteFromPage();
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe("/settings/templates"),
+    );
+    await waitFor(() => expect(screen.queryByText(FUTURE.name)).toBeNull());
+    expect(deletes(server.calls).map((c) => c.path)).toEqual([
+      "/me/project-templates/11",
+    ]);
+  });
+
   it("says on its page where it cannot be read", async () => {
     fakeServer({ templates });
     renderAt("/settings/templates/11", undefined, templates);
@@ -949,6 +982,63 @@ describe("a template's page", () => {
     );
   });
 
+  it("deletes a template from its page, then shows the list without it, never the missing-template page", async () => {
+    const server = fakeServer();
+    const missing = "You have no template at this address.";
+    let shown = false;
+    // Records keep what was added, however soon the page replaces it.
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        const nodes = [record.target, ...record.addedNodes];
+        if (nodes.some((node) => node.textContent?.includes(missing))) {
+          shown = true;
+        }
+      }
+    });
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+    try {
+      const router = renderAt("/settings/templates/7");
+      await deleteFromPage();
+      await waitFor(() =>
+        expect(router.state.location.pathname).toBe("/settings/templates"),
+      );
+      await waitFor(() =>
+        expect(screen.queryByRole("link", { name: KANBAN.name })).toBeNull(),
+      );
+      expect(screen.getByRole("link", { name: BUGS.name })).toBeTruthy();
+      expect(deletes(server.calls).map((c) => c.path)).toEqual([
+        "/me/project-templates/7",
+      ]);
+      await settle();
+      expect(shown).toBe(false);
+    } finally {
+      observer.disconnect();
+    }
+  });
+
+  it("a delete waits for an edit still being saved", async () => {
+    const error = vi.spyOn(toast, "error");
+    const server = fakeServer({ hold: true });
+    renderAt("/settings/templates/7");
+    await screen.findByText("Doing");
+    await addStatus("Review");
+    await deleteFromPage();
+    await settle();
+    expect(server.puts()).toHaveLength(1);
+    expect(deletes(server.calls)).toEqual([]);
+
+    await server.release();
+    await waitFor(() => expect(deletes(server.calls)).toHaveLength(1));
+    expect(
+      server.calls.indexOf(deletes(server.calls)[0] as Call),
+    ).toBeGreaterThan(server.calls.indexOf(server.puts()[0] as Call));
+    expect(error).not.toHaveBeenCalled();
+  });
+
   it("shows Default with nothing to change", async () => {
     fakeServer();
     renderAt("/settings/templates/default");
@@ -956,6 +1046,9 @@ describe("a template's page", () => {
     expect(screen.queryByRole("button", { name: /New status/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /New label/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Delete template" }),
+    ).toBeNull();
   });
 });
 
