@@ -61,14 +61,14 @@ async function scenario(db: Db, ids: ProjectIds): Promise<void> {
     const p1 = await add(a, "Parked");
     const p2 = await add(a, "parked");
     const p3 = await add(a, "PARKED");
-    const e1 = await add(a, "État");
-    const e2 = await add(a, "état");
+    const e1 = await add(a, "\u00c9tat");
+    const e2 = await add(a, "\u00e9tat");
     const cased = new Map([
       [p1, "Parked"],
       [p2, `parked (${p2})`],
       [p3, `PARKED (${p3})`],
-      [e1, "État"],
-      [e2, `état (${e2})`],
+      [e1, "\u00c9tat"],
+      [e2, `\u00e9tat (${e2})`],
     ]);
 
     // C2: a suffix another row already holds, whatever its case, is passed
@@ -83,16 +83,16 @@ async function scenario(db: Db, ids: ProjectIds): Promise<void> {
 
     // C3: names that differ only in composition: the NFC one keeps its
     // name even though it came later.
-    const c1 = await add(a, "Café");
-    const c2 = await add(a, "Café");
+    const c1 = await add(a, "Cafe\u0301");
+    const c2 = await add(a, "Caf\u00e9");
     const composed = new Map([
-      [c1, `Café (${c1})`],
-      [c2, "Café"],
+      [c1, `Caf\u00e9 (${c1})`],
+      [c2, "Caf\u00e9"],
     ]);
 
     // C4: a name that clashes with nothing is still stored as NFC.
-    const t1 = await add(a, "Thé");
-    const alone = new Map([[t1, "Thé"]]);
+    const t1 = await add(a, "The\u0301");
+    const alone = new Map([[t1, "Th\u00e9"]]);
 
     // C5: only a name in the same project is a clash.
     await add(a, "Shared");

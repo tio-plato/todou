@@ -70,7 +70,7 @@ describe.skipIf(!PG_URL)("case_insensitive_names migration on postgres", () => {
       // No conversion either way: the bytes sent are the bytes stored.
       await client.query("SET client_encoding = 'SQL_ASCII'");
       await createNameTables(client);
-      const seed = ["Done", "done", "Café", "état", "État"];
+      const seed = ["Done", "done", "Cafe\u0301", "\u00e9tat", "\u00c9tat"];
       const ids: Record<string, number[]> = {};
       for (const table of ["statuses", "labels"]) {
         ids[table] = [];
@@ -99,9 +99,13 @@ describe.skipIf(!PG_URL)("case_insensitive_names migration on postgres", () => {
           rows.map((row) => row.name.toString("hex")),
           table,
         ).toEqual(
-          ["Done", `done (${done})`, "Café", "état", "État"].map((name) =>
-            Buffer.from(name, "utf8").toString("hex"),
-          ),
+          [
+            "Done",
+            `done (${done})`,
+            "Cafe\u0301",
+            "\u00e9tat",
+            "\u00c9tat",
+          ].map((name) => Buffer.from(name, "utf8").toString("hex")),
         );
       }
     } finally {
