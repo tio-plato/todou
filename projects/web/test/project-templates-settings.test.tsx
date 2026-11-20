@@ -1,4 +1,4 @@
-import { QueryClientProvider } from "@tanstack/react-query";
+import { notifyManager, QueryClientProvider } from "@tanstack/react-query";
 import {
   createMemoryHistory,
   createRootRoute,
@@ -1000,6 +1000,10 @@ describe("a template's page", () => {
       subtree: true,
       characterData: true,
     });
+    // A list change renders the moment it is made, not on the next timer
+    // tick: whether the page shows the template missing then depends on the
+    // order alone, not on which of two timers fires first.
+    notifyManager.setScheduler((callback) => callback());
     try {
       const router = renderAt("/settings/templates/7");
       await deleteFromPage();
@@ -1016,6 +1020,7 @@ describe("a template's page", () => {
       await settle();
       expect(shown).toBe(false);
     } finally {
+      notifyManager.setScheduler((callback) => setTimeout(callback, 0));
       observer.disconnect();
     }
   });
