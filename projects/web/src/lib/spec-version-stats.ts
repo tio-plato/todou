@@ -16,7 +16,7 @@ export type SpecFileStat = {
 };
 
 /** jsdiff's diffLines, injected so the library loads lazily. */
-type DiffLines = (
+export type DiffLines = (
   a: string,
   b: string,
 ) => Array<{ count?: number; added?: boolean; removed?: boolean }>;
