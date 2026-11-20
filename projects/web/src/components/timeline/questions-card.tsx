@@ -8,7 +8,7 @@ import type {
   QuestionSettlement,
   QuestionsComponent,
 } from "@todou/shared";
-import { answerRecordOf } from "@todou/shared";
+import { answerRecordOf, shownQuestions } from "@todou/shared";
 import {
   CheckIcon,
   ChevronDownIcon,
@@ -57,12 +57,61 @@ const resolved = (d: Draft): boolean =>
   d.selected.size > 0 || d.other.trim() !== "" || d.declined;
 
 /**
+ * The questions the drafts ask (T-22). Every question keeps a draft, hidden
+ * or not, so a follow-up that comes back brings its picks and its Other
+ * text back with it; `shownQuestions` asks whether its question is asked,
+ * so a hidden question's leftover pick shows nothing.
+ */
+const askedByDrafts = (
+  drafts: Record<string, Draft>,
+  component: QuestionsComponent,
+): Question[] =>
+  shownQuestions(
+    component.questions,
+    new Map(
+      component.questions.map((q) => [
+        q.key,
+        [...(drafts[q.key] ?? emptyDraft()).selected],
+      ]),
+    ),
+  );
+
+/**
+ * What a settled card shows: the questions its answer asked, as whoever
+ * answered saw them — a branch not taken leaves no trace. A withdrawn card
+ * shows what was asked before any answer.
+ */
+const askedBySettlement = (
+  component: QuestionsComponent,
+  settlement: QuestionSettlement,
+): Question[] =>
+  shownQuestions(
+    component.questions,
+    new Map(
+      settlement.kind === "answered"
+        ? settlement.answer.answers.map((a) => [
+            a.key,
+            a.selected.map((s) => s.index),
+          ])
+        : [],
+    ),
+  );
+
+/** A follow-up sits one step in, behind a bar; a chain does not step further. */
+const followUpFrame = (question: Question): string =>
+  question.when === undefined ? "" : "ml-2 border-l-2 pl-3";
+
+/**
  * The submission's payload, assembled at the `mutate()` call rather than
  * by the mutation itself. `drafts` is component state and does not reset
  * when the card under it is swapped, while `component` is a prop that
  * does — read together at the wrong moment they pair the new card's keys
  * with empty answers, and a sealed target would deliver that to the old
  * card accurately.
+ *
+ * Only the questions the drafts ask are sent (T-22): a hidden follow-up's
+ * draft stays behind, since the server refuses an answer to a question the
+ * picks do not ask.
  *
  * `force` (T-517) sends each still-unresolved question as a decline — the
  * answer hiding the comment would give it. Only genuinely unanswered
@@ -76,7 +125,7 @@ const answersOf = (
   component: QuestionsComponent,
   force = false,
 ): QuestionAnswerInput[] =>
-  component.questions.map((q) => {
+  askedByDrafts(drafts, component).map((q) => {
     const d = drafts[q.key] ?? emptyDraft();
     if (force && !resolved(d)) {
       return { key: q.key, selected: [], declined: true };
@@ -219,7 +268,8 @@ export function QuestionsCard({
   );
 
   if (settlement) {
-    const hasDescriptions = component.questions.some((q) =>
+    const questions = askedBySettlement(component, settlement);
+    const hasDescriptions = questions.some((q) =>
       q.options.some((o) => o.description !== undefined),
     );
     return (
@@ -227,7 +277,7 @@ export function QuestionsCard({
         <SettledCard
           slug={slug}
           issueNumber={issueNumber}
-          component={component}
+          questions={questions}
           settlement={settlement}
           hasDescriptions={hasDescriptions}
         />
@@ -252,11 +302,13 @@ export function QuestionsCard({
   // Neutral: the verdict is not established. The answered card's grey frame
   // and its read-only rows say exactly that much and nothing more; the
   // footer slot — the one cell whose content the verdict decides — waits
-  // as a skeleton, or names the failure when /questions failed.
+  // as a skeleton, or names the failure when /questions failed. Only what is
+  // asked before any answer: the form and the answered card both start
+  // there, so no follow-up flashes up only to go again.
   return (
     <div ref={quotableRef} data-quote-questions="">
       <div className="mt-1 space-y-3 rounded-md border bg-muted/20 p-3">
-        {component.questions.map((q) => (
+        {shownQuestions(component.questions, new Map()).map((q) => (
           <AnsweredQuestion
             key={q.key}
             slug={slug}
@@ -289,13 +341,14 @@ export function QuestionsCard({
 function SettledCard({
   slug,
   issueNumber,
-  component,
+  questions,
   settlement,
   hasDescriptions,
 }: {
   slug: string;
   issueNumber: number;
-  component: QuestionsComponent;
+  /** The questions the settlement asked (`askedBySettlement`). */
+  questions: Question[];
   settlement: QuestionSettlement;
   hasDescriptions: boolean;
 }) {
@@ -303,7 +356,7 @@ function SettledCard({
   const answer = settlement.kind === "answered" ? settlement.answer : null;
   return (
     <div className="mt-1 space-y-3 rounded-md border bg-muted/20 p-3">
-      {component.questions.map((q) => (
+      {questions.map((q) => (
         <AnsweredQuestion
           key={q.key}
           slug={slug}
@@ -422,12 +475,13 @@ function AnswerForm({
       [key]: update(prev[key] ?? emptyDraft()),
     }));
 
-  const complete = component.questions.every((q) =>
-    resolved(drafts[q.key] ?? emptyDraft()),
-  );
+  // Gate, counts and the first open question all read the asked questions
+  // only: a hidden follow-up neither holds the form back nor gets declined.
+  const asked = askedByDrafts(drafts, component);
+  const complete = asked.every((q) => resolved(drafts[q.key] ?? emptyDraft()));
   const blocked = !complete || submit.isPending;
   const [forcing, setForcing] = useState(false);
-  const openCount = component.questions.filter(
+  const openCount = asked.filter(
     (q) => !resolved(drafts[q.key] ?? emptyDraft()),
   ).length;
 
@@ -447,9 +501,7 @@ function AnswerForm({
   // answered state.
   const pip = useDocumentPip();
   const firstOpen = () => {
-    const q = component.questions.find(
-      (x) => !resolved(drafts[x.key] ?? emptyDraft()),
-    );
+    const q = asked.find((x) => !resolved(drafts[x.key] ?? emptyDraft()));
     const row =
       q &&
       root.current?.querySelector<HTMLElement>(
@@ -497,7 +549,7 @@ function AnswerForm({
           </Button>
         )}
       </div>
-      {component.questions.map((q) => (
+      {asked.map((q) => (
         <QuestionForm
           key={q.key}
           slug={slug}
@@ -645,7 +697,10 @@ function QuestionForm({
   const refCompletion = useRefCompletion(slug);
 
   return (
-    <fieldset className="space-y-1.5" data-question-key={question.key}>
+    <fieldset
+      className={`space-y-1.5 ${followUpFrame(question)}`}
+      data-question-key={question.key}
+    >
       <legend className="w-full space-y-1">
         {question.header !== undefined && (
           <InlineMarkdown
@@ -784,7 +839,10 @@ function AnsweredQuestion({
 }) {
   const chosen = new Set(record?.selected.map((s) => s.index) ?? []);
   return (
-    <div className="space-y-1.5" data-question-key={question.key}>
+    <div
+      className={`space-y-1.5 ${followUpFrame(question)}`}
+      data-question-key={question.key}
+    >
       <div className="space-y-1">
         {question.header !== undefined && (
           <InlineMarkdown
