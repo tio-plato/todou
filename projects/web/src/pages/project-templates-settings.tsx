@@ -10,6 +10,7 @@ import {
   defaultInsightsRole,
   LabelName,
   lineAfterDeleting,
+  nameKey,
   type ProjectTemplate,
   type ProjectTemplateCreateInput,
   type TemplateBody,
@@ -437,7 +438,8 @@ function refused(
       return true;
     }
   }
-  if (!others.some((other) => other.name === name)) return false;
+  const key = nameKey(name);
+  if (!others.some((other) => nameKey(other.name) === key)) return false;
   toast.error(`${kind} "${name}" already exists`);
   return true;
 }
@@ -608,7 +610,12 @@ function TemplateEditor({ template }: { template: UsableTemplate }) {
           const name = canonicalizeLabelName(draft.name);
           if (
             before === undefined ||
-            (name !== before.name && refused("status", body.statuses, name))
+            (name !== before.name &&
+              refused(
+                "status",
+                body.statuses.filter((status) => status !== before),
+                name,
+              ))
           ) {
             return Promise.resolve(false);
           }
@@ -709,7 +716,14 @@ function TemplateEditor({ template }: { template: UsableTemplate }) {
             input.name === undefined
               ? before.name
               : canonicalizeLabelName(input.name);
-          if (name !== before.name && refused("label", body.labels, name)) {
+          if (
+            name !== before.name &&
+            refused(
+              "label",
+              body.labels.filter((label) => label !== before),
+              name,
+            )
+          ) {
             return Promise.resolve(false);
           }
           labelIds.rename(before.name, name);
