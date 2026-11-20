@@ -22,6 +22,12 @@ import {
   useProjectIconFallback,
   useRefPlacement,
   useShowRepeatedRefTitle,
+  useSpecOutline,
+  useSpecOutlineChanges,
+  useSpecOutlineComments,
+  useSpecStrip,
+  useSpecStripChanges,
+  useSpecStripComments,
   useTruncateRefTitle,
   useUserAvatarFallback,
 } from "@/api/prefs.ts";
@@ -56,6 +62,7 @@ import {
   setPlainTextEditor,
   usePlainTextEditor,
 } from "@/lib/plain-text-editor.ts";
+import { cn } from "@/lib/utils";
 
 /** The signed-in user's own profile. Agents are edited via /settings/agents. */
 export function ProfileSettingsPage() {
@@ -167,6 +174,7 @@ export function AppearanceSettingsPage() {
       <BodyReferencesSection />
       <FallbackAvatarsSection />
       <TextEditorSection />
+      <SpecPageSection />
     </div>
   );
 }
@@ -581,10 +589,100 @@ function PreviewRow({
   );
 }
 
+/**
+ * The spec page's outline and change strip (T-234). Each part and what it
+ * marks are separate switches; a part switched off keeps the stored values of
+ * the two under it, so switching it back on brings them back as they were.
+ */
+function SpecPageSection() {
+  const prefs = useQuery(prefsQuery);
+  const patch = usePatchPrefs();
+  const pending = prefs.isPending;
+  const outline = useSpecOutline();
+  const outlineComments = useSpecOutlineComments();
+  const outlineChanges = useSpecOutlineChanges();
+  const strip = useSpecStrip();
+  const stripComments = useSpecStripComments();
+  const stripChanges = useSpecStripChanges();
+
+  return (
+    <div className="space-y-4 border-t pt-6">
+      <div className="space-y-1">
+        <h2 className="font-medium">Spec page</h2>
+      </div>
+      {/* A group per part, so the two "Comments" switches are told apart by
+          the part they sit under. */}
+      <fieldset
+        aria-labelledby="spec-outline-label"
+        className="min-w-0 space-y-4"
+      >
+        <ToggleRow
+          id="spec-outline"
+          label="Outline"
+          description="List the file's headings beside the document."
+          checked={outline}
+          disabled={pending}
+          onChange={(checked) => patch.mutate({ spec_outline: checked })}
+        />
+        <ToggleRow
+          id="spec-outline-comments"
+          label="Comments"
+          indent
+          checked={outlineComments}
+          disabled={pending || !outline}
+          onChange={(checked) =>
+            patch.mutate({ spec_outline_comments: checked })
+          }
+        />
+        <ToggleRow
+          id="spec-outline-changes"
+          label="Changes"
+          indent
+          checked={outlineChanges}
+          disabled={pending || !outline}
+          onChange={(checked) =>
+            patch.mutate({ spec_outline_changes: checked })
+          }
+        />
+      </fieldset>
+      <fieldset
+        aria-labelledby="spec-strip-label"
+        className="min-w-0 space-y-4"
+      >
+        <ToggleRow
+          id="spec-strip"
+          label="Change strip"
+          description="Mark changes and comments along the document's right edge, on wide screens."
+          checked={strip}
+          disabled={pending}
+          onChange={(checked) => patch.mutate({ spec_strip: checked })}
+        />
+        <ToggleRow
+          id="spec-strip-comments"
+          label="Comments"
+          indent
+          checked={stripComments}
+          disabled={pending || !strip}
+          onChange={(checked) => patch.mutate({ spec_strip_comments: checked })}
+        />
+        <ToggleRow
+          id="spec-strip-changes"
+          label="Changes"
+          indent
+          checked={stripChanges}
+          disabled={pending || !strip}
+          onChange={(checked) => patch.mutate({ spec_strip_changes: checked })}
+        />
+      </fieldset>
+    </div>
+  );
+}
+
 function ToggleRow({
   id,
   label,
   description,
+  indent = false,
   checked,
   disabled,
   onChange,
@@ -592,14 +690,24 @@ function ToggleRow({
   id: string;
   label: string;
   description?: string;
+  /** One of the switches under the row above, which disables it when off. */
+  indent?: boolean;
   checked: boolean;
   disabled: boolean;
   onChange: (checked: boolean) => void;
 }) {
   return (
-    <div className="flex items-start justify-between gap-4">
+    <div
+      className={cn("flex items-start justify-between gap-4", indent && "pl-6")}
+    >
       <div className="space-y-1">
-        <Label htmlFor={id}>{label}</Label>
+        <Label
+          id={`${id}-label`}
+          htmlFor={id}
+          className={cn(indent && disabled && "text-muted-foreground")}
+        >
+          {label}
+        </Label>
         {description && (
           <p className="text-sm text-muted-foreground">{description}</p>
         )}

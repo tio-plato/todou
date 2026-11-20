@@ -34,6 +34,12 @@ const prefs: MePrefs = {
   project_icon_fallback: "colorful_text",
   user_avatar_fallback: "monochrome_text",
   new_project_template: "basic",
+  spec_outline: true,
+  spec_outline_comments: true,
+  spec_outline_changes: true,
+  spec_strip: true,
+  spec_strip_comments: true,
+  spec_strip_changes: true,
 };
 
 /** The app's own route tree, entered at `path`. */
