@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
-import type { Label, TemplateStatus } from "@todou/shared";
+import type { Label, TemplateBody, TemplateStatus } from "@todou/shared";
 import { type ReactNode, useCallback, useRef, useState } from "react";
 import { insightsSettingsQuery } from "@/api/insights.ts";
 import { labelsQuery, projectQuery, statusesQuery } from "@/api/queries.ts";
 import { LabelRows } from "@/components/issue/label-chip.tsx";
+import { StatusPill } from "@/components/issue/status-pill.tsx";
 import {
   type StatusSetEntry,
   StatusSetList,
@@ -41,6 +42,23 @@ export function templateStatusSet(
     statuses: entries,
     lineStatusId: entries.find((status) => status.block_clear)?.id ?? null,
   };
+}
+
+const counted = (n: number, one: string, many: string) =>
+  `${n} ${n === 1 ? one : many}`;
+
+/** What a row says of a template: its size, and where its blocks clear. */
+export function TemplateSummary({ body }: { body: TemplateBody }) {
+  const line = body.statuses.find((status) => status.block_clear);
+  return (
+    <div className="flex flex-wrap items-center gap-x-1 text-sm text-muted-foreground">
+      {counted(body.statuses.length, "status", "statuses")}
+      {" · "}
+      {counted(body.labels.length, "label", "labels")}
+      {" · Blocks clear at"}
+      {line ? <StatusPill status={line} /> : " any closed status"}
+    </div>
+  );
 }
 
 /** The list's writes, for a list that makes none. */
