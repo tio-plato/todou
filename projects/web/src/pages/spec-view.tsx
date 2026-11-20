@@ -55,7 +55,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { issueQuery } from "@/api/issues.ts";
-import { useRefPlacement } from "@/api/prefs.ts";
+import { useRefPlacement, useSpecOutline } from "@/api/prefs.ts";
 import { api } from "@/api/queries.ts";
 import { specCommentsQuery, specFilesQuery, specQuery } from "@/api/spec.ts";
 import { SpecStatusBadge } from "@/components/issue/spec-entry.tsx";
@@ -105,6 +105,7 @@ import {
   type ComposerStaging,
   SpecComposer,
 } from "@/components/spec/spec-composer.tsx";
+import { jumpToHeading, SpecOutline } from "@/components/spec/spec-outline.tsx";
 import {
   SpecReviewSessionScope,
   useSpecReviewSessionHandle,
@@ -159,6 +160,7 @@ import {
   type SpecReviewDraft,
   useSpecReviewDrafts,
 } from "@/lib/spec-drafts.ts";
+import { outlineOf } from "@/lib/spec-outline.ts";
 import type { SpecReviewSession } from "@/lib/spec-review-session.ts";
 import {
   type SpecSearch,
@@ -212,6 +214,9 @@ function stopsFor(els: HTMLElement[], sourceDiff: boolean): Stops {
 
 /** Two toolbar rows, until the measurement lands. */
 const TOOLBAR_FALLBACK_HEIGHT = 78;
+
+/** How far below the toolbar the rail's top edge stays, and above the window's bottom. */
+const RAIL_GAP = 16;
 
 /**
  * The one content slot in the toolbar's second row: `fold`, `wrap` and the
@@ -752,6 +757,16 @@ function SpecViewBody({
   const selected = files.data.files.find((f) => f.path === selectedPath);
   const params = { slug, number: String(issueNumber) };
 
+  // The rendered file's headings (T-234). The source views have none: their
+  // rail lists files alone.
+  const outlineOn = useSpecOutline();
+  const selectedBody =
+    outlineOn && view === "rendered" ? selected?.body : undefined;
+  const outline = useMemo(
+    () => (selectedBody === undefined ? null : outlineOf(selectedBody)),
+    [selectedBody],
+  );
+
   const fileSearch = (path: string): SpecSearch =>
     specSearchFor({ file: path, version, baseline, view });
   const baselineSearch = (next: number | null): SpecSearch =>
@@ -952,14 +967,18 @@ function SpecViewBody({
   // Held like every other landing (T-527). Native scroll anchoring already
   // keeps the stop here in Chromium; the hold is for engines without it.
   const keepHold = useOwnHold();
-  const flashTo = (
-    target: HTMLElement,
-    mode: RevealMode = "auto",
-    highlight = true,
-  ) => {
-    revealBlock(target, { mode, behavior: "smooth", flash: highlight });
-    keepHold(holdRevealed(target, document.body, mode, "smooth"));
-  };
+  // Stable: the outline is handed it.
+  const flashTo = useCallback(
+    (target: HTMLElement, mode: RevealMode = "auto", highlight = true) => {
+      revealBlock(target, { mode, behavior: "smooth", flash: highlight });
+      keepHold(holdRevealed(target, document.body, mode, "smooth"));
+    },
+    [keepHold],
+  );
+  const jumpToSection = useCallback(
+    (line: number) => jumpToHeading(contentRef.current, line, flashTo),
+    [flashTo],
+  );
 
   /**
    * False when this file has no further change that way, which is what hands
@@ -1574,6 +1593,21 @@ function SpecViewBody({
           sidebarStats={sidebarStats}
           onNavigate={() => setFilesOpen(false)}
         />
+        {outline !== null && (
+          <>
+            <OutlineTitle />
+            <SpecOutline
+              headings={outline}
+              contentRef={contentRef}
+              onJump={(line) => {
+                // The popover hands focus back to its trigger without
+                // scrolling to it (T-388), so the landing below stands.
+                setFilesOpen(false);
+                jumpToSection(line);
+              }}
+            />
+          </>
+        )}
       </PopoverContent>
     </Popover>
   );
@@ -1963,19 +1997,57 @@ function SpecViewBody({
             height and leave sticky nothing to travel through. */}
         <aside
           style={{
-            top: stickyTop + 16,
-            maxHeight: `calc(100vh - ${stickyTop + 32}px)`,
+            top: stickyTop + RAIL_GAP,
+            maxHeight: `calc(100vh - ${stickyTop + 2 * RAIL_GAP}px)`,
           }}
-          className="hidden self-start space-y-1 overflow-y-auto overscroll-contain lg:sticky lg:block"
+          className={cn(
+            "hidden self-start overscroll-contain lg:sticky",
+            // Two boxes that scroll on their own, so the outline never
+            // pushes the other files out of reach (T-234). The rail clips
+            // neither: their focus rings reach past its edges.
+            wide && outline !== null
+              ? "lg:flex lg:flex-col"
+              : "space-y-1 overflow-y-auto lg:block",
+          )}
         >
-          <SpecFileList
-            entries={railEntries}
-            selectedPath={selectedPath}
-            params={params}
-            searchFor={fileSearch}
-            unresolvedByPath={unresolvedByPath}
-            sidebarStats={sidebarStats}
-          />
+          {wide && outline !== null ? (
+            <>
+              {/* `-m-1 p-1` on both: a focus ring drawn past a row's edge
+                  would be clipped by the box's overflow otherwise. */}
+              <div
+                style={{
+                  maxHeight: `calc((100vh - ${stickyTop + 2 * RAIL_GAP}px) * 0.4)`,
+                }}
+                className="-m-1 shrink-0 overflow-y-auto overscroll-contain p-1"
+              >
+                <SpecFileList
+                  entries={railEntries}
+                  selectedPath={selectedPath}
+                  params={params}
+                  searchFor={fileSearch}
+                  unresolvedByPath={unresolvedByPath}
+                  sidebarStats={sidebarStats}
+                />
+              </div>
+              <OutlineTitle />
+              <div className="-m-1 min-h-0 flex-1 overflow-y-auto overscroll-contain p-1">
+                <SpecOutline
+                  headings={outline}
+                  contentRef={contentRef}
+                  onJump={jumpToSection}
+                />
+              </div>
+            </>
+          ) : (
+            <SpecFileList
+              entries={railEntries}
+              selectedPath={selectedPath}
+              params={params}
+              searchFor={fileSearch}
+              unresolvedByPath={unresolvedByPath}
+              sidebarStats={sidebarStats}
+            />
+          )}
         </aside>
         <main className="min-w-0 space-y-4" ref={contentRef}>
           {sourceDiff && baseline !== null ? (
@@ -2197,6 +2269,15 @@ function SessionReviewSubmitDialog({
 }) {
   const summary = useSpecReviewSessionValue(session, (s) => s.summary);
   return <ReviewSubmitDialog {...props} summary={summary} />;
+}
+
+/** Where the file list ends and the outline begins, in the rail and the popover. */
+function OutlineTitle() {
+  return (
+    <h2 className="mt-3 shrink-0 border-t px-2 pt-3 pb-1 text-xs font-medium text-muted-foreground">
+      Outline
+    </h2>
+  );
 }
 
 /** One rail row: a file of the viewed version, or one the baseline had. */

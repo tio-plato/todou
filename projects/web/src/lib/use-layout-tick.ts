@@ -1,4 +1,4 @@
-import { type RefObject, useEffect, useRef } from "react";
+import { type DependencyList, type RefObject, useEffect, useRef } from "react";
 
 /**
  * Call `callback` once now and then at most once a frame whenever what is
@@ -7,11 +7,13 @@ import { type RefObject, useEffect, useRef } from "react";
  * itself announces a new document height with no scroll event at all.
  *
  * The callback is read through a ref, so a fresh closure per render neither
- * re-subscribes nor misses a frame.
+ * re-subscribes nor misses a frame. `deps` are what the callback measures
+ * against besides the page: a change to one of them calls it again.
  */
 export function useLayoutTick(
   target: RefObject<HTMLElement | null>,
   callback: () => void,
+  deps: DependencyList = [],
 ): void {
   const latest = useRef(callback);
   latest.current = callback;
@@ -41,4 +43,7 @@ export function useLayoutTick(
       observer?.disconnect();
     };
   }, [target]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the caller names what its callback reads
+  useEffect(() => latest.current(), deps);
 }
