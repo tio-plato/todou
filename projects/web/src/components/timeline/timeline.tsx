@@ -392,7 +392,7 @@ export function Timeline({
         link.origin === window.location.origin &&
         link.pathname === window.location.pathname &&
         link.search === window.location.search &&
-        link.hash !== ""
+        link.href.includes("#")
       )
         window.history.scrollRestoration = "auto";
     };
