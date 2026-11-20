@@ -632,10 +632,11 @@ describe("the change strip (T-234)", () => {
       ) ?? []),
     ];
     expect(removal).not.toBeNull();
-    expect(stops.length).toBeGreaterThan(1);
+    expect(stops.length).toBeGreaterThan(2);
     // A 1000px card at the top of a 768px window: the bar is 752px tall, so
     // the card is drawn at 0.752 of its size. The removal sits above every
-    // stop, the way the note above Alpha does.
+    // stop, the way the note above Alpha does; the first two stops sit a
+    // pixel apart, so they share one tick, and the rest are well apart.
     const place = (el: Element, top: number) => {
       el.getBoundingClientRect = () =>
         ({ top, height: 20, bottom: top + 20, left: 0, right: 0 }) as DOMRect;
@@ -645,16 +646,20 @@ describe("the change strip (T-234)", () => {
     bar.getBoundingClientRect = () =>
       ({ top: 0, height: 752, bottom: 752, left: 893, right: 907 }) as DOMRect;
     place(removal as HTMLElement, 100);
+    const tops = stops.map((_, i) =>
+      i === 0 ? 300 : i === 1 ? 301 : 400 + i * 150,
+    );
     stops.forEach((stop, i) => {
-      place(stop, 300 + i * 200);
+      place(stop, tops[i] ?? 0);
     });
     await act(async () => {
       window.dispatchEvent(new Event("scroll"));
       await new Promise((resolve) => setTimeout(resolve, 50));
     });
     const ticks = [...bar.querySelectorAll<HTMLElement>("[data-stop-index]")];
+    // Numbered as ↑↓ number the stops: the shared tick by the first of its two.
     expect(ticks.map((tick) => tick.dataset.stopIndex)).toEqual(
-      stops.map((_, i) => String(i)),
+      stops.flatMap((_, i) => (i === 1 ? [] : [String(i)])),
     );
     expect(
       bar.querySelector('[data-kind="del"]')?.hasAttribute("data-stop-index"),
@@ -665,11 +670,14 @@ describe("the change strip (T-234)", () => {
       fireEvent.pointerDown(bar, { button: 0, pointerId: 1, clientY: y });
       fireEvent.pointerUp(bar, { button: 0, pointerId: 1, clientY: y });
     };
-    // The second stop's tick, 1px into it.
-    clickAt((300 + 200) * 0.752 + 1);
-    expect(reveals.map((r) => r.el)).toEqual([stops[1]]);
+    // The third stop's tick, the second on the bar, 1px into it; then the
+    // shared one, which lands where its first stop is.
+    clickAt((tops[2] ?? 0) * 0.752 + 1);
+    expect(reveals.map((r) => r.el)).toEqual([stops[2]]);
+    clickAt(300 * 0.752 + 1);
+    expect(reveals.map((r) => r.el)).toEqual([stops[2], stops[0]]);
     clickAt(100 * 0.752 + 1);
-    expect(reveals.map((r) => r.el)).toEqual([stops[1], removal]);
+    expect(reveals.map((r) => r.el)).toEqual([stops[2], stops[0], removal]);
   });
 
   it("keeps dragging while the button is down, even when the browser drops its capture", async () => {
