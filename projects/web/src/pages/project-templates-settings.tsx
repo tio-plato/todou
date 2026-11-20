@@ -52,6 +52,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 const templatesKey = projectTemplatesQuery.queryKey;
 
@@ -78,6 +85,42 @@ export function ProjectTemplatesSettingsPage() {
       <div className="flex items-center justify-between gap-3">
         <h1 className="text-xl font-semibold">Project templates</h1>
         <NewTemplateDialog templates={templates.data} />
+      </div>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <Label
+          htmlFor="new-project-template"
+          className="font-normal text-muted-foreground"
+        >
+          New projects start from
+        </Label>
+        <Select
+          value={String(current)}
+          onValueChange={(value) => {
+            // The ref as the prefs take it: a number for one of the
+            // account's own, not the string the select keys it by.
+            const picked = templates.data.find(
+              (template) => String(template.ref) === value,
+            );
+            if (picked) patch.mutate({ new_project_template: picked.ref });
+          }}
+        >
+          <SelectTrigger
+            id="new-project-template"
+            className="max-w-full min-w-0"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {templates.data.filter(usable).map((template) => (
+              <SelectItem
+                key={String(template.ref)}
+                value={String(template.ref)}
+              >
+                {template.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
       <ul className="divide-y rounded-lg border">
         {templates.data.map((template) => (
@@ -108,17 +151,6 @@ export function ProjectTemplatesSettingsPage() {
                 {template.body !== null && <Summary body={template.body} />}
               </div>
             </PreviewOnHover>
-            {template.ref !== current && template.body !== null && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  patch.mutate({ new_project_template: template.ref })
-                }
-              >
-                Set as default
-              </Button>
-            )}
             {!template.builtin && <DeleteTemplateButton template={template} />}
           </li>
         ))}

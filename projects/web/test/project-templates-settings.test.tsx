@@ -183,6 +183,7 @@ function fakeServer({
   const failing = new Set<string>();
   const stored = new Map(templates.map((t) => [t.ref, structuredClone(t)]));
   const waiting: Array<() => void> = [];
+  let prefs = PREFS;
 
   vi.stubGlobal("fetch", (async (input: unknown, init?: RequestInit) => {
     const path = new URL(String(input), "http://test").pathname.replace(
@@ -231,8 +232,10 @@ function fakeServer({
       return json(200, saved);
     }
     if (path === "/me/prefs" && method === "PATCH") {
-      return json(200, { ...PREFS, ...body });
+      prefs = { ...prefs, ...body };
+      return json(200, prefs);
     }
+    if (path === "/me/prefs" && method === "GET") return json(200, prefs);
     if (failing.has(path)) {
       return json(500, { error: { code: "internal", message: "read failed" } });
     }
@@ -374,12 +377,18 @@ describe("the project templates list", () => {
       rows.map((row) => within(row).getAllByRole("link")[0]?.textContent),
     ).toEqual(["Default", "Bugs", "Kanban"]);
     expect(within(rows[0] as HTMLElement).getByText("default")).toBeTruthy();
+    for (const row of rows) {
+      expect(
+        within(row).queryByRole("button", { name: "Set as default" }),
+      ).toBeNull();
+    }
 
-    fireEvent.click(
-      within(rows[2] as HTMLElement).getByRole("button", {
-        name: "Set as default",
-      }),
-    );
+    const select = screen.getByRole("combobox", {
+      name: "New projects start from",
+    });
+    expect(select.textContent).toBe("Default");
+    fireEvent.keyDown(select, { key: "ArrowDown" });
+    fireEvent.click(await screen.findByRole("option", { name: "Kanban" }));
     await waitFor(() =>
       expect(server.calls.filter((c) => c.method === "PATCH")).toEqual([
         {
@@ -389,6 +398,9 @@ describe("the project templates list", () => {
         },
       ]),
     );
+    expect(select.textContent).toBe("Kanban");
+    expect(within(rows[2] as HTMLElement).getByText("default")).toBeTruthy();
+    expect(within(rows[0] as HTMLElement).queryByText("default")).toBeNull();
   });
 
   it("says in each row where the template's blocks clear", async () => {
@@ -420,8 +432,9 @@ describe("the project templates list", () => {
         within(r).queryByRole("link", { name: "Kanban" }),
       ) as HTMLElement,
     );
-    hover(kanban.getByRole("button", { name: "Set as default" }));
-    fireEvent.click(kanban.getByRole("button", { name: "Delete Kanban" }));
+    const remove = kanban.getByRole("button", { name: "Delete Kanban" });
+    hover(remove);
+    fireEvent.click(remove);
     expect(
       await screen.findByRole("dialog", { name: "Delete this template?" }),
     ).toBeTruthy();
@@ -491,10 +504,18 @@ describe("a template this version cannot read", () => {
     const inRow = within(row as HTMLElement);
     expect(inRow.getByText("Incompatible")).toBeTruthy();
     expect(inRow.queryByText(/statuses/)).toBeNull();
-    expect(inRow.queryByRole("button", { name: "Set as default" })).toBeNull();
     expect(
       inRow.getByRole("button", { name: "Delete From the future" }),
     ).toBeTruthy();
+    fireEvent.keyDown(
+      screen.getByRole("combobox", { name: "New projects start from" }),
+      { key: "ArrowDown" },
+    );
+    expect(
+      (await screen.findAllByRole("option")).map((o) => o.textContent),
+    ).toEqual(["Default", "Bugs", "Kanban"]);
+    fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
+    await waitFor(() => expect(screen.queryAllByRole("option")).toEqual([]));
 
     fireEvent.click(screen.getByRole("button", { name: "New template" }));
     const dialog = within(await screen.findByRole("dialog"));
