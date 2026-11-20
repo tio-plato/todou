@@ -16,10 +16,14 @@ export interface ThemeDef {
    *
    * Each value is the one nearest the theme's own end, on a 0.01 grid, at
    * which the presets and `#a2eeef` read at APCA Lc 50 or more on every
-   * surface a chip is drawn on in this theme (measured outside the
-   * repository with apca-w3 0.1.9, with 0.5 to spare), and every colour at
-   * 3:1 or more by WCAG 2. The test holds the WCAG floor, as APCA's licence
-   * keeps its code out of this repository.
+   * surface a chip is drawn on in this theme, and every colour at 3:1 or
+   * more by WCAG 2. APCA is measured outside the repository with apca-w3
+   * 0.1.9 twice: on surfaces blended at their exact alpha, with 0.5 to
+   * spare, and on the surfaces Chromium paints. Chromium keeps alpha in
+   * 8 bits and blends premultiplied, which draws a stack of translucent
+   * layers (a selected board card) a level or two darker; that is what
+   * holds todou Light at 0.53. The test holds the WCAG floor, as APCA's
+   * licence keeps its code out of this repository.
    *
    * A new theme is measured the same way; where APCA cannot be run, take the
    * strictest value of its kind (0.47 light, 0.81 dark) and let the test
@@ -46,7 +50,7 @@ export const THEMES = [
     kind: "light",
     surface: "oklch(1 0 0)",
     accent: "oklch(0.205 0 0)",
-    labelInkLimit: 0.54,
+    labelInkLimit: 0.53,
   },
   {
     value: "pico-light",
