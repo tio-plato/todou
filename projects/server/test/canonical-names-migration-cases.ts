@@ -8,81 +8,16 @@
  * on one driver says nothing about the other.
  */
 
-import { readFile } from "node:fs/promises";
-import { inArray, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { expect } from "vitest";
 import type { Db } from "../src/db/driver.ts";
-import { labels, statuses } from "../src/db/project-schema.ts";
-
-const MIGRATION = new URL(
-  "../drizzle/project/0025_canonical_names.sql",
-  import.meta.url,
-);
-
-export async function migrationStatements(): Promise<string[]> {
-  const text = await readFile(MIGRATION, "utf8");
-  return text
-    .split("--> statement-breakpoint")
-    .map((one) => one.trim())
-    .filter((one) => one !== "");
-}
+import { migrationStatements, rolledBack, TABLES } from "./name-migration.ts";
 
 async function migrate(db: Db): Promise<void> {
-  for (const statement of await migrationStatements()) {
+  for (const statement of await migrationStatements("canonical_names")) {
     await db.execute(sql.raw(statement));
   }
 }
-
-type Table = {
-  label: string;
-  /** What a name that is all whitespace becomes, before its id. */
-  blank: string;
-  insert: (db: Db, projectId: number, name: string) => Promise<number>;
-  names: (db: Db, ids: number[]) => Promise<Map<number, string>>;
-};
-
-const TABLES: Table[] = [
-  {
-    label: "statuses",
-    blank: "Status",
-    insert: async (db, projectId, name) => {
-      const [row] = await db
-        .insert(statuses)
-        .values({ projectId, name, category: "open", position: 0 })
-        .returning({ id: statuses.id });
-      return (row as { id: number }).id;
-    },
-    names: async (db, ids) =>
-      new Map(
-        (
-          await db
-            .select({ id: statuses.id, name: statuses.name })
-            .from(statuses)
-            .where(inArray(statuses.id, ids))
-        ).map((row) => [row.id, row.name]),
-      ),
-  },
-  {
-    label: "labels",
-    blank: "Label",
-    insert: async (db, projectId, name) => {
-      const [row] = await db
-        .insert(labels)
-        .values({ projectId, name })
-        .returning({ id: labels.id });
-      return (row as { id: number }).id;
-    },
-    names: async (db, ids) =>
-      new Map(
-        (
-          await db
-            .select({ id: labels.id, name: labels.name })
-            .from(labels)
-            .where(inArray(labels.id, ids))
-        ).map((row) => [row.id, row.name]),
-      ),
-  },
-];
 
 /**
  * The code points of the Basic Multilingual Plane past NUL, split by whether
@@ -115,17 +50,7 @@ export async function checkCanonicalNamesMigration(
   db: Db,
   ids: ProjectIds,
 ): Promise<void> {
-  // One transaction, always rolled back, so nothing the fixture seeds
-  // outlives the run on a shared test database.
-  const ROLLBACK = Symbol("rollback");
-  try {
-    await db.transaction(async (tx) => {
-      await scenario(tx, ids);
-      throw ROLLBACK;
-    });
-  } catch (err) {
-    if (err !== ROLLBACK) throw err;
-  }
+  await rolledBack(db, (tx) => scenario(tx, ids));
 }
 
 async function scenario(db: Db, ids: ProjectIds): Promise<void> {
