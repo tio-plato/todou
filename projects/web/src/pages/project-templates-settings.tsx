@@ -17,8 +17,21 @@ import {
   type TemplateStatus,
   TodouError,
 } from "@todou/shared";
-import { ArrowLeftIcon, PlusIcon, Trash2Icon } from "lucide-react";
-import { type ReactElement, type RefObject, useRef, useState } from "react";
+import {
+  ArrowLeftIcon,
+  CheckIcon,
+  PencilIcon,
+  PlusIcon,
+  Trash2Icon,
+  XIcon,
+} from "lucide-react";
+import {
+  type ReactElement,
+  type RefObject,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import { prefsQuery, usePatchPrefs } from "@/api/prefs.ts";
 import { api, projectsQuery, projectTemplatesQuery } from "@/api/queries.ts";
@@ -694,15 +707,16 @@ function TemplateEditor({ template }: { template: UsableTemplate }) {
     <div className="space-y-10">
       <div className="space-y-4">
         <BackToTemplates />
-        <div className="flex min-w-0 items-center gap-2">
-          <h1 className="truncate text-xl font-semibold">{template.name}</h1>
-          {template.builtin && <Badge variant="outline">Built in</Badge>}
-        </div>
-        {canManage && (
+        {canManage ? (
           <TemplateNameForm
             name={template.name}
             onSave={(name) => queue({ name })}
           />
+        ) : (
+          <div className="flex min-w-0 items-center gap-2">
+            <h1 className="truncate text-xl font-semibold">{template.name}</h1>
+            <Badge variant="outline">Built in</Badge>
+          </div>
         )}
       </div>
       <StatusSetList
@@ -879,6 +893,7 @@ function TemplateEditor({ template }: { template: UsableTemplate }) {
   );
 }
 
+/** A template's name as its page's heading, renamed in place. */
 function TemplateNameForm({
   name,
   onSave,
@@ -886,32 +901,78 @@ function TemplateNameForm({
   name: string;
   onSave: (name: string) => void;
 }) {
-  // null = untouched; the field shows the saved name until edited.
+  // null = showing the name; a string = the field, holding the draft.
   const [draft, setDraft] = useState<string | null>(null);
-  const next = (draft ?? name).trim();
-  const dirty = draft !== null && next !== "" && next !== name;
+  const field = useRef<HTMLInputElement>(null);
+  const pencil = useRef<HTMLButtonElement>(null);
+  // Set as the field closes, so focus goes back to the pencil it came from.
+  const returning = useRef(false);
+  const editing = draft !== null;
+
+  useEffect(() => {
+    if (editing) {
+      field.current?.focus();
+      field.current?.select();
+    } else if (returning.current) {
+      returning.current = false;
+      pencil.current?.focus();
+    }
+  }, [editing]);
+
+  const close = () => {
+    returning.current = true;
+    setDraft(null);
+  };
+
+  if (!editing) {
+    return (
+      <div className="flex min-w-0 items-center gap-1">
+        <h1 className="truncate text-xl font-semibold">{name}</h1>
+        <Button
+          ref={pencil}
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Rename"
+          onClick={() => setDraft(name)}
+        >
+          <PencilIcon className="size-4" />
+        </Button>
+      </div>
+    );
+  }
   return (
     <form
-      className="flex max-w-xl items-end gap-2"
+      className="flex min-w-0 items-center gap-2"
       onSubmit={(e) => {
         e.preventDefault();
-        if (!dirty) return;
-        onSave(next);
-        setDraft(null);
+        const next = draft.trim();
+        if (next !== "" && next !== name) onSave(next);
+        close();
       }}
     >
-      <div className="min-w-0 flex-1 space-y-2">
-        <Label htmlFor="template-name">Name</Label>
-        <Input
-          id="template-name"
-          value={draft ?? name}
-          maxLength={100}
-          onChange={(e) => setDraft(e.target.value)}
-          autoComplete="off"
-        />
-      </div>
-      <Button type="submit" disabled={!dirty}>
-        Save
+      <Input
+        ref={field}
+        value={draft}
+        maxLength={100}
+        aria-label="Template name"
+        autoComplete="off"
+        className="h-auto py-0 text-xl font-semibold md:text-xl"
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape" && !e.nativeEvent.isComposing) close();
+        }}
+      />
+      <Button type="submit" size="icon-sm" aria-label="Save name">
+        <CheckIcon className="size-4" />
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-sm"
+        aria-label="Cancel"
+        onClick={close}
+      >
+        <XIcon className="size-4" />
       </Button>
     </form>
   );

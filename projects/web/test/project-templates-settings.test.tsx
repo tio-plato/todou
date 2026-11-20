@@ -796,12 +796,70 @@ describe("a template's page", () => {
     );
   });
 
+  it("renames in place: Enter sends the whole template with the new name; Esc sends nothing", async () => {
+    const server = fakeServer();
+    renderAt("/settings/templates/7");
+    fireEvent.click(await screen.findByRole("button", { name: "Rename" }));
+    const field = screen.getByRole("textbox", {
+      name: "Template name",
+    }) as HTMLInputElement;
+    expect(field.value).toBe(KANBAN.name);
+    fireEvent.change(field, { target: { value: "Board" } });
+    // What Enter does in a browser: happy-dom submits no form on a key.
+    fireEvent.submit(field);
+    await waitFor(() => expect(server.puts()).toHaveLength(1));
+    expect(server.puts()[0]?.body).toEqual({
+      revision: 3,
+      name: "Board",
+      body: KANBAN.body,
+    });
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Board");
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: "Rename" }),
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    const again = screen.getByRole("textbox", { name: "Template name" });
+    fireEvent.change(again, { target: { value: "Never" } });
+    fireEvent.keyDown(again, { key: "Escape" });
+    await settle();
+    expect(server.puts()).toHaveLength(1);
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Board");
+  });
+
+  it("a rename made while a status save is in flight goes out after it, carrying both", async () => {
+    const server = fakeServer({ hold: true });
+    renderAt("/settings/templates/7");
+    await screen.findByText("Doing");
+    await addStatus("Review");
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    const field = screen.getByRole("textbox", { name: "Template name" });
+    fireEvent.change(field, { target: { value: "Board" } });
+    fireEvent.submit(field);
+    await settle();
+    expect(server.puts()).toHaveLength(1);
+
+    await server.release();
+    await waitFor(() => expect(server.puts()).toHaveLength(2));
+    expect(server.puts()[1]?.body).toEqual({
+      revision: 4,
+      name: "Board",
+      body: {
+        statuses: [...KANBAN.body.statuses, added("Review")],
+        labels: KANBAN.body.labels,
+      },
+    });
+  });
+
   it("shows Default with nothing to change", async () => {
     fakeServer();
     renderAt("/settings/templates/default");
     await screen.findByText("Backlog");
     expect(screen.queryByRole("button", { name: /New status/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /New label/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
   });
 });
 
