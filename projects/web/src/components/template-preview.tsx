@@ -237,7 +237,9 @@ function PreviewHoverCard({
         side={side}
         align={align}
         sideOffset={offset}
-        className="max-h-(--radix-hover-card-content-available-height) overflow-y-auto overscroll-contain"
+        // Capped below the room Radix leaves it, so that a template with
+        // many statuses, opened beside its row, does not fill the window.
+        className="max-h-[min(var(--radix-hover-card-content-available-height),70dvh)] overflow-y-auto overscroll-contain"
         style={{ width: PREVIEW_WIDTH }}
         onWheel={(event) => {
           const horizontal = Math.abs(event.deltaX) > Math.abs(event.deltaY);
