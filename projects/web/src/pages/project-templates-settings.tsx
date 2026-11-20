@@ -20,6 +20,8 @@ import {
 import {
   ArrowLeftIcon,
   CheckIcon,
+  CircleCheckIcon,
+  CircleIcon,
   PencilIcon,
   PlusIcon,
   Trash2Icon,
@@ -718,6 +720,9 @@ function TemplateEditor({ template }: { template: UsableTemplate }) {
             <Badge variant="outline">Built in</Badge>
           </div>
         )}
+        <div className="flex flex-wrap items-center gap-2">
+          <UseForNewProjectsButton template={template} />
+        </div>
       </div>
       <StatusSetList
         statuses={statuses}
@@ -890,6 +895,39 @@ function TemplateEditor({ template }: { template: UsableTemplate }) {
         pending={{ create: false, update: false, delete: false }}
       />
     </div>
+  );
+}
+
+// The outline button's own hover and dark colours are overridden too: left
+// in, the dark ones hide the fill and a hover turns the text back.
+const IN_USE =
+  "border-primary/45 bg-primary/15 text-primary hover:bg-primary/15 hover:text-primary dark:border-primary/45 dark:bg-primary/15 dark:hover:bg-primary/15";
+
+/**
+ * Whether new projects start from `template`, and the press that makes them.
+ * It looks the same width either way. Once pressed it does nothing: a new
+ * project always starts from some template, so there is nothing to unset.
+ */
+function UseForNewProjectsButton({ template }: { template: UsableTemplate }) {
+  const templates = useSuspenseQuery(projectTemplatesQuery);
+  const prefs = useSuspenseQuery(prefsQuery);
+  const patch = usePatchPrefs();
+  const inUse =
+    preferredTemplate(templates.data, prefs.data.new_project_template) ===
+    template.ref;
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      aria-pressed={inUse}
+      aria-disabled={inUse || undefined}
+      className={inUse ? IN_USE : undefined}
+      onClick={() => {
+        if (!inUse) patch.mutate({ new_project_template: template.ref });
+      }}
+    >
+      {inUse ? <CircleCheckIcon /> : <CircleIcon />} Use for new projects
+    </Button>
   );
 }
 

@@ -853,6 +853,55 @@ describe("a template's page", () => {
     });
   });
 
+  it("sets the account's new-project template from a template's page, and does nothing when pressed again", async () => {
+    const server = fakeServer();
+    renderAt("/settings/templates/7");
+    const use = await screen.findByRole("button", {
+      name: "Use for new projects",
+    });
+    expect(use.getAttribute("aria-pressed")).toBe("false");
+    const patches = () => server.calls.filter((c) => c.method === "PATCH");
+
+    fireEvent.click(use);
+    await waitFor(() => expect(use.getAttribute("aria-pressed")).toBe("true"));
+    expect(patches()).toEqual([
+      {
+        method: "PATCH",
+        path: "/me/prefs",
+        body: { new_project_template: 7 },
+      },
+    ]);
+
+    fireEvent.click(use);
+    await settle();
+    expect(patches()).toHaveLength(1);
+  });
+
+  it("marks the built-in template as in use only when no other usable template is", async () => {
+    fakeServer();
+    const client = testQueryClient();
+    renderAt("/settings/templates/default", client);
+    act(() => {
+      client.setQueryData(prefsQuery.queryKey, {
+        ...PREFS,
+        new_project_template: 7,
+      });
+    });
+    const use = await screen.findByRole("button", {
+      name: "Use for new projects",
+    });
+    await waitFor(() => expect(use.getAttribute("aria-pressed")).toBe("false"));
+
+    // Gone, as when the template new projects used was deleted.
+    act(() => {
+      client.setQueryData(prefsQuery.queryKey, {
+        ...PREFS,
+        new_project_template: 99,
+      });
+    });
+    await waitFor(() => expect(use.getAttribute("aria-pressed")).toBe("true"));
+  });
+
   it("shows Default with nothing to change", async () => {
     fakeServer();
     renderAt("/settings/templates/default");
