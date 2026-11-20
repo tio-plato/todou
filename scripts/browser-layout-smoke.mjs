@@ -2,8 +2,9 @@
 /**
  * Manual real-Chromium layout smoke for board overlay scrollbars, collapsed
  * assignee badge clipping, the spec comment composer staying above the
- * compare view's stacked file headers, and the rendered spec's annotation
- * gutter. It is intentionally independent of `pnpm test`/CI.
+ * compare view's stacked file headers, the rendered spec's annotation
+ * gutter, and the spec page's outline and change strip. It is intentionally
+ * independent of `pnpm test`/CI.
  *
  * Usage: node scripts/browser-layout-smoke.mjs [--self-test|--self-test-cdp] [--keep] [--help]
  * Preconditions: the devshell's Node 24+, installed workspace dependencies,
@@ -26,6 +27,7 @@ import { runBadgeClip } from "./browser/badge-clip.mjs";
 import { runBoardScrollbars } from "./browser/board-scrollbars.mjs";
 import { runSpecChipGutter } from "./browser/spec-chip-gutter.mjs";
 import { runSpecComposerCover } from "./browser/spec-composer-cover.mjs";
+import { runSpecOutlineStrip } from "./browser/spec-outline-strip.mjs";
 import { selfCheckCdpPipe, startBrowser } from "./lib/browser-cdp.mjs";
 import { createBrowserStack } from "./lib/browser-stack.mjs";
 
@@ -39,6 +41,11 @@ Cases:
   spec-chip-gutter     Below 640px spec text reaches the card's padding, chips
                        stay off it and their popovers on screen; from 640px up
                        the 40px chip gutter and left-opening popovers stay.
+  spec-outline-strip   The change strip sits on the card's right border, holds
+                       its ticks still while the page scrolls and lands a
+                       click where ↓ lands; its tooltip covers an open comment
+                       popover; the outline opens a folded heading it jumps to
+                       and marks the section past the reading line.
 
 Usage:
   node scripts/browser-layout-smoke.mjs
@@ -121,6 +128,11 @@ const COVERAGE_FAILURES = new Set([
   "card-missing",
   "chip-missing",
   "popover-missing",
+  "spec-strip-missing",
+  "fixture-deletions",
+  "fixture-not-folded",
+  "outline-row-missing",
+  "tooltip-popover-apart",
 ]);
 
 function isCoverageFailure(entry) {
@@ -201,6 +213,7 @@ async function main() {
       ["badge-clip", runBadgeClip],
       ["spec-composer-cover", runSpecComposerCover],
       ["spec-chip-gutter", runSpecChipGutter],
+      ["spec-outline-strip", runSpecOutlineStrip],
     ]) {
       const stage = Date.now();
       try {
