@@ -16,7 +16,7 @@ const question = (
 
 const keys = (shown: Question[]) => shown.map((q) => q.key);
 
-describe("shownQuestions (T-22)", () => {
+describe("shownQuestions", () => {
   it("asks the unconditional questions and no follow-up before anything is picked", () => {
     const questions = [
       question("q1"),

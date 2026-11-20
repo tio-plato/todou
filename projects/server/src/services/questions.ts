@@ -48,7 +48,7 @@ import { getUserRefs } from "./users.ts";
  * renamed, because answers reference keys and silent renames would misdirect
  * them.
  *
- * A follow-up's `when` (T-22) is checked once every key is known: it names an
+ * A follow-up's `when` is checked once every key is known: it names an
  * earlier question, and the follow-up sits in that question's run — right
  * after it or its other follow-ups — so array order is the order the page
  * shows, and an indented follow-up never sits under a question it does not
@@ -113,7 +113,7 @@ export function canonicalizeComponent(
 
 /**
  * What an unsettled comment counts towards `open_questions`: the questions it
- * asks before any answer (T-22), which is all of them unless some are
+ * asks before any answer, which is all of them unless some are
  * follow-ups; 0 for non-question components. Asking adds it, and answering,
  * withdrawing, deleting and hiding take back this same number, never the
  * length of an answer that reached follow-ups.
@@ -131,7 +131,7 @@ export function openQuestionCount(
  * snapshots. Errors name the question key — these travel to CLI users
  * verbatim.
  *
- * The submission answers exactly the questions its own picks ask (T-22). An
+ * The submission answers exactly the questions its own picks ask. An
  * answer to a question they do not ask is reported before a missing one:
  * whoever answered the wrong follow-up has usually skipped the right one,
  * and the stray answer is the mistake to name.

@@ -72,7 +72,7 @@ export class CommentAddCommand extends ProjectCommand {
       page (or \`todou question answer\`); block on the reply with
       \`todou question wait <issue> <commentId>\`.
 
-      \`when: {key, selected}\` makes a follow-up (T-22): it is asked only
+      \`when: {key, selected}\` makes a follow-up: it is asked only
       when the earlier question \`key\` (auto-keys \`q1\`… count) picks one
       of the 0-based option indexes in \`selected\`. A follow-up goes right
       after its question or that question's other follow-ups.

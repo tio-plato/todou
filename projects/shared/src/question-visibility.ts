@@ -2,7 +2,7 @@ import type { Question, QuestionCondition } from "./schemas/component.ts";
 
 /**
  * The questions a reader is asked, in component order, given the options
- * picked so far (T-22). The one answer in the repo to "is this question
+ * picked so far. The one answer in the repo to "is this question
  * asked?": the server validates and counts with it, the web renders with it.
  *
  * A question without `when` is always asked. A follow-up is asked when the

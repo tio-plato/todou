@@ -382,7 +382,7 @@ describe("the surfaces a form loses along with its text", () => {
     await waitFor(() => expect(hasUnsavedWork()).toBe(true));
   });
 
-  it("counts Other text left in a follow-up that is hidden again (T-22)", async () => {
+  it("counts Other text left in a follow-up that is hidden again", async () => {
     // The editors need the router context the shared shim provides, and the
     // form must outlive the mount's refetch of its seeded answer state.
     const client = testQueryClient();
