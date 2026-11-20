@@ -18,12 +18,15 @@ export interface ThemeDef {
    * which the presets and `#a2eeef` read at APCA Lc 50 or more on every
    * surface a chip is drawn on in this theme, and every colour at 3:1 or
    * more by WCAG 2. APCA is measured outside the repository with apca-w3
-   * 0.1.9 twice: on surfaces blended at their exact alpha, with 0.5 to
-   * spare, and on the surfaces Chromium paints. Chromium keeps alpha in
-   * 8 bits and blends premultiplied, which draws a stack of translucent
-   * layers (a selected board card) a level or two darker; that is what
-   * holds todou Light at 0.53. The test holds the WCAG floor, as APCA's
-   * licence keeps its code out of this repository.
+   * 0.1.9 twice: on surfaces blended at their exact alpha, with Lc 0.5 to
+   * spare, and on the surfaces Chromium and Firefox paint, with none.
+   * Browsers keep alpha in 8 bits and blend premultiplied, which draws a
+   * stack of translucent layers (a selected board card) one or two 8-bit
+   * steps darker, so todou Light (by Chromium) and Visual Studio Light (by
+   * Firefox) sit a step stricter than the exact blend alone asks for.
+   * WebKit is checked by screenshot only, as its canvas reads darker than
+   * its screen. The test holds the WCAG floor, as APCA's licence keeps its
+   * code out of this repository.
    *
    * A new theme is measured the same way; where APCA cannot be run, take the
    * strictest value of its kind (0.47 light, 0.81 dark) and let the test
@@ -75,7 +78,7 @@ export const THEMES = [
     kind: "light",
     surface: "oklch(0.985 0.001 250)",
     accent: "oklch(0.5 0.16 250)",
-    labelInkLimit: 0.55,
+    labelInkLimit: 0.54,
     syntax: "light-plus",
   },
   {

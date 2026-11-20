@@ -46,10 +46,14 @@ afterEach(() => {
 const MIN_TEXT_CONTRAST = 3;
 
 /**
- * The surfaces a chip is actually drawn on, built the way the browser
- * composites them: each translucent layer over the one beneath, in 8-bit
- * sRGB. Every theme's `--card` equals its `--popover`, and no chip sits on
- * a card, so the card is not listed on its own.
+ * The surfaces a chip is actually drawn on, each translucent layer blended
+ * over the one beneath at its exact alpha and rounded to 8-bit sRGB.
+ * Browsers keep alpha in 8 bits and blend premultiplied, which can paint a
+ * stack of layers one or two steps darker; that does not take any colour
+ * here below 3:1, and the APCA floor, which it does move, is measured on
+ * the surfaces browsers paint (see `labelInkLimit`). Every theme's
+ * `--card` equals its `--popover`, and no chip sits on a card, so the card
+ * is not listed on its own.
  */
 function surfaces(tokens: Record<string, string>): Record<string, Rgb> {
   const background = oklch(tokens["--background"]);
