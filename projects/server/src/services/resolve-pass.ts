@@ -17,8 +17,9 @@
  * so guessing one would be the very error this replaces.
  */
 
-import type { AgentContext, ScanConfig } from "@todou/shared";
+import type { AgentContext, MemberRole, ScanConfig } from "@todou/shared";
 import {
+  cardScoped,
   findMarkdownLinks,
   hrefFor,
   type LinkTarget,
@@ -275,6 +276,18 @@ export type ResolveWorld = {
   gate: "referenceable" | "exists";
   /** Absolute URLs count as internal only against a configured origin. */
   origin?: string | undefined;
+  /**
+   * The author whose cards alone count as readable in `project`, for an
+   * author card-scoped there (T-788); null where every card is. Absent
+   * means null everywhere — the migration has no author to narrow by.
+   */
+  ownCardsOnly?: (project: ProjectRow) => Promise<number | null>;
+  /**
+   * Whether `@login` may resolve at all. A card-scoped author cannot list
+   * the members, so resolving against that list would let it probe who
+   * belongs to the project (T-788).
+   */
+  mentions?: boolean;
 };
 
 export type ResolvedText = {
@@ -365,13 +378,24 @@ export async function resolveContent(args: {
   self: ReferenceTarget | null;
 }): Promise<ResolveResult> {
   const { ctx, db, project, actor, inputs, text, self } = args;
+  const roles = new Map<number, Promise<MemberRole | null>>();
+  const roleIn = (target: ProjectRow) => {
+    let role = roles.get(target.id);
+    if (role === undefined) {
+      role = projectRoleOf(ctx, target, actor);
+      roles.set(target.id, role);
+    }
+    return role;
+  };
   const resolved = await resolveText(
     {
       ctx,
       here: project,
       hereDb: db,
-      mayRead: async (target) =>
-        (await projectRoleOf(ctx, target, actor)) !== null,
+      mayRead: async (target) => (await roleIn(target)) !== null,
+      ownCardsOnly: async (target) =>
+        cardScoped(await roleIn(target)) ? actor.id : null,
+      mentions: !cardScoped(await roleIn(project)),
       gate: "referenceable",
       origin: ctx.config.http.public_origin,
     },
@@ -533,6 +557,7 @@ class Resolver {
    * hand them to its caller.
    */
   private async mention(login: string): Promise<Resolution | null> {
+    if (this.world.mentions === false) return null;
     const cached = this.memberByLogin.get(login);
     if (cached !== undefined) {
       if (cached === null) return null;
@@ -595,6 +620,10 @@ class Resolver {
     return may;
   }
 
+  private async ownCardsOnly(project: ProjectRow): Promise<number | null> {
+    return (await this.world.ownCardsOnly?.(project)) ?? null;
+  }
+
   /**
    * One lookup on a project's database. A text can reference cards in many
    * projects, so another project's database is held only for its lookup,
@@ -616,6 +645,7 @@ class Resolver {
     const key = `${project.id}/${number}`;
     const cached = this.issueLive.get(key);
     if (cached !== undefined) return cached;
+    const only = await this.ownCardsOnly(project);
     const rows = await this.withDbOf(project, (db) =>
       db
         .select({ id: issues.id })
@@ -625,6 +655,7 @@ class Resolver {
             eq(issues.projectId, project.id),
             eq(issues.number, number),
             this.world.gate === "referenceable" ? referenceable : live,
+            only === null ? undefined : eq(issues.authorId, only),
           ),
         ),
     );
@@ -725,6 +756,9 @@ class Resolver {
   private async findLooseComment(
     commentId: number,
   ): Promise<Resolution | null> {
+    // Somebody else's card stays plain text, exactly like an id never
+    // minted: a card-scoped author must not learn which ids it holds.
+    const onlyHere = await this.ownCardsOnly(this.project);
     const here = await this.db
       .select({ number: issues.number })
       .from(comments)
@@ -735,6 +769,7 @@ class Resolver {
           eq(issues.projectId, this.project.id),
           eq(comments.id, commentId),
           this.world.gate === "referenceable" ? referenceable : live,
+          onlyHere === null ? undefined : eq(issues.authorId, onlyHere),
         ),
       );
     const number = here[0]?.number;
@@ -760,6 +795,7 @@ class Resolver {
     if (alias === null) return null;
     const target = await this.projectById(alias.projectId);
     if (target === null || !(await this.mayRead(target))) return null;
+    const only = await this.ownCardsOnly(target);
     const rows = await this.withDbOf(target, (db) =>
       db
         .select({ number: issues.number })
@@ -771,6 +807,7 @@ class Resolver {
             eq(issues.projectId, target.id),
             eq(comments.id, alias.id),
             this.world.gate === "referenceable" ? referenceable : live,
+            only === null ? undefined : eq(issues.authorId, only),
           ),
         ),
     );
@@ -805,10 +842,15 @@ class Resolver {
         ? named
         : await this.projectById(address.projectId);
     if (home === null || !(await this.mayRead(home))) return null;
+    const only = await this.ownCardsOnly(home);
     const rows = await this.withDbOf(home, (db) =>
       db
-        .select({ id: attachments.id })
+        .select({
+          uploaderId: attachments.uploaderId,
+          authorId: issues.authorId,
+        })
         .from(attachments)
+        .leftJoin(issues, eq(attachments.issueId, issues.id))
         .where(
           and(
             eq(attachments.projectId, home.id),
@@ -816,7 +858,12 @@ class Resolver {
           ),
         ),
     );
-    if (rows.length === 0) return null;
+    const row = rows[0];
+    if (row === undefined) return null;
+    // On a card, it is that card's to show; a loose draft, its uploader's.
+    if (only !== null && (row.authorId ?? row.uploaderId) !== only) {
+      return null;
+    }
     return {
       target: {
         kind: "attachment",

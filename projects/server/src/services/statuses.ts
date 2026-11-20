@@ -55,7 +55,7 @@ export async function listStatusUsage(
   actor: UserRow,
   slug: string,
 ): Promise<StatusUsage[]> {
-  const { project } = await requireCapability(ctx, actor, slug, "status.list");
+  const { project } = await requireCapability(ctx, actor, slug, "status.usage");
   const db = await ctx.router.forProject(routeInfoOf(project));
   return statusUsageRows(db, project.id);
 }

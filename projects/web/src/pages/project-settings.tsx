@@ -43,6 +43,7 @@ import {
   meQuery,
   projectQuery,
   useCan,
+  useNotRefused,
 } from "@/api/queries.ts";
 import { referenceConfigQuery } from "@/api/references.ts";
 import { userQuery } from "@/api/users.ts";
@@ -1225,7 +1226,10 @@ export function AccessDenialsSection({ slug }: { slug: string }) {
 export function LabelsSection({ slug }: { slug: string }) {
   const labels = useSuspenseQuery(labelsQuery(slug));
   // A heavier read than the catalog; the list does not wait for it.
-  const usage = useQuery(labelUsageQuery(slug));
+  const usage = useQuery({
+    ...labelUsageQuery(slug),
+    enabled: useNotRefused(slug, "label.usage"),
+  });
   const queryClient = useQueryClient();
   const invalidate = (slug: string) =>
     queryClient.invalidateQueries({ queryKey: ["labels", slug] });

@@ -6,6 +6,7 @@ import {
   type AttachmentReference,
   type ChangeEvent,
   can,
+  cardScoped,
   type DeletedAttachment,
   type DirectUploadRequest,
   type DirectUploadTicket,
@@ -69,6 +70,7 @@ import {
   assertIssueWritable,
   gateColumns,
   lockWritableIssue,
+  mayFollowAlias,
   type TrashFields,
 } from "./trash.ts";
 import { getUserRefs } from "./users.ts";
@@ -678,7 +680,7 @@ export async function openAttachment(
         attachmentId,
         via.variant,
         via.filename,
-        role !== null,
+        mayFollowAlias(role, undefined, actor),
       );
     }
     throw new NotFoundError("attachment not found");
@@ -994,6 +996,8 @@ export async function listAttachmentReferences(
     eq(issues.projectId, project.id),
     isNull(issues.deletedAt),
     isNull(issues.movedAt),
+    // Same reason the trash is left out (T-788).
+    cardScoped(role) ? eq(issues.authorId, actor.id) : undefined,
   );
   const [bodies, commentRows] = await Promise.all([
     db

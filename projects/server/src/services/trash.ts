@@ -1,4 +1,4 @@
-import type { MemberRole } from "@todou/shared";
+import { cardScoped, type MemberRole } from "@todou/shared";
 import { and, eq, isNull, type SQL } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import type { Db } from "../db/driver.ts";
@@ -77,6 +77,49 @@ export function seesTrashed(
 }
 
 /**
+ * Whether a card-scoped reader (T-788) may see this card at all: only its
+ * author may. Every other role sees whatever the gates below let through.
+ */
+export function cardInScope(
+  row: Pick<TrashFields, "authorId">,
+  actor: UserRow,
+  role: MemberRole | null,
+): boolean {
+  return !cardScoped(role) || row.authorId === actor.id;
+}
+
+/**
+ * Whether a miss here may be answered from the address book as "it moved"
+ * rather than "not found". A card-scoped reader (T-788) may only follow from
+ * a card row it authored: with no row in hand, a 410 would confirm that the
+ * id once belonged to somebody else's card.
+ */
+export function mayFollowAlias(
+  role: MemberRole | null,
+  row: Pick<TrashFields, "authorId"> | undefined,
+  actor: UserRow,
+): boolean {
+  if (role === null) return false;
+  if (!cardScoped(role)) return true;
+  return row !== undefined && row.authorId === actor.id;
+}
+
+/**
+ * Ahead of the tombstone on purpose: someone else's card that has moved
+ * away must answer the same 404 as a number never used, not a redirect
+ * naming where it went.
+ */
+function assertCardInScope(
+  row: Pick<TrashFields, "authorId">,
+  actor: UserRow,
+  role: MemberRole | null,
+): void {
+  if (!cardInScope(row, actor, role)) {
+    throw new NotFoundError("issue not found");
+  }
+}
+
+/**
  * Read gate: a trashed card stays readable to whoever may see the trash and
  * simply does not exist for everyone else. The 404 is the point — a reader
  * who may not see the trash must not be able to tell a deleted card apart
@@ -96,6 +139,7 @@ export function assertIssueReadable(
    */
   role: MemberRole | null,
 ): void {
+  assertCardInScope(row, actor, role);
   if (row.movedAt !== null)
     throw new IssueMovedError(row, false, role !== null);
   // The tombstone above is the only thing a reader without a role can be
@@ -116,6 +160,7 @@ export function assertIssueWritable(
   actor: UserRow,
   role: MemberRole,
 ): void {
+  assertCardInScope(row, actor, role);
   // Always readable at the source: writing still demands a writer role there.
   if (row.movedAt !== null) throw new IssueMovedError(row, true, true);
   if (row.movingSince !== null) throw new IssueMovingError();
