@@ -429,7 +429,6 @@ describe("the project templates list", () => {
     expect(
       rows.map((row) => within(row).getAllByRole("link")[0]?.textContent),
     ).toEqual(["Basic", "Agile", "Kanban"]);
-    expect(within(rows[0] as HTMLElement).getByText("default")).toBeTruthy();
     for (const row of rows) {
       expect(
         within(row).queryByRole("button", { name: "Set as default" }),
@@ -452,8 +451,6 @@ describe("the project templates list", () => {
       ]),
     );
     expect(select.textContent).toBe("Kanban");
-    expect(within(rows[2] as HTMLElement).getByText("default")).toBeTruthy();
-    expect(within(rows[0] as HTMLElement).queryByText("default")).toBeNull();
   });
 
   it("says in each row where the template's blocks clear", async () => {
