@@ -58,7 +58,7 @@ const resolved = (d: Draft): boolean =>
   d.selected.size > 0 || d.other.trim() !== "" || d.declined;
 
 /**
- * The questions the drafts ask (T-22). Every question keeps a draft, hidden
+ * The questions the drafts ask. Every question keeps a draft, hidden
  * or not, so a follow-up that comes back brings its picks and its Other
  * text back with it; `shownQuestions` asks whether its question is asked,
  * so a hidden question's leftover pick shows nothing.
@@ -110,7 +110,7 @@ const followUpFrame = (question: Question): string =>
  * with empty answers, and a sealed target would deliver that to the old
  * card accurately.
  *
- * Only the questions the drafts ask are sent (T-22): a hidden follow-up's
+ * Only the questions the drafts ask are sent: a hidden follow-up's
  * draft stays behind, since the server refuses an answer to a question the
  * picks do not ask.
  *
@@ -439,7 +439,7 @@ function AnswerForm({
   // Options and "decline" are not text and have no editor of their own, so
   // nothing else on this card would notice them going up in smoke. The Other
   // box is a MarkdownEditor and registers itself — but only while it is
-  // mounted, and a follow-up hidden again (T-22) takes its editor along and
+  // mounted, and a follow-up hidden again takes its editor along and
   // leaves its text in `drafts` alone.
   useDirtySource(() =>
     Object.values(drafts).some(

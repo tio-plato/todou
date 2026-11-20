@@ -684,7 +684,7 @@ export async function settleHiddenInTx(
       if (component?.type !== "questions") continue;
       if (settlementFor(settling, row.id) !== undefined) continue;
       // What the comment asks before any answer, as it counted: declining
-      // those leaves every follow-up unasked (T-22).
+      // those leaves every follow-up unasked.
       const answers = shownQuestions(component.questions, new Map()).map(
         (question) => ({
           key: question.key,

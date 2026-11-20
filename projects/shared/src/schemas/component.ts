@@ -39,7 +39,7 @@ const questionShape = {
   options: z.array(QuestionOption).min(2).max(12),
   /**
    * Absent: always asked. Present: a follow-up, asked only when the earlier
-   * question it names is asked and picked one of these options (T-22).
+   * question it names is asked and picked one of these options.
    */
   when: QuestionCondition.optional(),
 };
@@ -197,7 +197,7 @@ export const IssueQuestions = z.object({
   items: z.array(IssueQuestionsItem),
   /**
    * Over the items whose `answer` and `withdrawal` are both null, the
-   * questions each asks before any answer, follow-ups left out (T-22) —
+   * questions each asks before any answer, follow-ups left out —
    * matches `issues.open_questions` (T-46).
    */
   open: z.number().int().nonnegative(),

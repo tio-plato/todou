@@ -702,7 +702,7 @@ describe.each(PLACEMENTS)("questions T-19 (%s placement)", (placement) => {
     });
   });
 
-  describe("follow-up questions (T-22)", () => {
+  describe("follow-up questions", () => {
     const choice = { options: [{ label: "yes" }, { label: "no" }] };
     // q2 follows q1 = a, q3 follows q1 = b.
     const CASCADE = [

@@ -100,7 +100,7 @@ export function withdrawalOf(item: {
  * would multiply the length of an entry nobody asked to read in full.
  *
  * Every question is listed, follow-ups too, each with the condition it is
- * asked under (T-22): `--answers` has no form that unfolds as options are
+ * asked under: `--answers` has no form that unfolds as options are
  * picked, so whoever answers needs to see which option brings which
  * follow-up before writing it.
  */

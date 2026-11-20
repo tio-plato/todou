@@ -1005,7 +1005,7 @@ describe("QuestionsCard (floating window)", () => {
   });
 });
 
-describe("QuestionsCard follow-up questions (T-22)", () => {
+describe("QuestionsCard follow-up questions", () => {
   const yesNo = (after: string) => [
     { label: `Yes after ${after}` },
     { label: `No after ${after}` },

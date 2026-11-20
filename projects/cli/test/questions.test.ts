@@ -254,7 +254,7 @@ describe("question list", () => {
     expect(result.stdout).toContain("no unanswered questions");
   });
 
-  it("names the condition a follow-up is asked under (T-22)", async () => {
+  it("names the condition a follow-up is asked under", async () => {
     const options = [{ label: "a" }, { label: "b" }, { label: "c" }];
     const yesNo = [{ label: "yes" }, { label: "no" }];
     const cascade = {
