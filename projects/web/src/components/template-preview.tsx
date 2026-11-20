@@ -47,16 +47,34 @@ export function templateStatusSet(
 const counted = (n: number, one: string, many: string) =>
   `${n} ${n === 1 ? one : many}`;
 
-/** What a row says of a template: its size, and where its blocks clear. */
+/**
+ * What a row says of a template: its size, and where its blocks clear.
+ *
+ * A narrow row breaks it between its parts, never inside one; the last part
+ * breaks only before its pill. A pill wider than the row is cut at its end
+ * rather than pushing the row wide. The spaces between the parts are not
+ * drawn, the gap is, but they keep the copied and announced text apart.
+ */
 export function TemplateSummary({ body }: { body: TemplateBody }) {
   const line = body.statuses.find((status) => status.block_clear);
   return (
-    <div className="flex flex-wrap items-center gap-x-1 text-sm text-muted-foreground">
-      {counted(body.statuses.length, "status", "statuses")}
-      {" · "}
-      {counted(body.labels.length, "label", "labels")}
-      {" · Blocks clear at"}
-      {line ? <StatusPill status={line} /> : " any closed status"}
+    <div className="flex flex-wrap items-center gap-x-1 overflow-hidden text-sm text-muted-foreground">
+      <span className="whitespace-nowrap">
+        {counted(body.statuses.length, "status", "statuses")} ·
+      </span>{" "}
+      <span className="whitespace-nowrap">
+        {counted(body.labels.length, "label", "labels")} ·
+      </span>{" "}
+      {line ? (
+        <span>
+          <span className="whitespace-nowrap">Blocks clear at</span>{" "}
+          <StatusPill status={line} />
+        </span>
+      ) : (
+        <span className="whitespace-nowrap">
+          Blocks clear at any closed status
+        </span>
+      )}
     </div>
   );
 }

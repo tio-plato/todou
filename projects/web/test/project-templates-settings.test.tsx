@@ -459,7 +459,16 @@ describe("the project templates list", () => {
     const rows = await screen.findAllByRole("listitem");
     const note = (name: string) => {
       const row = rows.find((r) => within(r).queryByRole("link", { name }));
-      return within(row as HTMLElement).getByText(/Blocks clear at/);
+      // The innermost element holding the whole line, whatever elements its
+      // parts are drawn in and whatever wraps it.
+      const whole = (element: Element) =>
+        /^\d+ status.*Blocks clear at/.test(element.textContent ?? "");
+      return within(row as HTMLElement).getByText(
+        (_, element) =>
+          element !== null &&
+          whole(element) &&
+          ![...element.children].some(whole),
+      );
     };
     const shipped = BASIC.body.statuses.find((s) => s.name === "Shipped");
     expect(note("Basic").innerHTML).toContain(
