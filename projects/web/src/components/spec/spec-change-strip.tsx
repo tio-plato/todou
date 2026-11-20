@@ -1,4 +1,4 @@
-import { type RefObject, useRef, useState } from "react";
+import { type RefObject, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   blockForLine,
@@ -258,6 +258,11 @@ export function SpecChangeStrip({
   const drag = useRef<{ startY: number; moved: boolean } | null>(null);
   /** The bar's height as last measured, for the frame between measurements. */
   const stripHeightRef = useRef(0);
+  /** Where the card started down the page when last measured. */
+  const cardTopRef = useRef<number | null>(null);
+  /** Ends the watch for a release off the bar that the last press began. */
+  const pressWatch = useRef<AbortController | null>(null);
+  useEffect(() => () => pressWatch.current?.abort(), []);
 
   useLayoutTick(
     contentRef,
@@ -266,16 +271,23 @@ export function SpecChangeStrip({
       const doc = renderedDocumentIn(card);
       if (card === null || doc === null) return;
       const box = paddingBoxOf(card);
+      const cardTop = box.top + window.scrollY;
       // Where things lie down the card only changes when something changes
-      // size; a scroll alone moves the frame and nothing else.
-      if (resized) {
+      // size or moves the card down the page; a scroll alone moves the frame
+      // and nothing else.
+      const moved =
+        cardTopRef.current === null ||
+        Math.abs(cardTop - cardTopRef.current) > 0.5;
+      if (resized || moved) {
+        cardTopRef.current = cardTop;
         // Fixed for a given window and toolbar: the bar's height when the card
         // sits as low as it ever does, at the top of the page, so that the
-        // whole bar shows there too; but never less than half the height it
-        // has once stuck, however far down the page the card starts, and never
-        // taller than the card it runs down.
+        // whole bar shows there too. A card that starts so far down that this
+        // leaves less than half the height the bar has once stuck gets that
+        // half, and its foot shows once the page scrolls. Never taller than
+        // the card it runs down.
         const stuck = window.innerHeight - stickyTop - 2 * gap;
-        const fits = window.innerHeight - (box.top + window.scrollY) - gap;
+        const fits = window.innerHeight - cardTop - gap;
         const stripHeight = Math.max(
           0,
           Math.min(Math.max(fits, stuck / 2), box.height),
@@ -376,15 +388,18 @@ export function SpecChangeStrip({
           drag.current = { startY: event.clientY, moved: false };
           // Without the capture, a release off the bar never reaches it, and
           // the tooltip would stay up until the pointer came back.
-          window.addEventListener(
-            "pointerup",
-            (up) => {
-              if (up.target instanceof Node && bar.contains(up.target)) return;
-              drag.current = null;
-              setHover(null);
-            },
-            { once: true },
-          );
+          pressWatch.current?.abort();
+          const watch = new AbortController();
+          pressWatch.current = watch;
+          const end = (up: PointerEvent) => {
+            watch.abort();
+            if (up.target instanceof Node && bar.contains(up.target)) return;
+            drag.current = null;
+            setHover(null);
+          };
+          for (const type of ["pointerup", "pointercancel"] as const) {
+            window.addEventListener(type, end, { signal: watch.signal });
+          }
         }}
         onPointerMove={(event) => {
           const at = pointAt(event.clientY);
@@ -421,6 +436,10 @@ export function SpecChangeStrip({
         }}
         onPointerLeave={() => {
           if (drag.current === null) setHover(null);
+        }}
+        onPointerCancel={() => {
+          drag.current = null;
+          setHover(null);
         }}
       >
         {PAINT.flatMap(([kind, colour]) =>
