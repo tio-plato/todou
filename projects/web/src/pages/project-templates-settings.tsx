@@ -1101,6 +1101,15 @@ function TemplateNameForm({
 }) {
   // null = showing the name; a string = the field, holding the draft.
   const [draft, setDraft] = useState<string | null>(null);
+  // The name just saved, shown until the list it is queued into has it: the
+  // list changes a tick later, and the heading would show the old one first.
+  const [saved, setSaved] = useState<string | null>(null);
+  const [listed, setListed] = useState(name);
+  if (listed !== name) {
+    setListed(name);
+    setSaved(null);
+  }
+  const shown = saved ?? name;
   const field = useRef<HTMLInputElement>(null);
   const pencil = useRef<HTMLButtonElement>(null);
   // Set as the field closes, so focus goes back to the pencil it came from.
@@ -1125,13 +1134,13 @@ function TemplateNameForm({
   if (!editing) {
     return (
       <div className="flex min-w-0 items-center gap-1">
-        <h1 className="truncate text-xl font-semibold">{name}</h1>
+        <h1 className="truncate text-xl font-semibold">{shown}</h1>
         <Button
           ref={pencil}
           variant="ghost"
           size="icon-sm"
           aria-label="Rename"
-          onClick={() => setDraft(name)}
+          onClick={() => setDraft(shown)}
         >
           <PencilIcon className="size-4" />
         </Button>
@@ -1144,7 +1153,10 @@ function TemplateNameForm({
       onSubmit={(e) => {
         e.preventDefault();
         const next = draft.trim();
-        if (next !== "" && next !== name) onSave(next);
+        if (next !== "" && next !== shown) {
+          setSaved(next);
+          onSave(next);
+        }
         close();
       }}
     >

@@ -840,6 +840,8 @@ describe("a template's page", () => {
     fireEvent.change(field, { target: { value: "Board" } });
     // What Enter does in a browser: happy-dom submits no form on a key.
     fireEvent.submit(field);
+    // At once, not only once the save has put it in the list.
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Board");
     await waitFor(() => expect(server.puts()).toHaveLength(1));
     expect(server.puts()[0]?.body).toEqual({
       revision: 3,
