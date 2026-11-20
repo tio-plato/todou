@@ -641,6 +641,19 @@ describe.each(PLACEMENTS)("projects domain (%s placement)", (placement) => {
       await createProject(s);
       const bug = await json(await postLabel(s, { name: "bug" }));
       expect((await postLabel(s, { name: "Bug" })).status).toBe(409);
+      const web = await json(await postLabel(s, { name: "area:web" }));
+      const renamed = await t.app.request(
+        `/api/projects/${s}/labels/${web.id}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json", cookie },
+          body: JSON.stringify({ name: "BUG" }),
+        },
+      );
+      expect(renamed.status).toBe(409);
+      expect((await json(renamed)).error.message).toContain(
+        'label "BUG" already exists',
+      );
 
       const recased = await t.app.request(
         `/api/projects/${s}/labels/${bug.id}`,
