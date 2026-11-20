@@ -4,6 +4,7 @@ import {
   Bucket,
   BurnQuery,
   BurnResponse,
+  defaultInsightsRole,
   Flow,
   Grain,
   Measure,
@@ -302,5 +303,19 @@ describe("buckets and burn responses", () => {
     };
 
     expect(BurnResponse.parse(response)).toEqual(response);
+  });
+});
+
+describe("defaultInsightsRole", () => {
+  it("reads the role from the name whatever its case", () => {
+    expect(defaultInsightsRole({ name: "done", category: "open" })).toBe(
+      "completed",
+    );
+    expect(defaultInsightsRole({ name: "SHIPPED", category: "open" })).toBe(
+      "completed",
+    );
+    expect(defaultInsightsRole({ name: "invalid", category: "closed" })).toBe(
+      "excluded",
+    );
   });
 });
