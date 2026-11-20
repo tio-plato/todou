@@ -194,9 +194,10 @@ export function SpecOutline({
   const active = useActiveHeading(headings, contentRef);
   const listRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
+    if (headings.length === 0) return;
     const row = listRef.current?.children.item(active);
     if (row instanceof HTMLElement) keepInView(row);
-  }, [active]);
+  }, [active, headings]);
 
   if (headings.length === 0) {
     return (
