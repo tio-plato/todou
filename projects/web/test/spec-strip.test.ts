@@ -93,16 +93,24 @@ describe("where a press on the strip lands", () => {
   const kinds = ["stop", "del"] as const;
 
   it("takes the tick under the press, not the one above whose slop reaches it", () => {
-    expect(tickAt([...ticks], 105.5, kinds, 3)?.target).toBe("lower");
-    expect(tickAt([...ticks], 101, kinds, 3)?.target).toBe("upper");
+    expect(tickAt(ticks, 105.5, kinds, 3)?.target).toBe("lower");
+    expect(tickAt(ticks, 101, kinds, 3)?.target).toBe("upper");
   });
 
   it("takes the nearest within the slop, and nothing past it", () => {
-    expect(tickAt([...ticks], 138, kinds, 3)?.target).toBe("removal");
-    expect(tickAt([...ticks], 120, kinds, 3)).toBeUndefined();
+    expect(tickAt(ticks, 138, kinds, 3)?.target).toBe("removal");
+    expect(tickAt(ticks, 120, kinds, 3)).toBeUndefined();
   });
 
   it("looks only at the kinds it is asked about", () => {
-    expect(tickAt([...ticks], 141, ["stop"], 3)).toBeUndefined();
+    expect(tickAt(ticks, 141, ["stop"], 3)).toBeUndefined();
+  });
+
+  it("takes a change over a removal it overlaps", () => {
+    const overlapping = [
+      { kind: "del", top: 99, height: 3, target: "removal" },
+      { kind: "stop", top: 100, height: 3, target: "change" },
+    ] as const;
+    expect(tickAt(overlapping, 101, kinds, 3)?.target).toBe("change");
   });
 });
