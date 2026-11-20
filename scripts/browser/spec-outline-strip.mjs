@@ -28,11 +28,22 @@ const FOLDED_HEADING = "Charlie";
  * - `tooltip-under-popover`: the tooltip below the popover layer.
  * - `fold-not-opened`: the outline's jump never reaches the fold's
  *   placeholder, so the heading it aims at has no box.
+ * - `tooltip-catches-pointer`: the tooltip takes the pointer from what lies
+ *   under it.
  */
 const FAULTS = {
   "tick-scale": "ticks-move-on-scroll",
   "tooltip-under-popover": "tooltip-under-popover",
   "fold-not-opened": "folded-heading-landing",
+  "tooltip-catches-pointer": "tooltip-catches-pointer",
+};
+
+/** The faults that are a stylesheet, and its rule. */
+const FAULT_CSS = {
+  "tooltip-under-popover":
+    "[data-spec-strip-tooltip] { z-index: 40 !important; }",
+  "tooltip-catches-pointer":
+    "[data-spec-strip-tooltip] { pointer-events: auto !important; }",
 };
 
 function failure(name, detail, width) {
@@ -181,13 +192,13 @@ function setupSource(fixture, fold) {
 
 /** The fault's page-side half; see FAULTS. */
 function faultSource(fault) {
-  if (fault === "tooltip-under-popover") {
+  if (FAULT_CSS[fault]) {
     return `(() => {
       const inject = () => {
         if (!document.head || document.querySelector("style[data-spec-outline-fault]")) return;
         const style = document.createElement("style");
         style.dataset.specOutlineFault = "";
-        style.textContent = "[data-spec-strip-tooltip] { z-index: 40 !important; }";
+        style.textContent = ${JSON.stringify(FAULT_CSS[fault])};
         document.head.append(style);
       };
       new MutationObserver(inject).observe(document, { childList: true, subtree: true });
@@ -614,6 +625,21 @@ async function checkStrip(page, width) {
       ),
     );
   } else {
+    // What the pointer reaches there is what lies under the tooltip.
+    const through = await evaluate(
+      page,
+      ({ x, y }) =>
+        window.__specOutline.hits(x, y, "[data-spec-strip-tooltip]"),
+      { x, y },
+    );
+    if (through.inside)
+      failures.push(
+        failure(
+          "tooltip-catches-pointer",
+          `at ${x},${y}: ${through.hit}`,
+          width,
+        ),
+      );
     // The tooltip lets the pointer through, so it is asked to stop it for
     // the one question: which of the two is painted on top.
     const hit = await evaluate(
@@ -723,7 +749,7 @@ async function runPass({ browser, stack, fixture, fault, label }) {
             ? await checkOutline(page, viewport.width)
             : await checkStrip(page, viewport.width);
           failures.push(...found);
-          if (fault === "tooltip-under-popover")
+          if (FAULT_CSS[fault])
             injected += (await evaluate(
               page,
               () => !!document.querySelector("style[data-spec-outline-fault]"),
