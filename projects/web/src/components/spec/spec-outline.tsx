@@ -170,7 +170,7 @@ function keepInView(row: HTMLElement): void {
 
 /**
  * The selected file's headings, beside the document from lg up and under the
- * file list in the Files popover below it (T-234). Four columns, laid out
+ * file list in the Files popover below it. Four columns, laid out
  * across every row at once, so a count lines up with the counts above it
  * whatever the rows around it hold: the heading, then the open comments, the
  * drafts and the lines changed. A column empty on every row takes no width.

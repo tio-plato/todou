@@ -7,7 +7,7 @@ import { AppearanceSettingsPage } from "../src/pages/profile-settings.tsx";
 import { renderWithProviders, testQueryClient } from "./render.tsx";
 
 // The spec page's outline and change strip, each switchable whole and in
-// what it marks (T-234).
+// what it marks.
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -41,7 +41,7 @@ async function switchIn(
   return within(box).getByRole<HTMLButtonElement>("switch", { name });
 }
 
-describe("spec page preferences (T-234)", () => {
+describe("spec page preferences", () => {
   const SWITCHES = [
     ["Outline", "Outline", "spec_outline"],
     ["Outline", "Comments", "spec_outline_comments"],

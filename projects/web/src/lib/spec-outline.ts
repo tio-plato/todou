@@ -3,7 +3,7 @@ import type { DisplayedAnnotation } from "@/components/spec/annotated-markdown.t
 import { parseMarkdown } from "./markdown-processor.ts";
 import type { DiffLines } from "./spec-version-stats.ts";
 
-/** One row of a spec file's outline (T-234). */
+/** One row of a spec file's outline. */
 export type OutlineHeading = {
   /** 1–6. */
   level: number;

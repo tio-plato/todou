@@ -67,7 +67,7 @@ export function useOpenExternalLinksInNewTab(): boolean {
   return useBooleanPref("open_external_links_in_new_tab");
 }
 
-/** Whether the spec page lists the file's headings beside it (T-234). */
+/** Whether the spec page lists the file's headings beside it. */
 export function useSpecOutline(): boolean {
   return useBooleanPref("spec_outline");
 }

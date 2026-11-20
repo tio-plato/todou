@@ -6,7 +6,7 @@ import {
   stripToDocument,
 } from "../src/lib/spec-strip.ts";
 
-// The change strip's geometry (T-234): a 2000px card drawn on a 500px bar,
+// The change strip's geometry: a 2000px card drawn on a 500px bar,
 // a quarter of its size.
 const CARD = 2000;
 const BAR = 500;
@@ -18,7 +18,7 @@ const mark = (
   target = `${kind}@${top}`,
 ): Mark<string> => ({ kind, top, height, target });
 
-describe("the change strip's ticks (T-234)", () => {
+describe("the change strip's ticks", () => {
   it("draws each mark at its share of the card", () => {
     expect(layoutTicks([mark("stop", 800, 40)], CARD, BAR)).toEqual([
       { kind: "stop", top: 200, height: 10, target: "stop@800" },
