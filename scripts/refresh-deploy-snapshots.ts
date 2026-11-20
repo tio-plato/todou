@@ -19,6 +19,12 @@
 // gave up (it exits 0 then too): its output is printed. A file is written only
 // when every tier succeeds; run `pnpm fmt` after a rewrite.
 //
+// That check is textual and misses one case: a statement a later migration
+// undid still counts as made. Say one migration drops a NOT NULL and a later
+// one sets it again; a schema that drops it once more, with no migration of
+// its own, passes, and the snapshot hides the change. Neither tier has such a
+// pair of migrations so far.
+//
 // Usage, after laying out a merge's journals:
 //
 //   node scripts/refresh-deploy-snapshots.ts
