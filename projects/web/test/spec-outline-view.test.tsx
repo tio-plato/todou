@@ -741,6 +741,34 @@ describe("the change strip", () => {
     expect(Number.parseFloat(bar.style.height)).toBeGreaterThan(100);
   });
 
+  it("measures the bar again when the card moves down the page with no resize", async () => {
+    const view = await renderSpec("?v=2&file=design.md");
+    await waitFor(() => expect(strip(view)).not.toBeNull());
+    const box = card(view) as HTMLElement;
+    const bar = strip(view)?.firstElementChild as HTMLElement;
+    Object.defineProperty(box, "clientHeight", { value: 2998 });
+    const startAt = async (top: number) => {
+      box.getBoundingClientRect = () =>
+        ({
+          top,
+          height: 3000,
+          bottom: top + 3000,
+          left: 0,
+          right: 900,
+        }) as DOMRect;
+      await act(async () => {
+        window.dispatchEvent(new Event("scroll"));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+      return Number.parseFloat(bar.style.height);
+    };
+    // Something above the card, outside what is watched for size, grows by
+    // 200px: the card starts lower, and less of the window is left below it.
+    const before = await startAt(100);
+    const after = await startAt(300);
+    expect(before - after).toBeCloseTo(200, 0);
+  });
+
   it("takes the tooltip down when a press that left the bar ends off it", async () => {
     const view = await renderSpec("?v=2&file=design.md");
     await waitFor(() => expect(strip(view)).not.toBeNull());
