@@ -344,9 +344,16 @@ const headingAt = (view: { container: HTMLElement }, line: number) =>
     `[data-testid="annotated-markdown"] [data-loc^="${line}-"]`,
   );
 
-/** Every scrollIntoView, with the alignment it asked for. */
+/**
+ * Every scrollIntoView, with the alignment it asked for and whether what it
+ * was asked to show was still folded away, with no box to scroll to.
+ */
 function watchReveals() {
-  const reveals: { el: Element; block?: ScrollLogicalPosition }[] = [];
+  const reveals: {
+    el: Element;
+    block?: ScrollLogicalPosition;
+    folded: boolean;
+  }[] = [];
   vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
     this: Element,
     arg?: boolean | ScrollIntoViewOptions,
@@ -354,6 +361,7 @@ function watchReveals() {
     reveals.push({
       el: this,
       block: typeof arg === "object" ? arg.block : undefined,
+      folded: this.closest(".spec-folded") !== null,
     });
   });
   return reveals;
@@ -413,6 +421,8 @@ describe("the outline in the rail (T-234)", () => {
     expect(opened?.closest(".spec-folded")).toBeNull();
     expect(reveals[0]?.el).toBe(opened);
     expect(reveals[0]?.block).toBe("start");
+    // Measured once the fold was open, not while the heading had no box.
+    expect(reveals[0]?.folded).toBe(false);
   });
 });
 
