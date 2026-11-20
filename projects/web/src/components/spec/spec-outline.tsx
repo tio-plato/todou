@@ -1,5 +1,6 @@
 import { type RefObject, useEffect, useRef, useState } from "react";
 import { visibleAnchor } from "@/components/spec/annotated-markdown.tsx";
+import { StatNumbers } from "@/components/timeline/spec-version-card.tsx";
 import {
   FOLD_CLASS,
   FOLD_KEY_ATTR,
@@ -192,13 +193,10 @@ export function SpecOutline({
 }) {
   const active = useActiveHeading(headings, contentRef);
   const listRef = useRef<HTMLDivElement>(null);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a new active row is what has to come into view
   useEffect(() => {
-    const row = listRef.current?.querySelector<HTMLElement>(
-      '[aria-current="location"]',
-    );
-    if (row != null) keepInView(row);
-  }, [active, headings]);
+    const row = listRef.current?.children.item(active);
+    if (row instanceof HTMLElement) keepInView(row);
+  }, [active]);
 
   if (headings.length === 0) {
     return (
@@ -217,6 +215,7 @@ export function SpecOutline({
           key={heading.line}
           type="button"
           title={heading.text}
+          aria-label={rowLabel(heading, notes?.[i], stats?.[i])}
           aria-current={i === active ? "location" : undefined}
           onClick={() => onJump(heading.line)}
           className={cn(
@@ -237,6 +236,27 @@ export function SpecOutline({
       ))}
     </div>
   );
+}
+
+/**
+ * What a row says to assistive tech: the heading, then what each count means,
+ * which the columns only say by where they stand.
+ */
+function rowLabel(
+  heading: OutlineHeading,
+  note: SectionNotes | undefined,
+  stat: SectionStat | undefined,
+): string {
+  const parts = [heading.text === "" ? "Untitled heading" : heading.text];
+  const comments = note?.comments ?? 0;
+  const drafts = note?.drafts ?? 0;
+  if (comments > 0) {
+    parts.push(`${comments} open ${comments === 1 ? "comment" : "comments"}`);
+  }
+  if (drafts > 0) parts.push(`${drafts} ${drafts === 1 ? "draft" : "drafts"}`);
+  if ((stat?.plus ?? 0) > 0) parts.push(`${stat?.plus} added`);
+  if ((stat?.minus ?? 0) > 0) parts.push(`${stat?.minus} removed`);
+  return parts.join(", ");
 }
 
 /** The file rail's amber circle for comments, the draft chip's indigo. */
@@ -299,9 +319,7 @@ function SectionCounts({
           changed && "pl-1.5",
         )}
       >
-        {plus > 0 && <span className="diff-addition-text">+{plus}</span>}
-        {plus > 0 && minus > 0 && " "}
-        {minus > 0 && <span className="diff-deletion-text">−{minus}</span>}
+        {changed && <StatNumbers stat={{ plus, minus }} />}
       </span>
     </>
   );

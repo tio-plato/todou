@@ -527,6 +527,16 @@ describe("what each section holds", () => {
         drafts: "",
       });
     }
+    // The columns say what each count is only by where they stand; the
+    // row's name says it in words.
+    expect(
+      within(aside).getByRole("button", {
+        name: "Delta, 1 open comment, 1 draft",
+      }),
+    ).toBe(rowFor(aside, "Delta"));
+    expect(
+      within(aside).getByRole("button", { name: "Gamma, 3 added, 1 removed" }),
+    ).toBe(rowFor(aside, "Gamma"));
   });
 
   it("drops a column when its switch is off", async () => {
