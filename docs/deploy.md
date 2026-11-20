@@ -102,10 +102,10 @@ again runs it anew.
 
 The `case_insensitive_names` migration makes a status or label name one name
 whatever its case or Unicode composition, as the API now compares them. Of
-the names of one project that differ only that way, the first created keeps
-its name (of names that differ only in composition, the one already in NFC
-does) and each other one becomes `<name> (<id>)`, which may take it past 60
-characters as above. Every name is stored in Unicode NFC, and from then on
+the names of one project that equal each other that way, one already in
+Unicode NFC goes before one that is not, and otherwise the first created
+keeps its name; each other one becomes `<name> (<id>)`, which may take it
+past 60 characters as above. Every name is stored in NFC, and from then on
 the database refuses two names of a project that are equal under `lower()`.
 Which letters count as case is the database's ctype: under `C`, or in a
 `SQL_ASCII` database, only ASCII letters do, so an `État` and an `état`
@@ -114,11 +114,19 @@ On a database whose encoding is not UTF-8, or on PostgreSQL 12 or older,
 names are not composed, and two that differ only in composition both stay.
 `lower()` also folds a few letters the API does not, such as a final sigma
 or a dotted capital I: a name differing from another only there is refused
-as a duplicate. A status whose chart role was never chosen and whose name is
-`done`, `shipped` or `invalid` in any case now counts as such in the charts,
-over its whole history. The old spellings are kept nowhere. With an older
-version still writing, the upgrade can fail once, as above, and runs anew
-when started again.
+as a duplicate. A status whose chart role was never chosen takes the
+default for its name as the charts now read it, over its whole history: one
+named `done`, `shipped` or `invalid` in any case now counts as such, and a
+`Done` renamed `Done (<id>)` no longer does. The old spellings are kept
+nowhere, so take a backup first if you may want them back, and do not
+upgrade while a backup or another long transaction is reading the
+database: the migration locks the status and label tables until it
+commits, and from the moment it asks for that lock, every request that
+reads statuses or labels waits with it. With an older version still
+writing, the upgrade can fail once, as above, and runs anew when started
+again. Going back to an older version keeps the renamed names and the new
+indexes: it then fails with a server error where it would have stored a
+name differing from another only in case.
 
 ### What project search needs from PostgreSQL
 
