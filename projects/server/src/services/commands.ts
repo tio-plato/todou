@@ -9,7 +9,7 @@ import type {
   IssueListRow,
   TimelineComment,
 } from "@todou/shared";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import type { AppContext } from "../bootstrap.ts";
 import type { Db } from "../db/driver.ts";
@@ -214,26 +214,8 @@ export async function executeCommands(
 
     // The labels the commands name, before the card's rows under them (see
     // lockIssueRows), so the card's labels are read below only once a
-    // deletion this waited for has removed its row. A label to add that was
-    // deleted meanwhile fails the submission; one to remove has nothing
-    // left to remove.
-    const named = [
-      ...new Set(
-        input.commands.flatMap((command) =>
-          command.type === "label_add" || command.type === "label_remove"
-            ? [command.label_id]
-            : [],
-        ),
-      ),
-    ];
-    const locked = new Set(
-      (await lockLabels(tx, project.id, named)).map((row) => row.id),
-    );
-    for (const [i, command] of input.commands.entries()) {
-      if (command.type === "label_add" && !locked.has(command.label_id)) {
-        throw new ValidationFailedError(`command[${i}]: unknown label_id`);
-      }
-    }
+    // deletion this waited for has removed its row.
+    await lockCommandLabels(tx, project.id, input.commands);
     const fields = await readFieldState(tx, issue.id);
     const statusBefore = fields.statusId;
     const target = {
@@ -422,6 +404,36 @@ async function validateFieldCommands(
     }
   }
   return { statusById, labelById, userIds };
+}
+
+/**
+ * Lock the labels the commands name (see lockIssueRows, rule 6), after the
+ * cards they write and before any of those cards' label rows. A label to add
+ * that was deleted meanwhile fails the whole submission; one to remove has
+ * nothing left to remove.
+ */
+async function lockCommandLabels(
+  tx: Tx,
+  projectId: number,
+  commands: readonly CommandInput[],
+): Promise<void> {
+  const named = [
+    ...new Set(
+      commands.flatMap((command) =>
+        command.type === "label_add" || command.type === "label_remove"
+          ? [command.label_id]
+          : [],
+      ),
+    ),
+  ];
+  const locked = new Set(
+    (await lockLabels(tx, projectId, named)).map((row) => row.id),
+  );
+  for (const [i, command] of commands.entries()) {
+    if (command.type === "label_add" && !locked.has(command.label_id)) {
+      throw new ValidationFailedError(`command[${i}]: unknown label_id`);
+    }
+  }
 }
 
 type FieldState = {
@@ -621,8 +633,6 @@ export async function executeBulkCommands(
   );
   const userRefs = await getUserRefs(ctx.router.system(), [...userIds]);
 
-  // Ascending, so two bulk requests over overlapping cards take the row
-  // locks in one order and cannot deadlock each other on real postgres.
   const ordered = [...rows].sort((a, b) => a.number - b.number);
   const perCard: {
     id: number;
@@ -632,6 +642,31 @@ export async function executeBulkCommands(
   }[] = [];
   const moved: number[] = [];
   await db.transaction(async (tx) => {
+    // Every card first, in one statement, in ascending id, asking the write
+    // gate again under the lock, then the labels the commands name, and only
+    // then any row under a card (see lockIssueRows, rules 1, 2 and 6): two
+    // bulk requests over overlapping cards, or one and a single card's
+    // write, queue instead of deadlocking.
+    const locked = await tx
+      .select(gateColumns)
+      .from(issues)
+      .where(
+        inArray(
+          issues.id,
+          rows.map((row) => row.id),
+        ),
+      )
+      .orderBy(asc(issues.id))
+      .for("no key update");
+    const lockedById = new Map(locked.map((row) => [row.id, row]));
+    const vanished = ordered.filter((row) => !lockedById.has(row.id));
+    if (vanished.length > 0) {
+      throw new NotFoundError(
+        `issues not found: ${vanished.map((row) => row.number).join(", ")}`,
+      );
+    }
+    for (const row of locked) assertIssueWritable(row, actor, role);
+    await lockCommandLabels(tx, project.id, input.commands);
     const now = new Date();
     for (const row of ordered) {
       const state = await readFieldState(tx, row.id);
