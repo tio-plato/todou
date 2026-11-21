@@ -2219,6 +2219,71 @@ describe("the card's own question badge", () => {
     expect(scroll.reveals("comment-16")).toBe(0);
   });
 
+  it("rereads a failed read when pressed again, as its Retry does", async () => {
+    const model = openCard();
+    const server = serve({ "p/7": model });
+    const scroll = scrolling();
+    const view = renderAt("/projects/p/issues/7#comment-12");
+    await landed(view, scroll, 12);
+    const entries = view.router.history.length;
+    const seen = writes(view);
+    model.questionReply = () => failure("questions unavailable");
+
+    await click(inTitle(view, model));
+    await view.findByText(LOCATE_FAILURE);
+    const reads = server.questions().length;
+    const failed = seen.length;
+    const pending = deferred<Response>();
+    model.questionReply = () => pending.promise;
+
+    await click(inTitle(view, model));
+    await waitFor(() => expect(server.questions()).toHaveLength(reads + 1));
+    // The read under way already answers a press made while it lasts.
+    await click(inTitle(view, model));
+    expect(server.questions()).toHaveLength(reads + 1);
+    expect(view.queryByText(LOCATE_FAILURE)).not.toBeNull();
+    expect((retryFor(view, LOCATE_FAILURE) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    await release(pending, json(model.questions));
+
+    await landed(view, scroll, 14);
+    expect(server.questions()).toHaveLength(reads + 1);
+    expect(asksInTheAddress(seen)).toEqual([]);
+    // Past the failure, nothing but the comment it lands on.
+    expect(
+      seen
+        .slice(failed)
+        .map(({ href }) => href)
+        .filter((href) => href !== "/projects/p/issues/7#comment-14"),
+    ).toEqual([]);
+    expect(seen.filter(({ type }) => type === "PUSH")).toEqual([]);
+    expect(view.router.history.length).toBe(entries);
+  });
+
+  it("rereads a failed entry from elsewhere when pressed, writing only the comment it lands on", async () => {
+    const model = openCard();
+    model.questionReply = () => failure("questions unavailable");
+    const server = serve({ "p/7": model });
+    const scroll = scrolling();
+    const view = renderAt(`/projects/p/issues/7#${ENTRY}-after-10`);
+    await view.findByText(LOCATE_FAILURE);
+    await view.findByText("Decision 14?");
+    const seen = writes(view);
+    const reads = server.questions().length;
+    model.questionReply = undefined;
+
+    await click(inTitle(view, model));
+    await landed(view, scroll, 14);
+    expect(server.questions()).toHaveLength(reads + 1);
+    expect(
+      seen
+        .map(({ href }) => href)
+        .filter((href) => href !== "/projects/p/issues/7#comment-14"),
+    ).toEqual([]);
+    expect(seen.filter(({ type }) => type === "PUSH")).toEqual([]);
+  });
+
   it("starts from the earliest when the address names a comment that asks nothing", () => {
     const open = questions([
       question(10),

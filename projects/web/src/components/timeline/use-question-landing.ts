@@ -37,6 +37,20 @@ function asksForQuestion(hash: string, state: unknown): boolean {
   return isQuestionLandingHash(hash) || readQuestionStep(state) !== null;
 }
 
+/**
+ * Each card's landing, for its badge to reach while the entry still holds a
+ * request: asking for it again through the router would write the same
+ * address and the same state, which the router takes for no move at all (it
+ * only reloads), so the landing would never hear of the press. Keyed by card,
+ * as the Timeline is, so a press never reaches another card's landing.
+ */
+const presses = new Map<string, () => void>();
+
+/** A press of the card's badge while its entry still holds a request. */
+export function pressQuestionLanding(slug: string, issueNumber: number): void {
+  presses.get(`${slug}/${issueNumber}`)?.();
+}
+
 /** One entry consumes one fresh snapshot, then hands scrolling to the timeline. */
 export function useQuestionLanding(slug: string, issueNumber: number) {
   const client = useQueryClient();
@@ -172,6 +186,21 @@ export function useQuestionLanding(slug: string, issueNumber: number) {
     },
     [],
   );
+
+  // A failed read is read again, as its Retry does; a read under way already
+  // answers the press. Called long after this render, so it reads the ref.
+  useEffect(() => {
+    const key = `${slug}/${issueNumber}`;
+    const press = () => {
+      if (active.current?.phase === "failed") setRetry((value) => value + 1);
+    };
+    presses.set(key, press);
+    return () => {
+      // Only its own: were two landings of one card ever to overlap, the
+      // newer one keeps the press.
+      if (presses.get(key) === press) presses.delete(key);
+    };
+  }, [slug, issueNumber]);
 
   const finish = (error?: "unavailable" | "stalled") => {
     const current = active.current;
