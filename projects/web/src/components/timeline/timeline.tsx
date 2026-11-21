@@ -41,13 +41,10 @@ import { HiddenBlock } from "@/components/timeline/hidden-block.tsx";
 import {
   locateUnit,
   pickReadingUnit,
+  readingFromTail,
 } from "@/components/timeline/reading-unit.ts";
 import { useRevealedRuns } from "@/components/timeline/revealed-runs.tsx";
 import { SpecVersionCard } from "@/components/timeline/spec-version-card.tsx";
-import {
-  readingFromTail,
-  TailSlideAnchor,
-} from "@/components/timeline/tail-slide-anchor.tsx";
 import { TimelineSettlementsProvider } from "@/components/timeline/timeline-answers.tsx";
 import { useBelowViewport } from "@/components/timeline/use-below-viewport.ts";
 import { useQuestionLanding } from "@/components/timeline/use-question-landing.ts";
@@ -1060,12 +1057,6 @@ export function Timeline({
         {/* The list's end, after the comments still being sent. */}
         <div ref={setListEnd} />
       </div>
-      <TailSlideAnchor
-        list={listRef}
-        tailUnits={unitsBelow.map(unitKey)}
-        tailItems={below.map(itemKey)}
-        present={new Set(items.map(itemKey))}
-      />
       {/* A sibling of the list, not its last child: a sticky box moves only
           within its parent, and the page's column is what lets this one
           float over the whole card, title and body included. It holds no
