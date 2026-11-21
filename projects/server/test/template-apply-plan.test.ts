@@ -9,6 +9,7 @@ import {
   applySelection,
   type ProjectState,
   planTemplateApply,
+  TEMPLATE_APPLY_RULES,
   templateApplyDigest,
 } from "../src/services/template-apply.ts";
 
@@ -446,6 +447,14 @@ describe("applySelection", () => {
 });
 
 describe("templateApplyDigest", () => {
+  it("tells apart a plan made under other rules, the project and template the same", () => {
+    // A preview from before an upgrade must not match the apply after it.
+    const state = drifted();
+    expect(
+      templateApplyDigest(state, BASIC, 0, TEMPLATE_APPLY_RULES - 1),
+    ).not.toBe(templateApplyDigest(state, BASIC, 0));
+  });
+
   it("tells two template bodies apart at the same revision", () => {
     // A built-in template is always revision 0: an upgrade that changes it
     // between a preview and its apply has to void the preview all the same.

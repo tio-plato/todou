@@ -469,15 +469,26 @@ function canonicalJson(value: unknown): string {
 }
 
 /**
+ * Which rules a plan's rows and its apply follow. Raised whenever the kinds
+ * of row, their fields or what applying them comes to change, so that a
+ * preview made before an upgrade is refused once after it rather than
+ * carried out under rules it was not drawn by. The digests before 2 hashed
+ * none.
+ */
+export const TEMPLATE_APPLY_RULES = 2;
+
+/**
  * What a plan was computed from, hashed: the project's statuses, line,
- * stored roles and labels, and the template with its revision. Issue counts
- * are left out — anyone editing a card would otherwise void every preview —
- * so a status that took issues after the preview is skipped instead.
+ * stored roles and labels, the template with its revision, and the rules.
+ * Issue counts are left out — anyone editing a card would otherwise void
+ * every preview — so a status that took issues after the preview is skipped
+ * instead.
  */
 export function templateApplyDigest(
   state: ProjectState,
   template: TemplateBody,
   revision: number,
+  rules = TEMPLATE_APPLY_RULES,
 ): string {
   return createHash("sha256")
     .update(
@@ -499,6 +510,7 @@ export function templateApplyDigest(
           .map((l) => ({ id: l.id, name: l.name, color: l.color })),
         template,
         revision,
+        rules,
       }),
     )
     .digest("base64url");
