@@ -89,6 +89,35 @@ describe("patchLineOfRow", () => {
     expect(lines[addition as number]).toBe("+more b");
   });
 
+  it("finds a CRLF fence's rows in every drawing", () => {
+    // mdast keeps each `\r\n` in a CRLF fence's body; pierre's rows carry no
+    // `\r`. Every row names the line it names in the LF body.
+    const crlf = TWO_FILES.replaceAll("\n", "\r\n");
+    expect(patchLineOfRow(crlf, row("diff", 10, "shared", "context"))).toBe(
+      lines.indexOf(" shared", secondFile),
+    );
+    expect(
+      patchLineOfRow(crlf, row("diff", 11, "old b", "change-deletion")),
+    ).toBe(lines.indexOf("-old b"));
+    expect(
+      patchLineOfRow(crlf, row("diff", 12, "more b", "change-addition")),
+    ).toBe(lines.indexOf("+more b"));
+    expect(patchLineOfRow(crlf, row("message", 1, "Explain the change."))).toBe(
+      lines.indexOf("Explain the change."),
+    );
+    // The signature's trailing space is part of its line.
+    const signature = lines.indexOf("-- ");
+    expect(patchLineOfRow(crlf, row("raw", signature + 1, "-- "))).toBe(
+      signature,
+    );
+    // A `\r` that ends no line is part of it: the source counts lines by
+    // `\n` alone, so a row past it keeps the line it has in the LF body.
+    const stray = crlf.replace("Explain the change.", "Explain\rthe change.");
+    expect(
+      patchLineOfRow(stray, row("diff", 12, "more b", "change-addition")),
+    ).toBe(lines.indexOf("+more b"));
+  });
+
   it("counts past a no-newline marker and stops before the signature", () => {
     const patch = [
       "diff --git a/c.txt b/c.txt",

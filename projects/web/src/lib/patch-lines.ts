@@ -1,4 +1,8 @@
-import { DELETION_LINE_TYPE, LINE_TYPE_ATTR, rowText } from "./pierre-rows.ts";
+import {
+  DELETION_LINE_TYPE,
+  LINE_TYPE_ATTR,
+  rowLineText,
+} from "./pierre-rows.ts";
 
 /**
  * Which line of a ```diff / ```patch fence one of the patch viewer's rows
@@ -55,7 +59,8 @@ const FILE_HEADER =
   /^(index |old mode |new mode |deleted file mode |new file mode |similarity index |dissimilarity index |rename from |rename to |copy from |copy to |Binary files |GIT binary patch|--- |\+\+\+ )/;
 
 function parse(value: string): ParsedFence {
-  const lines = value.split("\n");
+  // A CRLF fence's body keeps each `\r\n`, and pierre's rows have no `\r`.
+  const lines = value.split(/\r?\n/);
   const hunkLines: HunkLine[] = [];
   const inFile = new Array<boolean>(lines.length).fill(false);
   let i = 0;
@@ -187,7 +192,7 @@ export function patchLineOfRow(value: string, row: Element): number | null {
   if (pre === null) return null;
   const number = Number(row.getAttribute("data-line"));
   if (!Number.isInteger(number)) return null;
-  const text = rowText(row);
+  const text = rowLineText(row);
   const parsed = parsedFence(value);
   if (pre.hasAttribute("data-diff")) {
     const type = row.getAttribute(LINE_TYPE_ATTR);
