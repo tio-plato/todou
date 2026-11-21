@@ -45,7 +45,6 @@ import {
 import { toast } from "sonner";
 import { prefsQuery, usePatchPrefs } from "@/api/prefs.ts";
 import { api, projectsQuery, projectTemplatesQuery } from "@/api/queries.ts";
-import { StatusPill } from "@/components/issue/status-pill.tsx";
 import { LabelSetList } from "@/components/settings/label-set-list.tsx";
 import {
   isRole,
@@ -60,6 +59,7 @@ import {
 } from "@/components/start-from-picker.tsx";
 import {
   TemplateHoverCard,
+  TemplateSummary,
   templateStatusSet,
 } from "@/components/template-preview.tsx";
 import { Badge } from "@/components/ui/badge";
@@ -87,9 +87,6 @@ const templatesKey = projectTemplatesQuery.queryKey;
 
 const INCOMPATIBLE_PILL =
   "rounded-full border border-destructive/40 px-2 py-0.5 text-xs text-destructive";
-
-const counted = (n: number, one: string, many: string) =>
-  `${n} ${n === 1 ? one : many}`;
 
 /** The account's project templates: the built-in ones, then its own. */
 export function ProjectTemplatesSettingsPage() {
@@ -171,7 +168,9 @@ export function ProjectTemplatesSettingsPage() {
                       <span className={INCOMPATIBLE_PILL}>Incompatible</span>
                     )}
                   </div>
-                  {template.body !== null && <Summary body={template.body} />}
+                  {template.body !== null && (
+                    <TemplateSummary body={template.body} />
+                  )}
                 </div>
               </PreviewOnHover>
             </div>
@@ -188,20 +187,6 @@ export function ProjectTemplatesSettingsPage() {
           </li>
         ))}
       </ul>
-    </div>
-  );
-}
-
-/** What a row says of a template: its size, and where its blocks clear. */
-function Summary({ body }: { body: TemplateBody }) {
-  const line = body.statuses.find((status) => status.block_clear);
-  return (
-    <div className="flex flex-wrap items-center gap-x-1 text-sm text-muted-foreground">
-      {counted(body.statuses.length, "status", "statuses")}
-      {" · "}
-      {counted(body.labels.length, "label", "labels")}
-      {" · Blocks clear at"}
-      {line ? <StatusPill status={line} /> : " any closed status"}
     </div>
   );
 }

@@ -12,6 +12,7 @@ import { MatchHighlight } from "@/components/shared/match-highlight.tsx";
 import {
   ProjectHoverCard,
   TemplateHoverCard,
+  TemplateSummary,
 } from "@/components/template-preview.tsx";
 import { matchText, type ProjectMatch } from "@/lib/project-match.ts";
 
@@ -71,6 +72,8 @@ export function TemplateListbox({
     const range = matchText(template.name, query);
     return range === undefined ? null : { range };
   }, []);
+  const summaryId = (template: UsableTemplate) =>
+    `${idPrefix}-${template.ref}-summary`;
   return (
     <SearchableListbox<UsableTemplate, { range: ProjectMatch["range"] }>
       options={options}
@@ -86,15 +89,27 @@ export function TemplateListbox({
           align="start"
           sideOffset={32}
         >
-          <span className="min-w-0 flex-1 truncate">
-            {hit ? (
-              <MatchHighlight text={template.name} range={hit.range} />
-            ) : (
-              template.name
-            )}
+          {/* The name and the summary under it are one element to hover. */}
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className="truncate">
+              {hit ? (
+                <MatchHighlight text={template.name} range={hit.range} />
+              ) : (
+                template.name
+              )}
+            </span>
+            <TemplateSummary
+              body={template.body}
+              id={summaryId(template)}
+              className="text-xs"
+            />
           </span>
         </TemplateHoverCard>
       )}
+      // The option holds the summary too, which would otherwise be read into
+      // its name.
+      optionAriaLabel={(template) => template.name}
+      optionDescribedBy={summaryId}
       selected={String(value)}
       startAtSelected
       onSelect={(template) => onChange(template.ref)}
