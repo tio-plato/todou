@@ -917,6 +917,14 @@ class Resolver {
  *    the target's `project_meta`; cleaning up a deleted project locks its
  *    cards, then its `project_meta`, so a card still being created there
  *    either finishes first or waits for the cleanup.
+ *    And `project_meta` before the project's statuses: a transaction that
+ *    writes more than one existing status, or a status and the block clear
+ *    line (reordering statuses, making one the default), locks
+ *    `project_meta` FOR NO KEY UPDATE as its first statement, even when the
+ *    line stays where it is, so that such writes queue there and none holds
+ *    a status while it waits for another. Creating a card takes its number
+ *    before the foreign key share-locks its status, and cleaning up a
+ *    deleted project locks `project_meta` before it deletes the statuses.
  * 4. Rows outside one card that a statement or a transaction locks several
  *    of (block edges, read positions, a deleted project's labels) are locked
  *    first, `ORDER BY id FOR UPDATE`, and only then written. A background
