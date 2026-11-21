@@ -154,14 +154,18 @@ export async function templateBodyFromProject(
   actor: UserRow,
   ref: string,
 ): Promise<TemplateBody> {
+  // Gated on the chart roles the body carries, which a guest may not read
+  // (T-788), and then on the statuses and labels around them.
   const { project, role } = await requireCapability(
     ctx,
     actor,
     ref,
-    "status.list",
+    "insights.read",
   );
-  if (!can(role, "label.list")) {
-    throw new ForbiddenError("requires the label.list capability");
+  for (const cap of ["status.list", "label.list"] as const) {
+    if (!can(role, cap)) {
+      throw new ForbiddenError(`requires the ${cap} capability`);
+    }
   }
   const db = await ctx.router.forProject(routeInfoOf(project));
   const [statusRows, meta, saved, labelRows] = await Promise.all([

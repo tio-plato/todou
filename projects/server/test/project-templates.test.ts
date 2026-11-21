@@ -266,6 +266,31 @@ describe("project templates", () => {
     expect(status).toBe(404);
   });
 
+  it("will not read a project for a guest there, which may not see its chart roles", async () => {
+    const slug = await createProject();
+    const guest = await addUserWithToken(t.ctx, "tpl-guest");
+    expect(
+      (
+        await request(`/projects/${slug}/members`, "POST", {
+          login: "tpl-guest",
+          role: "guest",
+        })
+      ).status,
+    ).toBe(201);
+    const saved = await createTemplate(
+      { name: "Peek", from_project: slug },
+      guest.headers,
+    );
+    expect(saved.status).toBe(403);
+    const copied = await request(
+      "/projects",
+      "POST",
+      { slug: `tpl-guest-copy-${n++}`, name: "Copy", from_project: slug },
+      guest.headers,
+    );
+    expect(copied.status).toBe(403);
+  });
+
   it("stores a status name trimmed, and refuses two that become one", async () => {
     const slug = await createProject();
     const done = await idOf(slug, "Done");
