@@ -200,8 +200,6 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
   // What the reader had picked when the page last asked to be reloaded;
   // otherwise none, and a preview is read only for a template they pick.
   const [kept] = useState(() => keptFor(slug, templates.data));
-  // Used once: the next visit starts with nothing picked again.
-  useEffect(() => sessionStorage.removeItem(reloadKey(slug)), [slug]);
   const [template, setTemplate] = useState<TemplateRef | null>(
     kept?.template ?? null,
   );
@@ -247,8 +245,15 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
     (older || mismatch) && template !== null
       ? JSON.stringify({ template, rows: [...chosen] } satisfies Kept)
       : null;
+  // Otherwise nothing is kept: what was kept is used once, on mounting,
+  // and given up once the page no longer asks to be reloaded.
   useEffect(() => {
-    if (keep !== null) sessionStorage.setItem(reloadKey(slug), keep);
+    try {
+      if (keep === null) sessionStorage.removeItem(reloadKey(slug));
+      else sessionStorage.setItem(reloadKey(slug), keep);
+    } catch {
+      // Storage refused: the reloaded page starts with nothing picked.
+    }
   }, [slug, keep]);
   const select = (ids: readonly string[], on: boolean) => {
     if (plan === undefined || template === null) return;

@@ -461,15 +461,13 @@ export function exceptionText(category: string, role: string): string {
     { category } as Pick<Status, "category">,
     role,
   );
-  if (exception !== null) {
-    parts.push(
-      exception === "excluded"
-        ? "excluded from charts"
-        : `${exception} in charts`,
-    );
-  }
+  if (exception !== null) parts.push(chartRoleText(exception));
   return parts.join(" · ");
 }
+
+/** How a status's chart role is said beside it. */
+export const chartRoleText = (role: string) =>
+  role === "excluded" ? "excluded from charts" : `${role} in charts`;
 
 function StatusRow({
   status,

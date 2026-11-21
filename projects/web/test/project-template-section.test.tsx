@@ -923,6 +923,45 @@ describe("applying a template", () => {
     });
   });
 
+  it("gives up what it kept once the server answers in full again", async () => {
+    const { project: _, template: __, ...older } = PLAN_7;
+    const plans: Record<string, TemplateApplyPlan> = {
+      ...PLANS,
+      "7": older as TemplateApplyPlan,
+    };
+    fakeServer({ plans });
+    renderPage();
+    fireEvent.click(await screen.findByRole("option", { name: "Kanban" }));
+    await screen.findByText("The server is older than this page.");
+    expect(kept("todou")).toEqual({ template: 7, rows: [] });
+
+    // The deploy finished: the next preview comes from a new server.
+    plans["7"] = PLAN_7;
+    fireEvent(window, new Event("visibilitychange"));
+    await screen.findByRole("checkbox", { name: "Add status Review" });
+    expect(kept("todou")).toBeNull();
+  });
+
+  it("still asks for a reload where the tab's storage is refused", async () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("refused", "SecurityError");
+    });
+    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new DOMException("refused", "SecurityError");
+    });
+    const { project: _, template: __, ...older } = PLAN_7;
+    fakeServer({ plans: { ...PLANS, "7": older as TemplateApplyPlan } });
+    renderPage();
+    fireEvent.click(await screen.findByRole("option", { name: "Kanban" }));
+    await screen.findByText("The server is older than this page.");
+    // Still there once the page has tried to keep the picks.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+    expect(
+      screen.getByText("The server is older than this page."),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
+  });
+
   it("picks again, once, what was kept for this project before a reload", async () => {
     keep("todou", {
       template: 7,

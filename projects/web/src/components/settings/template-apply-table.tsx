@@ -1,8 +1,4 @@
-import {
-  type ChangeRow,
-  enumLookup,
-  type TemplateApplyPlan,
-} from "@todou/shared";
+import type { ChangeRow, TemplateApplyPlan } from "@todou/shared";
 import {
   ArrowUpDownIcon,
   ChevronDownIcon,
@@ -23,6 +19,7 @@ import { LabelRows } from "@/components/issue/label-chip.tsx";
 import { StatusPill } from "@/components/issue/status-pill.tsx";
 import {
   ClearRule,
+  chartRoleText,
   exceptionText,
   plural,
 } from "@/components/settings/status-set-list.tsx";
@@ -298,12 +295,6 @@ function Look({
   );
 }
 
-const ROLE_TEXT = {
-  remaining: "remaining in charts",
-  completed: "completed in charts",
-  excluded: "excluded from charts",
-} as const;
-
 function StatusCell({
   face,
   side,
@@ -348,12 +339,7 @@ function StatusCell({
           </span>
           {" · "}
           <span className={cn(changed?.role && strong)}>
-            {enumLookup(
-              ROLE_TEXT,
-              face.role,
-              (role) => `${role} in charts`,
-              "chart role",
-            )}
+            {chartRoleText(face.role)}
           </span>
         </span>
       )}
