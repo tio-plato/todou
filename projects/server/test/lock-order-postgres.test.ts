@@ -1159,6 +1159,48 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
     }
   });
 
+  it("a bulk command adding a label another write puts on first adds it once", async () => {
+    const p = await project();
+    const a = await card(p.slug, "a");
+    const b = await card(p.slug, "b");
+    const l = await label(p.slug, "L");
+
+    // The holder is a write on a that labels it and commits while the bulk
+    // command waits for the card.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issues WHERE id = $1 FOR NO KEY UPDATE",
+        [a.id],
+      );
+      pending = send("POST", `/projects/${p.slug}/issues/bulk`, {
+        numbers: [a.number, b.number],
+        commands: [{ type: "label_add", label_id: l }],
+      });
+      await waitForLockWaiters(1);
+      await holder.query(
+        "INSERT INTO issue_labels (issue_id, label_id) VALUES ($1, $2)",
+        [a.id, l],
+      );
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(200);
+      const labeled = await observer.query<{ issue_id: string }>(
+        "SELECT issue_id FROM issue_labels WHERE label_id = $1 ORDER BY issue_id",
+        [l],
+      );
+      expect(labeled.rows).toEqual([
+        { issue_id: String(a.id) },
+        { issue_id: String(b.id) },
+      ]);
+      expect(await eventsOf(a, "label_added")).toEqual([]);
+      expect(await eventsOf(b, "label_added")).toHaveLength(1);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
   it("a PATCH emptying the assignees removes one assigned meanwhile, under their login", async () => {
     const p = await project();
     const x = await card(p.slug, "T1");
