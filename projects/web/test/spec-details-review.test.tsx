@@ -1,4 +1,4 @@
-import { fireEvent, waitFor } from "@testing-library/react";
+import { act, fireEvent, waitFor } from "@testing-library/react";
 import type { SpecCommentItem } from "@todou/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -192,6 +192,44 @@ describe("a fold in the spec review view", () => {
     expect(
       container.querySelectorAll("button.spec-fold").length,
     ).toBeGreaterThan(0);
+  });
+});
+
+describe("chips of neighbouring blocks", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("joins every chip in a fold the reader shut into one by its summary", async () => {
+    // Only the fold has a place on the page; once shut, every block in it is
+    // measured where the fold is.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        return DOMRect.fromRect({ y: this.tagName === "DETAILS" ? 300 : 0 });
+      },
+    );
+    const { view, container } = await renderSpec({
+      body: doc("第一段。\n\n第二段。"),
+      annotations: [
+        annotation(FOLD_LINE + 1),
+        annotation(BODY_LINE),
+        annotation(BODY_LINE + 2),
+      ],
+    });
+    const fold = container.querySelector("details");
+    if (fold === null) throw new Error("no fold");
+    expect(fold.hasAttribute("open")).toBe(true);
+    act(() => {
+      fold.removeAttribute("open");
+      fold.dispatchEvent(new Event("toggle"));
+    });
+    await waitFor(() =>
+      expect(
+        view
+          .getAllByRole("button", { name: /comment\(s\) on this block/ })
+          .map((chip) => [chip.style.top, chip.getAttribute("aria-label")]),
+      ).toEqual([["300px", "3 comment(s) on this block"]]),
+    );
   });
 });
 
