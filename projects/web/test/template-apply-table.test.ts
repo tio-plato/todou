@@ -1,9 +1,9 @@
 import type {
   ChangeRow,
-  StatusKey,
   TemplateApplyPlan,
   TemplateStatus,
 } from "@todou/shared";
+import type { StatusKey } from "@todou/shared/template-apply";
 import { describe, expect, it } from "vitest";
 import {
   labelTable,

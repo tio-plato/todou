@@ -1,15 +1,14 @@
 import { describe, expect, it } from "vitest";
+import type { ChangeRow, TemplateBody } from "../src/index.ts";
 import {
   type ApplyProject,
   afterCell,
   applyLayout,
   applyResult,
-  type ChangeRow,
   type LayoutRow,
   type StatusKey,
   statusMovers,
-  type TemplateBody,
-} from "../src/index.ts";
+} from "../src/template-apply.ts";
 
 /** A project with these statuses in this order, ids from 1. */
 function project(names: string[], line: string | null = null): ApplyProject {

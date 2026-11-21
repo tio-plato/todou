@@ -1,16 +1,9 @@
 import { createHash } from "node:crypto";
 import {
-  type ApplyResult,
-  applyLayout,
-  applyResult,
   type ChangeRow,
   defaultInsightsRole,
-  pairByName,
-  pairStatuses,
   type Role,
-  type StatusKey,
   type StatusRef,
-  statusMovers,
   type TemplateApplyInput,
   type TemplateApplyPlan,
   type TemplateApplyProject,
@@ -19,6 +12,15 @@ import {
   type TemplateRef,
   type TemplateStatus,
 } from "@todou/shared";
+import {
+  type ApplyResult,
+  applyLayout,
+  applyResult,
+  pairByName,
+  pairStatuses,
+  type StatusKey,
+  statusMovers,
+} from "@todou/shared/template-apply";
 import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import { uniqueViolation } from "../auth/provision.ts";

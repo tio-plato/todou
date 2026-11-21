@@ -13,6 +13,10 @@ import type {
  * that draws it beforehand: the two cannot disagree when both read it here,
  * from the same project and template.
  *
+ * A subpath of its own, `@todou/shared/template-apply`, kept out of the
+ * main entry as `spec-remap` is: it carries jsdiff, which the CLI, loading
+ * the main entry only, should not.
+ *
  * The rule is the table the page draws. Each status the project has or the
  * template adds is a row of it, laid out once whatever is ticked; a status
  * the project keeps but the template has elsewhere is two rows, where it is

@@ -1,15 +1,12 @@
+import type { ChangeRow, Label, Role, TemplateApplyPlan } from "@todou/shared";
 import {
   type ApplyResult,
   afterCell,
   applyLayout,
   applyResult,
-  type ChangeRow,
-  type Label,
   pairStatuses,
-  type Role,
   type StatusKey,
-  type TemplateApplyPlan,
-} from "@todou/shared";
+} from "@todou/shared/template-apply";
 import { groupLabelsByPrefix, splitLabelName } from "@/lib/labels.ts";
 
 /**

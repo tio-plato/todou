@@ -49,4 +49,3 @@ export * from "./schemas/watcher.ts";
 export * from "./search-query.ts";
 export * from "./spec-rename.ts";
 export * from "./sse.ts";
-export * from "./template-apply.ts";
