@@ -8,13 +8,15 @@ import {
 import { useParams } from "@tanstack/react-router";
 import {
   ChangeRow,
+  type ProjectTemplate,
   type TemplateApplyInput,
   type TemplateApplyResult,
-  type TemplateRef,
+  TemplateRef,
   TodouError,
 } from "@todou/shared";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { z } from "zod";
 import { invalidateInsights } from "@/api/insights.ts";
 import {
   api,
@@ -32,6 +34,7 @@ import { ApplyTable } from "@/components/settings/template-apply-table.tsx";
 import {
   PICKER_FRAME,
   TemplateListbox,
+  usable,
 } from "@/components/start-from-picker.tsx";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -163,10 +166,45 @@ function appliedText(
   return `${text} ${kept.join(", ")} ${one ? "was" : "were"} not deleted: ${one ? "it has" : "they have"} issues now.`;
 }
 
+/** Where the page keeps the reader's picks while it asks for a reload. */
+const reloadKey = (slug: string) => `todou:apply-template:${slug}`;
+
+const Kept = z.object({
+  template: TemplateRef,
+  rows: z.array(z.tuple([z.string(), z.boolean()])),
+});
+type Kept = z.infer<typeof Kept>;
+
+/**
+ * What the page kept for `slug` before a reload, provided its template can
+ * still be applied. Anything unreadable is as good as nothing kept.
+ */
+function keptFor(
+  slug: string,
+  templates: readonly ProjectTemplate[],
+): Kept | null {
+  try {
+    const raw = sessionStorage.getItem(reloadKey(slug));
+    if (raw === null) return null;
+    const kept = Kept.safeParse(JSON.parse(raw));
+    if (!kept.success) return null;
+    const ref = kept.data.template;
+    return templates.some((t) => t.ref === ref && usable(t)) ? kept.data : null;
+  } catch {
+    return null;
+  }
+}
+
 function ApplyTemplateSection({ slug }: { slug: string }) {
   const templates = useSuspenseQuery(projectTemplatesQuery);
-  // None at first: a preview is read only for a template the reader picks.
-  const [template, setTemplate] = useState<TemplateRef | null>(null);
+  // What the reader had picked when the page last asked to be reloaded;
+  // otherwise none, and a preview is read only for a template they pick.
+  const [kept] = useState(() => keptFor(slug, templates.data));
+  // Used once: the next visit starts with nothing picked again.
+  useEffect(() => sessionStorage.removeItem(reloadKey(slug)), [slug]);
+  const [template, setTemplate] = useState<TemplateRef | null>(
+    kept?.template ?? null,
+  );
   const preview = useQuery(previewQuery(slug, template));
   const queryClient = useQueryClient();
 
@@ -176,7 +214,11 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
   const older =
     preview.data !== undefined &&
     (preview.data.project === undefined || preview.data.template === undefined);
-  const plan = template === null || older ? undefined : preview.data;
+  // The server worked the apply out otherwise than this page drew it: the
+  // two run different code, and previewing again would draw the same.
+  const [mismatch, setMismatch] = useState(false);
+  const plan =
+    template === null || older || mismatch ? undefined : preview.data;
   // A row of a kind this page does not know is left off: it would be
   // applied without the reader having seen what it does.
   const rows =
@@ -188,13 +230,26 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
   const [choices, setChoices] = useState<{
     template: TemplateRef;
     rows: ReadonlyMap<string, boolean>;
-  } | null>(null);
+  } | null>(() =>
+    kept === null
+      ? null
+      : { template: kept.template, rows: new Map(kept.rows) },
+  );
   // Labels coming off cards are asked about once more before Apply.
   const [confirming, setConfirming] = useState(false);
   const chosen =
     choices?.template === template ? choices.rows : new Map<string, boolean>();
   const selected =
     plan === undefined ? new Set<string>() : selectedIn(rows, chosen);
+  // While the page asks for a reload, what the reader picked is kept for the
+  // reloaded page, however it is reloaded.
+  const keep =
+    (older || mismatch) && template !== null
+      ? JSON.stringify({ template, rows: [...chosen] } satisfies Kept)
+      : null;
+  useEffect(() => {
+    if (keep !== null) sessionStorage.setItem(reloadKey(slug), keep);
+  }, [slug, keep]);
   const select = (ids: readonly string[], on: boolean) => {
     if (plan === undefined || template === null) return;
     const next = withRows(rows, selected, ids, on);
@@ -252,6 +307,10 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
     },
     onError: (error, vars) => {
       setConfirming(false);
+      if (error instanceof TodouError && error.code === "drawn_mismatch") {
+        setMismatch(true);
+        return;
+      }
       if (error instanceof TodouError && error.status === 409) {
         toast.error(STALE);
         setChoices(forgetTicks);
@@ -297,10 +356,17 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
       />
       {template === null ? null : preview.isError ? (
         <p className="text-sm text-destructive">{preview.error.message}</p>
-      ) : older ? (
-        <p className="text-sm text-destructive">
-          The server is older than this page: reload the page.
-        </p>
+      ) : older || mismatch ? (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <p className="text-sm text-destructive">
+            {mismatch
+              ? "This page and the server apply templates differently."
+              : "The server is older than this page."}
+          </p>
+          <Button variant="outline" onClick={() => window.location.reload()}>
+            Reload
+          </Button>
+        </div>
       ) : plan?.changes.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           This project already matches this template.

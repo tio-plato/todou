@@ -80,6 +80,21 @@ export class ConflictError extends DomainError {
 }
 
 /**
+ * A page drew applying a template otherwise than the server works it out:
+ * the two run different code, so previewing again draws the same, and only
+ * reloading the page helps.
+ */
+export class DrawnMismatchError extends DomainError {
+  constructor() {
+    super(
+      409,
+      "drawn_mismatch",
+      "this page and the server apply templates differently — reload the page",
+    );
+  }
+}
+
+/**
  * Taking a slug a project used to hold needs an explicit `reclaim` (T-156).
  * Raised only to someone who can read that project — to anyone else the
  * slug is simply taken (T-662) — and the details still name the slug alone.

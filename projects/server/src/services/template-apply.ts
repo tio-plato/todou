@@ -36,7 +36,11 @@ import {
   STATUS_NAME_INDEX,
   statuses,
 } from "../db/project-schema.ts";
-import { ConflictError, ValidationFailedError } from "../errors.ts";
+import {
+  ConflictError,
+  DrawnMismatchError,
+  ValidationFailedError,
+} from "../errors.ts";
 import { requireCapability, routeInfoOf } from "./access.ts";
 import { announceBlockChanges, reevaluateProjectBlocks } from "./blocks.ts";
 import {
@@ -368,7 +372,7 @@ export function applySelection(
   }
   const layout = applyLayout(projectSnapshot(state), template, rows);
   if (drawn !== undefined && !asDrawn(applyResult(layout, chosen), drawn)) {
-    throw new ConflictError("the preview is out of date — preview again");
+    throw new DrawnMismatchError();
   }
   const picked = rows.filter((row) => chosen.has(row.id));
   const { keyOf } = pairStatuses(state.statuses, template);

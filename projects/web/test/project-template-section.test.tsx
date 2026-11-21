@@ -9,6 +9,7 @@ import {
 } from "@tanstack/react-router";
 import {
   act,
+  cleanup,
   fireEvent,
   render,
   screen,
@@ -460,6 +461,14 @@ const applyButton = () =>
 const drawn = (ui: ReactElement) =>
   render(ui, { container: document.createElement("div") }).container.innerHTML;
 
+/** What the page kept for `slug` across a reload, read back. */
+const kept = (slug: string) => {
+  const raw = sessionStorage.getItem(`todou:apply-template:${slug}`);
+  return raw === null ? null : JSON.parse(raw);
+};
+const keep = (slug: string, value: unknown) =>
+  sessionStorage.setItem(`todou:apply-template:${slug}`, JSON.stringify(value));
+
 /** Hovering, as React hears it: from the pointerover/out pair. */
 const hover = (el: Element) =>
   fireEvent.pointerOver(el, { pointerType: "mouse", bubbles: true });
@@ -467,6 +476,7 @@ const hover = (el: Element) =>
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  sessionStorage.clear();
 });
 
 describe("applying a template", () => {
@@ -869,13 +879,77 @@ describe("applying a template", () => {
     renderPage();
     fireEvent.click(await screen.findByRole("option", { name: "Kanban" }));
     expect(
-      await screen.findByText(
-        "The server is older than this page: reload the page.",
-      ),
+      await screen.findByText("The server is older than this page."),
     ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
     expect(screen.queryByRole("table")).toBeNull();
     expect(screen.queryByRole("button", { name: /Apply/ })).toBeNull();
     expect(server.applies()).toEqual([]);
+    expect(kept("todou")).toEqual({ template: 7, rows: [] });
+  });
+
+  it("asks for a reload, not another preview, when the server works the apply out otherwise", async () => {
+    const server = fakeServer({
+      apply: () =>
+        json(409, {
+          error: {
+            code: "drawn_mismatch",
+            message:
+              "this page and the server apply templates differently — reload the page",
+          },
+        }),
+    });
+    renderPage();
+    await pickKanban();
+    fireEvent.click(box("Recolour status Done"));
+    fireEvent.click(box("Delete status Parked"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply 6 changes" }));
+    expect(
+      await screen.findByText(
+        "This page and the server apply templates differently.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
+    expect(screen.queryByRole("table")).toBeNull();
+    await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+    expect(server.previews()).toHaveLength(1);
+    // What the reader picked is kept for the reloaded page.
+    expect(kept("todou")).toEqual({
+      template: 7,
+      rows: [
+        ["status.recolour:3", false],
+        ["status.delete:4", true],
+      ],
+    });
+  });
+
+  it("picks again, once, what was kept for this project before a reload", async () => {
+    keep("todou", {
+      template: 7,
+      rows: [
+        ["status.recolour:3", false],
+        ["status.delete:4", true],
+      ],
+    });
+    keep("other", { template: "basic", rows: [] });
+    const server = fakeServer();
+    renderPage();
+    await screen.findByRole("checkbox", { name: "Add status Review" });
+    expect(option("Kanban").getAttribute("aria-selected")).toBe("true");
+    expect(box("Recolour status Done").checked).toBe(false);
+    expect(box("Delete status Parked").checked).toBe(true);
+    expect(box("Add status Review").checked).toBe(true);
+    expect(server.previews().map((c) => c.body)).toEqual([{ template: 7 }]);
+    expect(kept("todou")).toBeNull();
+    expect(kept("other")).toEqual({ template: "basic", rows: [] });
+
+    // The next visit starts with nothing picked.
+    cleanup();
+    renderPage();
+    const list = await screen.findByRole("listbox", { name: "Templates" });
+    expect(within(list).queryAllByRole("option", { selected: true })).toEqual(
+      [],
+    );
   });
 
   it("says the project already matches a template with no difference", async () => {

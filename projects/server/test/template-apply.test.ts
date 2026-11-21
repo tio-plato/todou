@@ -338,6 +338,8 @@ describe.each(PLACEMENTS)("applying a template (%s placement)", (placement) => {
     ]) {
       const res = await apply(p.s, plan.expected, selected, "basic", wrong);
       expect(res.status, JSON.stringify(wrong)).toBe(409);
+      // Its own code: previewing again would draw the same.
+      expect((await json(res)).error.code).toBe("drawn_mismatch");
     }
     expect(await snapshot(p.s)).toEqual(before);
 
