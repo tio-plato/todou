@@ -907,8 +907,11 @@ class Resolver {
  *    on the card it moves (the same-database move, the copy of a move to
  *    another database when both share the project database, and the move's
  *    last step), and deleting a project on all its cards, in one statement,
- *    in ascending id. With one mode for every other write, no lock is ever
- *    upgraded.
+ *    in ascending id. FOR KEY SHARE is for a transaction that writes rows
+ *    under several cards and none of the cards (marking several cards read):
+ *    the lock those rows' foreign keys take anyway, so it waits only for a
+ *    transaction that deletes or moves the cards away. With one mode for each
+ *    kind of write, no lock is ever upgraded.
  * 3. Cards before `project_meta`: creating a card locks the cards it
  *    touches, then takes a number; a same-database move locks its card, then
  *    the target's `project_meta`; cleaning up a deleted project locks its

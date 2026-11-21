@@ -452,38 +452,54 @@ export async function markIssuesRead(
     "issue.mark_read",
   );
   const db = await ctx.router.forProject(routeInfoOf(project));
-  const rows = (
-    await db
-      .select({ id: issues.id, authorId: issues.authorId })
-      .from(issues)
+  // One statement holding several positions while it waits for more, so it
+  // takes them in the order every other writer does (see lockIssueRows): the
+  // cards first, in ascending id, in the mode the new positions' foreign key
+  // takes anyway; then the caller's positions on them in id order; and only
+  // then the write. Deleting the project takes the same cards and then the
+  // same positions, and a move its card and then the card's positions.
+  await db.transaction(async (tx) => {
+    const rows = (
+      await tx
+        .select({ id: issues.id, authorId: issues.authorId })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.projectId, project.id),
+            inArray(issues.number, [...new Set(input.numbers)]),
+            live,
+          ),
+        )
+        .orderBy(asc(issues.id))
+        .for("key share")
+    ).filter((row) => cardInScope(row, actor, role));
+    if (rows.length === 0) return;
+    const ids = rows.map((row) => row.id);
+    await tx
+      .select({ id: issueReads.id })
+      .from(issueReads)
       .where(
-        and(
-          eq(issues.projectId, project.id),
-          inArray(issues.number, [...new Set(input.numbers)]),
-          live,
-        ),
+        and(inArray(issueReads.issueId, ids), eq(issueReads.userId, actor.id)),
       )
-  ).filter((row) => cardInScope(row, actor, role));
-  if (rows.length === 0) return;
-  // Ascending, so two of these over overlapping cards take the row locks in
-  // one order and cannot deadlock each other on real postgres.
-  const ids = rows.map((row) => row.id).sort((a, b) => a - b);
-  await db
-    .insert(issueReads)
-    .values(
-      ids.map((issueId) => ({
-        projectId: project.id,
-        issueId,
-        userId: actor.id,
-        lastSeenAt: sql`now()`,
-      })),
-    )
-    .onConflictDoUpdate({
-      target: [issueReads.issueId, issueReads.userId],
-      set: {
-        lastSeenAt: sql`greatest(${issueReads.lastSeenAt}, excluded.last_seen_at)`,
-      },
-    });
+      .orderBy(asc(issueReads.id))
+      .for("update");
+    await tx
+      .insert(issueReads)
+      .values(
+        ids.map((issueId) => ({
+          projectId: project.id,
+          issueId,
+          userId: actor.id,
+          lastSeenAt: sql`now()`,
+        })),
+      )
+      .onConflictDoUpdate({
+        target: [issueReads.issueId, issueReads.userId],
+        set: {
+          lastSeenAt: sql`greatest(${issueReads.lastSeenAt}, excluded.last_seen_at)`,
+        },
+      });
+  });
 }
 
 /**
