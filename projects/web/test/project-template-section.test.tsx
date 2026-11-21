@@ -527,6 +527,21 @@ describe("applying a template", () => {
     );
   });
 
+  it("keeps a template's preview card shut when the template is picked before it opens", async () => {
+    fakeServer();
+    renderPage();
+    const kanban = await screen.findByRole("option", { name: "Kanban" });
+    const name = within(kanban).getByText("Kanban");
+    hover(name);
+    fireEvent.pointerDown(name, { pointerType: "mouse" });
+    fireEvent.click(kanban);
+    // Past the delay the card would have opened after.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 700)));
+    expect(
+      document.querySelectorAll("[data-slot='hover-card-content']"),
+    ).toHaveLength(0);
+  });
+
   it("goes back to no template when the one picked is picked again, forgetting its ticks", async () => {
     fakeServer();
     renderPage();
