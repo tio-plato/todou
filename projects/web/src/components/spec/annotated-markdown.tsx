@@ -717,7 +717,11 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     // page, so that a layout moving it keeps its key.
     type Place = {
       key: string;
-      /** The key of the block it is in, whose places join one another. */
+      /**
+       * The key of the block it is in. A block put back of the baseline
+       * joins its places within itself; a current block's join any other
+       * current block's.
+       */
       block: string;
       /** Whether that block is one put back of the baseline. */
       old: boolean;
@@ -988,13 +992,16 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       el.classList.add(ANNOTATED_CLASS);
       if (!kinds.has("comment")) el.classList.add(ANNOTATED_DRAFT_CLASS);
     }
-    // A block's places top to bottom: one less than a chip's height below
-    // the last kept would draw over it, and joins it instead. The block's
-    // own top is above every row in it, so a row joins upwards, inside its
-    // block; blocks never join one another here.
+    // Places top to bottom: one less than a chip's height below the last
+    // kept would draw over it, and joins it instead. The current version's
+    // places go in one pass, whatever block they are in, so a place joins
+    // the chip of the block above it as readily as its own block's. A block
+    // put back of the baseline joins only its own places here; the loop
+    // after this one joins it to another chip it would draw over.
     const byBlock = new Map<string, Place[]>();
     for (const place of places.values()) {
-      byBlock.set(place.block, [...(byBlock.get(place.block) ?? []), place]);
+      const group = place.old ? place.block : "";
+      byBlock.set(group, [...(byBlock.get(group) ?? []), place]);
     }
     // A chip is drawn in rem, which the root element's font size sets, not
     // this text's; the reader may have set it to other than 16px.

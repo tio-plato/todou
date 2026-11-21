@@ -1889,6 +1889,7 @@ async function chipTops(container: HTMLElement) {
 describe("chips on a block's later lines", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    setViewportWidth(1024);
     document.documentElement.style.fontSize = "";
   });
 
@@ -2043,6 +2044,59 @@ describe("chips on a block's later lines", () => {
       fold.dispatchEvent(new Event("toggle"));
     });
     expect(await chipTops(container)).toEqual(["98px"]);
+  });
+
+  it("joins the chips of blocks closer than a chip drawn at that width, in one pass", async () => {
+    // The blocks one line of text apart, as an open fold's summary and the
+    // paragraph under it are: inside a 24px phone badge, just clear of a
+    // 22px desktop chip. The second block's second line is two lines below
+    // the first block, clear of it at either width.
+    placeLines((el) => {
+      const text = el.textContent ?? "";
+      return text.startsWith("First")
+        ? 76
+        : text.startsWith("Second")
+          ? 98
+          : 30;
+    });
+    // Mounted narrow and widened: happy-dom seeds a `change` listener as
+    // unmatched, so one registered while the query already matches never
+    // hears it stop matching.
+    setViewportWidth(390);
+    const body = [
+      "Intro.",
+      "",
+      "First block.",
+      "",
+      "Second block's first line,",
+      "its second line.",
+      "",
+    ].join("\n");
+    const { container } = await renderDiff(body, body, [
+      wholeLines("comment", 3, 3),
+      wholeLines("comment", 5, 5),
+      wholeLines("comment", 6, 6),
+    ]);
+    const chips = () =>
+      [
+        ...container.querySelectorAll<HTMLElement>(
+          "[aria-label$='comment(s) on this block']",
+        ),
+      ].map((chip) => [chip.style.top, chip.getAttribute("aria-label")]);
+    await settleChips();
+    expect(chips()).toEqual([
+      ["76px", "2 comment(s) on this block"],
+      ["120px", "1 comment(s) on this block"],
+    ]);
+
+    act(() => setViewportWidth(1024));
+    await waitFor(() =>
+      expect(chips()).toEqual([
+        ["76px", "1 comment(s) on this block"],
+        ["98px", "1 comment(s) on this block"],
+        ["120px", "1 comment(s) on this block"],
+      ]),
+    );
   });
 });
 
