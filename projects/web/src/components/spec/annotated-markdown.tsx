@@ -718,9 +718,9 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     type Place = {
       key: string;
       /**
-       * The key of the block it is in. A block put back of the baseline
-       * joins its places within itself; a current block's join any other
-       * current block's.
+       * The key of the block it is in. Places in a block put back of the
+       * baseline join one another only; the current version's places join
+       * across blocks.
        */
       block: string;
       /** Whether that block is one put back of the baseline. */
@@ -996,8 +996,8 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     // kept would draw over it, and joins it instead. The current version's
     // places go in one pass, whatever block they are in, so a place joins
     // the chip of the block above it as readily as its own block's. A block
-    // put back of the baseline joins only its own places here; the loop
-    // after this one joins it to another chip it would draw over.
+    // put back of the baseline joins only its own places here; further down,
+    // `near` joins it to another chip it would draw over.
     const byBlock = new Map<string, Place[]>();
     for (const place of places.values()) {
       const group = place.old ? place.block : "";
