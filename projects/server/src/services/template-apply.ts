@@ -1,13 +1,19 @@
 import { createHash } from "node:crypto";
 import {
+  type ApplyResult,
+  applyLayout,
+  applyResult,
   type ChangeRow,
-  canonicalizeLabelName,
   defaultInsightsRole,
-  lineAfterDeleting,
+  pairByName,
+  pairStatuses,
   type Role,
+  type StatusKey,
   type StatusRef,
+  statusMovers,
   type TemplateApplyInput,
   type TemplateApplyPlan,
+  type TemplateApplyProject,
   type TemplateApplyResult,
   type TemplateBody,
   type TemplateRef,
@@ -72,12 +78,6 @@ export type ProjectState = {
   }>;
 };
 
-/**
- * A status in the project once the apply has run: an existing one by its
- * id, a new one by its name in the template, which has no id yet.
- */
-export type StatusKey = number | string;
-
 /** What carrying out the selected rows comes to. */
 export type ApplyOutcome = {
   deleteLabelIds: number[];
@@ -108,62 +108,29 @@ export type ApplyOutcome = {
 const sameColor = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /**
- * Inserts every item of `incoming` that `base` lacks right after the item
- * nearest before it in `incoming` that is already placed, or first when
- * there is none; `base` keeps its order. So a run of new items stays
- * together, and each lands next to what it followed where it came from.
+ * The project as a plan hands it to the page, and as the order rules read
+ * it: the page draws the table from this, so the apply reads it too.
  */
-function mergeOrder<K>(base: readonly K[], incoming: readonly K[]): K[] {
-  const result = [...base];
-  const placed = new Set(base);
-  for (const [index, item] of incoming.entries()) {
-    if (placed.has(item)) continue;
-    let at = 0;
-    for (let before = index - 1; before >= 0; before -= 1) {
-      const anchor = incoming[before] as K;
-      if (placed.has(anchor)) {
-        at = result.indexOf(anchor) + 1;
-        break;
-      }
-    }
-    result.splice(at, 0, item);
-    placed.add(item);
-  }
-  return result;
+export function projectSnapshot(state: ProjectState): TemplateApplyProject {
+  return {
+    statuses: state.statuses.map((s) => ({
+      id: s.id,
+      name: s.name,
+      color: s.color,
+      category: s.category,
+      role: s.role,
+      is_default: s.isDefault,
+    })),
+    line: state.lineId,
+    labels: state.labels.map((l) => ({
+      id: l.id,
+      name: l.name,
+      color: l.color,
+    })),
+  };
 }
 
-/**
- * The project's entries paired with the template's by canonical name, case
- * kept. Where several entries are one name once canonical, the first one
- * pairs and the rest are left over.
- */
-function pairByName<T extends { name: string }>(
-  entries: readonly T[],
-  names: readonly string[],
-): { paired: Map<string, T>; leftover: T[] } {
-  const wanted = new Set(names);
-  const paired = new Map<string, T>();
-  const leftover: T[] = [];
-  for (const entry of entries) {
-    const key = canonicalizeLabelName(entry.name);
-    if (wanted.has(key) && !paired.has(key)) paired.set(key, entry);
-    else leftover.push(entry);
-  }
-  return { paired, leftover };
-}
-
-type Pairing = ReturnType<typeof pairStatuses>;
-
-function pairStatuses(state: ProjectState, template: TemplateBody) {
-  const { paired, leftover } = pairByName(
-    state.statuses,
-    template.statuses.map((s) => s.name),
-  );
-  /** A template status as the project will know it. */
-  const keyOf = (status: TemplateStatus): StatusKey =>
-    paired.get(status.name)?.id ?? status.name;
-  return { paired, extras: leftover, keyOf };
-}
+type Pairing = Pick<ReturnType<typeof pairStatuses>, "keyOf">;
 
 function refOf(
   state: ProjectState,
@@ -183,7 +150,7 @@ function refOf(
 const base = (
   id: string,
   section: "statuses" | "labels",
-  action: "add" | "change" | "delete",
+  action: ChangeRow["action"],
   extra: { selectable?: boolean; requires?: string[] } = {},
 ) => ({
   id,
@@ -197,15 +164,15 @@ const base = (
 
 /**
  * Every difference between a project and a template, one row each. Rows
- * changing or deleting what the project has are named by its id there;
- * rows adding something by the template's name for it.
+ * changing, moving or deleting what the project has are named by its id
+ * there; rows adding something by the template's name for it.
  */
 export function planTemplateApply(
   state: ProjectState,
   template: TemplateBody,
 ): ChangeRow[] {
   const rows: ChangeRow[] = [];
-  const pairing = pairStatuses(state, template);
+  const pairing = pairStatuses(state.statuses, template);
   const { paired, extras, keyOf } = pairing;
   const addId = (name: string) => `status.add:${name}`;
 
@@ -226,19 +193,27 @@ export function planTemplateApply(
     });
   }
 
+  // A colour apart from what the status means, so either can be left out.
   for (const status of template.statuses) {
     const current = paired.get(status.name);
     if (current === undefined) continue;
-    const color = !sameColor(current.color, status.color);
+    if (!sameColor(current.color, status.color)) {
+      rows.push({
+        ...base(`status.recolour:${current.id}`, "statuses", "recolour"),
+        type: "status_recolour",
+        name: current.name,
+        from: current.color,
+        to: status.color,
+      });
+    }
     const category = current.category !== status.category;
     const role = current.role !== status.chart_role;
-    if (!color && !category && !role) continue;
+    if (!category && !role) continue;
     rows.push({
       ...base(`status.change:${current.id}`, "statuses", "change"),
       type: "status_change",
       name: current.name,
       color_now: current.color,
-      ...(color && { color: { from: current.color, to: status.color } }),
       ...(category && {
         category: { from: current.category, to: status.category },
       }),
@@ -248,36 +223,29 @@ export function planTemplateApply(
     });
   }
 
-  const nowOrder = state.statuses.filter((s) =>
-    [...paired.values()].includes(s),
-  );
-  const templateOrder = template.statuses.flatMap((s) => {
-    const current = paired.get(s.name);
-    return current ? [current] : [];
-  });
-  if (nowOrder.some((status, i) => templateOrder[i] !== status)) {
-    const ref = (s: { name: string; color: string }) => ({
-      name: s.name,
-      color: s.color,
-    });
+  const movers = statusMovers(state.statuses, template);
+  for (const status of state.statuses) {
+    if (!movers.has(status.id)) continue;
     rows.push({
-      ...base("status.order", "statuses", "change"),
-      type: "status_order",
-      from: nowOrder.map(ref),
-      to: templateOrder.map(ref),
+      ...base(`status.move:${status.id}`, "statuses", "move"),
+      type: "status_move",
     });
   }
 
-  for (const [id, type, now, wanted] of [
+  // Which status is the default changes what it means; where the line is,
+  // like a status's place, is the order.
+  for (const [id, type, action, now, wanted] of [
     [
       "status.default",
       "status_default",
+      "change",
       state.statuses.find((s) => s.isDefault)?.id ?? null,
       template.statuses.find((s) => s.is_default),
     ],
     [
       "status.line",
       "status_line",
+      "move",
       state.lineId,
       template.statuses.find((s) => s.block_clear),
     ],
@@ -285,7 +253,7 @@ export function planTemplateApply(
     const target = wanted === undefined ? null : keyOf(wanted);
     if (target === now) continue;
     rows.push({
-      ...base(id, "statuses", "change", {
+      ...base(id, "statuses", action, {
         requires: typeof target === "string" ? [addId(target)] : [],
       }),
       type,
@@ -324,7 +292,7 @@ export function planTemplateApply(
       });
     } else if (!sameColor(current.color, label.color)) {
       rows.push({
-        ...base(`label.change:${current.id}`, "labels", "change"),
+        ...base(`label.change:${current.id}`, "labels", "recolour"),
         type: "label_change",
         name: current.name,
         from: current.color,
@@ -345,17 +313,36 @@ export function planTemplateApply(
   return rows;
 }
 
+/** Whether `result` is what the page drew. */
+function asDrawn(
+  result: ApplyResult,
+  drawn: NonNullable<TemplateApplyInput["drawn"]>,
+): boolean {
+  return (
+    result.line === drawn.line &&
+    result.default === drawn.default &&
+    result.order.length === drawn.order.length &&
+    result.order.every((key, i) => drawn.order[i] === key)
+  );
+}
+
 /**
  * What carrying out `selected` of `rows` does to the project. Refuses an id
  * no row has, and a row selected without the rows it requires; a status
  * deletion whose status holds issues is skipped rather than refused, since
  * whether it held them when previewed cannot be told any more.
+ *
+ * Refuses too a selection that comes to anything but `drawn`, what the page
+ * drew the project as once applied, when it sent that. It is compared
+ * before any deletion is skipped: a status that took issues since the
+ * preview is not the page drawing it wrong.
  */
 export function applySelection(
   state: ProjectState,
   template: TemplateBody,
   rows: readonly ChangeRow[],
   selected: readonly string[],
+  drawn?: TemplateApplyInput["drawn"],
 ): ApplyOutcome {
   const chosen = new Set(selected);
   const byId = new Map(rows.map((row) => [row.id, row]));
@@ -377,15 +364,22 @@ export function applySelection(
       );
     }
   }
+  const layout = applyLayout(projectSnapshot(state), template, rows);
+  if (drawn !== undefined && !asDrawn(applyResult(layout, chosen), drawn)) {
+    throw new ConflictError("the preview is out of date — preview again");
+  }
   const picked = rows.filter((row) => chosen.has(row.id));
-  const pairing = pairStatuses(state, template);
-  const { keyOf } = pairing;
+  const { keyOf } = pairStatuses(state.statuses, template);
 
   const skipped: string[] = [];
   const deleteStatusIds: number[] = [];
   const deleteLabelIds: number[] = [];
   const addStatuses: TemplateStatus[] = [];
-  const updateStatuses: ApplyOutcome["updateStatuses"] = [];
+  const updates = new Map<number, ApplyOutcome["updateStatuses"][number]>();
+  const update = (
+    id: number,
+    change: { color?: string; category?: "open" | "closed" },
+  ) => updates.set(id, { ...updates.get(id), id, ...change });
   const roleChanges: ApplyOutcome["roleChanges"] = [];
   const addLabels: ApplyOutcome["addLabels"] = [];
   const updateLabels: ApplyOutcome["updateLabels"] = [];
@@ -410,16 +404,12 @@ export function applySelection(
         status,
         role: status.chart_role,
       });
+    } else if (row.type === "status_recolour") {
+      update(idIn(row), { color: row.to });
     } else if (row.type === "status_change") {
       const id = idIn(row);
       // A row may change the chart role alone, which writes no column here.
-      if (row.color || row.category) {
-        updateStatuses.push({
-          id,
-          ...(row.color && { color: row.color.to }),
-          ...(row.category && { category: row.category.to }),
-        });
-      }
+      if (row.category) update(id, { category: row.category.to });
       const target = template.statuses.find((s) => keyOf(s) === id);
       if (target === undefined) throw new Error(`${row.id} has no status`);
       // The role the status ends up counting as has to be the template's.
@@ -442,39 +432,21 @@ export function applySelection(
     }
   }
 
-  // The order is worked out with the deleted statuses still in place, so the
-  // line can move off one to what will then be below it.
-  const added = new Set<StatusKey>(addStatuses.map((s) => s.name));
-  const now = state.statuses.map((s) => s.id as StatusKey);
-  const wanted = template.statuses
-    .map(keyOf)
-    .filter((key) => typeof key === "number" || added.has(key));
-  const all = chosen.has("status.order")
-    ? mergeOrder(wanted, now)
-    : mergeOrder(now, wanted);
-  const deleted = new Set<StatusKey>(deleteStatusIds);
-
-  const templateLine = template.statuses.find((s) => s.block_clear);
-  const line = chosen.has("status.line")
-    ? templateLine === undefined
-      ? null
-      : keyOf(templateLine)
-    : lineAfterDeleting<StatusKey>(all, state.lineId, deleted);
-  const templateDefault = template.statuses.find((s) => s.is_default);
-
+  // A deletion skipped keeps its status in its place, and the line on it.
+  const done = applyResult(
+    layout,
+    new Set([...chosen].filter((id) => !skipped.includes(id))),
+  );
   return {
     deleteLabelIds,
     deleteStatusIds,
     skipped,
     addStatuses,
-    updateStatuses,
-    order: all.filter((key) => !deleted.has(key)),
-    ...(chosen.has("status.default") && {
-      defaultStatus:
-        templateDefault === undefined ? null : keyOf(templateDefault),
-    }),
-    line,
-    lineChanged: line !== state.lineId,
+    updateStatuses: [...updates.values()],
+    order: done.order,
+    ...(chosen.has("status.default") && { defaultStatus: done.default }),
+    line: done.line,
+    lineChanged: done.lineChanged,
     roleChanges,
     addLabels,
     updateLabels,
@@ -629,6 +601,8 @@ export async function previewTemplateApply(
   const state = await readState(db, project.id, { labelCounts: true });
   return {
     expected: templateApplyDigest(state, template.body, template.revision),
+    project: projectSnapshot(state),
+    template: template.body,
     changes: planTemplateApply(state, template.body),
   };
 }
@@ -681,6 +655,7 @@ export async function applyTemplate(
         template.body,
         rows,
         input.selected,
+        input.drawn,
       );
       return write(tx, project.id, state, outcome);
     },

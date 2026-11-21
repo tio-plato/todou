@@ -8,6 +8,7 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -22,6 +23,7 @@ import {
   type ProjectTemplate,
   type Status,
   type TemplateApplyPlan,
+  type TemplateBody,
 } from "@todou/shared";
 import type { ReactElement } from "react";
 import { toast } from "sonner";
@@ -118,14 +120,15 @@ const project = (
   block_clear_status_id: null,
 });
 
+/** The project's statuses, Doing above Todo, as Kanban has them not. */
 const STATUSES: Status[] = [
-  ["Todo", "open", "#6b7280"],
-  ["Doing", "open", "#3b82f6"],
-  ["Done", "closed", "#16a34a"],
-  ["Parked", "open", "#a855f7"],
-  ["Discard", "closed", "#64748b"],
-].map(([name, category, color], i) => ({
-  id: i + 1,
+  [2, "Doing", "open", "#3b82f6"],
+  [1, "Todo", "open", "#6b7280"],
+  [3, "Done", "closed", "#16a34a"],
+  [4, "Parked", "open", "#a855f7"],
+  [5, "Discard", "closed", "#64748b"],
+].map(([id, name, category, color], i) => ({
+  id: id as number,
   name: name as string,
   category: category as Status["category"],
   color: color as string,
@@ -133,10 +136,29 @@ const STATUSES: Status[] = [
   is_default: name === "Todo",
 }));
 
+/** The project as a plan hands it back. */
+const SNAPSHOT: TemplateApplyPlan["project"] = {
+  statuses: STATUSES.map((s) => ({
+    id: s.id,
+    name: s.name,
+    color: s.color,
+    category: s.category as "open" | "closed",
+    role: s.category === "closed" ? "completed" : "remaining",
+    is_default: s.is_default,
+  })),
+  line: null,
+  labels: [
+    { id: 40, name: "urgent", color: "#f97316" },
+    { id: 41, name: "area:web", color: "#0ea5e9" },
+    { id: 42, name: "kind:docs", color: "#8b5cf6" },
+    { id: 43, name: "wontfix", color: "#64748b" },
+  ],
+};
+
 const row = (
   id: string,
   section: "statuses" | "labels",
-  action: "add" | "change" | "delete",
+  action: ChangeRow["action"],
   extra: { selectable?: boolean; requires?: string[] } = {},
 ) => ({
   id,
@@ -150,6 +172,8 @@ const row = (
 /** Kanban against the project, as the server lays it out. */
 const PLAN_7: TemplateApplyPlan = {
   expected: "plan-7",
+  project: SNAPSHOT,
+  template: KANBAN.body as TemplateBody,
   changes: [
     {
       ...row("status.add:Review", "statuses", "add"),
@@ -161,11 +185,15 @@ const PLAN_7: TemplateApplyPlan = {
       after: "Doing",
     },
     {
-      ...row("status.change:3", "statuses", "change"),
-      type: "status_change",
+      ...row("status.recolour:3", "statuses", "recolour"),
+      type: "status_recolour",
       name: "Done",
-      color_now: "#16a34a",
-      color: { from: "#16a34a", to: "#22c55e" },
+      from: "#16a34a",
+      to: "#22c55e",
+    },
+    {
+      ...row("status.move:2", "statuses", "move"),
+      type: "status_move",
     },
     {
       ...row("status.default", "statuses", "change", {
@@ -198,7 +226,7 @@ const PLAN_7: TemplateApplyPlan = {
       color: "#ef4444",
     },
     {
-      ...row("label.change:40", "labels", "change"),
+      ...row("label.change:40", "labels", "recolour"),
       type: "label_change",
       name: "urgent",
       from: "#f97316",
@@ -220,29 +248,51 @@ const PLAN_7: TemplateApplyPlan = {
       issues: 1,
       trashed: 1,
     },
+    {
+      ...row("label.delete:43", "labels", "delete"),
+      type: "label_delete",
+      name: "wontfix",
+      color: "#64748b",
+      issues: 0,
+      trashed: 0,
+    },
   ],
 };
 
-/** What the server starts selected in PLAN_7: its additions and changes. */
+/** What the server starts selected in PLAN_7: everything but deletions. */
 const DEFAULT_SELECTED = [
   "status.add:Review",
-  "status.change:3",
+  "status.recolour:3",
+  "status.move:2",
   "status.default",
   "label.add:kind:bug",
   "label.change:40",
 ];
 
-/** The boxes of those rows, by name. */
+/**
+ * The boxes of those rows, by name, in the table's order: the default's on
+ * its arrow, in Review's row after Review's own.
+ */
 const DEFAULT_BOXES = [
+  "Move Doing below Todo",
   "Add status Review",
-  "Change status Done",
-  "Change the default status",
+  "Change default status Todo → Review",
+  "Recolour status Done",
   "Add label kind:bug",
-  "Change label urgent",
+  "Recolour label urgent",
 ];
+
+/** What the page draws PLAN_7 as once the default rows are applied. */
+const DRAWN_7 = {
+  order: [1, 2, "Review", 3, 4, 5],
+  line: null,
+  default: "Review",
+};
 
 const PLAN_BASIC: TemplateApplyPlan = {
   expected: "plan-basic",
+  project: SNAPSHOT,
+  template: BUILTIN_TEMPLATES.basic.body,
   changes: [
     {
       ...row("label.add:needs-brainstorm", "labels", "add"),
@@ -256,7 +306,7 @@ const PLAN_BASIC: TemplateApplyPlan = {
 const PLANS: Record<string, TemplateApplyPlan> = {
   "7": PLAN_7,
   basic: PLAN_BASIC,
-  "8": { expected: "plan-8", changes: [] },
+  "8": { ...PLAN_7, expected: "plan-8", changes: [] },
 };
 
 type Call = { method: string; path: string; body: unknown };
@@ -275,6 +325,7 @@ function fakeServer({
   role = "admin" as Project["viewer_role"],
   plans = PLANS,
   apply = (): Response => json(200, { skipped: [] }),
+  held = false,
 } = {}) {
   const calls: Call[] = [];
   vi.stubGlobal("fetch", (async (input: unknown, init?: RequestInit) => {
@@ -288,6 +339,8 @@ function fakeServer({
     calls.push({ method, path, body });
 
     if (path.endsWith("/template/preview")) {
+      // Never answered: the plan is on its way for as long as the test runs.
+      if (held) return new Promise<Response>(() => {});
       return json(200, plans[String(body.template)]);
     }
     if (path.endsWith("/template/apply")) return apply();
@@ -320,16 +373,12 @@ function fakeServer({
  */
 function renderPage({
   role = "admin" as Project["viewer_role"],
-  preferred = 7 as MePrefs["new_project_template"],
   name = "Potato field",
 } = {}) {
   const client = testQueryClient();
   client.setQueryData(projectQuery("todou").queryKey, project(role, name));
   client.setQueryData(projectTemplatesQuery.queryKey, TEMPLATES);
-  client.setQueryData(prefsQuery.queryKey, {
-    ...PREFS,
-    new_project_template: preferred,
-  });
+  client.setQueryData(prefsQuery.queryKey, PREFS);
   client.setQueryData(statusesQuery("todou").queryKey, STATUSES);
 
   const rootRoute = createRootRoute();
@@ -382,22 +431,36 @@ function renderPage({
 const box = (name: string) =>
   screen.getByRole("checkbox", { name }) as HTMLInputElement;
 
+/** The ticked boxes in the table's rows, by name, top down. */
 const checkedRows = () =>
-  [...document.querySelectorAll("li input[type=checkbox]")]
+  [...document.querySelectorAll("[role=row] [data-tick] input")]
     .filter((input) => (input as HTMLInputElement).checked)
     .map((input) => input.getAttribute("aria-label"));
 
-/** Wait for PLAN_7's rows. */
-const rowsOf7 = () =>
-  screen.findByRole("checkbox", { name: "Add status Review" });
+const option = (name: string) => screen.getByRole("option", { name });
 
-const section = (name: string) => within(screen.getByRole("region", { name }));
+/** Pick Kanban and wait for its table. */
+async function pickKanban() {
+  fireEvent.click(await screen.findByRole("option", { name: "Kanban" }));
+  return screen.findByRole("checkbox", { name: "Add status Review" });
+}
 
-const rowOf = (name: string) => box(name).closest("li") as HTMLElement;
+const section = (name: string) =>
+  within(screen.getByRole("rowgroup", { name }));
+
+const rowOf = (name: string) =>
+  screen.getByRole("checkbox", { name }).closest("[role=row]") as HTMLElement;
+
+const applyButton = () =>
+  screen.getByRole("button", { name: /Apply/ }) as HTMLButtonElement;
 
 /** How a component draws `ui`, rendered apart from the page. */
 const drawn = (ui: ReactElement) =>
   render(ui, { container: document.createElement("div") }).container.innerHTML;
+
+/** Hovering, as React hears it: from the pointerover/out pair. */
+const hover = (el: Element) =>
+  fireEvent.pointerOver(el, { pointerType: "mouse", bubbles: true });
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -405,98 +468,214 @@ afterEach(() => {
 });
 
 describe("applying a template", () => {
-  it("previews the preferred template, additions and changes selected, no deletion", async () => {
+  it("starts with no template picked, and reads no preview", async () => {
     const server = fakeServer();
     renderPage();
-    await rowsOf7();
+    const list = await screen.findByRole("listbox", { name: "Templates" });
+    expect(within(list).queryAllByRole("option", { selected: true })).toEqual(
+      [],
+    );
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Apply/ })).toBeNull();
+    await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+    expect(server.previews()).toEqual([]);
+  });
+
+  it("previews the template picked, everything but deletions ticked", async () => {
+    const server = fakeServer();
+    renderPage();
+    await pickKanban();
     expect(server.previews()).toEqual([
       { method: "POST", path: PREVIEW, body: { template: 7 } },
     ]);
-
-    for (const name of DEFAULT_BOXES) {
-      expect(box(name).checked, name).toBe(true);
-    }
+    expect(checkedRows()).toEqual(DEFAULT_BOXES);
     for (const name of [
       "Delete status Parked",
-      "Delete status Discard",
-      "Delete label area:web",
-      "Delete label kind:docs",
+      "Delete label area:web — comes off 3 issues",
+      "Delete label kind:docs — comes off 2 issues (1 in the trash)",
+      "Delete label wontfix — on no issue",
     ]) {
       expect(box(name).checked, name).toBe(false);
     }
-    expect(box("Delete status Parked").disabled).toBe(false);
-    // Two issues in it and one in the trash, which holds a delete off too.
-    expect(box("Delete status Discard").disabled).toBe(true);
-    expect(rowOf("Delete status Discard").textContent).toMatch(
-      /(?<!\d)3 issues\b/,
+    // Two issues in it and one in the trash hold its deletion off: no box.
+    expect(
+      screen.getByRole("img", {
+        name: "Discard cannot be deleted: 3 issues are in it, 1 trashed",
+      }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: /Discard/ })).toBeNull();
+  });
+
+  it("closes a template's preview card once the template is picked", async () => {
+    fakeServer();
+    renderPage();
+    const kanban = await screen.findByRole("option", { name: "Kanban" });
+    hover(within(kanban).getByText("Kanban"));
+    await waitFor(() =>
+      expect(
+        document.querySelectorAll("[data-slot='hover-card-content']"),
+      ).toHaveLength(1),
     );
+    fireEvent.pointerDown(within(kanban).getByText("Kanban"), {
+      pointerType: "mouse",
+    });
+    fireEvent.click(kanban);
+    await waitFor(() =>
+      expect(
+        document.querySelectorAll("[data-slot='hover-card-content']"),
+      ).toHaveLength(0),
+    );
+  });
+
+  it("goes back to no template when the one picked is picked again, forgetting its ticks", async () => {
+    fakeServer();
+    renderPage();
+    await pickKanban();
+    fireEvent.click(box("Recolour status Done"));
+    expect(box("Recolour status Done").checked).toBe(false);
+
+    fireEvent.click(option("Kanban"));
+    expect(option("Kanban").getAttribute("aria-selected")).toBe("false");
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Apply/ })).toBeNull();
+
+    await pickKanban();
+    expect(box("Recolour status Done").checked).toBe(true);
+    expect(checkedRows()).toEqual(DEFAULT_BOXES);
+  });
+
+  it("counts each kind of change under the picker, leaving out the kinds there are none of", async () => {
+    fakeServer();
+    renderPage();
+    await pickKanban();
+    const summary = screen.getByText(/differs from this project in/)
+      .parentElement as HTMLElement;
+    expect(summary.textContent).toContain(
+      "Kanban differs from this project in 11 places:",
+    );
+    const counted = () =>
+      [...summary.querySelectorAll("[data-action]")].map((part) => [
+        part.getAttribute("data-action"),
+        part.textContent,
+      ]);
+    expect(counted()).toEqual([
+      ["add", "2 to add"],
+      ["recolour", "2 recolour"],
+      ["change", "1 to change"],
+      ["move", "1 move"],
+      ["delete", "5 to delete(0 ticked)"],
+    ]);
+    fireEvent.click(box("Delete status Parked"));
+    expect(counted().at(-1)).toEqual(["delete", "5 to delete(1 ticked)"]);
+  });
+
+  it("names each box by what it does, and draws a status left out as a shadow", async () => {
+    fakeServer();
+    renderPage();
+    await pickKanban();
+    const afterLook = (name: string) =>
+      rowOf(name).querySelector("[data-cell='after'] [data-look]");
+    expect(afterLook("Add status Review")?.getAttribute("data-look")).toBe(
+      "solid",
+    );
+    fireEvent.click(box("Add status Review"));
+    expect(afterLook("Add status Review")?.getAttribute("data-look")).toBe(
+      "shadow",
+    );
+    // The default goes with the status it needs.
+    expect(box("Change default status Todo → Review").checked).toBe(false);
   });
 
   it("selects a section's deletions from its heading, and clears them again", async () => {
     fakeServer();
     renderPage();
-    await rowsOf7();
+    await pickKanban();
     const labels = section("Labels");
 
     fireEvent.click(labels.getByRole("checkbox", { name: "Delete" }));
-    expect(box("Delete label area:web").checked).toBe(true);
-    expect(box("Delete label kind:docs").checked).toBe(true);
+    for (const name of ["area:web", "kind:docs", "wontfix"]) {
+      expect(
+        box(
+          (screen.getAllByRole("checkbox") as HTMLInputElement[])
+            .map((b) => b.getAttribute("aria-label") ?? "")
+            .find((label) => label.startsWith(`Delete label ${name} `)) ?? "",
+        ).checked,
+        name,
+      ).toBe(true);
+    }
     expect(box("Delete status Parked").checked).toBe(false);
 
     fireEvent.click(labels.getByRole("checkbox", { name: "Delete" }));
-    expect(box("Delete label area:web").checked).toBe(false);
-    expect(box("Delete label kind:docs").checked).toBe(false);
     expect(checkedRows()).toEqual(DEFAULT_BOXES);
+
+    // Half the moves ticked shows as half.
+    const statuses = section("Statuses");
+    const moves = statuses.getByRole("checkbox", { name: "Move" });
+    expect((moves as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(box("Move Doing below Todo"));
+    expect((moves as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(moves);
+    expect(box("Move Doing below Todo").checked).toBe(true);
   });
 
   it("keeps the default status and the status it needs together", async () => {
     fakeServer();
     renderPage();
-    await rowsOf7();
+    await pickKanban();
 
     fireEvent.click(box("Add status Review"));
     expect(box("Add status Review").checked).toBe(false);
-    expect(box("Change the default status").checked).toBe(false);
+    expect(box("Change default status Todo → Review").checked).toBe(false);
 
-    fireEvent.click(box("Change the default status"));
-    expect(box("Change the default status").checked).toBe(true);
+    fireEvent.click(box("Change default status Todo → Review"));
+    expect(box("Change default status Todo → Review").checked).toBe(true);
     expect(box("Add status Review").checked).toBe(true);
   });
 
-  it("counts the selected rows on Apply, and holds it back with none", async () => {
+  it("counts the ticked rows on Apply, and holds it back with none", async () => {
     fakeServer();
     renderPage();
-    await rowsOf7();
-    const apply = () => screen.getByRole("button", { name: /^Apply/ });
+    await pickKanban();
 
-    expect(apply().textContent).toBe("Apply 5 changes");
-    expect((apply() as HTMLButtonElement).disabled).toBe(false);
+    expect(applyButton().textContent).toBe("Apply 6 changes");
+    expect(applyButton().disabled).toBe(false);
     fireEvent.click(box("Delete status Parked"));
-    expect(apply().textContent).toBe("Apply 6 changes");
+    expect(applyButton().textContent).toBe("Apply 7 changes");
 
     // The default status before the status it needs, so each click clears
     // one box whatever the rows hanging together do.
     for (const name of [
       "Delete status Parked",
-      "Change the default status",
+      "Change default status Todo → Review",
       "Add status Review",
-      "Change status Done",
+      "Recolour status Done",
+      "Move Doing below Todo",
       "Add label kind:bug",
-      "Change label urgent",
+      "Recolour label urgent",
     ]) {
       fireEvent.click(box(name));
     }
     expect(checkedRows()).toEqual([]);
-    expect(apply().textContent).toBe("Apply 0 changes");
-    expect((apply() as HTMLButtonElement).disabled).toBe(true);
+    expect(applyButton().textContent).toBe("Apply");
+    expect(applyButton().disabled).toBe(true);
+  });
+
+  it("holds Apply back while the plan is on its way, never offering zero changes", async () => {
+    fakeServer({ held: true });
+    renderPage();
+    fireEvent.click(await screen.findByRole("option", { name: "Kanban" }));
+    expect(await screen.findByText("Preparing plan…")).toBeTruthy();
+    expect(applyButton().textContent).toBe("Apply");
+    expect(applyButton().disabled).toBe(true);
+    expect(screen.queryByText(/Apply 0/)).toBeNull();
   });
 
   it("previews another template when one is picked, and applies that preview", async () => {
     const server = fakeServer();
     renderPage();
-    await rowsOf7();
+    await pickKanban();
 
-    fireEvent.click(screen.getByRole("option", { name: "Basic" }));
+    fireEvent.click(option("Basic"));
     await screen.findByRole("checkbox", {
       name: "Add label needs-brainstorm",
     });
@@ -510,69 +689,137 @@ describe("applying a template", () => {
       template: "basic",
       expected: "plan-basic",
       selected: ["label.add:needs-brainstorm"],
+      drawn: { order: [2, 1, 3, 4, 5], line: null, default: 1 },
     });
   });
 
-  it("sends the selected rows and says what was done, a skipped deletion included", async () => {
+  it("sends the ticked rows and what the table draws, and says what was done, a skipped deletion included", async () => {
     const success = vi.spyOn(toast, "success");
     const warning = vi.spyOn(toast, "warning");
     const server = fakeServer({
       apply: () => json(200, { skipped: ["status.delete:4"] }),
     });
     renderPage();
-    await rowsOf7();
+    await pickKanban();
 
     fireEvent.click(box("Delete status Parked"));
-    fireEvent.click(screen.getByRole("button", { name: "Apply 6 changes" }));
+    // The After column, top down: what is sent as drawn.
+    const after = [...document.querySelectorAll("[data-row]")].flatMap((r) => {
+      const look = r.querySelector("[data-cell='after'] [data-look='solid']");
+      return look?.textContent ? [look.textContent] : [];
+    });
+    expect(after).toEqual(["Todo", "Doing", "Review", "Done", "Discard"]);
+    fireEvent.click(screen.getByRole("button", { name: "Apply 7 changes" }));
     await waitFor(() => expect(warning).toHaveBeenCalledTimes(1));
     expect(server.applies()[0]?.body).toEqual({
       template: 7,
       expected: "plan-7",
       selected: [
         "status.add:Review",
-        "status.change:3",
+        "status.recolour:3",
+        "status.move:2",
         "status.default",
         "status.delete:4",
         "label.add:kind:bug",
         "label.change:40",
       ],
+      drawn: { ...DRAWN_7, order: [1, 2, "Review", 3, 5] },
     });
     const said = String(warning.mock.calls[0]?.[0]);
-    expect(said).toContain("Applied 5 changes.");
+    expect(said).toContain("Applied 6 changes.");
     expect(said).toContain("Parked");
     expect(success).not.toHaveBeenCalled();
     // The project changed: what is left of the template is previewed again.
     await waitFor(() => expect(server.previews()).toHaveLength(2));
   });
 
+  it("asks before taking labels off cards, its Cancel focused", async () => {
+    const server = fakeServer();
+    renderPage();
+    await pickKanban();
+    fireEvent.click(
+      box("Delete label kind:docs — comes off 2 issues (1 in the trash)"),
+    );
+    fireEvent.click(applyButton());
+    const cancel = await screen.findByRole("button", { name: "Cancel" });
+    expect(document.activeElement).toBe(cancel);
+    expect(screen.getByText("This cannot be undone.")).toBeTruthy();
+    fireEvent.click(cancel);
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+    expect(server.applies()).toEqual([]);
+
+    fireEvent.click(applyButton());
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Delete and apply 7 changes" }),
+    );
+    await waitFor(() => expect(server.applies()).toHaveLength(1));
+    expect(server.applies()[0]?.body).toMatchObject({
+      selected: [...DEFAULT_SELECTED, "label.delete:42"],
+    });
+  });
+
+  it("applies at once a deletion that takes a label off no card", async () => {
+    const server = fakeServer();
+    renderPage();
+    await pickKanban();
+    fireEvent.click(box("Delete label wontfix — on no issue"));
+    fireEvent.click(applyButton());
+    await waitFor(() => expect(server.applies()).toHaveLength(1));
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+  });
+
+  it("asks too before taking a label off trashed cards alone", async () => {
+    const server = fakeServer({
+      plans: {
+        ...PLANS,
+        "7": {
+          ...PLAN_7,
+          changes: PLAN_7.changes.map((change) =>
+            change.id === "label.delete:43"
+              ? { ...change, issues: 0, trashed: 2 }
+              : change,
+          ),
+        },
+      },
+    });
+    renderPage();
+    await pickKanban();
+    fireEvent.click(
+      box("Delete label wontfix — comes off 2 issues (2 in the trash)"),
+    );
+    fireEvent.click(applyButton());
+    expect(await screen.findByRole("button", { name: "Cancel" })).toBeTruthy();
+    expect(server.applies()).toEqual([]);
+  });
+
   it("after an apply, keeps what the reader left out and disarms what they ticked", async () => {
     // Parked took an issue after the preview, so its deletion was skipped;
-    // it must not stay ticked, ready for the next Apply. Done's change the
+    // it must not stay ticked, ready for the next Apply. Done's recolour the
     // reader left out must not come back ticked either.
     const warning = vi.spyOn(toast, "warning");
     const server = fakeServer({
       apply: () => json(200, { skipped: ["status.delete:4"] }),
     });
     renderPage();
-    await rowsOf7();
+    await pickKanban();
     fireEvent.click(box("Delete status Parked"));
-    fireEvent.click(box("Change status Done"));
-    fireEvent.click(screen.getByRole("button", { name: "Apply 5 changes" }));
+    fireEvent.click(box("Recolour status Done"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply 6 changes" }));
     await waitFor(() => expect(warning).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(server.previews()).toHaveLength(2));
     await waitFor(() =>
       expect(box("Delete status Parked").checked).toBe(false),
     );
-    expect(box("Change status Done").checked).toBe(false);
+    expect(box("Recolour status Done").checked).toBe(false);
     expect(box("Add status Review").checked).toBe(true);
   });
 
   it("does not carry one project's choices to another's", async () => {
     const server = fakeServer();
     const router = renderPage();
-    await rowsOf7();
-    fireEvent.click(box("Change status Done"));
-    expect(box("Change status Done").checked).toBe(false);
+    await pickKanban();
+    fireEvent.click(box("Recolour status Done"));
+    expect(box("Recolour status Done").checked).toBe(false);
 
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "Todou's flow" },
@@ -582,34 +829,26 @@ describe("applying a template", () => {
       to: "/projects/$slug/settings/template",
       params: { slug: "other" },
     });
-    await waitFor(() => expect(server.previewsOf("other")).toHaveLength(1));
-    await waitFor(() => expect(box("Change status Done").checked).toBe(true));
-    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe(
-      "Other",
+    await waitFor(() =>
+      expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe(
+        "Other",
+      ),
     );
-  });
-
-  it("counts the trashed cards a label deletion takes it off", async () => {
-    fakeServer();
-    renderPage();
-    await rowsOf7();
-    expect(rowOf("Delete label kind:docs").textContent).toContain(
-      "comes off 2 issues (1 in the trash)",
-    );
-    expect(rowOf("Delete label area:web").textContent).toContain(
-      "comes off 3 issues",
-    );
-    expect(rowOf("Delete label area:web").textContent).not.toContain("trash");
+    expect(screen.queryByRole("table")).toBeNull();
+    await pickKanban();
+    expect(server.previewsOf("other")).toHaveLength(1);
+    expect(box("Recolour status Done").checked).toBe(true);
   });
 
   it("says the project already matches a template with no difference", async () => {
     fakeServer();
-    renderPage({ preferred: 8 });
+    renderPage();
+    fireEvent.click(await screen.findByRole("option", { name: "Same" }));
     expect(
       await screen.findByText("This project already matches this template."),
     ).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /^Apply/ })).toBeNull();
-    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Apply/ })).toBeNull();
+    expect(screen.queryByRole("table")).toBeNull();
   });
 
   it("previews again on a 409, and says nothing was applied", async () => {
@@ -619,14 +858,14 @@ describe("applying a template", () => {
         json(409, {
           error: {
             code: "conflict",
-            message: "project or template changed — preview again",
+            message: "the preview is out of date — preview again",
           },
         }),
     });
     renderPage();
-    await rowsOf7();
+    await pickKanban();
 
-    fireEvent.click(screen.getByRole("button", { name: "Apply 5 changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply 6 changes" }));
     await waitFor(() => expect(server.previews()).toHaveLength(2));
     expect(server.previews()[1]?.body).toEqual({ template: 7 });
     expect(error).toHaveBeenCalledWith(
@@ -638,11 +877,12 @@ describe("applying a template", () => {
     const plans = { ...PLANS };
     const server = fakeServer({ plans });
     renderPage();
-    await rowsOf7();
-    fireEvent.click(box("Change status Done"));
+    await pickKanban();
+    fireEvent.click(box("Recolour status Done"));
 
     // Someone recoloured urgent meanwhile: the same rows, another plan.
     plans["7"] = {
+      ...PLAN_7,
       expected: "plan-7-again",
       changes: PLAN_7.changes.map((change) =>
         change.type === "label_change"
@@ -652,19 +892,20 @@ describe("applying a template", () => {
     };
     fireEvent(window, new Event("visibilitychange"));
     const recoloured = drawn(
-      <LabelChip label={{ id: 0, name: "urgent", color: "#eab308" }} />,
+      <LabelChip label={{ id: 1, name: "urgent", color: "#eab308" }} />,
     );
+    // Untick it to see what it was: the Before side is what it is now.
     await waitFor(() =>
-      expect(rowOf("Change label urgent").innerHTML).toContain(recoloured),
+      expect(rowOf("Recolour label urgent").innerHTML).toContain(recoloured),
     );
-    expect(box("Change status Done").checked).toBe(false);
+    expect(box("Recolour status Done").checked).toBe(false);
 
-    fireEvent.click(screen.getByRole("button", { name: "Apply 4 changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply 5 changes" }));
     await waitFor(() => expect(server.applies()).toHaveLength(1));
-    expect(server.applies()[0]?.body).toEqual({
+    expect(server.applies()[0]?.body).toMatchObject({
       template: 7,
       expected: "plan-7-again",
-      selected: DEFAULT_SELECTED.filter((id) => id !== "status.change:3"),
+      selected: DEFAULT_SELECTED.filter((id) => id !== "status.recolour:3"),
     });
   });
 
@@ -677,32 +918,33 @@ describe("applying a template", () => {
     );
     const plans: Record<string, TemplateApplyPlan> = {
       ...PLANS,
-      "7": { expected: "plan-7", changes: toDoing },
+      "7": { ...PLAN_7, changes: toDoing },
     };
     fakeServer({ plans });
     renderPage();
-    await rowsOf7();
+    await pickKanban();
     fireEvent.click(box("Add status Review"));
-    expect(box("Change the default status").checked).toBe(true);
+    expect(box("Change default status Todo → Doing").checked).toBe(true);
 
     // The template moved its default to Review since, and gained a label.
     plans["7"] = {
+      ...PLAN_7,
       expected: "plan-7-again",
       changes: [
         ...PLAN_7.changes,
         {
-          ...row("label.add:wontfix", "labels", "add"),
+          ...row("label.add:later", "labels", "add"),
           type: "label_add",
-          name: "wontfix",
+          name: "later",
           color: "#64748b",
         },
       ],
     };
     fireEvent(window, new Event("visibilitychange"));
-    await screen.findByRole("checkbox", { name: "Add label wontfix" });
-    expect(box("Add label wontfix").checked).toBe(true);
+    await screen.findByRole("checkbox", { name: "Add label later" });
+    expect(box("Add label later").checked).toBe(true);
     expect(box("Add status Review").checked).toBe(false);
-    expect(box("Change the default status").checked).toBe(false);
+    expect(box("Change default status Todo → Review").checked).toBe(false);
   });
 
   it("leaves off a row of a kind this page does not know", async () => {
@@ -723,42 +965,77 @@ describe("applying a template", () => {
       },
     });
     renderPage();
-    await rowsOf7();
+    await pickKanban();
 
-    fireEvent.click(screen.getByRole("button", { name: "Apply 5 changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Apply 6 changes" }));
     await waitFor(() => expect(server.applies()).toHaveLength(1));
     expect(server.applies()[0]?.body).toMatchObject({
       selected: DEFAULT_SELECTED,
+      drawn: DRAWN_7,
     });
   });
 
-  it("draws each row's statuses and labels in the row's colours", async () => {
+  it("draws each side in the plan's colours, the After side as ticked", async () => {
     fakeServer();
     renderPage();
-    await rowsOf7();
+    await pickKanban();
 
     const pill = (name: string, color: string) =>
       drawn(<StatusPill status={{ name, color }} />);
     const chip = (name: string, color: string) =>
-      drawn(<LabelChip label={{ id: 0, name, color }} />);
-    const html = (name: string) => rowOf(name).innerHTML;
+      drawn(<LabelChip label={{ id: 1, name, color }} />);
+    const cell = (box: string, side: "before" | "after") =>
+      rowOf(box).querySelector(`[data-cell='${side}']`)?.innerHTML ?? "";
 
-    expect(html("Add status Review")).toContain(pill("Review", "#14b8a6"));
-    expect(html("Add status Review")).toContain(pill("Doing", "#3b82f6"));
-    expect(html("Change status Done")).toContain(pill("Done", "#16a34a"));
-    expect(html("Change status Done")).toContain(pill("Done", "#22c55e"));
-    expect(html("Change the default status")).toContain(
-      pill("Todo", "#6b7280"),
+    expect(cell("Recolour status Done", "before")).toContain(
+      pill("Done", "#16a34a"),
     );
-    expect(html("Change the default status")).toContain(
+    expect(cell("Recolour status Done", "after")).toContain(
+      pill("Done", "#22c55e"),
+    );
+    fireEvent.click(box("Recolour status Done"));
+    expect(cell("Recolour status Done", "after")).toContain(
+      pill("Done", "#16a34a"),
+    );
+    expect(cell("Add status Review", "after")).toContain(
       pill("Review", "#14b8a6"),
     );
-    expect(html("Delete status Discard")).toContain(pill("Discard", "#64748b"));
-    expect(html("Add label kind:bug")).toContain(chip("kind:bug", "#ef4444"));
-    expect(html("Change label urgent")).toContain(chip("urgent", "#f97316"));
-    expect(html("Change label urgent")).toContain(chip("urgent", "#ef4444"));
-    expect(html("Delete label area:web")).toContain(
-      chip("area:web", "#0ea5e9"),
+    expect(cell("Recolour label urgent", "before")).toContain(
+      chip("urgent", "#f97316"),
+    );
+    expect(cell("Recolour label urgent", "after")).toContain(
+      chip("urgent", "#ef4444"),
+    );
+  });
+
+  it("draws the template the plan was computed from, not the one listed", async () => {
+    // Another tab recoloured Review since the list was read: the plan has
+    // the template as the apply will find it.
+    const plans = {
+      ...PLANS,
+      "7": {
+        ...PLAN_7,
+        template: {
+          ...(KANBAN.body as TemplateBody),
+          statuses: (KANBAN.body as TemplateBody).statuses.map((status) =>
+            status.name === "Review" ? { ...status, color: "#0d9488" } : status,
+          ),
+        },
+        changes: PLAN_7.changes.map((change) =>
+          change.type === "status_add"
+            ? { ...change, color: "#0d9488" }
+            : change,
+        ),
+      },
+    };
+    fakeServer({ plans });
+    renderPage();
+    await pickKanban();
+    const review = rowOf("Add status Review").querySelector(
+      "[data-cell='after']",
+    );
+    expect(review?.innerHTML).toContain(
+      drawn(<StatusPill status={{ name: "Review", color: "#0d9488" }} />),
     );
   });
 

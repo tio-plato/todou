@@ -274,10 +274,53 @@ describe("planTemplateApply", () => {
       { labels: BASIC_LABELS },
     );
     const rows = planTemplateApply(state, BASIC);
-    expect(ids(rows)).toEqual(["status.change:7"]);
-    expect(row(rows, "status.change:7")).toMatchObject({
+    expect(ids(rows)).toEqual(["status.recolour:7"]);
+    expect(row(rows, "status.recolour:7")).toMatchObject({
       name: "Done ",
-      color: { from: "#000000", to: colorIn(BASIC, "Done") },
+      from: "#000000",
+      to: colorIn(BASIC, "Done"),
+    });
+  });
+
+  it("lists a status's colour apart from what it means", () => {
+    const state = project([
+      ...FLOW.map((name) => ({ name })),
+      { name: "Shipped" },
+      { name: "Done", color: "#000000", category: "open" },
+      { name: "Invalid" },
+    ]);
+    const rows = planTemplateApply(state, { ...BASIC, labels: [] });
+    expect(ids(rows)).toEqual(["status.change:7", "status.recolour:7"]);
+    expect(row(rows, "status.recolour:7")).toMatchObject({
+      action: "recolour",
+      from: "#000000",
+      to: colorIn(BASIC, "Done"),
+    });
+    expect(row(rows, "status.change:7")).toMatchObject({
+      action: "change",
+      category: { from: "open", to: "closed" },
+    });
+  });
+
+  it("lists each status out of the template's order as a move of its own", () => {
+    // Todo and Next swapped, Done before Shipped: of each pair the upper one
+    // moves.
+    const state = project([
+      { name: "Backlog" },
+      { name: "Next" },
+      { name: "Todo" },
+      { name: "In Progress" },
+      { name: "Ready to Ship" },
+      { name: "Done" },
+      { name: "Shipped" },
+      { name: "Invalid" },
+    ]);
+    const rows = planTemplateApply(state, { ...BASIC, labels: [] });
+    expect(ids(rows)).toEqual(["status.move:2", "status.move:6"]);
+    expect(row(rows, "status.move:2")).toMatchObject({
+      type: "status_move",
+      action: "move",
+      default_selected: true,
     });
   });
 });
@@ -299,31 +342,7 @@ describe("applySelection", () => {
     ]);
   });
 
-  it("takes the template's order, each extra right after what it followed", () => {
-    const state = project([
-      { name: "Backlog" },
-      { name: "Next" },
-      { name: "Todo" },
-      { name: "In Progress" },
-      { name: "Ready to Ship" },
-      { name: "Shipped" },
-      { name: "Discard", category: "closed" },
-      { name: "Done" },
-      { name: "Invalid" },
-    ]);
-    const rows = planTemplateApply(state, BASIC);
-    expect(row(rows, "status.order").type).toBe("status_order");
-    const outcome = applySelection(state, BASIC, rows, ["status.order"]);
-    expect(outcome.order.map((key) => nameOf(state, key))).toEqual([
-      ...FLOW,
-      "Shipped",
-      "Discard",
-      "Done",
-      "Invalid",
-    ]);
-  });
-
-  it("changes a paired status's colour, category and role, keeping its name", () => {
+  it("changes a paired status's colour, category and role, each as ticked, keeping its name", () => {
     const state = project([
       ...FLOW.map((name) => ({ name })),
       { name: "Shipped" },
@@ -335,13 +354,22 @@ describe("applySelection", () => {
       },
       { name: "Invalid" },
     ]);
-    const outcome = apply(state, ["status.change:7"]);
-    expect(outcome.updateStatuses).toEqual([
-      { id: 7, color: colorIn(BASIC, "Done"), category: "closed" },
+    const done = colorIn(BASIC, "Done");
+    const both = apply(state, ["status.recolour:7", "status.change:7"]);
+    expect(both.updateStatuses).toEqual([
+      { id: 7, color: done, category: "closed" },
     ]);
-    expect(outcome.roleChanges).toEqual([
+    expect(both.roleChanges).toEqual([
       { kind: "edited", key: 7, role: "completed" },
     ]);
+    expect(apply(state, ["status.recolour:7"])).toMatchObject({
+      updateStatuses: [{ id: 7, color: done }],
+      roleChanges: [],
+    });
+    expect(apply(state, ["status.change:7"])).toMatchObject({
+      updateStatuses: [{ id: 7, category: "closed" }],
+      roleChanges: [{ kind: "edited", key: 7, role: "completed" }],
+    });
     expect(state.statuses[6]?.name).toBe("Done ");
   });
 

@@ -241,17 +241,31 @@ const transition = <T extends z.ZodType>(value: T) =>
   z.object({ from: value, to: value });
 
 /**
+ * What a row does, one select-all box each: add, recolour alone, change what
+ * a status means (open or closed, how charts count it, being the default),
+ * move one in the board order, delete.
+ */
+export const ChangeRowAction = z.enum([
+  "add",
+  "recolour",
+  "change",
+  "move",
+  "delete",
+]);
+export type ChangeRowAction = z.infer<typeof ChangeRowAction>;
+
+/**
  * The fields every row of an apply plan carries. `id` is what `selected`
  * names: a row adding a status or label goes by the template's name for it,
- * having no id in the project yet; a row changing or deleting one goes by
- * its id in the project, so that two statuses whose names differ only in
- * whitespace never share one; the order, default and line rows have fixed
+ * having no id in the project yet; a row changing, moving or deleting one
+ * goes by its id in the project, so that two statuses whose names differ
+ * only in whitespace never share one; the default and line rows have fixed
  * ids.
  */
 const ChangeBase = {
   id: z.string(),
   section: z.enum(["statuses", "labels"]),
-  action: z.enum(["add", "change", "delete"]),
+  action: ChangeRowAction,
   default_selected: z.boolean(),
   /** False only for deleting a status that still holds issues. */
   selectable: z.boolean(),
@@ -272,19 +286,30 @@ export const ChangeRow = z.discriminatedUnion("type", [
   }),
   z.object({
     ...ChangeBase,
-    type: z.literal("status_change"),
+    type: z.literal("status_recolour"),
     name: z.string(),
-    color_now: ColorHex,
-    color: transition(ColorHex).optional(),
-    category: transition(StatusCategory).optional(),
-    chart_role: transition(Role).optional(),
+    from: ColorHex,
+    to: ColorHex,
   }),
   z.object({
     ...ChangeBase,
-    type: z.literal("status_order"),
-    /** The statuses both sides have, in the project's order and the template's. */
-    from: z.array(StatusRef),
-    to: z.array(StatusRef),
+    type: z.literal("status_change"),
+    name: z.string(),
+    /**
+     * The colour it has now, which a recolour row changes apart. Kept for
+     * pages that predate that row: their schema requires it.
+     */
+    color_now: ColorHex,
+    category: transition(StatusCategory).optional(),
+    chart_role: transition(Role).optional(),
+  }),
+  /**
+   * One status both sides have, out of place in the template's order. Its
+   * name and colour are in the plan's `project`.
+   */
+  z.object({
+    ...ChangeBase,
+    type: z.literal("status_move"),
   }),
   z.object({
     ...ChangeBase,
@@ -334,18 +359,67 @@ export type ChangeRow = z.infer<typeof ChangeRow>;
 export const TemplatePreviewInput = z.object({ template: TemplateRef });
 export type TemplatePreviewInput = z.infer<typeof TemplatePreviewInput>;
 
+/**
+ * The project a plan was computed from, as it was read then: what a page
+ * draws the table of before and after from, so that it draws what the
+ * apply will work from rather than what another read says.
+ */
+export const TemplateApplyProject = z.object({
+  /** In board order. */
+  statuses: z.array(
+    z.object({
+      id: z.number().int(),
+      name: z.string(),
+      color: ColorHex,
+      category: StatusCategory,
+      /** The chart role it counts as now, saved or default. */
+      role: Role,
+      is_default: z.boolean(),
+    }),
+  ),
+  /** The status the block clear line is on; null when there is no line. */
+  line: z.number().int().nullable(),
+  labels: z.array(
+    z.object({ id: z.number().int(), name: z.string(), color: ColorHex }),
+  ),
+});
+export type TemplateApplyProject = z.infer<typeof TemplateApplyProject>;
+
 /** Every difference between a project and a template; empty when none. */
 export const TemplateApplyPlan = z.object({
   /** What the plan was computed from; apply refuses it once that changed. */
   expected: z.string(),
+  project: TemplateApplyProject,
+  /** The template's body the plan was computed from. */
+  template: TemplateBody,
   changes: z.array(ChangeRow),
 });
 export type TemplateApplyPlan = z.infer<typeof TemplateApplyPlan>;
+
+/**
+ * A status as an apply leaves it: one the project has by its id, one it
+ * adds by its name in the template.
+ */
+const StatusKey = z.union([z.number().int(), z.string()]);
 
 export const TemplateApplyInput = z.object({
   template: TemplateRef,
   expected: z.string(),
   selected: z.array(z.string()).min(1),
+  /**
+   * What the page drew the project as once applied. The apply refuses to
+   * write anything else; a page that predates it sends none, and is not
+   * checked.
+   */
+  drawn: z
+    .object({
+      /** The statuses in board order. */
+      order: z.array(StatusKey),
+      /** The status the block clear line is on; null when there is none. */
+      line: StatusKey.nullable(),
+      default: StatusKey.nullable(),
+    })
+    .optional(),
 });
 export type TemplateApplyInput = z.infer<typeof TemplateApplyInput>;
 
