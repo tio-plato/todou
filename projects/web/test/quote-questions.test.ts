@@ -25,6 +25,15 @@ const NAME: Question = {
   options: [{ label: "`foo`" }, { label: "bar" }],
 };
 
+const TABLE: Question = {
+  key: "table",
+  header: "Table",
+  question: "What should the new table be called?",
+  multiple: false,
+  options: [{ label: "jobs_v2" }, { label: "job_runs" }],
+  when: { key: "storage", selected: [1] },
+};
+
 const ANSWERS: QuestionAnswer[] = [
   {
     key: "storage",
@@ -207,6 +216,112 @@ describe("entryQuote", () => {
       entryQuote({
         body: "Two questions below.",
         questions: [STORAGE, NAME],
+        answers: null,
+      }),
+    ).toBe(
+      [
+        "Two questions below.",
+        "",
+        "**Storage**",
+        "",
+        "Where should X live?",
+        "",
+        "- Reuse the jobs table (recommended) — Fewer tables.",
+        "- A new table for X",
+        "",
+        "Which **name**?",
+        "",
+        "- `foo`",
+        "- bar",
+      ].join("\n"),
+    );
+  });
+
+  it("quotes the follow-ups the answer asked and no other", () => {
+    expect(
+      entryQuote({
+        body: "Two questions below.",
+        questions: [STORAGE, TABLE, NAME],
+        answers: ANSWERS,
+      }),
+    ).toBe(
+      [
+        "Two questions below.",
+        "",
+        "**Storage**",
+        "",
+        "Where should X live?",
+        "",
+        "- Reuse the jobs table (recommended) — Fewer tables.",
+        "- A new table for X",
+        "",
+        "**Answer:** Reuse the jobs table (recommended) · other: Keep it small.",
+        "",
+        "Which **name**?",
+        "",
+        "- `foo`",
+        "- bar",
+        "",
+        "**Answer:** declined to answer",
+      ].join("\n"),
+    );
+    expect(
+      entryQuote({
+        body: "Two questions below.",
+        questions: [STORAGE, TABLE, NAME],
+        answers: [
+          {
+            key: "storage",
+            selected: [{ index: 1, label: "A new table for X" }],
+            other: null,
+            declined: false,
+          },
+          {
+            key: "table",
+            selected: [{ index: 0, label: "jobs_v2" }],
+            other: null,
+            declined: false,
+          },
+          { key: "name", selected: [], other: null, declined: true },
+        ],
+      }),
+    ).toBe(
+      [
+        "Two questions below.",
+        "",
+        "**Storage**",
+        "",
+        "Where should X live?",
+        "",
+        "- Reuse the jobs table (recommended) — Fewer tables.",
+        "- A new table for X",
+        "",
+        "**Answer:** A new table for X",
+        "",
+        "**Table**",
+        "",
+        "What should the new table be called?",
+        "",
+        "- jobs_v2",
+        "- job_runs",
+        "",
+        "**Answer:** jobs_v2",
+        "",
+        "Which **name**?",
+        "",
+        "- `foo`",
+        "- bar",
+        "",
+        "**Answer:** declined to answer",
+      ].join("\n"),
+    );
+  });
+
+  it("quotes only what is asked before any pick while there is no answer", () => {
+    expect(
+      entryQuote({
+        body: "Two questions below.",
+        questions: [STORAGE, TABLE, NAME],
         answers: null,
       }),
     ).toBe(
