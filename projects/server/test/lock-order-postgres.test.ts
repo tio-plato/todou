@@ -1159,6 +1159,48 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
     }
   });
 
+  it("a bulk command adding a label another write puts on first adds it once", async () => {
+    const p = await project();
+    const a = await card(p.slug, "a");
+    const b = await card(p.slug, "b");
+    const l = await label(p.slug, "L");
+
+    // The holder is a write on a that labels it and commits while the bulk
+    // command waits for the card.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issues WHERE id = $1 FOR NO KEY UPDATE",
+        [a.id],
+      );
+      pending = send("POST", `/projects/${p.slug}/issues/bulk`, {
+        numbers: [a.number, b.number],
+        commands: [{ type: "label_add", label_id: l }],
+      });
+      await waitForLockWaiters(1);
+      await holder.query(
+        "INSERT INTO issue_labels (issue_id, label_id) VALUES ($1, $2)",
+        [a.id, l],
+      );
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(200);
+      const labeled = await observer.query<{ issue_id: string }>(
+        "SELECT issue_id FROM issue_labels WHERE label_id = $1 ORDER BY issue_id",
+        [l],
+      );
+      expect(labeled.rows).toEqual([
+        { issue_id: String(a.id) },
+        { issue_id: String(b.id) },
+      ]);
+      expect(await eventsOf(a, "label_added")).toEqual([]);
+      expect(await eventsOf(b, "label_added")).toHaveLength(1);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
   it("a PATCH emptying the assignees removes one assigned meanwhile, under their login", async () => {
     const p = await project();
     const x = await card(p.slug, "T1");
@@ -1530,6 +1572,65 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       ]);
     } finally {
       stop();
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("marking several cards read locks the reader's positions in id order", async () => {
+    const p = await project();
+    const a = await card(p.slug, "a");
+    const b = await card(p.slug, "b");
+    expect(a.id).toBeLessThan(b.id);
+    // b is read first, so its position has the lower id; reading b again
+    // writes a new version of it, behind a's.
+    for (const x of [b, a, b]) {
+      const read = await send(
+        "PUT",
+        `/projects/${p.slug}/issues/${x.number}/read`,
+        {},
+      );
+      expect(read.status).toBe(204);
+    }
+    const positions = await observer.query<{ id: string; issue_id: string }>(
+      "SELECT id, issue_id FROM issue_reads WHERE issue_id = ANY($1)",
+      [[a.id, b.id]],
+    );
+    const idOf = (x: { id: number }) =>
+      Number(positions.rows.find((row) => Number(row.issue_id) === x.id)?.id);
+    const [ra, rb] = [idOf(a), idOf(b)];
+    expect(rb).toBeLessThan(ra);
+    expect(await physicalOrder("issue_reads", [ra, rb])).toEqual([ra, rb]);
+    const [start] = (await observer.query<{ now: Date }>("SELECT now() AS now"))
+      .rows;
+
+    // The holder is the same reader marking everything read.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issue_reads WHERE id = $1 FOR UPDATE",
+        [rb],
+      );
+      pending = send(
+        "PUT",
+        `/projects/${p.slug}/issues/read`,
+        { numbers: [a.number, b.number] },
+        seq,
+      );
+      await waitForLockWaiters(1);
+      await holder.query(
+        "SELECT id FROM issue_reads WHERE id = $1 FOR UPDATE",
+        [ra],
+      );
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(204);
+      const after = await observer.query<{ seen: boolean }>(
+        "SELECT last_seen_at >= $2 AS seen FROM issue_reads WHERE id = ANY($1)",
+        [[ra, rb], start?.now],
+      );
+      expect(after.rows).toEqual([{ seen: true }, { seen: true }]);
+    } finally {
       await holder.query("ROLLBACK");
       await Promise.allSettled([pending]);
     }
