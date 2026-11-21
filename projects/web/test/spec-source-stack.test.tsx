@@ -618,6 +618,52 @@ describe("selecting text in the source view", () => {
     await waitFor(() => expect(fileOptions.length).toBeGreaterThan(drawn));
     expect(fileOptions.at(-1)).toBe(before);
   });
+
+  it("moves the entry without drawing the file again", async () => {
+    mockSpec();
+    const view = await singleSource("drift.md");
+    const row = await waitFor(() => {
+      const el = view.container.querySelector(
+        '[data-testid="file-view"] [data-line="2"]',
+      );
+      if (el === null) throw new Error("not drawn");
+      return el;
+    });
+    await act(async () => {});
+    const drawn = fileOptions.length;
+    // Shift+→ and Shift+← each move the selection, and on iOS so does every
+    // frame of a handle drag: only the entry follows it.
+    selectInRow(row, 1, 4);
+    await view.findByText(/Comment L2:2–4/);
+    selectInRow(row, 1, 3);
+    await view.findByText(/Comment L2:2–3/);
+    window.getSelection()?.removeAllRanges();
+    await waitFor(() => expect(view.queryByText(/Comment L2/)).toBeNull());
+    expect(fileOptions.length).toBe(drawn);
+  });
+
+  it("moves the entry without drawing the stack again", async () => {
+    mockSpec();
+    const view = renderSpecView("?v=2&view=source&file=new-name.md");
+    const row = await waitFor(() => {
+      const el = view.container.querySelector(
+        '[data-testid="file-view"] [data-line="2"]',
+      );
+      if (el === null) throw new Error("not drawn");
+      return el;
+    });
+    await act(async () => {});
+    const drawn = fileOptions.length;
+    // The unfolded rename draws a `File`, which redraws whenever the stack
+    // around it does.
+    selectInRow(row, 5, 8);
+    await view.findByText(/Comment L2:6–8/);
+    selectInRow(row, 5, 7);
+    await view.findByText(/Comment L2:6–7/);
+    window.getSelection()?.removeAllRanges();
+    await waitFor(() => expect(view.queryByText(/Comment L2/)).toBeNull());
+    expect(fileOptions.length).toBe(drawn);
+  });
 });
 
 const DRAFTS_KEY = "todou-spec-review:demo:1";
