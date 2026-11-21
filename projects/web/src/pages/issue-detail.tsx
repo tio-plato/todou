@@ -90,6 +90,7 @@ import { RevealAllEye } from "@/components/timeline/reveal-all-eye.tsx";
 import { RevealedRunsProvider } from "@/components/timeline/revealed-runs.tsx";
 import { Timeline } from "@/components/timeline/timeline.tsx";
 import { TimelineDivider } from "@/components/timeline/timeline-divider.tsx";
+import { pressQuestionLanding } from "@/components/timeline/use-question-landing.ts";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -331,6 +332,8 @@ export function IssueDetailPage() {
  * A press asks in the entry's state and leaves the address as it is until the
  * landing writes the comment it found: every address a page writes is a row in
  * the browser's history, and the request is only a step on the way.
+ * While the entry still holds a request, being read or after a failed read,
+ * a press writes nothing and goes to the landing instead.
  * The link itself still names the request, for a new tab and a copied link.
  */
 function CardQuestionBadge({
@@ -344,8 +347,9 @@ function CardQuestionBadge({
 }) {
   const router = useRouter();
   const hash = useRouterState({ select: (s) => s.location.hash });
-  // A request still being read: a Retry asks from the earliest while the
-  // address still names the comment that went missing.
+  // A request the entry still holds, being read or after a failed read: a
+  // Retry asks from the earliest while the address still names the comment
+  // that went missing.
   const pending = useRouterState({
     select: (s) => readQuestionStep(s.location.state)?.after,
   });
@@ -363,20 +367,14 @@ function CardQuestionBadge({
       issueNumber={issueNumber}
       count={count}
       hash={entered ? hash : questionLandingHash(after)}
-      // Moving within the card: a pushed entry would make Back's last step
-      // the top of the card, and nothing being edited here is left behind.
-      replace
-      ignoreBlocker
       // Its target is this page: matched without the hash, it would always
       // be marked as the current one.
       activeOptions={{ includeHash: true }}
       onClick={(event) => {
         // The title mirror reads a click on itself as "back to the top".
         event.stopPropagation();
-        // An entry from elsewhere still being read is reread through the
-        // link, as it was followed; a modified click opens a new tab.
+        // A modified click opens a new tab.
         if (
-          entered ||
           event.button !== 0 ||
           event.ctrlKey ||
           event.metaKey ||
@@ -385,6 +383,12 @@ function CardQuestionBadge({
         )
           return;
         event.preventDefault();
+        // Asking again for the request the entry holds would write the same
+        // address and state, which the router takes for no move at all.
+        if (entered || pending !== undefined) {
+          pressQuestionLanding(slug, issueNumber);
+          return;
+        }
         void router.navigate({
           hash: true,
           search: true,

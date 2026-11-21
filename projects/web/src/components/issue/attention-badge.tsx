@@ -54,8 +54,6 @@ export function QuestionBadge({
   count,
   className,
   hash = UNANSWERED_QUESTIONS_HASH,
-  replace,
-  ignoreBlocker,
   activeOptions,
   onClick,
 }: {
@@ -64,8 +62,6 @@ export function QuestionBadge({
   count: number;
   className?: string;
   hash?: string;
-  replace?: boolean;
-  ignoreBlocker?: boolean;
   activeOptions?: ActiveOptions;
   onClick?: (event: MouseEvent) => void;
 }) {
@@ -78,8 +74,6 @@ export function QuestionBadge({
       hash={hash}
       hashScrollIntoView={false}
       state={returnState}
-      replace={replace}
-      ignoreBlocker={ignoreBlocker}
       activeOptions={activeOptions}
       onClick={onClick}
       aria-label={label}
