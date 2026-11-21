@@ -86,7 +86,7 @@ export function foldKey(fold: Fold, blocks: FoldBlock[]): string {
 }
 
 /** The source lines a line-based fold key spans; null for an index key. */
-function keyLines(key: string): LineRange | null {
+export function keyLines(key: string): LineRange | null {
   const match = /^(\d+)-(\d+)$/.exec(key);
   return match === null
     ? null
@@ -127,6 +127,18 @@ export const FOLD_CLASS = "spec-fold";
 export const FOLDED_CLASS = "spec-folded";
 export const FOLD_KEY_ATTR = "data-fold-key";
 
+/** What rehype-decorations paints for content the baseline had and lost. */
+export const DELETION_CLASSES: ReadonlySet<string> = new Set([
+  "spec-del-block",
+  "spec-del",
+  // Restored old semantic subtrees have no current-source position.
+  "spec-del-structure",
+  // A removed row or column is spliced back into the table it left (T-221),
+  // so it carries no source line the diff could have reported either.
+  "spec-del-cell",
+  "spec-del-row",
+]);
+
 /**
  * Everything rehype-decorations paints. Reading the classes rather than the
  * ranges is what keeps a mark from being folded away: an aligned pair puts
@@ -135,15 +147,8 @@ export const FOLD_KEY_ATTR = "data-fold-key";
  */
 const DECORATION_CLASSES = new Set([
   "spec-ins-block",
-  "spec-del-block",
   "spec-ins",
-  "spec-del",
-  // Restored old semantic subtrees have no current-source position.
-  "spec-del-structure",
-  // A removed row or column is spliced back into the table it left (T-221),
-  // so it carries no source line the diff could have reported either.
-  "spec-del-cell",
-  "spec-del-row",
+  ...DELETION_CLASSES,
 ]);
 
 function classesOf(element: Element): string[] {

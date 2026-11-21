@@ -1,3 +1,26 @@
+/** What ↑↓ stops on: both kinds of "changed since the baseline" mark (T-158). */
+export const CHANGED_SELECTOR = ".spec-changed, .spec-ins-block";
+
+/**
+ * The stops inside `root`, in document order and never one inside another.
+ *
+ * ↑↓ have always stepped over blocks — a paragraph with three edited words is
+ * one stop, because the word-level marks are not in the selector. A swapped
+ * image is the one mark that lands on an inline element, so the `<img>` and
+ * the paragraph holding it both match (T-223); left in, one edit would stop
+ * the reader twice a few pixels apart and count as two.
+ */
+export function stopsIn(root: HTMLElement, selector: string): HTMLElement[] {
+  const stops: HTMLElement[] = [];
+  for (const el of root.querySelectorAll<HTMLElement>(selector)) {
+    // An ancestor comes first in document order, so the stop kept last is the
+    // only one that can contain this element.
+    if (stops.at(-1)?.contains(el) === true) continue;
+    stops.push(el);
+  }
+  return stops;
+}
+
 /**
  * One navigation decision's inputs. Both ↑↓ and the counter read the same
  * `Stops`, so the number on screen is always the one the arrow will land on.

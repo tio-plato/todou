@@ -56,7 +56,15 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { issueQuery } from "@/api/issues.ts";
-import { useRefPlacement } from "@/api/prefs.ts";
+import {
+  useRefPlacement,
+  useSpecOutline,
+  useSpecOutlineChanges,
+  useSpecOutlineComments,
+  useSpecStrip,
+  useSpecStripChanges,
+  useSpecStripComments,
+} from "@/api/prefs.ts";
 import { api } from "@/api/queries.ts";
 import { specCommentsQuery, specFilesQuery, specQuery } from "@/api/spec.ts";
 import { SpecStatusBadge } from "@/components/issue/spec-entry.tsx";
@@ -106,11 +114,13 @@ import {
   sourceHighlightRanges,
 } from "@/components/spec/source-selection.ts";
 import { SpecBaselinePicker } from "@/components/spec/spec-baseline-picker.tsx";
+import { SpecChangeStrip } from "@/components/spec/spec-change-strip.tsx";
 import { SpecCompareToggle } from "@/components/spec/spec-compare-toggle.tsx";
 import {
   type ComposerStaging,
   SpecComposer,
 } from "@/components/spec/spec-composer.tsx";
+import { jumpToHeading, SpecOutline } from "@/components/spec/spec-outline.tsx";
 import {
   SpecReviewSessionScope,
   useSpecReviewSessionHandle,
@@ -153,9 +163,11 @@ import {
 import type { SelectionEndpoints } from "@/lib/selection-endpoints.ts";
 import {
   acceptsShortcut,
+  CHANGED_SELECTOR,
   currentIndex,
   type Stops,
   stepIndex,
+  stopsIn,
 } from "@/lib/spec-change-nav.ts";
 import { changedLineRanges } from "@/lib/spec-changes.ts";
 import { type DraftPlacement, placeDraft } from "@/lib/spec-draft-placement.ts";
@@ -163,6 +175,11 @@ import {
   type SpecReviewDraft,
   useSpecReviewDrafts,
 } from "@/lib/spec-drafts.ts";
+import {
+  outlineOf,
+  sectionAnnotations,
+  sectionDiffstat,
+} from "@/lib/spec-outline.ts";
 import type { SpecReviewSession } from "@/lib/spec-review-session.ts";
 import {
   type SpecSearch,
@@ -183,34 +200,11 @@ import { LG_UP, SM_UP, useMediaQuery, XL_UP } from "@/lib/use-media-query.ts";
 import { cn } from "@/lib/utils.ts";
 import { VIEWPORT_CHROME_EVENT } from "@/lib/viewport-chrome.ts";
 
-/** What ↑↓ stops on: both kinds of "changed since the baseline" mark (T-158). */
-const CHANGED_SELECTOR = ".spec-changed, .spec-ins-block";
-
 /** What ↑↓ stops on in source-diff mode: one per file pair (T-190). */
 const FILE_DIFF_SELECTOR = "[data-file-diff]";
 
 /** Where the reader stands among what ↑↓ steps over, 1-based (T-224). */
 type ChangePosition = { index: number; total: number };
-
-/**
- * The stops inside `root`, in document order and never one inside another.
- *
- * ↑↓ have always stepped over blocks — a paragraph with three edited words is
- * one stop, because the word-level marks are not in the selector. A swapped
- * image is the one mark that lands on an inline element, so the `<img>` and
- * the paragraph holding it both match (T-223); left in, one edit would stop
- * the reader twice a few pixels apart and count as two.
- */
-function stopsIn(root: HTMLElement, selector: string): HTMLElement[] {
-  const stops: HTMLElement[] = [];
-  for (const el of root.querySelectorAll<HTMLElement>(selector)) {
-    // An ancestor comes first in document order, so the stop kept last is the
-    // only one that can contain this element.
-    if (stops.at(-1)?.contains(el) === true) continue;
-    stops.push(el);
-  }
-  return stops;
-}
 
 /**
  * Where each stop comes to rest, in page coordinates, so the pivot is simply
@@ -239,6 +233,15 @@ function stopsFor(els: HTMLElement[], sourceDiff: boolean): Stops {
 
 /** Two toolbar rows, until the measurement lands. */
 const TOOLBAR_FALLBACK_HEIGHT = 78;
+
+/**
+ * How far below the toolbar the rail's top edge stays, and above the window's
+ * bottom; the change strip stops as far below it.
+ */
+const RAIL_GAP = 12;
+
+/** A line taken to itself, where no comparison moved any. */
+const SAME_LINE = (line: number) => line;
 
 /**
  * The one content slot in the toolbar's second row: `fold`, `wrap` and the
@@ -779,6 +782,22 @@ function SpecViewBody({
   const selected = files.data.files.find((f) => f.path === selectedPath);
   const params = { slug, number: String(issueNumber) };
 
+  // The rendered file's headings, for the outline and the change strip. The
+  // source views have neither: their rail lists files alone.
+  const outlineOn = useSpecOutline();
+  const showsStrip =
+    useSpecStrip() && wide && view === "rendered" && selected !== undefined;
+  const renderedBody =
+    view === "rendered" && (outlineOn || showsStrip)
+      ? selected?.body
+      : undefined;
+  const sections = useMemo(
+    () => (renderedBody === undefined ? null : outlineOf(renderedBody)),
+    [renderedBody],
+  );
+  const outline = outlineOn ? sections : null;
+  const cardRef = useRef<HTMLDivElement>(null);
+
   const fileSearch = (path: string): SpecSearch =>
     specSearchFor({ file: path, version, baseline, view });
   const baselineSearch = (next: number | null): SpecSearch =>
@@ -986,14 +1005,18 @@ function SpecViewBody({
   // Held like every other landing (T-527). Native scroll anchoring already
   // keeps the stop here in Chromium; the hold is for engines without it.
   const keepHold = useOwnHold();
-  const flashTo = (
-    target: HTMLElement,
-    mode: RevealMode = "auto",
-    highlight = true,
-  ) => {
-    revealBlock(target, { mode, behavior: "smooth", flash: highlight });
-    keepHold(holdRevealed(target, document.body, mode, "smooth"));
-  };
+  // Stable: the outline is handed it.
+  const flashTo = useCallback(
+    (target: HTMLElement, mode: RevealMode = "auto", highlight = true) => {
+      revealBlock(target, { mode, behavior: "smooth", flash: highlight });
+      keepHold(holdRevealed(target, document.body, mode, "smooth"));
+    },
+    [keepHold],
+  );
+  const jumpToSection = useCallback(
+    (line: number) => jumpToHeading(contentRef.current, line, flashTo),
+    [flashTo],
+  );
 
   /**
    * False when this file has no further change that way, which is what hands
@@ -1489,6 +1512,44 @@ function SpecViewBody({
     return counts;
   }, [comments.data]);
 
+  // Each section's share of the file's diffstat while comparing, against
+  // nothing for a file the baseline lacks, and where its lines went, for the
+  // notes on the baseline.
+  const sectionDiff = useMemo(() => {
+    if (
+      sections === null ||
+      !renderedCompare ||
+      baselineFiles === undefined ||
+      selected === undefined
+    ) {
+      return null;
+    }
+    return sectionDiffstat(
+      sections,
+      baselineBody ?? "",
+      selected.body,
+      diffLines,
+    );
+  }, [sections, renderedCompare, baselineFiles, selected, baselineBody]);
+  const sectionNotes = useMemo(
+    () =>
+      outline === null
+        ? null
+        : sectionAnnotations(
+            outline,
+            displayed,
+            baselineDisplayed,
+            sectionDiff?.oldToNew ?? SAME_LINE,
+          ),
+    [outline, displayed, baselineDisplayed, sectionDiff],
+  );
+  const outlineComments = useSpecOutlineComments();
+  const outlineChanges = useSpecOutlineChanges();
+  const outlineNotes = outlineComments ? sectionNotes : null;
+  const outlineStats = outlineChanges ? (sectionDiff?.stats ?? null) : null;
+  const stripComments = useSpecStripComments();
+  const stripChanges = useSpecStripChanges();
+
   const backControl = mergedBack ? (
     <SpecIssueReturnLink
       slug={slug}
@@ -1617,6 +1678,23 @@ function SpecViewBody({
           sidebarStats={sidebarStats}
           onNavigate={() => setFilesOpen(false)}
         />
+        {outline !== null && (
+          <>
+            <OutlineTitle />
+            <SpecOutline
+              headings={outline}
+              notes={outlineNotes}
+              stats={outlineStats}
+              contentRef={contentRef}
+              onJump={(line) => {
+                // The popover hands focus back to its trigger without
+                // scrolling to it (T-388), so the landing below stands.
+                setFilesOpen(false);
+                jumpToSection(line);
+              }}
+            />
+          </>
+        )}
       </PopoverContent>
     </Popover>
   );
@@ -2009,19 +2087,59 @@ function SpecViewBody({
             count the border box, so they give back the 4px on each end. */}
         <aside
           style={{
-            top: stickyTop + 12,
-            maxHeight: `calc(100vh - ${stickyTop + 24}px)`,
+            top: stickyTop + RAIL_GAP,
+            maxHeight: `calc(100vh - ${stickyTop + 2 * RAIL_GAP}px)`,
           }}
-          className="-m-1 hidden self-start space-y-1 overflow-y-auto overscroll-contain p-1 lg:sticky lg:block"
+          className={cn(
+            "-m-1 hidden self-start overscroll-contain p-1 lg:sticky",
+            // Two boxes that scroll on their own, so the outline never
+            // pushes the other files out of reach. The rail clips
+            // neither: their focus rings reach past its edges.
+            wide && outline !== null
+              ? "lg:flex lg:flex-col"
+              : "space-y-1 overflow-y-auto lg:block",
+          )}
         >
-          <SpecFileList
-            entries={railEntries}
-            selectedPath={selectedPath}
-            params={params}
-            searchFor={fileSearch}
-            unresolvedByPath={unresolvedByPath}
-            sidebarStats={sidebarStats}
-          />
+          {wide && outline !== null ? (
+            <>
+              {/* `-m-1 p-1` on both: a focus ring drawn past a row's edge
+                  would be clipped by the box's overflow otherwise. */}
+              <div
+                style={{
+                  maxHeight: `calc((100vh - ${stickyTop + 2 * RAIL_GAP}px) * 0.4)`,
+                }}
+                className="-m-1 shrink-0 overflow-y-auto overscroll-contain p-1"
+              >
+                <SpecFileList
+                  entries={railEntries}
+                  selectedPath={selectedPath}
+                  params={params}
+                  searchFor={fileSearch}
+                  unresolvedByPath={unresolvedByPath}
+                  sidebarStats={sidebarStats}
+                />
+              </div>
+              <OutlineTitle />
+              <div className="-m-1 min-h-0 flex-1 overflow-y-auto overscroll-contain p-1">
+                <SpecOutline
+                  headings={outline}
+                  notes={outlineNotes}
+                  stats={outlineStats}
+                  contentRef={contentRef}
+                  onJump={jumpToSection}
+                />
+              </div>
+            </>
+          ) : (
+            <SpecFileList
+              entries={railEntries}
+              selectedPath={selectedPath}
+              params={params}
+              searchFor={fileSearch}
+              unresolvedByPath={unresolvedByPath}
+              sidebarStats={sidebarStats}
+            />
+          )}
         </aside>
         <main className="min-w-0 space-y-4" ref={contentRef}>
           {sourceDiff && baseline !== null ? (
@@ -2114,7 +2232,15 @@ function SpecViewBody({
               ) : (
                 // The inset is the card's padding and how far past the text
                 // AnnotatedMarkdown's chips reach on a phone, onto the border.
-                <div className="rounded-lg border px-(--spec-card-inset) py-4 [--spec-card-inset:--spacing(5)]">
+                // From lg up the change strip takes the right border's place;
+                // below it the chips ride on that border.
+                <div
+                  ref={cardRef}
+                  className={cn(
+                    "relative rounded-lg border px-(--spec-card-inset) py-4 [--spec-card-inset:--spacing(5)]",
+                    showsStrip && "border-r-transparent",
+                  )}
+                >
                   {selected === undefined ? (
                     selectedPath !== undefined &&
                     baseline !== null &&
@@ -2153,6 +2279,32 @@ function SpecViewBody({
                       compareLabels={compareLabels}
                     />
                   )}
+                  {showsStrip &&
+                    sections !== null &&
+                    selected !== undefined && (
+                      <SpecChangeStrip
+                        cardRef={cardRef}
+                        contentRef={contentRef}
+                        stickyTop={stickyTop}
+                        gap={RAIL_GAP}
+                        headings={sections}
+                        stats={
+                          stripChanges ? (sectionDiff?.stats ?? null) : null
+                        }
+                        annotations={displayed}
+                        baselineAnnotations={baselineDisplayed}
+                        oldToNew={sectionDiff?.oldToNew ?? SAME_LINE}
+                        showComments={stripComments}
+                        showChanges={stripChanges}
+                        land={flashTo}
+                        deps={[
+                          selected.body,
+                          baselineBody,
+                          changedRanges,
+                          foldUnchanged,
+                        ]}
+                      />
+                    )}
                 </div>
               )}
               <UnplacedNotes
@@ -2244,6 +2396,15 @@ function SessionReviewSubmitDialog({
 }) {
   const summary = useSpecReviewSessionValue(session, (s) => s.summary);
   return <ReviewSubmitDialog {...props} summary={summary} />;
+}
+
+/** Where the file list ends and the outline begins, in the rail and the popover. */
+function OutlineTitle() {
+  return (
+    <h2 className="mt-3 shrink-0 border-t px-2 pt-3 pb-1 text-xs font-medium text-muted-foreground">
+      Outline
+    </h2>
+  );
 }
 
 /** One rail row: a file of the viewed version, or one the baseline had. */
