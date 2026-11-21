@@ -178,6 +178,7 @@ const ISSUE = {
   number: 1,
   title: "Spec outline",
   body: "",
+  body_preview: null,
   status: {
     id: 1,
     name: "In Progress",

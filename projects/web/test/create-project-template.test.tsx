@@ -108,6 +108,12 @@ const prefs = (new_project_template: TemplateRef): MePrefs => ({
   project_icon_fallback: "colorful_text",
   user_avatar_fallback: "monochrome_text",
   new_project_template,
+  spec_outline: true,
+  spec_outline_comments: true,
+  spec_outline_changes: true,
+  spec_strip: true,
+  spec_strip_comments: true,
+  spec_strip_changes: true,
 });
 
 const json = (status: number, payload: unknown) =>
