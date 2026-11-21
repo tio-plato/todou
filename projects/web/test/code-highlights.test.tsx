@@ -19,6 +19,7 @@ import {
   markRows,
   setCodeHighlights,
 } from "../src/lib/code-highlights.ts";
+import { FakeResizeObserver, resizePage } from "./fake-resize-observer.ts";
 import { renderWithProviders } from "./render.tsx";
 
 // pierre draws code in a shadow root happy-dom cannot lay out; the rows are
@@ -585,6 +586,7 @@ function chipsOf(view: Pick<RenderResult, "queryAllByRole">) {
 describe("chips on code rows", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    FakeResizeObserver.instances = [];
   });
 
   it("hangs each annotation's chip by the row it is on", async () => {
@@ -772,6 +774,33 @@ describe("chips on code rows", () => {
     const reveals = revealsSpy();
     fireEvent.click(locateIn(popover, "L5"));
     expect(reveals).toEqual([shadow.querySelector("[data-line='2']")]);
+    await closePopover(popover);
+  });
+
+  it("keeps holding an annotation's row that pierre draws again after the jump", async () => {
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    layOutRows();
+    const { view, wrappers } = await renderDocument(SIX_FENCE, [
+      wholeLines("comment", 5, 5),
+    ]);
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    const shadow = await drawRows(wrapper, SIX_ROWS);
+    const [chip] = await view.findAllByRole("button", {
+      name: /comment\(s\) on this block/,
+    });
+    if (chip === undefined) throw new Error("no chip");
+    const popover = await openPopover(chip);
+    const reveals = revealsSpy();
+    const jumpedTo = shadow.querySelector("[data-line='2']");
+    fireEvent.click(locateIn(popover, "L5"));
+    // pierre draws the rows again, and the page grows before a frame passes.
+    shadow.innerHTML = SIX_ROWS;
+    act(() => resizePage());
+    // By identity: the row drawn again is equal to the one it replaced.
+    expect(reveals).toHaveLength(2);
+    expect(reveals[0]).toBe(jumpedTo);
+    expect(reveals[1]).toBe(shadow.querySelector("[data-line='2']"));
     await closePopover(popover);
   });
 

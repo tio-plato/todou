@@ -550,7 +550,8 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
   /**
    * Where each annotation's locate control scrolls to, by its key: the row
    * of code its first line shows on, where pierre drew one, else its block.
-   * Its own, even when its chip joined another's.
+   * Its own, even when its chip joined another's. The hold that follows the
+   * jump reads it again each time it puts the target back.
    */
   const placeOf = useRef(
     new Map<string, { block: HTMLElement; row: HTMLElement | null }>(),
@@ -1304,30 +1305,45 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
   const keepHold = useOwnHold();
   /**
    * Jump to what a popover entry points at — its own mark, else its row of
-   * code or its block. A row is not flashed: the flash is styled outside
+   * code or its block — and hold it there. The hold looks it up again for
+   * each placing, by the same rule: pierre replaces every row of a block it
+   * draws again (highlighting arriving late, a theme change), the row jumped
+   * to among them. A row is not flashed: the flash is styled outside
    * pierre's shadow root, and the row wears its annotation's tint already.
    */
   const flashAnnotation = useCallback(
     (annotation: DisplayedAnnotation) => {
-      const container = containerRef.current;
-      if (!container) return;
-      const mark = container.querySelector<HTMLElement>(
-        `[${MARK_KEY_ATTR}="${annotation.key}"]`,
-      );
-      let place = placeOf.current.get(annotation.key);
-      if (mark === null && place?.row != null && !place.row.isConnected) {
-        layoutRef.current();
-        place = placeOf.current.get(annotation.key);
-      }
-      const row = mark === null && place?.row?.isConnected ? place.row : null;
+      const find = () => {
+        const container = containerRef.current;
+        if (!container) return null;
+        const mark = container.querySelector<HTMLElement>(
+          `[${MARK_KEY_ATTR}="${annotation.key}"]`,
+        );
+        let place = placeOf.current.get(annotation.key);
+        if (mark === null && place?.row != null && !place.row.isConnected) {
+          layoutRef.current();
+          place = placeOf.current.get(annotation.key);
+        }
+        const row = mark === null && place?.row?.isConnected ? place.row : null;
+        const block = place?.block.isConnected ? place.block : null;
+        const target = mark ?? row ?? block;
+        return target === null ? null : { target, row, block };
+      };
+      const found = find();
+      if (found === null) return;
+      const { target, row, block } = found;
       // The walk up to a shut fold that `revealBlock` takes stops at pierre's
       // shadow root, so a row's folds are opened from its block.
-      if (row !== null && place !== undefined) openEnclosingFolds(place.block);
-      const target =
-        mark ?? row ?? (place?.block.isConnected ? place.block : null);
-      if (target === null) return;
+      if (row !== null && block !== null) openEnclosingFolds(block);
       revealBlock(target, { behavior: "smooth", flash: target !== row });
-      keepHold(holdRevealed(target, document.body, "auto", "smooth"));
+      keepHold(
+        holdRevealed(
+          () => find()?.target ?? null,
+          document.body,
+          "auto",
+          "smooth",
+        ),
+      );
     },
     [keepHold],
   );
