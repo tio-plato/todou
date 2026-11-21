@@ -64,17 +64,21 @@ export function entryOf(el: Element): Element {
   return el.closest("[data-comment-id]") ?? el;
 }
 
-/** What each question card shows, by the element it renders into. */
+/**
+ * Each question card's whole component and the answers it shows, by the
+ * element it renders into.
+ */
 const QUESTIONS = new WeakMap<
   Element,
   { component: QuestionsComponent; answers: readonly QuestionAnswer[] | null }
 >();
 
 /**
- * The ref for a question card's outermost element: it records the questions
- * and the answers the card shows, null while there are none or they are not
- * known. Outermost because a popped-out form renders into another document,
- * and the page keeps only this element and a placeholder inside it.
+ * The ref for a question card's outermost element: it records every
+ * question of the card's component and the answers the card shows, null
+ * while there are none or they are not known. Outermost because a
+ * popped-out form renders into another document, and the page keeps only
+ * this element and a placeholder inside it.
  */
 export function useQuotableQuestions(
   component: QuestionsComponent,
@@ -88,7 +92,7 @@ export function useQuotableQuestions(
   );
 }
 
-/** The questions an entry's card shows, and their answers; null for none. */
+/** The questions of an entry's card, and their answers; null for none. */
 export function questionsIn(entry: Element): {
   questions: readonly Question[];
   answers: readonly QuestionAnswer[] | null;
@@ -101,9 +105,10 @@ export function questionsIn(entry: Element): {
 }
 
 /**
- * What quoting a whole entry quotes: its stored body, then the questions and
- * answers its card shows. `entry` is null for an entry not rendered, which
- * quotes its body alone.
+ * What quoting a whole entry quotes: its stored body, then the questions its
+ * answers asked and those answers, or with no answers the questions asked
+ * before any pick. `entry` is null for an entry not rendered, which quotes
+ * its body alone.
  */
 export function wholeQuoteOf(entry: Element | null, body: string): string {
   return entryQuote({
