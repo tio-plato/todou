@@ -727,6 +727,57 @@ describe("a template's page", () => {
     });
   });
 
+  it("refuses a new status differing only in case from one it holds", async () => {
+    const error = vi.spyOn(toast, "error");
+    const server = fakeServer();
+    renderAt("/settings/templates/7");
+    await screen.findByText("Doing");
+    await addStatus("done");
+    await settle();
+    expect(error).toHaveBeenCalledWith('status "done" already exists');
+    expect(server.puts()).toHaveLength(0);
+  });
+
+  it("lets a status or a label change only its own case", async () => {
+    const server = fakeServer();
+    renderAt("/settings/templates/7");
+    await screen.findByText("Doing");
+
+    const statuses = within(statusesSection() as HTMLElement);
+    fireEvent.click(statuses.getByRole("button", { name: "edit status Done" }));
+    fireEvent.change(statuses.getByPlaceholderText("In Review"), {
+      target: { value: "DONE" },
+    });
+    await act(async () => {
+      fireEvent.click(statuses.getByRole("button", { name: "Save" }));
+    });
+    await waitFor(() => expect(server.puts()).toHaveLength(1));
+    expect(server.puts()[0]?.body).toMatchObject({
+      body: {
+        statuses: [{ name: "Todo" }, { name: "Doing" }, { name: "DONE" }],
+      },
+    });
+
+    const labels = within(
+      screen
+        .getByRole("heading", { name: "Labels" })
+        .closest("section") as HTMLElement,
+    );
+    fireEvent.click(
+      labels.getByRole("button", { name: "edit label kind:bug" }),
+    );
+    fireEvent.change(labels.getByPlaceholderText("area:web"), {
+      target: { value: "KIND:BUG" },
+    });
+    await act(async () => {
+      fireEvent.click(labels.getByRole("button", { name: "Save" }));
+    });
+    await waitFor(() => expect(server.puts()).toHaveLength(2));
+    expect(server.puts()[1]?.body).toMatchObject({
+      body: { labels: [{ name: "KIND:BUG", color: "#ef4444" }] },
+    });
+  });
+
   it("sends a second edit after the first, with the revision it got back", async () => {
     const server = fakeServer({ hold: true });
     renderAt("/settings/templates/7");

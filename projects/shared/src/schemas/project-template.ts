@@ -4,6 +4,7 @@ import {
   type BuiltinTemplateKey,
   ColorHex,
   LabelName,
+  nameKey,
   ProjectRef,
   StatusCategory,
   StatusName,
@@ -33,9 +34,9 @@ export type TemplateLabel = z.infer<typeof TemplateLabel>;
 
 /**
  * What a template holds: the statuses in board order and the labels. Names
- * are compared after canonicalizing and case-sensitively, the way
- * `statuses_project_name_idx` compares them, so `Done` and `done` may both
- * be there while `Done` and `"Done "` may not.
+ * are canonicalized, then compared whatever their case or Unicode
+ * composition (`nameKey`), the way a project compares them, so neither
+ * `Done` and `done` nor `Done` and `"Done "` may both be there.
  */
 /** The rules a body holds beyond each field's own. */
 function checkBody(
@@ -44,14 +45,15 @@ function checkBody(
 ) {
   const seen = new Set<string>();
   for (const [index, status] of body.statuses.entries()) {
-    if (seen.has(status.name)) {
+    const key = nameKey(status.name);
+    if (seen.has(key)) {
       ctx.addIssue({
         code: "custom",
         path: ["statuses", index, "name"],
         message: `status "${status.name}" appears twice`,
       });
     }
-    seen.add(status.name);
+    seen.add(key);
   }
   for (const mark of ["is_default", "block_clear"] as const) {
     if (body.statuses.filter((status) => status[mark]).length > 1) {
@@ -64,14 +66,15 @@ function checkBody(
   }
   const labels = new Set<string>();
   for (const [index, label] of body.labels.entries()) {
-    if (labels.has(label.name)) {
+    const key = nameKey(label.name);
+    if (labels.has(key)) {
       ctx.addIssue({
         code: "custom",
         path: ["labels", index, "name"],
         message: `label "${label.name}" appears twice`,
       });
     }
-    labels.add(label.name);
+    labels.add(key);
   }
 }
 

@@ -280,6 +280,47 @@ describe("planTemplateApply", () => {
       color: { from: "#000000", to: colorIn(BASIC, "Done") },
     });
   });
+
+  it("pairs a project's name with the template's whatever their case", () => {
+    const state = project(
+      [
+        ...FLOW.map((name) => ({ name })),
+        { name: "Shipped" },
+        { name: "done", category: "closed", color: "#000000" },
+        { name: "Invalid" },
+      ],
+      { labels: [...BASIC_LABELS, { name: "bug", color: "#000000" }] },
+    );
+    const template: TemplateBody = {
+      ...BASIC,
+      labels: [...BASIC.labels, { name: "Bug", color: "#ef4444" }],
+    };
+    const rows = planTemplateApply(state, template);
+    expect(ids(rows)).toEqual(["label.change:104", "status.change:7"]);
+    expect(row(rows, "status.change:7")).toMatchObject({ name: "done" });
+    expect(row(rows, "label.change:104")).toMatchObject({
+      name: "bug",
+      to: "#ef4444",
+    });
+  });
+
+  it("pairs a name the database folds alike, as a capital dotted I", () => {
+    const state = project(
+      [
+        ...FLOW.map((name) => ({ name })),
+        { name: "Shipped" },
+        { name: "Done" },
+        { name: "Invalid" },
+      ],
+      { labels: [...BASIC_LABELS, { name: "iptal", color: "#000000" }] },
+    );
+    const template: TemplateBody = {
+      ...BASIC,
+      labels: [...BASIC.labels, { name: "\u0130ptal", color: "#000000" }],
+    };
+    const rows = planTemplateApply(state, template);
+    expect(ids(rows).filter((id) => id.startsWith("label."))).toEqual([]);
+  });
 });
 
 describe("applySelection", () => {

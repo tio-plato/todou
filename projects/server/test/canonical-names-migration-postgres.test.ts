@@ -1,10 +1,8 @@
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import {
-  checkCanonicalNamesMigration,
-  migrationStatements,
-} from "./canonical-names-migration-cases.ts";
+import { checkCanonicalNamesMigration } from "./canonical-names-migration-cases.ts";
 import { makeTestApp, type TestApp } from "./helpers.ts";
+import { createNameTables, migrationStatements } from "./name-migration.ts";
 import { createTestDatabase } from "./postgres-database.ts";
 
 const json = (res: Response) => res.json() as Promise<{ id: number }>;
@@ -19,20 +17,6 @@ const json = (res: Response) => res.json() as Promise<{ id: number }>;
  *     pnpm --filter @todou/server test canonical-names-migration-postgres
  */
 const PG_URL = process.env.TODOU_TEST_POSTGRES_URL;
-
-/** The two tables the migration touches, with their unique name index. */
-async function createNameTables(client: pg.Client): Promise<void> {
-  for (const table of ["statuses", "labels"]) {
-    await client.query(
-      `CREATE TABLE ${table} (id serial PRIMARY KEY, ` +
-        "project_id int NOT NULL, name text NOT NULL)",
-    );
-    await client.query(
-      `CREATE UNIQUE INDEX ${table}_project_name_idx ` +
-        `ON ${table} (project_id, name)`,
-    );
-  }
-}
 
 describe.skipIf(!PG_URL)("canonical_names migration on postgres", () => {
   let t: TestApp;
@@ -139,7 +123,7 @@ describe.skipIf(!PG_URL)("canonical_names migration on postgres", () => {
           }
         }
 
-        for (const statement of await migrationStatements()) {
+        for (const statement of await migrationStatements("canonical_names")) {
           await client.query(statement);
         }
 
@@ -202,7 +186,9 @@ describe.skipIf(!PG_URL)("canonical_names migration on postgres", () => {
         let settled = false;
         const done = (async () => {
           await migrator.query(begin);
-          for (const statement of await migrationStatements()) {
+          for (const statement of await migrationStatements(
+            "canonical_names",
+          )) {
             await migrator.query(statement);
           }
           await migrator.query("COMMIT");
