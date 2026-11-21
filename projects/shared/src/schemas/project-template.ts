@@ -281,7 +281,10 @@ export const ChangeRow = z.discriminatedUnion("type", [
     category: StatusCategory,
     color: ColorHex,
     chart_role: Role,
-    /** The status it goes in after, null for first. */
+    /**
+     * The status before it in the template, null for the template's first.
+     * Where it lands in the project is the shared rule's, which may differ.
+     */
     after: z.string().nullable(),
   }),
   z.object({

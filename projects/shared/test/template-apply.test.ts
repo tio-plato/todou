@@ -39,8 +39,17 @@ function template(names: string[], line: string | null = null): TemplateBody {
   };
 }
 
+const base = (id: string, action: ChangeRow["action"]) => ({
+  id,
+  section: "statuses" as const,
+  action,
+  default_selected: action !== "delete",
+  selectable: true,
+  requires: [],
+});
+
 /**
- * The plan's rows by id, all the layout reads of them: a move for each
+ * The plan's status rows, as the server lays them out: a move for each
  * status that moves, an addition for each status the template adds, a
  * deletion for each it lacks, and the line's row when the line differs.
  */
@@ -49,27 +58,51 @@ function rowsFor(p: ApplyProject, t: TemplateBody): ChangeRow[] {
   const names = new Set(t.statuses.map((s) => s.name));
   const line = t.statuses.find((s) => s.block_clear);
   const lineKey = line === undefined ? null : (ids.get(line.name) ?? line.name);
+  const ref = (name: string | undefined) =>
+    name === undefined ? null : { name, color: "#6b7280" };
   return [
-    ...[...statusMovers(p.statuses, t)].map((id) => `status.move:${id}`),
     ...t.statuses
       .filter((s) => !ids.has(s.name))
-      .map((s) => `status.add:${s.name}`),
+      .map(
+        (s): ChangeRow => ({
+          ...base(`status.add:${s.name}`, "add"),
+          type: "status_add",
+          name: s.name,
+          category: s.category,
+          color: s.color,
+          chart_role: s.chart_role,
+          after: t.statuses[t.statuses.indexOf(s) - 1]?.name ?? null,
+        }),
+      ),
+    ...[...statusMovers(p.statuses, t)].map(
+      (id): ChangeRow => ({
+        ...base(`status.move:${id}`, "move"),
+        type: "status_move",
+      }),
+    ),
+    ...(lineKey === p.line
+      ? []
+      : [
+          {
+            ...base("status.line", "move"),
+            type: "status_line",
+            from: ref(p.statuses.find((s) => s.id === p.line)?.name),
+            to: ref(line?.name),
+          } satisfies ChangeRow,
+        ]),
     ...p.statuses
       .filter((s) => !names.has(s.name))
-      .map((s) => `status.delete:${s.id}`),
-    ...(lineKey === p.line ? [] : ["status.line"]),
-  ].map(
-    (id) =>
-      ({
-        id,
-        section: "statuses",
-        action: "move",
-        default_selected: true,
-        selectable: true,
-        requires: [],
-        type: "status_move",
-      }) as ChangeRow,
-  );
+      .map(
+        (s): ChangeRow => ({
+          ...base(`status.delete:${s.id}`, "delete"),
+          type: "status_delete",
+          name: s.name,
+          color: "#6b7280",
+          issues: 0,
+          trashed: 0,
+        }),
+      ),
+  ];
 }
 
 /** The order once `selected` is applied, by name. */

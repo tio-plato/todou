@@ -277,7 +277,6 @@ export type ApplyResult = {
   order: StatusKey[];
   /** `order` with the deleted statuses still in place. */
   before: StatusKey[];
-  deleted: StatusKey[];
   line: StatusKey | null;
   lineChanged: boolean;
   default: StatusKey | null;
@@ -314,7 +313,6 @@ export function applyResult(
   return {
     order,
     before,
-    deleted: [...deleted],
     line,
     lineChanged: line !== layout.line.now,
     default: selected.has("status.default")
