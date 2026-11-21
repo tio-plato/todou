@@ -115,19 +115,7 @@ export function MermaidBlock({
 
   const diagram = result?.ok === true ? result : null;
   const drawn = diagram !== null && !showSource;
-  // Rows painted on the source go with it when the diagram takes its place,
-  // and pierre says nothing as its rows leave: the swap is announced here,
-  // either way, so that the page paints the block again. The source drawn
-  // on mount announces itself.
-  const swapped = useRef(false);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the swap itself is what runs this
-  useLayoutEffect(() => {
-    if (!swapped.current) {
-      swapped.current = true;
-      return;
-    }
-    if (probe.current !== null) announceCodeRendered(probe.current);
-  }, [drawn]);
+  useAnnounceSwap(probe, drawn);
   const open = () => {
     if (diagram === null) return;
     const view = {
@@ -282,6 +270,7 @@ export function MermaidCompare({
   );
   const pending = old === null || next === null;
   const neither = old?.ok === false && next?.ok === false;
+  useAnnounceSwap(probe, pending || showSource || neither);
   const side = (
     label: string,
     result: DiagramResult | null,
@@ -390,6 +379,27 @@ function OpenInViewer({ onOpen }: { onOpen: () => void }) {
  * Renders `source` with the page's palette and font, again on every theme
  * switch; null until the first render is back.
  */
+/**
+ * Rows painted on a fence's source go with it when a diagram takes its
+ * place, and pierre says nothing as its rows leave: each swap between the
+ * two is announced, either way, so that the page paints the block again.
+ * The source drawn on mount announces itself.
+ */
+function useAnnounceSwap(
+  probe: RefObject<HTMLElement | null>,
+  sourceShown: boolean,
+): void {
+  const swapped = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the swap itself is what runs this
+  useLayoutEffect(() => {
+    if (!swapped.current) {
+      swapped.current = true;
+      return;
+    }
+    if (probe.current !== null) announceCodeRendered(probe.current);
+  }, [sourceShown]);
+}
+
 function useDiagram(
   probe: RefObject<HTMLElement | null>,
   source: string,

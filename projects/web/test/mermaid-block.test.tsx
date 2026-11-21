@@ -222,6 +222,21 @@ describe("changed diagrams in a compare view (T-724)", () => {
     render.next = { ok: true, svg: SVG, width: 1360, height: 164 };
   });
 
+  it("tells the page around it when the diagrams take the source diff's place", async () => {
+    let heard = 0;
+    const hear = () => {
+      heard++;
+    };
+    document.addEventListener(CODE_RENDERED_EVENT, hear);
+    try {
+      const container = await compare();
+      await waitFor(() => expect(drawn(container)).toHaveLength(2));
+      expect(heard).toBeGreaterThan(0);
+    } finally {
+      document.removeEventListener(CODE_RENDERED_EVENT, hear);
+    }
+  });
+
   it("draws both versions side by side, and copies the new source", async () => {
     const writeText = vi.fn(async (_text: string) => {});
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
