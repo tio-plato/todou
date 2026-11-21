@@ -807,6 +807,21 @@ describe("baseline comments in the rendered comparison", () => {
     // 1) and keeps line 3, where the server carries a comment on v1.
     const resolved = { by: AUTHOR, at: "2026-01-07T00:00:00Z" };
     const onBrown = onV1("words.md", 1, 11, 15);
+    // The two paragraphs a few lines apart, so that their chips stay apart.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        const text = this.textContent ?? "";
+        const y =
+          this.tagName !== "P"
+            ? 0
+            : text.startsWith("The quick")
+              ? 100
+              : text.startsWith("Kept line")
+                ? 160
+                : 0;
+        return DOMRect.fromRect({ y });
+      },
+    );
     mockSpec(
       [
         { ...onBrown, comment_id: 1, body: "still open" },

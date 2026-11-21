@@ -1891,6 +1891,7 @@ async function chipTops(container: HTMLElement) {
 describe("chips on a block's later lines", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    setViewportWidth(1024);
     document.documentElement.style.fontSize = "";
   });
 
@@ -2045,6 +2046,59 @@ describe("chips on a block's later lines", () => {
       fold.dispatchEvent(new Event("toggle"));
     });
     expect(await chipTops(container)).toEqual(["98px"]);
+  });
+
+  it("joins the chips of blocks closer than a chip drawn at that width, in one pass", async () => {
+    // The blocks one line of text apart, as an open fold's summary and the
+    // paragraph under it are: inside a 24px phone badge, just clear of a
+    // 22px desktop chip. The second block's second line is two lines below
+    // the first block, clear of it at either width.
+    placeLines((el) => {
+      const text = el.textContent ?? "";
+      return text.startsWith("First")
+        ? 76
+        : text.startsWith("Second")
+          ? 98
+          : 30;
+    });
+    // Mounted narrow and widened: happy-dom seeds a `change` listener as
+    // unmatched, so one registered while the query already matches never
+    // hears it stop matching.
+    setViewportWidth(390);
+    const body = [
+      "Intro.",
+      "",
+      "First block.",
+      "",
+      "Second block's first line,",
+      "its second line.",
+      "",
+    ].join("\n");
+    const { container } = await renderDiff(body, body, [
+      wholeLines("comment", 3, 3),
+      wholeLines("comment", 5, 5),
+      wholeLines("comment", 6, 6),
+    ]);
+    const chips = () =>
+      [
+        ...container.querySelectorAll<HTMLElement>(
+          "[aria-label$='comment(s) on this block']",
+        ),
+      ].map((chip) => [chip.style.top, chip.getAttribute("aria-label")]);
+    await settleChips();
+    expect(chips()).toEqual([
+      ["76px", "2 comment(s) on this block"],
+      ["120px", "1 comment(s) on this block"],
+    ]);
+
+    act(() => setViewportWidth(1024));
+    await waitFor(() =>
+      expect(chips()).toEqual([
+        ["76px", "1 comment(s) on this block"],
+        ["98px", "1 comment(s) on this block"],
+        ["120px", "1 comment(s) on this block"],
+      ]),
+    );
   });
 });
 
@@ -3510,6 +3564,44 @@ describe("baseline annotations on deleted text", () => {
       "1 comment(s) on this block",
       "1 comment(s) on this block",
     ]);
+  });
+
+  it("joins a restored block's chip to the current version's chip their places joined into", async () => {
+    // One line apart on a phone, inside a 24px badge: a restored block, then
+    // two current paragraphs. The paragraphs' chips join; the restored
+    // block's joins theirs, where it hangs, rather than the first paragraph
+    // joining the restored block and the second staying apart.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        const text = this.textContent ?? "";
+        const y = this.classList.contains("spec-del-structure")
+          ? 300
+          : this.tagName !== "P"
+            ? 0
+            : text.startsWith("Para one")
+              ? 322.4
+              : text.startsWith("Para two")
+                ? 344.8
+                : 0;
+        return DOMRect.fromRect({ y });
+      },
+    );
+    setViewportWidth(390);
+    const before = "Old A here.\n\nPara one.\n\nPara two.\n";
+    const { container } = await renderDiff(
+      before,
+      "Para one.\n\nPara two.\n",
+      [wholeLines("comment", 1, 1), wholeLines("comment", 3, 3)],
+      [onBaseline("comment", before, 1, "A")],
+    );
+    await settleChips();
+    expect(
+      [
+        ...container.querySelectorAll<HTMLElement>(
+          "[aria-label$='comment(s) on this block']",
+        ),
+      ].map((chip) => [chip.style.top, chip.getAttribute("aria-label")]),
+    ).toEqual([["322.4px", "3 comment(s) on this block"]]);
   });
 
   it("hangs a baseline comment on the innermost restored block it reaches", async () => {
