@@ -575,6 +575,41 @@ describe("the table of labels", () => {
     ]);
   });
 
+  it("draws the project's labels in their own style, the template's added ones tinted", () => {
+    // kind:bug is recoloured, p1 would be deleted, urgent is left alone:
+    // all three solid in the project.
+    const project = ops();
+    const solid = new Set(["kind:bug", "p1", "urgent"]);
+    const styled = {
+      ...project,
+      labels: project.labels.map((label) =>
+        solid.has(label.name) ? { ...label, style: "solid" as const } : label,
+      ),
+    };
+    const rows = opsRows();
+    const selected = defaults(rows);
+    selected.add("label.delete:26");
+    const table = labelTable(
+      { project: styled, template: PATCH_FLOW },
+      rows,
+      selected,
+    );
+    const styleOf = (name: string) =>
+      table
+        .flatMap((row) => [
+          ...(row.before?.labels ?? []),
+          ...(row.after?.labels ?? []),
+          ...(row.group?.members.flatMap((m) => m.after?.labels ?? []) ?? []),
+        ])
+        .filter((label) => label.name === name)
+        .map((label) => label.style);
+    expect(styleOf("kind:bug")).toEqual(["solid", "solid"]);
+    expect(styleOf("p1")).toEqual(["solid"]);
+    expect(styleOf("urgent")).toEqual(["solid", "solid"]);
+    expect(styleOf("kind:chore")).toEqual([undefined, undefined]);
+    expect(styleOf("area:cli")).toEqual([undefined, undefined]);
+  });
+
   it("folds a prefix the template alone has into one row, half-ticked while some are left out", () => {
     const rows = opsRows();
     const selected = defaults(rows);

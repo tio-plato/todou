@@ -1,4 +1,4 @@
-import type { ChangeRow } from "@todou/shared";
+import type { ChangeRow, Label } from "@todou/shared";
 import type { CSSProperties } from "react";
 import { LabelChip } from "@/components/issue/label-chip.tsx";
 import { plural } from "@/components/settings/status-set-list.tsx";
@@ -8,7 +8,7 @@ import {
 } from "@/components/settings/template-apply-table.tsx";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
-import { labelOf } from "@/lib/template-apply-table.ts";
+import { deletedLabel } from "@/lib/template-apply-table.ts";
 
 /** How each kind of change is counted under the picker. */
 const COUNTED: Record<ChangeRow["action"], string> = {
@@ -100,6 +100,7 @@ type LabelLoss = Extract<ChangeRow, { type: "label_delete" }>;
 export function ApplyBar({
   count,
   deletes,
+  projectLabels,
   confirming,
   disabled,
   onApply,
@@ -110,6 +111,8 @@ export function ApplyBar({
   count: number;
   /** The ticked deletions. */
   deletes: readonly ChangeRow[];
+  /** The project's labels, whose style a deleted one is drawn in. */
+  projectLabels: ReadonlyArray<Pick<Label, "id" | "style">>;
   confirming: boolean;
   disabled: boolean;
   onApply: () => void;
@@ -133,7 +136,7 @@ export function ApplyBar({
           <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-sm">
             {losses.map((row, i) => (
               <span key={row.id} className="inline-flex items-center gap-1.5">
-                <LabelChip label={labelOf(row, i)} />
+                <LabelChip label={deletedLabel(row, projectLabels, i)} />
                 <span>
                   {labelUses(row.issues, row.trashed)}
                   {i < losses.length - 1 ? "," : "."}

@@ -396,16 +396,39 @@ export type LabelTableRow = {
   };
 };
 
-/** A label a row names, as the label list takes it; `index` tells it apart. */
-export const labelOf = (
-  label: { name: string; color: string },
-  index: number,
-): Label => ({ id: index + 1, name: label.name, color: label.color });
+type LabelFace = Pick<Label, "name" | "color" | "style">;
 
-const side = (
-  labels: ReadonlyArray<{ name: string; color: string }>,
-  look: Look,
-): LabelSide => ({ labels: labels.map(labelOf), look });
+/**
+ * A label a row names, as the label list takes it; `index` tells it apart.
+ * A project's label keeps its style; a template's has none, and is tinted.
+ */
+export const labelOf = (label: LabelFace, index: number): Label => ({
+  id: index + 1,
+  name: label.name,
+  color: label.color,
+  ...(label.style && { style: label.style }),
+});
+
+/** A label a deletion takes off cards, drawn in its own style. */
+export const deletedLabel = (
+  row: Extract<ChangeRow, { type: "label_delete" }>,
+  labels: ReadonlyArray<Pick<Label, "id" | "style">>,
+  index: number,
+): Label =>
+  labelOf(
+    {
+      name: row.name,
+      color: row.color,
+      style: labels.find((label) => `label.delete:${label.id}` === row.id)
+        ?.style,
+    },
+    index,
+  );
+
+const side = (labels: ReadonlyArray<LabelFace>, look: Look): LabelSide => ({
+  labels: labels.map(labelOf),
+  look,
+});
 
 /**
  * The labels, by name: one row for each the template adds, recolours or
@@ -419,21 +442,27 @@ export function labelTable(
 ): LabelTableRow[] {
   const on = (id: string) => selected.has(id);
   const touched = new Set<number>();
+  // A change row names the project's label by id; its style is the label's.
+  const styleOf = new Map(
+    plan.project.labels.map((label) => [label.id, label.style]),
+  );
   const single: Array<{ sort: string; row: LabelTableRow }> = [];
   const adds: Extract<ChangeRow, { type: "label_add" }>[] = [];
   for (const row of rows) {
     if (row.type === "label_add") {
       adds.push(row);
     } else if (row.type === "label_change") {
-      touched.add(Number(row.id.slice("label.change:".length)));
+      const id = Number(row.id.slice("label.change:".length));
+      touched.add(id);
       const ticked = on(row.id);
+      const style = styleOf.get(id);
       single.push({
         sort: row.name,
         row: {
           key: row.id,
-          before: side([{ name: row.name, color: row.from }], "solid"),
+          before: side([{ name: row.name, color: row.from, style }], "solid"),
           after: side(
-            [{ name: row.name, color: ticked ? row.to : row.from }],
+            [{ name: row.name, color: ticked ? row.to : row.from, style }],
             "solid",
           ),
           ticks: [row],
@@ -441,14 +470,16 @@ export function labelTable(
         },
       });
     } else if (row.type === "label_delete") {
-      touched.add(Number(row.id.slice("label.delete:".length)));
+      const id = Number(row.id.slice("label.delete:".length));
+      touched.add(id);
       const ticked = on(row.id);
+      const face = { name: row.name, color: row.color, style: styleOf.get(id) };
       single.push({
         sort: row.name,
         row: {
           key: row.id,
-          before: side([row], ticked ? "struck" : "solid"),
-          after: ticked ? null : side([row], "solid"),
+          before: side([face], ticked ? "struck" : "solid"),
+          after: ticked ? null : side([face], "solid"),
           ticks: [row],
           tint: ticked ? "delete" : null,
         },

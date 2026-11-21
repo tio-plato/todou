@@ -296,10 +296,11 @@ describe.each(PLACEMENTS)("applying a template (%s placement)", (placement) => {
     expect(byId(project.labels)).toEqual(
       byId(
         (await get(`/projects/${p.s}/labels`)).map(
-          (l: { id: number; name: string; color: string }) => ({
+          (l: { id: number; name: string; color: string; style: string }) => ({
             id: l.id,
             name: l.name,
             color: l.color,
+            style: l.style,
           }),
         ),
       ),

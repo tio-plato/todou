@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   type ChangeRow,
   defaultInsightsRole,
+  type LabelStyle,
   type Role,
   type StatusRef,
   type TemplateApplyInput,
@@ -79,6 +80,7 @@ export type ProjectState = {
     id: number;
     name: string;
     color: string;
+    style?: LabelStyle;
     issues: number;
     trashed: number;
   }>;
@@ -132,6 +134,7 @@ export function projectSnapshot(state: ProjectState): TemplateApplyProject {
       id: l.id,
       name: l.name,
       color: l.color,
+      ...(l.style && { style: l.style }),
     })),
   };
 }
@@ -596,6 +599,7 @@ async function readState(
       id: l.id,
       name: l.name,
       color: l.color,
+      style: l.style,
       issues: labelUses.get(l.id) ?? 0,
       trashed: labelTrashed.get(l.id) ?? 0,
     })),

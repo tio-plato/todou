@@ -4,6 +4,7 @@ import {
   type BuiltinTemplateKey,
   ColorHex,
   LabelName,
+  LabelStyle,
   nameKey,
   ProjectRef,
   StatusCategory,
@@ -384,7 +385,13 @@ export const TemplateApplyProject = z.object({
   /** The status the block clear line is on; null when there is no line. */
   line: z.number().int().nullable(),
   labels: z.array(
-    z.object({ id: z.number().int(), name: z.string(), color: ColorHex }),
+    z.object({
+      id: z.number().int(),
+      name: z.string(),
+      color: ColorHex,
+      // As a label carries it: absent means tint.
+      style: LabelStyle.optional(),
+    }),
   ),
 });
 export type TemplateApplyProject = z.infer<typeof TemplateApplyProject>;

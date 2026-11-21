@@ -398,6 +398,7 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
           <ApplyBar
             count={ticked.length}
             deletes={deletes}
+            projectLabels={plan?.project.labels ?? []}
             confirming={confirming}
             disabled={
               plan === undefined || preview.isFetching || apply.isPending
