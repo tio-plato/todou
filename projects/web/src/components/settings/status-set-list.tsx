@@ -632,17 +632,12 @@ function ClearLine({
         isDragging ? "z-20" : "z-1",
       )}
     >
-      <span
-        aria-hidden
-        className="absolute inset-x-0 top-1.5 h-0.5 bg-foreground max-sm:top-2"
-      />
-      <span
-        className={cn(
-          "absolute -top-1 left-1/2 flex h-5.5 -translate-x-1/2 items-stretch overflow-hidden rounded-full bg-foreground text-xs font-medium whitespace-nowrap text-background max-sm:-top-1.25 max-sm:h-7",
+      <ClearRule
+        pillClassName={
           isDragging
             ? "shadow-[0_8px_24px_oklch(0_0_0/0.18)]"
-            : "shadow-[0_1px_2px_oklch(0_0_0/0.12),0_2px_6px_oklch(0_0_0/0.08)]",
-        )}
+            : "shadow-[0_1px_2px_oklch(0_0_0/0.12),0_2px_6px_oklch(0_0_0/0.08)]"
+        }
       >
         {canManage ? (
           <>
@@ -667,10 +662,57 @@ function ClearLine({
             </button>
           </>
         ) : (
-          <span className="flex items-center px-2.5">Blocks clear below</span>
+          CLEAR_LABEL
         )}
-      </span>
+      </ClearRule>
     </div>
+  );
+}
+
+const CLEAR_LABEL = (
+  <span className="flex items-center px-2.5">Blocks clear below</span>
+);
+
+/**
+ * The block clear line as this list draws it: a rule across the box it is
+ * placed in, a pill in the middle, both centred on the box's height. The
+ * list's row puts its handles in the pill. Elsewhere it is drawn as it
+ * reads here, `dashed` where the line would go, or `label={false}` for a
+ * stretch of the rule alone.
+ */
+export function ClearRule({
+  dashed = false,
+  label = true,
+  pillClassName,
+  children = CLEAR_LABEL,
+}: {
+  dashed?: boolean;
+  label?: boolean;
+  pillClassName?: string;
+  children?: ReactNode;
+}) {
+  return (
+    <>
+      <span
+        aria-hidden
+        data-rule
+        className={cn(
+          "absolute inset-x-0 top-1/2 h-0.5 -translate-y-1/2 bg-foreground",
+          dashed &&
+            "h-0 border-t-2 border-dashed border-foreground bg-transparent",
+        )}
+      />
+      {label && (
+        <span
+          className={cn(
+            "absolute top-1/2 left-1/2 flex h-5.5 -translate-1/2 items-stretch overflow-hidden rounded-full bg-foreground text-xs font-medium whitespace-nowrap text-background max-sm:h-7",
+            pillClassName,
+          )}
+        >
+          {children}
+        </span>
+      )}
+    </>
   );
 }
 
