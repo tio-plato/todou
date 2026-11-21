@@ -85,20 +85,22 @@ function TildeIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
-/** Each kind of change: its select-all's word, colour and mark. */
-export const ACTIONS: ReadonlyArray<{
+type ActionMeta = {
   action: Action;
   text: string;
   tone: string;
   icon: (className: string) => ReactNode;
-}> = [
-  {
+};
+
+/** Each kind of change: its select-all's word, colour and mark. */
+const META: { [A in Action]: ActionMeta & { action: A } } = {
+  add: {
     action: "add",
     text: "Add",
     tone: "var(--change-add)",
     icon: (className) => <PlusIcon className={className} strokeWidth={2.75} />,
   },
-  {
+  recolour: {
     action: "recolour",
     text: "Colour",
     tone: "var(--change-recolour)",
@@ -106,13 +108,13 @@ export const ACTIONS: ReadonlyArray<{
       <PaletteIcon className={className} strokeWidth={2.25} />
     ),
   },
-  {
+  change: {
     action: "change",
     text: "Change",
     tone: "var(--change-meaning)",
     icon: (className) => <TildeIcon className={className} strokeWidth={2.75} />,
   },
-  {
+  move: {
     action: "move",
     text: "Move",
     tone: "var(--change-move)",
@@ -120,16 +122,22 @@ export const ACTIONS: ReadonlyArray<{
       <ArrowUpDownIcon className={className} strokeWidth={2.5} />
     ),
   },
-  {
+  delete: {
     action: "delete",
     text: "Delete",
     tone: "var(--change-delete)",
     icon: (className) => <MinusIcon className={className} strokeWidth={2.75} />,
   },
-];
+};
 
-const metaOf = (action: Action) =>
-  ACTIONS.find((meta) => meta.action === action) ?? (ACTIONS[0] as never);
+/** The kinds in the order their select-alls and counts are listed. */
+export const ACTIONS: readonly ActionMeta[] = [
+  META.add,
+  META.recolour,
+  META.change,
+  META.move,
+  META.delete,
+];
 
 /** A tinted row's background, by the change it makes. */
 const TINT: Record<Action, string> = {
@@ -221,7 +229,7 @@ function ChangeBox({
   tick?: string;
   onChange: (on: boolean) => void;
 }) {
-  const meta = metaOf(action);
+  const meta = META[action];
   return (
     <span
       data-tick={tick}
@@ -617,7 +625,9 @@ function StatusRow({
         if (e.pointerType === "mouse") onHover(null);
       }}
       // Touch has no hover: a tap lights the row until another is tapped.
-      onClick={() => onPin(index)}
+      onPointerUp={(e) => {
+        if (e.pointerType !== "mouse") onPin(index);
+      }}
       onFocus={(e) => {
         const tick = (e.target as HTMLElement)
           .closest("[data-tick]")

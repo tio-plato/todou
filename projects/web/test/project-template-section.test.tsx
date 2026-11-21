@@ -324,6 +324,7 @@ const APPLY = "/projects/todou/template/apply";
 function fakeServer({
   role = "admin" as Project["viewer_role"],
   plans = PLANS,
+  statuses = STATUSES,
   apply = (): Response => json(200, { skipped: [] }),
   held = false,
 } = {}) {
@@ -353,7 +354,7 @@ function fakeServer({
       return json(200, { ...project(role, "Other"), id: 2, slug: "other" });
     }
     if (/^\/projects\/(todou|other)\/statuses$/.test(path)) {
-      return json(200, STATUSES);
+      return json(200, statuses);
     }
     return json(404, { error: { code: "not_found", message: path } });
   }) as typeof fetch);
@@ -374,12 +375,13 @@ function fakeServer({
 function renderPage({
   role = "admin" as Project["viewer_role"],
   name = "Potato field",
+  statuses = STATUSES,
 } = {}) {
   const client = testQueryClient();
   client.setQueryData(projectQuery("todou").queryKey, project(role, name));
   client.setQueryData(projectTemplatesQuery.queryKey, TEMPLATES);
   client.setQueryData(prefsQuery.queryKey, PREFS);
-  client.setQueryData(statusesQuery("todou").queryKey, STATUSES);
+  client.setQueryData(statusesQuery("todou").queryKey, statuses);
 
   const rootRoute = createRootRoute();
   const authed = createRoute({
@@ -563,11 +565,8 @@ describe("applying a template", () => {
     fakeServer();
     renderPage();
     await pickKanban();
-    const summary = screen.getByText(/differs from this project in/)
-      .parentElement as HTMLElement;
-    expect(summary.textContent).toContain(
-      "Kanban differs from this project in 11 places:",
-    );
+    const summary = document.querySelector("[data-action]")
+      ?.parentElement as HTMLElement;
     const counted = () =>
       [...summary.querySelectorAll("[data-action]")].map((part) => [
         part.getAttribute("data-action"),
@@ -623,7 +622,14 @@ describe("applying a template", () => {
     fireEvent.click(labels.getByRole("checkbox", { name: "Delete" }));
     expect(checkedRows()).toEqual(DEFAULT_BOXES);
 
-    // Half the moves ticked shows as half.
+    // One of the three ticked shows the heading's box half ticked.
+    fireEvent.click(box("Delete label wontfix — on no issue"));
+    const deletions = labels.getByRole("checkbox", {
+      name: "Delete",
+    }) as HTMLInputElement;
+    expect(deletions.indeterminate).toBe(true);
+    expect(deletions.checked).toBe(false);
+
     const statuses = section("Statuses");
     const moves = statuses.getByRole("checkbox", { name: "Move" });
     expect((moves as HTMLInputElement).checked).toBe(true);
@@ -855,6 +861,23 @@ describe("applying a template", () => {
     expect(box("Recolour status Done").checked).toBe(true);
   });
 
+  it("asks for a reload, drawing nothing, when an older server sends a plan without the project", async () => {
+    const { project: _, template: __, ...older } = PLAN_7;
+    const server = fakeServer({
+      plans: { ...PLANS, "7": older as TemplateApplyPlan },
+    });
+    renderPage();
+    fireEvent.click(await screen.findByRole("option", { name: "Kanban" }));
+    expect(
+      await screen.findByText(
+        "The server is older than this page: reload the page.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Apply/ })).toBeNull();
+    expect(server.applies()).toEqual([]);
+  });
+
   it("says the project already matches a template with no difference", async () => {
     fakeServer();
     renderPage();
@@ -1051,6 +1074,23 @@ describe("applying a template", () => {
     );
     expect(review?.innerHTML).toContain(
       drawn(<StatusPill status={{ name: "Review", color: "#0d9488" }} />),
+    );
+  });
+
+  it("draws the project the plan was read from, not another read of its statuses", async () => {
+    // Done recoloured since the plan was read: the plan's project is what
+    // the apply will check against.
+    const statuses = STATUSES.map((status) =>
+      status.name === "Done" ? { ...status, color: "#000000" } : status,
+    );
+    fakeServer({ statuses });
+    renderPage({ statuses });
+    await pickKanban();
+    expect(
+      rowOf("Recolour status Done").querySelector("[data-cell='before']")
+        ?.innerHTML,
+    ).toContain(
+      drawn(<StatusPill status={{ name: "Done", color: "#16a34a" }} />),
     );
   });
 

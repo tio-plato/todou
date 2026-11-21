@@ -146,7 +146,8 @@ export function statusTable(
         kind: "line",
         key,
         before: row.place !== "to",
-        after: afterCell(row, selected) === "shadow" ? "shadow" : null,
+        // Where the line would go; the walk below finds where it does.
+        after: row.place === "to" ? "shadow" : null,
         ticks: [],
       };
     }
@@ -221,8 +222,11 @@ export function statusTable(
           ];
     const ticks = own.filter((tick) => tick !== undefined);
     // A move is drawn by its arrow alone; a row that recolours and changes
-    // what the status means takes the meaning's colour.
-    const tint: Action | null = changed
+    // what the status means takes the meaning's colour. Only a row holding
+    // the box is tinted, not the status's other row.
+    const tint: Action | null = ticks.some(
+      (tick) => tick.type === "status_change" && on(tick.id),
+    )
       ? "change"
       : ((["recolour", "add", "delete"] as const).find((action) =>
           ticks.some((tick) => tick.action === action && on(tick.id)),
@@ -305,19 +309,24 @@ export function statusTable(
   const lineFrom = lineRows.find((end) => end.row.place === "from");
   const lineTo = lineRows.find((end) => end.row.place === "to");
   if (lineFrom && lineTo) {
+    // Solid once the line is drawn where it points: a line ticked onto a
+    // status whose own move is not ticked is drawn above that status where
+    // it stays, and the arrow is left pointing where it would go.
+    const to = table[lineTo.index];
     arrows.push({
       kind: "move",
       from: lineFrom.index,
       to: lineTo.index,
       tick: lineTick === undefined ? null : lineTick.id,
-      ticked: on(lineTo.row.tick),
+      ticked: to?.kind === "line" && to.after === "solid",
       start: "line",
       end: "line",
     });
   }
   // The default's: from the status that has it to the one the template
-  // gives it, its box where that one ends up; with either side missing, a
-  // box in the row of the side there is.
+  // gives it, its box where that one goes once everything is ticked, so
+  // that it stays put whatever else is; with either side missing, a box in
+  // the row of the side there is.
   const defaultTick = byId.get("status.default");
   if (defaultTick !== undefined) {
     const now = layout.default.now;
@@ -328,19 +337,21 @@ export function statusTable(
         : rowsOf(now).find((end) => end.row.place !== "to");
     const candidates = next === null ? [] : rowsOf(next);
     const to =
-      candidates.find((end) => afterCell(end.row, selected) === "solid") ??
-      candidates.find((end) => end.row.place !== "both") ??
-      candidates[0];
+      candidates.find(
+        (end) => end.row.place === "to" || end.row.place === "added",
+      ) ?? candidates[0];
     const holder = to ?? from;
     // Before the row's own boxes: an arrow runs through its box last.
     if (holder) table[holder.index]?.ticks.unshift(defaultTick);
     if (from && to) {
+      // Solid once the default is drawn where it points, as the line's.
+      const target = table[to.index];
       arrows.push({
         kind: "default",
         from: from.index,
         to: to.index,
         tick: defaultTick.id,
-        ticked: on(defaultTick.id),
+        ticked: target?.kind === "status" && target.after?.isDefault === true,
         start: "default",
         end: "status",
       });

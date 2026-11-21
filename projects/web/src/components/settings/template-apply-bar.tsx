@@ -1,5 +1,5 @@
 import type { ChangeRow } from "@todou/shared";
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties } from "react";
 import { LabelChip } from "@/components/issue/label-chip.tsx";
 import { plural } from "@/components/settings/status-set-list.tsx";
 import {
@@ -20,16 +20,14 @@ const COUNTED: Record<ChangeRow["action"], string> = {
 };
 
 /**
- * Under the picker: how far the template is from the project, each kind
- * of change counted after its mark, the kinds it has none of left out.
- * The deletions say how many are ticked, since none starts ticked.
+ * Under the picker: each kind of change the template makes counted after
+ * its mark, the kinds it has none of left out. The deletions say how many
+ * are ticked, since none starts ticked.
  */
 export function ApplySummary({
-  template,
   rows,
   selected,
 }: {
-  template: ReactNode;
   rows: readonly ChangeRow[];
   selected: ReadonlySet<string>;
 }) {
@@ -60,10 +58,6 @@ export function ApplySummary({
   });
   return (
     <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
-      <span>
-        <span className="font-medium text-foreground">{template}</span> differs
-        from this project in {plural(rows.length, "place")}:
-      </span>
       {parts.flatMap((part, i) =>
         i === 0
           ? [part]

@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
  * so that `indeterminate`, `<label>` clicks and Space carrying `shiftKey`
  * into `onClick` all keep working. `className` lands on the input.
  *
- * With `icon` the box is a mark as well (T-263): the icon stands in it
+ * With `icon` the box is a mark as well: the icon stands in it
  * whether it is ticked or not, in the colour an ancestor sets as `--tick`,
  * which edges the box and fills it once ticked; half-ticked is a pale fill.
  * Its size is the input's, which `className` may change.

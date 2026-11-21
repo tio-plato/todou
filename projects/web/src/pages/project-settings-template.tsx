@@ -170,7 +170,13 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
   const preview = useQuery(previewQuery(slug, template));
   const queryClient = useQueryClient();
 
-  const plan = template === null ? undefined : preview.data;
+  // A server older than this page sends a plan without the project and the
+  // template the table is drawn from: a page loaded during a deploy or after
+  // a rollback, which has nothing to draw until reloaded.
+  const older =
+    preview.data !== undefined &&
+    (preview.data.project === undefined || preview.data.template === undefined);
+  const plan = template === null || older ? undefined : preview.data;
   // A row of a kind this page does not know is left off: it would be
   // applied without the reader having seen what it does.
   const rows =
@@ -277,7 +283,6 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
     });
   };
 
-  const name = templates.data.find((t) => t.ref === template)?.name;
   return (
     <section className="space-y-4">
       <h2 className="text-lg font-semibold">Apply a template</h2>
@@ -292,6 +297,10 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
       />
       {template === null ? null : preview.isError ? (
         <p className="text-sm text-destructive">{preview.error.message}</p>
+      ) : older ? (
+        <p className="text-sm text-destructive">
+          The server is older than this page: reload the page.
+        </p>
       ) : plan?.changes.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           This project already matches this template.
@@ -302,8 +311,10 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
             <PreparingPlan />
           ) : (
             <>
-              <ApplySummary template={name} rows={rows} selected={selected} />
+              <ApplySummary rows={rows} selected={selected} />
               <ApplyTable
+                // What the reader lit or unfolded belongs to one plan's rows.
+                key={`${String(template)}:${plan.expected}`}
                 plan={plan}
                 rows={rows}
                 statuses={statuses}

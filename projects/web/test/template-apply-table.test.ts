@@ -385,6 +385,129 @@ describe("the table of statuses", () => {
     expect(lineDrawnAbove(ticked)).toBe(S.shipped);
   });
 
+  it("leaves the line's arrow dashed while the status it is ticked onto stays put", () => {
+    // The template moves X to the end and the line onto it; X's move is
+    // left out, so the line is drawn above X where it is.
+    const project: Plan["project"] = {
+      statuses: ["X", "A", "B"].map((name, i) => ({
+        id: i + 1,
+        name,
+        color: "#6b7280",
+        category: "open",
+        role: "remaining",
+        is_default: name === "X",
+      })),
+      line: 3,
+      labels: [],
+    };
+    const template: Plan["template"] = {
+      statuses: [
+        st("A", "open", "#6b7280", "remaining"),
+        st("B", "open", "#6b7280", "remaining"),
+        st("X", "open", "#6b7280", "remaining", {
+          is_default: true,
+          block_clear: true,
+        }),
+      ],
+      labels: [],
+    };
+    const rows: ChangeRow[] = [
+      { ...base("status.move:1", "statuses", "move"), type: "status_move" },
+      lineRow("B", "X"),
+    ];
+    const table = statusTable(
+      { project, template },
+      rows,
+      new Set(["status.line"]),
+    );
+    expect(table.result.line).toBe(1);
+    expect(lineDrawnAbove(table)).toBe(1);
+    const arrow = table.arrows.find((a) => a.start === "line");
+    expect(arrow?.ticked).toBe(false);
+    expect(table.rows[arrow?.to ?? -1]).toMatchObject({
+      kind: "line",
+      after: "shadow",
+    });
+
+    // With X's move ticked too, the line is drawn where the arrow points.
+    const moved = statusTable(
+      { project, template },
+      rows,
+      new Set(["status.line", "status.move:1"]),
+    );
+    const solid = moved.arrows.find((a) => a.start === "line");
+    expect(solid?.ticked).toBe(true);
+    expect(moved.rows[solid?.to ?? -1]).toMatchObject({ after: "solid" });
+  });
+
+  it("keeps the default's box and a status's tint in their rows as its move is ticked", () => {
+    // The template makes M the default, moves it to the end, and closes it.
+    const project: Plan["project"] = {
+      statuses: ["M", "A", "B"].map((name, i) => ({
+        id: i + 1,
+        name,
+        color: "#6b7280",
+        category: "open",
+        role: "remaining",
+        is_default: name === "A",
+      })),
+      line: null,
+      labels: [],
+    };
+    const template: Plan["template"] = {
+      statuses: [
+        st("A", "open", "#6b7280", "remaining"),
+        st("B", "open", "#6b7280", "remaining"),
+        st("M", "closed", "#6b7280", "remaining", { is_default: true }),
+      ],
+      labels: [],
+    };
+    const rows: ChangeRow[] = [
+      {
+        ...base("status.change:1", "statuses", "change"),
+        type: "status_change",
+        name: "M",
+        color_now: "#6b7280",
+        category: { from: "open", to: "closed" },
+      },
+      { ...base("status.move:1", "statuses", "move"), type: "status_move" },
+      {
+        ...base("status.default", "statuses", "change"),
+        type: "status_default",
+        from: ref("A", "#6b7280"),
+        to: ref("M", "#6b7280"),
+      },
+    ];
+    const plan = { project, template };
+    const tables = [false, true].map((moved) =>
+      statusTable(
+        plan,
+        rows,
+        new Set([
+          "status.change:1",
+          "status.default",
+          ...(moved ? ["status.move:1"] : []),
+        ]),
+      ),
+    );
+    const holder = (table: StatusTable) =>
+      table.rows.findIndex((row) =>
+        row.ticks.some((tick) => tick.id === "status.default"),
+      );
+    const [stays, moves] = tables as [StatusTable, StatusTable];
+    expect(holder(stays)).toBe(holder(moves));
+    // Drawn where M stays until its move is ticked too.
+    expect(stays.arrows.find((a) => a.kind === "default")?.ticked).toBe(false);
+    expect(moves.arrows.find((a) => a.kind === "default")?.ticked).toBe(true);
+    const tints = (table: StatusTable) =>
+      table.rows.flatMap((row) =>
+        row.kind === "status" && row.status === 1 ? [row.tint] : [],
+      );
+    // The meaning's box and tint on M's own row, not where it goes.
+    expect(tints(stays)).toEqual(["change", null]);
+    expect(tints(moves)).toEqual(["change", null]);
+  });
+
   it("tints a row that recolours and changes what a status means in the meaning's colour", () => {
     // Shipped recoloured as well as opened.
     const rows: ChangeRow[] = [
