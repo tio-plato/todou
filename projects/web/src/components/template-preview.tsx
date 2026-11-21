@@ -236,6 +236,8 @@ type Placement = {
   sideOffset?: number;
   /** For a `right` card: the element its right edge lines up with. */
   endAt?: (trigger: Element) => Element | null;
+  /** Close the card when its trigger is pressed. */
+  closeOnPick?: boolean;
 };
 
 /**
@@ -256,12 +258,18 @@ type Placement = {
  *   where the dialog's scroll lock would cancel it as falling outside the
  *   dialog. With no room left it goes on, and the page behind stays put.
  * - A click in it would bubble to the option and pick it.
+ *
+ * With `closeOnPick` a press on the trigger closes the card, and keeps it
+ * closed until the pointer leaves: picking the row is done with it, and the
+ * card would cover what the pick shows. A press before the open delay has
+ * run would otherwise see the card open after it.
  */
 function PreviewHoverCard({
   side,
   align,
   sideOffset,
   endAt,
+  closeOnPick = false,
   preview,
   children,
 }: Placement & { preview: ReactNode; children: ReactNode }) {
@@ -271,18 +279,41 @@ function PreviewHoverCard({
     trigger.current = node;
   }, []);
   const [offset, setOffset] = useState(sideOffset);
+  const [open, setOpen] = useState(false);
+  const picked = useRef(false);
   return (
     <HoverCard
       openDelay={OPEN_DELAY_MS}
       closeDelay={CLOSE_DELAY_MS}
-      onOpenChange={(open) => {
+      open={open}
+      onOpenChange={(next) => {
+        if (next && picked.current) return;
+        setOpen(next);
         // Only on the right: below, the distance would be vertical.
-        if (open && side === "right") {
+        if (next && side === "right") {
           setOffset(offsetFrom(trigger.current, { sideOffset, endAt }));
         }
       }}
     >
-      <HoverCardTrigger asChild ref={triggerRef}>
+      <HoverCardTrigger
+        asChild
+        ref={triggerRef}
+        onPointerDown={
+          closeOnPick
+            ? () => {
+                picked.current = true;
+                setOpen(false);
+              }
+            : undefined
+        }
+        onPointerLeave={
+          closeOnPick
+            ? () => {
+                picked.current = false;
+              }
+            : undefined
+        }
+      >
         {children}
       </HoverCardTrigger>
       <HoverCardContent

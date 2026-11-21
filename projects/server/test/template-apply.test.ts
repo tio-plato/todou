@@ -1,3 +1,4 @@
+import { BUILTIN_TEMPLATES } from "@todou/shared";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   addUserWithToken,
@@ -109,18 +110,30 @@ describe.each(PLACEMENTS)("applying a template (%s placement)", (placement) => {
       template,
     });
     expect(res.status).toBe(200);
-    return json(res) as Promise<{ expected: string; changes: Row[] }>;
+    return json(res) as Promise<{
+      expected: string;
+      changes: Row[];
+      project: unknown;
+      template: unknown;
+    }>;
+  };
+  type Drawn = {
+    order: Array<number | string>;
+    line: number | string | null;
+    default: number | string | null;
   };
   const apply = (
     s: string,
     expected: string,
     selected: string[],
     template: unknown = "basic",
+    drawn?: Drawn,
   ) =>
     call("POST", `/projects/${s}/template/apply`, {
       template,
       expected,
       selected,
+      ...(drawn && { drawn }),
     });
 
   /** Everything an apply could change, to compare before and after. */
@@ -216,6 +229,7 @@ describe.each(PLACEMENTS)("applying a template (%s placement)", (placement) => {
       .map((r) => r.id);
     expect(selected.sort()).toEqual(
       [
+        `status.recolour:${done}`,
         `status.change:${done}`,
         `status.change:${shipped}`,
         "status.default",
@@ -243,6 +257,126 @@ describe.each(PLACEMENTS)("applying a template (%s placement)", (placement) => {
       (await get(`/projects/${s}/labels`)).map((l: { name: string }) => l.name),
     ).toContain("kind:chore");
     expect((await preview(s)).changes).toEqual([]);
+  });
+
+  it("hands back the project and the template the plan was computed from", async () => {
+    const p = await drifted();
+    const plan = await preview(p.s);
+    const roles = (await get(`/projects/${p.s}/insights/settings`)).roles;
+    const byId = <T extends { id: number }>(rows: T[]) =>
+      [...rows].sort((a, b) => a.id - b.id);
+    expect(plan.template).toEqual(BUILTIN_TEMPLATES.basic.body);
+    const project = plan.project as {
+      statuses: unknown[];
+      line: number | null;
+      labels: Array<{ id: number }>;
+    };
+    expect(project.statuses).toEqual(
+      (await get(`/projects/${p.s}/statuses`)).map(
+        (s: {
+          id: number;
+          name: string;
+          color: string;
+          category: string;
+          is_default: boolean;
+        }) => ({
+          id: s.id,
+          name: s.name,
+          color: s.color,
+          category: s.category,
+          role: roles.find((r: { status_id: number }) => r.status_id === s.id)
+            .role,
+          is_default: s.is_default,
+        }),
+      ),
+    );
+    expect(project.line).toBe(
+      (await get(`/projects/${p.s}`)).block_clear_status_id,
+    );
+    expect(byId(project.labels)).toEqual(
+      byId(
+        (await get(`/projects/${p.s}/labels`)).map(
+          (l: { id: number; name: string; color: string }) => ({
+            id: l.id,
+            name: l.name,
+            color: l.color,
+          }),
+        ),
+      ),
+    );
+  });
+
+  /** Drifted's statuses once Invalid is added and Parked deleted. */
+  async function drawnFor(p: Awaited<ReturnType<typeof drifted>>) {
+    const id = (name: string) => p.statusId(name);
+    return {
+      order: [
+        ...(await Promise.all(
+          ["Backlog", "Todo", "Next", "In Progress", "Ready to Ship"].map(id),
+        )),
+        await id("Shipped"),
+        await id("Done"),
+        "Invalid",
+        p.discard,
+      ],
+      line: await id("Shipped"),
+      default: await id("Todo"),
+    } satisfies Drawn;
+  }
+
+  it("refuses an apply that comes to anything but what was drawn, and changes nothing", async () => {
+    const p = await drifted();
+    const plan = await preview(p.s);
+    const selected = ["status.add:Invalid", `status.delete:${p.parked}`];
+    const drawn = await drawnFor(p);
+    const before = await snapshot(p.s);
+    for (const wrong of [
+      { ...drawn, order: [...drawn.order].reverse() },
+      { ...drawn, order: drawn.order.filter((key) => key !== "Invalid") },
+      { ...drawn, line: await p.statusId("Done") },
+      { ...drawn, default: null },
+    ]) {
+      const res = await apply(p.s, plan.expected, selected, "basic", wrong);
+      expect(res.status, JSON.stringify(wrong)).toBe(409);
+      // Its own code: previewing again would draw the same.
+      expect((await json(res)).error.code).toBe("drawn_mismatch");
+    }
+    expect(await snapshot(p.s)).toEqual(before);
+
+    const res = await apply(p.s, plan.expected, selected, "basic", drawn);
+    expect(res.status).toBe(200);
+    const statuses = await get(`/projects/${p.s}/statuses`);
+    expect(statuses.map((s: { id: number; name: string }) => s.id)).toEqual(
+      drawn.order.map((key) =>
+        key === "Invalid"
+          ? statuses.find((s: { name: string }) => s.name === "Invalid").id
+          : key,
+      ),
+    );
+  });
+
+  it("skips a status that took an issue after the preview, as drawn without it", async () => {
+    const p = await drifted();
+    const plan = await preview(p.s);
+    expect(
+      (
+        await call("PATCH", `/projects/${p.s}/issues/${p.card}`, {
+          status_id: p.parked,
+        })
+      ).status,
+    ).toBe(200);
+    const res = await apply(
+      p.s,
+      plan.expected,
+      ["status.add:Invalid", `status.delete:${p.parked}`],
+      "basic",
+      await drawnFor(p),
+    );
+    expect(res.status).toBe(200);
+    expect(await json(res)).toEqual({
+      skipped: [`status.delete:${p.parked}`],
+    });
+    expect(await p.statusId("Parked")).toBe(p.parked);
   });
 
   it("will not offer to delete a status holding only trashed issues", async () => {

@@ -146,6 +146,16 @@ const DECLARED: Readonly<Record<string, string>> = {
     "Closed client producer: issueListVerdict constructs contains/read/unknown local literals; entryWantsRefetch switches on that computed result, not HTTP enum fields.",
   "projects/web/src/components/settings/status-set-list.tsx :: read ROLE_LABELS[role] #1":
     "Closed options: Role.options.map((role) => ...) -> ROLE_LABELS[role]. The wire role is only compared in aria-pressed={value === option}; it is never the lookup key.",
+  "projects/web/src/components/settings/template-apply-bar.tsx :: read COUNTED[meta.action] #1":
+    "Closed client producer: meta comes from the local ACTIONS list, built from the META literals; a row's wire action is only compared with meta.action, never the lookup key.",
+  "projects/web/src/components/settings/template-apply-table.tsx :: read META[action] #1":
+    "Parsed payload: ChangeBox receives a plan row's action only after the page kept that row through ChangeRow.safeParse(row), or the literal add of a folded label group.",
+  "projects/web/src/components/settings/template-apply-table.tsx :: read TINT[row.tint] #1":
+    "Closed client producer: lib/template-apply-table.ts labelTable sets tint only to the literals add/recolour/delete or null.",
+  "projects/web/src/components/settings/template-apply-table.tsx :: read TINT[tint] #1":
+    "Closed client producer: lib/template-apply-table.ts statusTable sets tint to the literal change, or to a member of its local recolour/add/delete list found by comparing it with tick.action, or null.",
+  "projects/web/src/components/settings/template-apply-table.tsx :: switch row.type #1":
+    "Parsed payload: boxName only receives plan rows the page kept after ChangeRow.safeParse(row), and the table's ticks are a subset of those rows.",
   "projects/web/src/components/issue/metadata-dialog.tsx :: read PARSERS[t] #1":
     "Closed client tabs: local Radix triggers emit browse/bulk/json; both parser lookups exclude browse before indexing the bulk/json parser table.",
   "projects/web/src/components/issue/metadata-dialog.tsx :: read PARSERS[tab] #1":

@@ -8,39 +8,38 @@ import {
 import { useParams } from "@tanstack/react-router";
 import {
   ChangeRow,
-  type Label as LabelEntity,
-  type StatusRef,
+  type ProjectTemplate,
   type TemplateApplyInput,
   type TemplateApplyResult,
-  type TemplateRef,
+  TemplateRef,
   TodouError,
 } from "@todou/shared";
-import { type ReactNode, useId, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { z } from "zod";
 import { invalidateInsights } from "@/api/insights.ts";
-import { prefsQuery } from "@/api/prefs.ts";
 import {
   api,
   projectQuery,
   projectTemplatesQuery,
-  statusesQuery,
   useCan,
 } from "@/api/queries.ts";
-import { LabelChip } from "@/components/issue/label-chip.tsx";
-import { StatusPill } from "@/components/issue/status-pill.tsx";
+import { plural } from "@/components/settings/status-set-list.tsx";
 import {
-  exceptionText,
-  plural,
-} from "@/components/settings/status-set-list.tsx";
+  ApplyBar,
+  ApplySummary,
+  PreparingPlan,
+} from "@/components/settings/template-apply-bar.tsx";
+import { ApplyTable } from "@/components/settings/template-apply-table.tsx";
 import {
   PICKER_FRAME,
-  preferredTemplate,
   TemplateListbox,
+  usable,
 } from "@/components/start-from-picker.tsx";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { labelTable, statusTable } from "@/lib/template-apply-table.ts";
 import { cn } from "@/lib/utils";
 import { useCreateTemplate } from "@/pages/project-templates-settings.tsx";
 
@@ -71,12 +70,14 @@ const previewKey = (slug: string) => ["template-preview", slug] as const;
 
 /**
  * A POST, but one that writes nothing: read as a query, so picking another
- * template previews again by changing the key.
+ * template previews again by changing the key. Nothing is read until a
+ * template is picked.
  */
-const previewQuery = (slug: string, template: TemplateRef) =>
+const previewQuery = (slug: string, template: TemplateRef | null) =>
   queryOptions({
     queryKey: [...previewKey(slug), template] as const,
-    queryFn: () => api.previewTemplateApply(slug, template),
+    queryFn: () => api.previewTemplateApply(slug, template as TemplateRef),
+    enabled: template !== null,
   });
 
 /**
@@ -111,9 +112,9 @@ function withRows(
 
 /**
  * What a plan starts selected: each row as `choices` holds it from an
- * earlier plan, else as the server starts it (additions and changes, no
- * deletion). Then a row that cannot be selected is off, and so is a row
- * whose requirement is.
+ * earlier plan, else as the server starts it (everything but deletions).
+ * Then a row that cannot be selected is off, and so is a row whose
+ * requirement is.
  */
 function selectedIn(
   rows: readonly ChangeRow[],
@@ -165,25 +166,61 @@ function appliedText(
   return `${text} ${kept.join(", ")} ${one ? "was" : "were"} not deleted: ${one ? "it has" : "they have"} issues now.`;
 }
 
+/** Where the page keeps the reader's picks while it asks for a reload. */
+const reloadKey = (slug: string) => `todou:apply-template:${slug}`;
+
+const Kept = z.object({
+  template: TemplateRef,
+  rows: z.array(z.tuple([z.string(), z.boolean()])),
+});
+type Kept = z.infer<typeof Kept>;
+
+/**
+ * What the page kept for `slug` before a reload, provided its template can
+ * still be applied. Anything unreadable is as good as nothing kept.
+ */
+function keptFor(
+  slug: string,
+  templates: readonly ProjectTemplate[],
+): Kept | null {
+  try {
+    const raw = sessionStorage.getItem(reloadKey(slug));
+    if (raw === null) return null;
+    const kept = Kept.safeParse(JSON.parse(raw));
+    if (!kept.success) return null;
+    const ref = kept.data.template;
+    return templates.some((t) => t.ref === ref && usable(t)) ? kept.data : null;
+  } catch {
+    return null;
+  }
+}
+
 function ApplyTemplateSection({ slug }: { slug: string }) {
   const templates = useSuspenseQuery(projectTemplatesQuery);
-  const prefs = useSuspenseQuery(prefsQuery);
-  const [template, setTemplate] = useState<TemplateRef>(() =>
-    preferredTemplate(templates.data, prefs.data.new_project_template),
+  // What the reader had picked when the page last asked to be reloaded;
+  // otherwise none, and a preview is read only for a template they pick.
+  const [kept] = useState(() => keptFor(slug, templates.data));
+  const [template, setTemplate] = useState<TemplateRef | null>(
+    kept?.template ?? null,
   );
   const preview = useQuery(previewQuery(slug, template));
-  // Where a new status goes is named by the status before it, which the
-  // project has, or the template adds.
-  const statuses = useQuery(statusesQuery(slug));
   const queryClient = useQueryClient();
 
-  const plan = preview.data;
+  // A server older than this page sends a plan without the project and the
+  // template the table is drawn from: a page loaded during a deploy or after
+  // a rollback, which has nothing to draw until reloaded.
+  const older =
+    preview.data !== undefined &&
+    (preview.data.project === undefined || preview.data.template === undefined);
+  // The server worked the apply out otherwise than this page drew it: the
+  // two run different code, and previewing again would draw the same.
+  const [mismatch, setMismatch] = useState(false);
+  const plan =
+    template === null || older || mismatch ? undefined : preview.data;
   // A row of a kind this page does not know is left off: it would be
   // applied without the reader having seen what it does.
-  const rows = useMemo(
-    () => plan?.changes.filter((row) => ChangeRow.safeParse(row).success) ?? [],
-    [plan],
-  );
+  const rows =
+    plan?.changes.filter((row) => ChangeRow.safeParse(row).success) ?? [];
   // The rows the reader turned on or off, by id, for this template. A
   // refetch brings another plan whenever the project or the template
   // changed; a row the reader turned off must stay off in it, or Apply
@@ -191,17 +228,40 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
   const [choices, setChoices] = useState<{
     template: TemplateRef;
     rows: ReadonlyMap<string, boolean>;
-  } | null>(null);
+  } | null>(() =>
+    kept === null
+      ? null
+      : { template: kept.template, rows: new Map(kept.rows) },
+  );
+  // Labels coming off cards are asked about once more before Apply.
+  const [confirming, setConfirming] = useState(false);
   const chosen =
     choices?.template === template ? choices.rows : new Map<string, boolean>();
   const selected =
     plan === undefined ? new Set<string>() : selectedIn(rows, chosen);
+  // While the page asks for a reload, what the reader picked is kept for the
+  // reloaded page, however it is reloaded.
+  const keep =
+    (older || mismatch) && template !== null
+      ? JSON.stringify({ template, rows: [...chosen] } satisfies Kept)
+      : null;
+  // Otherwise nothing is kept: what was kept is used once, on mounting,
+  // and given up once the page no longer asks to be reloaded.
+  useEffect(() => {
+    try {
+      if (keep === null) sessionStorage.removeItem(reloadKey(slug));
+      else sessionStorage.setItem(reloadKey(slug), keep);
+    } catch {
+      // Storage refused: the reloaded page starts with nothing picked.
+    }
+  }, [slug, keep]);
   const select = (ids: readonly string[], on: boolean) => {
-    if (plan === undefined) return;
+    if (plan === undefined || template === null) return;
     const next = withRows(rows, selected, ids, on);
     const touched = rows.filter(
       (row) => next.has(row.id) !== selected.has(row.id),
     );
+    setConfirming(false);
     setChoices({
       template,
       rows: new Map([
@@ -210,12 +270,22 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
       ]),
     });
   };
+  const pick = (ref: TemplateRef | null) => {
+    setTemplate(ref);
+    setConfirming(false);
+    // Picking the template again to leave it forgets what was ticked in it.
+    if (ref === null) setChoices(null);
+  };
 
-  const body = templates.data.find((t) => t.ref === template)?.body;
-  const faceOf = (name: string): StatusRef | null =>
-    statuses.data?.find((status) => status.name === name) ??
-    body?.statuses.find((status) => status.name === name) ??
-    null;
+  // Drawn from the plan's own project and template, the ones the apply
+  // works from, so that what Apply sends as drawn is what it will find.
+  const statuses = plan && statusTable(plan, rows, selected);
+  const labels = plan ? labelTable(plan, rows, selected) : [];
+  const ticked = rows.filter((row) => selected.has(row.id));
+  const deletes = ticked.filter((row) => row.action === "delete");
+  const asks = deletes.some(
+    (row) => row.type === "label_delete" && row.issues + row.trashed > 0,
+  );
 
   const apply = useMutation({
     mutationFn: (vars: {
@@ -235,11 +305,17 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
       queryClient.invalidateQueries({ queryKey: ["issue"] });
       queryClient.invalidateQueries({ queryKey: previewKey(slug) });
       setChoices(forgetTicks);
+      setConfirming(false);
       const text = appliedText(vars.input.selected, result, vars.rows);
       if (result.skipped.length > 0) toast.warning(text);
       else toast.success(text);
     },
     onError: (error, vars) => {
+      setConfirming(false);
+      if (error instanceof TodouError && error.code === "drawn_mismatch") {
+        setMismatch(true);
+        return;
+      }
       if (error instanceof TodouError && error.status === 409) {
         toast.error(STALE);
         setChoices(forgetTicks);
@@ -250,364 +326,90 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
     },
   });
 
-  const sectionProps = { selected, onSelect: select, faceOf };
+  const send = () => {
+    if (plan === undefined || template === null || statuses === undefined) {
+      return;
+    }
+    const { result } = statuses;
+    apply.mutate({
+      slug,
+      input: {
+        template,
+        expected: plan.expected,
+        selected: ticked.map((row) => row.id),
+        drawn: {
+          order: result.order,
+          line: result.line,
+          default: result.default,
+        },
+      },
+      rows,
+    });
+  };
+
   return (
     <section className="space-y-4">
       <h2 className="text-lg font-semibold">Apply a template</h2>
       <TemplateListbox
         templates={templates.data}
         value={template}
-        onChange={setTemplate}
+        onChange={pick}
+        allowDeselect
         idPrefix="apply-template"
         className={cn("max-w-xl", PICKER_FRAME)}
         listClassName="max-h-56"
       />
-      {preview.isError ? (
+      {template === null ? null : preview.isError ? (
         <p className="text-sm text-destructive">{preview.error.message}</p>
+      ) : older || mismatch ? (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <p className="text-sm text-destructive">
+            {mismatch
+              ? "This page and the server apply templates differently."
+              : "The server is older than this page."}
+          </p>
+          <Button variant="outline" onClick={() => window.location.reload()}>
+            Reload
+          </Button>
+        </div>
       ) : plan?.changes.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           This project already matches this template.
         </p>
       ) : (
         <>
-          <ChangeSection
-            title="Statuses"
-            rows={rows.filter((row) => row.section === "statuses")}
-            {...sectionProps}
-          />
-          <ChangeSection
-            title="Labels"
-            rows={rows.filter((row) => row.section === "labels")}
-            deleteNote="Deleted labels come off their cards; this cannot be undone."
-            {...sectionProps}
-          />
-          <Button
-            disabled={
-              plan === undefined ||
-              preview.isFetching ||
-              selected.size === 0 ||
-              apply.isPending
-            }
-            onClick={() => {
-              if (plan === undefined) return;
-              apply.mutate({
-                slug,
-                input: {
-                  template,
-                  expected: plan.expected,
-                  selected: rows
-                    .filter((row) => selected.has(row.id))
-                    .map((row) => row.id),
-                },
-                rows,
-              });
-            }}
-          >
-            Apply {plural(selected.size, "change")}
-          </Button>
-        </>
-      )}
-    </section>
-  );
-}
-
-const ACTIONS = [
-  ["add", "Add"],
-  ["change", "Change"],
-  ["delete", "Delete"],
-] as const;
-
-type SectionProps = {
-  selected: ReadonlySet<string>;
-  onSelect: (ids: readonly string[], on: boolean) => void;
-  faceOf: (name: string) => StatusRef | null;
-};
-
-/**
- * One section of the change list, its select-all boxes in the heading. The
- * deletions get a list of their own under the rest, `deleteNote` above it.
- */
-function ChangeSection({
-  title,
-  rows,
-  deleteNote,
-  selected,
-  onSelect,
-  faceOf,
-}: SectionProps & {
-  title: string;
-  rows: readonly ChangeRow[];
-  deleteNote?: string;
-}) {
-  const headingId = useId();
-  if (rows.length === 0) return null;
-  const others = rows.filter((row) => row.action !== "delete");
-  const deletions = rows.filter((row) => row.action === "delete");
-  const list = (items: readonly ChangeRow[]) => (
-    <ul className="divide-y rounded-lg border">
-      {items.map((row) => (
-        <ChangeItem
-          key={row.id}
-          row={row}
-          checked={selected.has(row.id)}
-          onChange={(on) => onSelect([row.id], on)}
-          faceOf={faceOf}
-        />
-      ))}
-    </ul>
-  );
-  return (
-    <section aria-labelledby={headingId} className="space-y-2">
-      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-        <h3 id={headingId} className="font-medium">
-          {title}
-        </h3>
-        <div className="flex items-center gap-4">
-          {ACTIONS.map(([action, text]) => {
-            const ids = rows
-              .filter((row) => row.action === action && row.selectable)
-              .map((row) => row.id);
-            const on = ids.filter((id) => selected.has(id)).length;
-            const all = ids.length > 0 && on === ids.length;
-            return (
-              <Label
-                key={action}
-                className="cursor-pointer font-normal has-disabled:cursor-default has-disabled:opacity-60"
-              >
-                <Checkbox
-                  checked={all}
-                  indeterminate={on > 0 && !all}
-                  disabled={ids.length === 0}
-                  onChange={() => onSelect(ids, !all)}
-                />
-                {text}
-              </Label>
-            );
-          })}
-        </div>
-      </div>
-      {others.length > 0 && list(others)}
-      {deletions.length > 0 && (
-        <>
-          {deleteNote && (
-            <p className="pt-2 text-sm text-muted-foreground">{deleteNote}</p>
-          )}
-          {list(deletions)}
-        </>
-      )}
-    </section>
-  );
-}
-
-function ChangeItem({
-  row,
-  checked,
-  onChange,
-  faceOf,
-}: {
-  row: ChangeRow;
-  checked: boolean;
-  onChange: (on: boolean) => void;
-  faceOf: SectionProps["faceOf"];
-}) {
-  const id = useId();
-  return (
-    <li>
-      <label
-        htmlFor={id}
-        className={cn(
-          "flex min-h-11 items-center gap-3 px-3 py-2",
-          row.selectable && "cursor-pointer",
-        )}
-      >
-        <Checkbox
-          id={id}
-          checked={checked}
-          disabled={!row.selectable}
-          aria-label={rowName(row)}
-          onChange={(e) => onChange(e.target.checked)}
-        />
-        <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-sm">
-          <RowText row={row} faceOf={faceOf} />
-        </span>
-      </label>
-    </li>
-  );
-}
-
-/** A row's box in words; the row itself draws its statuses and labels. */
-function rowName(row: ChangeRow): string {
-  if (row.type === "status_add") return `Add status ${row.name}`;
-  if (row.type === "status_change") return `Change status ${row.name}`;
-  if (row.type === "status_order") return "Reorder statuses";
-  if (row.type === "status_default") return "Change the default status";
-  if (row.type === "status_line") return "Move the block clear line";
-  if (row.type === "status_delete") return `Delete status ${row.name}`;
-  if (row.type === "label_add") return `Add label ${row.name}`;
-  if (row.type === "label_change") return `Change label ${row.name}`;
-  return `Delete label ${row.name}`;
-}
-
-const Muted = ({ children }: { children: ReactNode }) => (
-  <span className="text-muted-foreground">{children}</span>
-);
-
-const Arrow = () => <Muted>→</Muted>;
-
-/** A label as a row shows it; a row's label has no id, nor needs one. */
-const chip = ({
-  name,
-  color,
-}: {
-  name: string;
-  color: string;
-}): LabelEntity => ({
-  id: 0,
-  name,
-  color,
-});
-
-function Face({ status }: { status: StatusRef | null }) {
-  return status === null ? <Muted>none</Muted> : <StatusPill status={status} />;
-}
-
-function issuesIn(issues: number, trashed: number): string {
-  const total = issues + trashed;
-  const verb = total === 1 ? "is" : "are";
-  if (trashed === 0) return `${plural(total, "issue")} ${verb} in it`;
-  if (issues === 0) return `${plural(total, "trashed issue")} ${verb} in it`;
-  return `${plural(total, "issue")} ${verb} in it, ${trashed} trashed`;
-}
-
-function RowText({
-  row,
-  faceOf,
-}: {
-  row: ChangeRow;
-  faceOf: SectionProps["faceOf"];
-}) {
-  if (row.type === "status_add") {
-    const extra = exceptionText(row.category, row.chart_role);
-    const anchor = row.after === null ? null : faceOf(row.after);
-    return (
-      <>
-        <Muted>Add</Muted>
-        <StatusPill status={row} />
-        {extra && <Muted>{extra}</Muted>}
-        {row.after === null ? (
-          <Muted>first</Muted>
-        ) : (
-          anchor && (
+          {plan === undefined || statuses === undefined ? (
+            <PreparingPlan />
+          ) : (
             <>
-              <Muted>after</Muted>
-              <StatusPill status={anchor} />
+              <ApplySummary rows={rows} selected={selected} />
+              <ApplyTable
+                // What the reader lit or unfolded belongs to one plan's rows.
+                key={`${String(template)}:${plan.expected}`}
+                plan={plan}
+                rows={rows}
+                statuses={statuses}
+                labels={labels}
+                selected={selected}
+                onSelect={select}
+              />
             </>
-          )
-        )}
-      </>
-    );
-  }
-  if (row.type === "status_change") {
-    const { name, color_now, color, category, chart_role } = row;
-    return (
-      <>
-        <Muted>Change</Muted>
-        <StatusPill status={{ name, color: color_now }} />
-        {color && (
-          <>
-            <Arrow />
-            <StatusPill status={{ name, color: color.to }} />
-          </>
-        )}
-        {category && (
-          <Muted>
-            {category.from} → {category.to}
-          </Muted>
-        )}
-        {chart_role && (
-          <Muted>
-            in burn charts: {chart_role.from} → {chart_role.to}
-          </Muted>
-        )}
-      </>
-    );
-  }
-  if (row.type === "status_order") {
-    return (
-      <span className="flex flex-col gap-1">
-        <span className="flex flex-wrap items-center gap-1.5">
-          <Muted>Reorder</Muted>
-          {/* A project's status names are unique, and these are its own. */}
-          {row.from.map((status) => (
-            <StatusPill key={status.name} status={status} />
-          ))}
-        </span>
-        <span className="flex flex-wrap items-center gap-1.5">
-          <Arrow />
-          {row.to.map((status) => (
-            <StatusPill key={status.name} status={status} />
-          ))}
-        </span>
-      </span>
-    );
-  }
-  if (row.type === "status_default" || row.type === "status_line") {
-    return (
-      <>
-        <Muted>
-          {row.type === "status_default" ? "Default status" : "Blocks clear at"}
-        </Muted>
-        <Face status={row.from} />
-        <Arrow />
-        <Face status={row.to} />
-      </>
-    );
-  }
-  if (row.type === "status_delete") {
-    return (
-      <>
-        <Muted>Delete</Muted>
-        <StatusPill status={row} />
-        {!row.selectable && <Muted>{issuesIn(row.issues, row.trashed)}</Muted>}
-      </>
-    );
-  }
-  if (row.type === "label_add") {
-    return (
-      <>
-        <Muted>Add</Muted>
-        <LabelChip label={chip(row)} />
-      </>
-    );
-  }
-  if (row.type === "label_change") {
-    return (
-      <>
-        <Muted>Change</Muted>
-        <LabelChip label={chip({ name: row.name, color: row.from })} />
-        <Arrow />
-        <LabelChip label={chip({ name: row.name, color: row.to })} />
-      </>
-    );
-  }
-  return (
-    <>
-      <Muted>Delete</Muted>
-      <LabelChip label={chip(row)} />
-      <Muted>{labelUses(row.issues, row.trashed)}</Muted>
-    </>
+          )}
+          <ApplyBar
+            count={ticked.length}
+            deletes={deletes}
+            confirming={confirming}
+            disabled={
+              plan === undefined || preview.isFetching || apply.isPending
+            }
+            onApply={() => (asks ? setConfirming(true) : send())}
+            onConfirm={send}
+            onCancel={() => setConfirming(false)}
+          />
+        </>
+      )}
+    </section>
   );
-}
-
-/**
- * The cards a label deletion takes it off. Trashed ones count, said apart:
- * a card restored later comes back without the label.
- */
-function labelUses(issues: number, trashed: number): string {
-  const all = issues + trashed;
-  if (all === 0) return "on no issue";
-  const off = `comes off ${plural(all, "issue")}`;
-  return trashed === 0 ? off : `${off} (${trashed} in the trash)`;
 }
 
 /** The longest name a template takes; a project's may be twice as long. */
