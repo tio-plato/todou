@@ -289,16 +289,28 @@ function hold(
   return release;
 }
 
-/** Hold `el` where `revealBlock` put it; see `hold`. */
+/**
+ * Hold `target` where `revealBlock` put it; see `hold`.
+ *
+ * A target a renderer replaces while it is held, as pierre does every row of
+ * a code block it draws again, is passed as a function that finds it anew
+ * for each placing. Null from it means the target is gone, and so is the
+ * hold.
+ */
 export function holdRevealed(
-  el: HTMLElement,
+  target: HTMLElement | (() => HTMLElement | null),
   container: Element,
   mode: RevealMode = "auto",
   behavior?: ScrollBehavior,
 ): () => void {
+  const find =
+    typeof target === "function"
+      ? target
+      : () => (target.isConnected ? target : null);
   return hold(container, (release) => {
-    // Gone with a route change nobody touched the page for.
-    if (!el.isConnected) release();
+    const el = find();
+    // Gone, as with a route change nobody touched the page for.
+    if (el === null) release();
     else revealBlock(el, { mode, behavior, flash: false });
   });
 }

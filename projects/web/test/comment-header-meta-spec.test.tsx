@@ -563,4 +563,43 @@ describe("the popover's locate control holds where it lands (T-527)", () => {
     resizePage();
     expect(reveals).toHaveLength(2);
   });
+
+  it("holds a comment's own words, not the block they sit in", async () => {
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    mockSpec([
+      annotation(406, { line_start: 3, line_end: 3, col_start: 1, col_end: 7 }),
+    ]);
+    const view = await page("?v=2&view=rendered&file=design.md");
+    fireEvent.click(await view.findByLabelText("1 comment(s) on this block"));
+    const popover = await waitFor(() => {
+      const el = document.querySelector("[data-slot='popover-content']");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    const locate = popover.querySelector<HTMLElement>(
+      "button[title='Scroll to what this points at']",
+    );
+    if (locate === null) throw new Error("no locate control");
+    const reveals: Element[] = [];
+    vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+      this: Element,
+    ) {
+      reveals.push(this);
+    });
+
+    fireEvent.click(locate);
+    const [words] = reveals;
+    expect(words?.tagName).toBe("MARK");
+    // Put back by the rule the jump took, not on the paragraph around them.
+    resizePage();
+    expect(reveals).toHaveLength(2);
+    expect(reveals[1]).toBe(words);
+
+    fireEvent.keyDown(popover, { key: "Escape" });
+    await waitFor(() =>
+      expect(
+        document.querySelector("[data-slot='popover-content']"),
+      ).toBeNull(),
+    );
+  });
 });
