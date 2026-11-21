@@ -1,4 +1,8 @@
-import type { ChangeRow, TemplateApplyPlan } from "@todou/shared";
+import {
+  type ChangeRow,
+  enumLookup,
+  type TemplateApplyPlan,
+} from "@todou/shared";
 import {
   ArrowUpDownIcon,
   ChevronDownIcon,
@@ -344,7 +348,12 @@ function StatusCell({
           </span>
           {" · "}
           <span className={cn(changed?.role && strong)}>
-            {ROLE_TEXT[face.role]}
+            {enumLookup(
+              ROLE_TEXT,
+              face.role,
+              (role) => `${role} in charts`,
+              "chart role",
+            )}
           </span>
         </span>
       )}
