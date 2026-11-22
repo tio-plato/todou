@@ -50,11 +50,13 @@ Cases:
                        overlays keeps its whole focus ring inside every
                        ancestor that clips or scrolls it, and focusing it
                        does not scroll a box that only clips.
-  spec-outline-strip   The change strip sits on the card's right border, holds
-                       its ticks still while the page scrolls and lands a
-                       click where ↓ lands; its tooltip covers an open comment
-                       popover; the outline opens a folded heading it jumps to
-                       and marks the section past the reading line.
+  spec-outline-strip   The change strip sits on the card's right border, runs
+                       once stuck from below the toolbar to as far above the
+                       window's foot, holds its ticks still while the page
+                       scrolls and lands a click where ↓ lands; its tooltip
+                       covers an open comment popover; the outline opens a
+                       folded heading it jumps to and marks the section past
+                       the reading line.
 
 Usage:
   node scripts/browser-layout-smoke.mjs
