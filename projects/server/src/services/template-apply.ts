@@ -639,7 +639,12 @@ type Written = {
  * Carries out the selected rows of a preview, provided the project and the
  * template are still what the preview was computed from. Serializable, so a
  * write landing on anything it read between the check and the commit fails
- * it, and the retry then finds the digest changed.
+ * it, and the retry then finds the digest changed. A card moved into a status
+ * after the read is the exception: the foreign key check reads the latest
+ * committed cards, not the snapshot, so deleting that status fails as a
+ * foreign key violation (23503), not a serialization failure. A card's
+ * status is the only foreign key this transaction can break, so that is
+ * retried too, and the retry reads the card and skips the status as in use.
  */
 export async function applyTemplate(
   ctx: AppContext,
@@ -677,6 +682,7 @@ export async function applyTemplate(
       );
       return write(tx, project.id, state, outcome);
     },
+    ["23503"],
   ).catch((cause: unknown) => {
     // A status or label of the same name created since the read: outside
     // serializable, so it reaches the insert as a duplicate, not a conflict.

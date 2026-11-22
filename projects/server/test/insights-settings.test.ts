@@ -2,6 +2,7 @@ import { count, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { insightsSettings } from "../src/db/project-schema.ts";
 import { getProjectByRef, routeInfoOf } from "../src/services/access.ts";
+import { inSerializableTransaction } from "../src/services/insights-settings.ts";
 import {
   addUserWithToken,
   makeTestApp,
@@ -242,3 +243,46 @@ describe.each(PLACEMENTS)(
     });
   },
 );
+
+describe("inSerializableTransaction", () => {
+  let t: TestApp;
+
+  beforeAll(async () => {
+    t = await makeTestApp("shared");
+  });
+
+  afterAll(async () => t.cleanup());
+
+  /** A transaction failing with `sqlState`, as drizzle wraps it, each try. */
+  async function failing(sqlState: string, alsoRetry?: readonly string[]) {
+    let attempts = 0;
+    const outcome = await inSerializableTransaction(
+      t.ctx.router.system(),
+      "busy",
+      async () => {
+        attempts += 1;
+        // Bounded, so a retry without end fails the test instead of hanging.
+        if (attempts > 10) return "still retrying";
+        throw new Error("Failed query", {
+          cause: Object.assign(new Error("database"), { code: sqlState }),
+        });
+      },
+      alsoRetry,
+    ).catch((error: unknown) => error);
+    return { outcome, attempts };
+  }
+
+  it("throws a SQLSTATE its caller did not name on the first try", async () => {
+    const { outcome, attempts } = await failing("23503");
+    expect(attempts).toBe(1);
+    expect(outcome).toMatchObject({ cause: { code: "23503" } });
+  });
+
+  it("retries a SQLSTATE its caller names as often as a serialization failure", async () => {
+    const named = await failing("23503", ["23503"]);
+    const serialization = await failing("40001");
+    expect(named.attempts).toBeGreaterThan(1);
+    expect(named.attempts).toBe(serialization.attempts);
+    expect(named.outcome).toMatchObject({ status: 503, message: "busy" });
+  });
+});
