@@ -26,8 +26,9 @@ import { renderWithProviders, testQueryClient } from "./render.tsx";
  * the fold block and the head's loading skeletons a unit's height. What
  * follows the list runs on far past the screen, unless the page declares
  * where its conversation ends, which is then the comment box's bottom with a
- * footer below it. A frame delivers what a browser's next frame would: the
- * scroll event of whatever moved the page, then the resizes.
+ * footer below it, the body's Edit button in the 40px right above the list.
+ * A frame delivers what a browser's next frame would: the scroll event of
+ * whatever moved the page, then the resizes.
  */
 
 const alice = {
@@ -79,11 +80,19 @@ type Options = {
   holdHead?: boolean;
 };
 
-/** A page that declares its column as where its conversation ends. */
+/**
+ * A page that declares its column as where its conversation ends, the card's
+ * body, down to its Edit button, right above the list.
+ */
 function Column({ children }: { children: ReactNode }) {
   const column = useRef<HTMLDivElement>(null);
   useScrollInsets({ end: column });
-  return <div ref={column}>{children}</div>;
+  return (
+    <div ref={column}>
+      <button type="button">Edit</button>
+      {children}
+    </div>
+  );
 }
 
 async function open({
@@ -221,6 +230,8 @@ async function open({
       if (this === list) return box(state.above - state.y, listHeight());
       if (end && this === list.parentElement)
         return box(state.above - state.y, listHeight() + COMPOSER);
+      if (end && this === list.previousElementSibling)
+        return box(state.above - 40 - state.y, 40);
       let child: Element | null = this;
       while (child !== null && child.parentElement !== list)
         child = child.parentElement;
@@ -659,6 +670,90 @@ describe("the reader's place, kept by one owner", () => {
     expect(page.topOf(8)).toBe(0);
     await page.fillAll();
     expect(page.topOf(8)).toBe(0);
+  });
+});
+
+describe("a card whose list starts on screen, read at its end", () => {
+  // A short card: the body above the list in view at the end, the first two
+  // comments long, the last six half a row.
+  const SHORT = {
+    "comment-1": 3000,
+    "comment-2": 3000,
+    ...Object.fromEntries(
+      [3, 4, 5, 6, 7, 8].map((id) => [`comment-${id}`, -ROW / 2]),
+    ),
+  };
+  const shortCard = (more: Options = {}) =>
+    open({ total: 8, tail: 50, end: true, above: 300, grown: SHORT, ...more });
+  /** The column the list stands in: blank space in it, say. */
+  const column = (page: Awaited<ReturnType<typeof open>>) =>
+    page.view.getByTestId("timeline-scroll").parentElement as HTMLElement;
+
+  it("keeps a reader at the end as the long comments reveal after a press", async () => {
+    // Landed on the end, the list's top 180px down the screen, the long
+    // comments still skeletons.
+    const page = await shortCard();
+    expect(page.at()).toBe(120);
+    expect(page.unit("comment-1")?.hasAttribute("data-unfilled")).toBe(true);
+    page.press(column(page));
+    await page.fillAll();
+    expect(page.unit("comment-1")?.hasAttribute("data-unfilled")).toBe(false);
+    expect(page.at()).toBe(page.endTarget());
+  });
+
+  it("opens a run revealed at its end downward, and keeps it there as the long comments reveal", async () => {
+    const page = await shortCard({
+      hidden: [7],
+      grown: { ...SHORT, "hidden-7": -ROW / 2, "comment-7": 200 },
+    });
+    const before = page.topOf("hidden-7");
+    page.press(page.view.getByRole("button", { name: "Reveal" }));
+    await page.view.findByText("body 7");
+    await page.settle();
+    await page.fillAll();
+    expect(page.topOf(7)).toBe(before);
+  });
+
+  it("puts back what grows in the list, and leaves what grows above it, at the end", async () => {
+    const page = await shortCard();
+    page.press(column(page));
+    await page.growUnit("comment-4", 100);
+    expect(page.at()).toBe(page.endTarget());
+    const y = page.at();
+    page.scrollBy.mockClear();
+    await page.growAbove(40);
+    expect(page.scrollBy).not.toHaveBeenCalled();
+    expect(page.at()).toBe(y);
+    await page.growUnit("comment-5", 100);
+    expect(page.at()).toBe(y + 100);
+  });
+
+  it("keeps the end against what grows above once the reveal took the body out of view", async () => {
+    const page = await shortCard();
+    page.press(column(page));
+    await page.fillAll();
+    expect(page.at()).toBe(page.endTarget());
+    await page.growAbove(500);
+    expect(page.at()).toBe(page.endTarget());
+  });
+
+  it("keeps the reader's own scroll its event has yet to report", async () => {
+    const page = await shortCard();
+    page.press(column(page));
+    // Applied with no scroll event yet: a fling, a caret revealed.
+    window.scrollTo(0, page.at() + 30);
+    await page.fillAll();
+    expect(page.at()).toBe(page.endTarget() + 30);
+  });
+
+  it("leaves a reader at the end who pressed the body above the list to the browser", async () => {
+    const page = await shortCard();
+    const edit = page.view.getByRole("button", { name: "Edit" });
+    const before = edit.getBoundingClientRect().top;
+    page.press(edit);
+    await page.fillAll();
+    expect(page.unit("comment-1")?.hasAttribute("data-unfilled")).toBe(false);
+    expect(edit.getBoundingClientRect().top).toBe(before);
   });
 });
 
