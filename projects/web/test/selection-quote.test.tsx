@@ -297,6 +297,26 @@ describe("quotableSelection", () => {
     });
   });
 
+  it("anchors a word before a fold on an item's second line to its columns", async () => {
+    // A message's line break cuts its text apart, into pieces with no
+    // position: the fold after `xx` is part of that line all the same.
+    const body =
+      "- first\n  xx <details><summary>Sum</summary>Body</details>\n- y\n";
+    const { a } = await renderTwo(comment(1, body), comment(2, B));
+    const text = textWith(a, "xx");
+    const at = text.data.indexOf("xx");
+    const part = onlyPart(
+      quotableSelection(select(text, at, text, at + 2), targets),
+      a,
+    );
+    expect(part?.anchor).toEqual({
+      lineStart: 2,
+      lineEnd: 2,
+      colStart: 3,
+      colEnd: 4,
+    });
+  });
+
   it("passes over a question form popped out into a window of its own", async () => {
     const { a } = await renderTwo(comment(1, A), comment(2, B));
     // Its texts render into that window's document, and register there.

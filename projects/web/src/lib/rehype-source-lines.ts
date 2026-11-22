@@ -15,7 +15,9 @@ import { advance, type Raw } from "./rehype-details.ts";
  * `details` is here for a second reason on top of that one (T-385): a reader
  * who closes a fold leaves every annotation inside it with a zero rect, and
  * the chip layout walks up the stamped ancestors to find something it can
- * still measure — the fold's own header.
+ * still measure — the fold's own header. A fold in a table cell, or written
+ * after the text of a line, goes unstamped all the same: it is part of the
+ * line it sits on, which its block already owns (`stampBlocks`).
  */
 const BLOCK_TAGS = new Set([
   "p",
@@ -107,18 +109,72 @@ export function parseSourceLoc(
  * being rendered, `OLD_LINE_ATTR` for a block put back from the baseline.
  */
 export function stampSourceLines(node: Root | Element, attr: string): void {
-  if (
-    node.type === "element" &&
-    BLOCK_TAGS.has(node.tagName) &&
-    node.position?.start.line !== undefined &&
-    node.position.end.line !== undefined
-  ) {
-    node.properties[attr] =
-      `${node.position.start.line}-${node.position.end.line}`;
+  stampBlocks(node, attr, true);
+}
+
+/**
+ * `stampSourceLines`, `own` false for an element that is part of a line its
+ * parent's block owns (`sharesLine`): it goes unstamped, and the blocks it
+ * holds on lines of their own are stamped as anywhere else.
+ *
+ * Two blocks on one line break the selection mapping, which takes the lines
+ * of a nested block out of its parent (`alignBlock`), and the whole-line
+ * wash, which lands on the innermost block of a line. So nothing in a table
+ * cell is stamped, its row being one line and the finest block there: the
+ * folds `rehypeDetails` builds there are the only blocks a cell can hold.
+ */
+function stampBlocks(node: Root | Element, attr: string, own: boolean): void {
+  if (node.type === "element") {
+    if (node.tagName === "td" || node.tagName === "th") return;
+    if (
+      own &&
+      BLOCK_TAGS.has(node.tagName) &&
+      node.position?.start.line !== undefined &&
+      node.position.end.line !== undefined
+    ) {
+      node.properties[attr] =
+        `${node.position.start.line}-${node.position.end.line}`;
+    }
   }
-  for (const child of node.children) {
-    if (child.type === "element") stampSourceLines(child, attr);
+  node.children.forEach((child, i) => {
+    if (child.type === "element") {
+      stampBlocks(child, attr, !sharesLine(node, i));
+    }
+  });
+}
+
+/**
+ * Whether the `i`th child of `parent` is part of a line its parent's block
+ * owns rather than a block of its own: an element that opens on the line the
+ * content before it ends on, as a fold written after the text of a tight
+ * list item (`- xx <details>…`) does.
+ *
+ * That content ends with its last character that is not blank, and text
+ * tells by its value whether a line ends after it, since a value holds every
+ * line ending of its source: a run `rehypeDetails` cuts out before a fold
+ * carries the ending of the line above, though its position runs on to the
+ * fold's line, and a text `remarkBreaks` cut out of a message has no
+ * position at all. An element tells by its position; one with none, a task
+ * list's checkbox, leaves the child a block. Never under the root, where no
+ * stamped block would take the line over: a selection there would have no
+ * anchor at all.
+ */
+function sharesLine(parent: Root | Element, i: number): boolean {
+  const child = parent.children[i];
+  if (child?.type !== "element" || parent.type === "root") return false;
+  const line = child.position?.start.line;
+  if (line === undefined) return false;
+  for (let j = i - 1; j >= 0; j--) {
+    const before = parent.children[j];
+    if (before?.type === "text" || before?.type === "raw") {
+      const shown = before.value.trimEnd();
+      if (/[\n\r]/.test(before.value.slice(shown.length))) return false;
+      if (shown !== "") return true;
+      continue;
+    }
+    return before?.position?.end.line === line;
   }
+  return false;
 }
 
 /**
