@@ -200,8 +200,6 @@ export function Timeline({
   const chunkAdjust = useRef<{ base: number; compensate: boolean } | null>(
     null,
   );
-  const lastScrollHeight = useRef(0);
-  const prevAboveCount = useRef(0);
 
   const { above, below } = mergeFolded(
     headEnabled ? (head.data?.pages ?? []) : [],
@@ -603,12 +601,6 @@ export function Timeline({
   // Insertions above the viewport must not shift what the reader sees.
   useLayoutEffect(() => {
     const doc = document.documentElement;
-    // The head mounting under an already-positioned viewport (bottom or
-    // anchor) is a prepend — keep the tail side glued, unconditionally.
-    if (above.length > 0 && prevAboveCount.current === 0) {
-      const delta = doc.scrollHeight - lastScrollHeight.current;
-      if (delta > 0) window.scrollBy(0, delta);
-    }
     // Chunk insert settled — apply the verdict captured at click time.
     // Consume only once the fetch settles: the fetching-state flip commits
     // first with an unchanged document, and consuming it there would leave
@@ -619,8 +611,6 @@ export function Timeline({
       const delta = doc.scrollHeight - base;
       if (compensate && delta > 0) window.scrollBy(0, delta);
     }
-    prevAboveCount.current = above.length;
-    lastScrollHeight.current = doc.scrollHeight;
   });
 
   // What the reader is reading stays where it is as the page changes around
