@@ -1,8 +1,10 @@
-import type { Nodes } from "mdast";
+import type { ElementContent, Root as HastRoot } from "hast";
+import type { Root as MdastRoot, Nodes } from "mdast";
 import { decodeString } from "micromark-util-decode-string";
 import { trimLines } from "trim-lines";
+import { unified } from "unified";
 import { parseMarkdown } from "./markdown-processor.ts";
-import { splitRaw } from "./rehype-details.ts";
+import { RENDERED_TREE_PLUGINS } from "./spec-baseline-tree.ts";
 import type { LineRange } from "./spec-changes.ts";
 
 /**
@@ -200,11 +202,14 @@ export type SegmentIndex = {
    * block's text up with what it shows. Each is exact and has no place in
    * `text`, so its `at` is -1.
    *
-   * Inline HTML is one literal, or one a run (`textPieces`) when a line a
-   * container prefixes cuts it. A block of HTML is cut where
-   * `rehypeDetails` cuts it, at the tags of a fold it turns into elements,
-   * and each run between them that is not blank is one: the page shows a
-   * fold's summary, not its tags.
+   * They are the HTML the page shows: what is left of it as `raw` once
+   * `rehypeDetails` has turned the tags of each fold it pairs into elements
+   * (`shownRaw`). A node left whole is one literal, or one per run
+   * (`textPieces`) when a line a container prefixes cuts it inline. A node
+   * cut apart gives one for each run around the tags that paired that is not
+   * blank: the page shows a fold's summary, not its tags, and a tag that
+   * paired with nothing as text. A block a container prefixes gives none,
+   * and its block keeps the line.
    */
   literals: SourceSegment[];
 };
@@ -622,6 +627,60 @@ export function lineTextOf(
   return text.endsWith("\r") ? text.slice(0, -1) : text;
 }
 
+const toRendered = unified().use(RENDERED_TREE_PLUGINS);
+
+/** A run of raw HTML the page shows, at its absolute `[from, to)`. */
+type ShownRaw = { value: string; from: number; to: number };
+
+/**
+ * The raw HTML left in the tree `MarkdownView` draws from `tree`, which the
+ * page shows as text, in source order. Where `rehypeDetails` pairs the tags
+ * of a fold depends on where `mdast-util-to-hast` puts them, in a table cell
+ * or straight in a tight list item as much as in a quote, so the index asks
+ * the renderer rather than keep a copy of its rules. Running it leaves
+ * `tree` as it was.
+ */
+function shownRaw(tree: Nodes): ShownRaw[] {
+  const rendered = toRendered.runSync(tree as MdastRoot) as HastRoot;
+  const shown: ShownRaw[] = [];
+  const visit = (nodes: ElementContent[]): void => {
+    for (const node of nodes) {
+      if (node.type === "element") visit(node.children);
+      if (node.type !== "raw") continue;
+      const from = node.position?.start.offset;
+      const to = node.position?.end.offset;
+      if (from !== undefined && to !== undefined) {
+        shown.push({ value: node.value, from, to });
+      }
+    }
+  };
+  visit(rendered.children as ElementContent[]);
+  // A footnote's definition renders at the end, wherever its source is.
+  return shown.sort((a, b) => a.from - b.from);
+}
+
+/** The runs of `shown` (`shownRaw`) inside `[start, end)` of the source. */
+function shownWithin(
+  shown: ShownRaw[],
+  start: number,
+  end: number,
+): ShownRaw[] {
+  let low = 0;
+  let high = shown.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if ((shown[mid]?.from ?? end) < start) low = mid + 1;
+    else high = mid;
+  }
+  const within: ShownRaw[] = [];
+  for (let i = low; i < shown.length; i++) {
+    const run = shown[i];
+    if (run === undefined || run.from >= end) break;
+    if (run.to <= end) within.push(run);
+  }
+  return within;
+}
+
 /**
  * Index a markdown source for the decoration engine (T-142): what prose it
  * contains, and where each run of it lives in the source. Both directions
@@ -694,47 +753,30 @@ export function buildSegmentIndex(source: string): SegmentIndex {
       const start = node.position?.start.offset;
       const end = node.position?.end.offset;
       if (start === undefined || end === undefined) return;
+      // What the page shows of it: all of it when none of its tags paired,
+      // nothing when every one did, and otherwise the runs around those
+      // that did.
+      const left = shownWithin(shown, start, end);
+      const whole =
+        left[0]?.from === start &&
+        left.map((run) => run.value).join("") === node.value;
       // One whose source is not its value spans a line a container
-      // prefixes. In a leaf it is lined up with its source, the prefix left
-      // out, and each run is a literal; a block of it is left out, and its
-      // block keeps the line.
+      // prefixes. Left whole in a leaf, it is lined up with its source, the
+      // prefix left out, and each run is a literal. A block of it is left
+      // out, and its block keeps the line, and so is one cut apart, since
+      // the runs' offsets count none of the prefixes before them.
       const reads = source.slice(start, end) === node.value;
       const wrapped =
-        reads || group < 0
+        reads || !whole || group < 0
           ? null
           : textPieces(source, start, end, node.value, false);
       if (!reads && wrapped === null) return;
-      const pieces =
-        group >= 0
-          ? null
-          : splitRaw({
-              type: "raw",
-              value: node.value,
-              position: node.position,
-            });
       const runs =
         wrapped?.map((piece) => ({
           value: piece.text,
           from: piece.start,
           to: piece.end,
-        })) ??
-        (pieces === null
-          ? [{ value: node.value, from: start, to: end }]
-          : pieces.flatMap((piece) =>
-              "type" in piece &&
-              piece.type === "raw" &&
-              /\S/.test(piece.value) &&
-              piece.position?.start.offset !== undefined &&
-              piece.position.end.offset !== undefined
-                ? [
-                    {
-                      value: piece.value,
-                      from: piece.position.start.offset,
-                      to: piece.position.end.offset,
-                    },
-                  ]
-                : [],
-            ));
+        })) ?? left.filter((run) => /\S/.test(run.value));
       for (const { value, from, to } of runs) {
         // Its lines are those of the characters that are not blank: what a
         // fold leaves after its closing tag opens with that line's ending,
@@ -878,7 +920,9 @@ export function buildSegmentIndex(source: string): SegmentIndex {
     verbatim = outerVerbatim;
   };
 
-  visit(parseMarkdown(source));
+  const tree = parseMarkdown(source);
+  const shown = shownRaw(tree);
+  visit(tree);
   return {
     source,
     text,
