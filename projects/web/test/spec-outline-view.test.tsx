@@ -643,10 +643,10 @@ describe("the change strip", () => {
     ];
     expect(removal).not.toBeNull();
     expect(stops.length).toBeGreaterThan(2);
-    // A 1000px card at the top of a 768px window: the bar is 752px tall, so
-    // the card is drawn at 0.752 of its size. The removal sits above every
-    // stop, the way the note above Alpha does; the first two stops sit a
-    // pixel apart, so they share one tick, and the rest are well apart.
+    // A 1000px card at the top of the window, drawn on the bar at the bar's
+    // height over 1000. The removal sits above every stop, the way the note
+    // above Alpha does; the first two stops sit a pixel apart, so they share
+    // one tick, and the rest are well apart.
     const place = (el: Element, top: number) => {
       el.getBoundingClientRect = () =>
         ({ top, height: 20, bottom: top + 20, left: 0, right: 0 }) as DOMRect;
@@ -654,8 +654,15 @@ describe("the change strip", () => {
     box.getBoundingClientRect = () =>
       ({ top: 0, height: 1000, bottom: 1000, left: 0, right: 900 }) as DOMRect;
     Object.defineProperty(box, "clientHeight", { value: 1000 });
+    const barHeight = () => Number.parseFloat(bar.style.height);
     bar.getBoundingClientRect = () =>
-      ({ top: 0, height: 752, bottom: 752, left: 893, right: 907 }) as DOMRect;
+      ({
+        top: 0,
+        height: barHeight(),
+        bottom: barHeight(),
+        left: 893,
+        right: 907,
+      }) as DOMRect;
     place(removal as HTMLElement, 100);
     const tops = stops.map((_, i) =>
       i === 0 ? 300 : i === 1 ? 301 : 400 + i * 150,
@@ -678,17 +685,19 @@ describe("the change strip", () => {
     ).toBe(false);
 
     const reveals = watchReveals();
+    const scale = barHeight() / 1000;
+    expect(scale).toBeGreaterThan(0);
     const clickAt = (y: number) => {
       fireEvent.pointerDown(bar, { button: 0, pointerId: 1, clientY: y });
       fireEvent.pointerUp(bar, { button: 0, pointerId: 1, clientY: y });
     };
     // The third stop's tick, the second on the bar, 1px into it; then the
     // shared one, which lands where its first stop is.
-    clickAt((tops[2] ?? 0) * 0.752 + 1);
+    clickAt((tops[2] ?? 0) * scale + 1);
     expect(reveals.map((r) => r.el)).toEqual([stops[2]]);
-    clickAt(300 * 0.752 + 1);
+    clickAt(300 * scale + 1);
     expect(reveals.map((r) => r.el)).toEqual([stops[2], stops[0]]);
-    clickAt(100 * 0.752 + 1);
+    clickAt(100 * scale + 1);
     expect(reveals.map((r) => r.el)).toEqual([stops[2], stops[0], removal]);
   });
 
@@ -739,34 +748,6 @@ describe("the change strip", () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
     });
     expect(Number.parseFloat(bar.style.height)).toBeGreaterThan(100);
-  });
-
-  it("measures the bar again when the card moves down the page with no resize", async () => {
-    const view = await renderSpec("?v=2&file=design.md");
-    await waitFor(() => expect(strip(view)).not.toBeNull());
-    const box = card(view) as HTMLElement;
-    const bar = strip(view)?.firstElementChild as HTMLElement;
-    Object.defineProperty(box, "clientHeight", { value: 2998 });
-    const startAt = async (top: number) => {
-      box.getBoundingClientRect = () =>
-        ({
-          top,
-          height: 3000,
-          bottom: top + 3000,
-          left: 0,
-          right: 900,
-        }) as DOMRect;
-      await act(async () => {
-        window.dispatchEvent(new Event("scroll"));
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      });
-      return Number.parseFloat(bar.style.height);
-    };
-    // Something above the card, outside what is watched for size, grows by
-    // 200px: the card starts lower, and less of the window is left below it.
-    const before = await startAt(100);
-    const after = await startAt(300);
-    expect(before - after).toBeCloseTo(200, 0);
   });
 
   it("takes the tooltip down when a press that left the bar ends off it", async () => {

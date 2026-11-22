@@ -41,11 +41,13 @@ Cases:
   spec-chip-gutter     Below 640px spec text reaches the card's padding, chips
                        stay off it and their popovers on screen; from 640px up
                        the 40px chip gutter and left-opening popovers stay.
-  spec-outline-strip   The change strip sits on the card's right border, holds
-                       its ticks still while the page scrolls and lands a
-                       click where ↓ lands; its tooltip covers an open comment
-                       popover; the outline opens a folded heading it jumps to
-                       and marks the section past the reading line.
+  spec-outline-strip   The change strip sits on the card's right border, runs
+                       once stuck from below the toolbar to as far above the
+                       window's foot, holds its ticks still while the page
+                       scrolls and lands a click where ↓ lands; its tooltip
+                       covers an open comment popover; the outline opens a
+                       folded heading it jumps to and marks the section past
+                       the reading line.
 
 Usage:
   node scripts/browser-layout-smoke.mjs

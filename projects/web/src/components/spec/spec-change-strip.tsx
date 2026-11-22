@@ -263,8 +263,6 @@ export function SpecChangeStrip({
   } | null>(null);
   /** The bar's height as last measured, for the frame between measurements. */
   const stripHeightRef = useRef(0);
-  /** Where the card started down the page when last measured. */
-  const cardTopRef = useRef<number | null>(null);
   /** Ends the watch for a release off the bar that the last press began. */
   const pressWatch = useRef<AbortController | null>(null);
   useEffect(() => () => pressWatch.current?.abort(), []);
@@ -276,26 +274,16 @@ export function SpecChangeStrip({
       const doc = renderedDocumentIn(card);
       if (card === null || doc === null) return;
       const box = paddingBoxOf(card);
-      const cardTop = box.top + window.scrollY;
       // Where things lie down the card only changes when something changes
-      // size or moves the card down the page; a scroll alone moves the frame
-      // and nothing else.
-      const moved =
-        cardTopRef.current === null ||
-        Math.abs(cardTop - cardTopRef.current) > 0.5;
-      if (resized || moved) {
-        cardTopRef.current = cardTop;
-        // Fixed for a given window and toolbar: the bar's height when the card
-        // sits as low as it ever does, at the top of the page, so that the
-        // whole bar shows there too. A card that starts so far down that this
-        // leaves less than half the height the bar has once stuck gets that
-        // half, and its foot shows once the page scrolls. Never taller than
-        // the card it runs down.
-        const stuck = window.innerHeight - stickyTop - 2 * gap;
-        const fits = window.innerHeight - cardTop - gap;
+      // size; a scroll alone moves the frame and nothing else.
+      if (resized) {
+        // Fixed for a given window and toolbar: once stuck, the bar runs from
+        // `gap` below the toolbar to `gap` above the window's foot, as the
+        // file rail does; until it sticks it rides lower with the card, its
+        // foot below the window. Never taller than the card it runs down.
         const stripHeight = Math.max(
           0,
-          Math.min(Math.max(fits, stuck / 2), box.height),
+          Math.min(window.innerHeight - stickyTop - 2 * gap, box.height),
         );
         stripHeightRef.current = stripHeight;
         const { marks, stopIndex } = collectMarks(
