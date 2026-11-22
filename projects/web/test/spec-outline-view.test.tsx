@@ -710,6 +710,8 @@ describe("the change strip", () => {
     const move = (y: number, buttons: number) =>
       fireEvent.pointerMove(bar, { pointerId: 1, clientY: y, buttons });
 
+    // The card has no height here and the frame no box: a press beside the
+    // frame, on a bar 0px tall, which still scrolls on every move.
     fireEvent.pointerDown(bar, {
       button: 0,
       buttons: 1,
@@ -726,6 +728,144 @@ describe("the change strip", () => {
     move(200, 0);
     move(260, 0);
     expect(scrolls).toHaveBeenCalledTimes(2);
+  });
+
+  /**
+   * A 3000px card, `cardTop` from the window's top on a page `pageHeight`
+   * tall scrolled to 1000px, its bar stuck at 80px with the frame 100px down
+   * it. `at` moves the bar and resizes the card; `measure` lays it out anew.
+   */
+  const stuckBar = async (
+    view: { container: HTMLElement },
+    cardTop: number,
+    pageHeight: number,
+  ) => {
+    const box = card(view) as HTMLElement;
+    const bar = strip(view)?.firstElementChild as HTMLElement;
+    const frame = bar.querySelector("[data-spec-strip-frame]") as HTMLElement;
+    vi.spyOn(window, "scrollY", "get").mockReturnValue(1000);
+    vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
+      pageHeight,
+    );
+    const at = { barTop: 80, cardHeight: 3000 };
+    box.getBoundingClientRect = () =>
+      ({
+        top: cardTop,
+        height: at.cardHeight,
+        bottom: cardTop + at.cardHeight,
+        left: 0,
+        right: 900,
+      }) as DOMRect;
+    Object.defineProperty(box, "clientHeight", { get: () => at.cardHeight });
+    const barHeight = () => Number.parseFloat(bar.style.height);
+    bar.getBoundingClientRect = () =>
+      ({
+        top: at.barTop,
+        height: barHeight(),
+        bottom: at.barTop + barHeight(),
+        left: 893,
+        right: 907,
+      }) as DOMRect;
+    frame.getBoundingClientRect = () =>
+      ({
+        top: at.barTop + 100,
+        height: 150,
+        bottom: at.barTop + 250,
+        left: 893,
+        right: 907,
+      }) as DOMRect;
+    const measure = () =>
+      act(async () => {
+        window.dispatchEvent(new Event("resize"));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+    await measure();
+    const scrolls = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    return {
+      at,
+      barHeight,
+      measure,
+      perPixel: 3000 / barHeight(),
+      tops: () =>
+        scrolls.mock.calls.map(([options]) => (options as ScrollToOptions).top),
+      press: (y: number) =>
+        fireEvent.pointerDown(bar, {
+          button: 0,
+          buttons: 1,
+          pointerId: 1,
+          clientY: y,
+        }),
+      move: (y: number) =>
+        fireEvent.pointerMove(bar, { pointerId: 1, clientY: y, buttons: 1 }),
+      release: (y: number) =>
+        fireEvent.pointerUp(bar, {
+          button: 0,
+          buttons: 0,
+          pointerId: 1,
+          clientY: y,
+        }),
+    };
+  };
+
+  it("drags by how far the pointer moves, wherever the bar has moved", async () => {
+    const view = await renderSpec("?v=2&file=design.md");
+    await waitFor(() => expect(strip(view)).not.toBeNull());
+    // Scrolled 400px into a card that starts 600px down a 3700px page.
+    const s = await stuckBar(view, -400, 3700);
+
+    // Pressed on the frame: the page moves on from where it is.
+    const startY = s.at.barTop + 150;
+    s.press(startY);
+    s.move(startY + 50);
+    expect(s.tops()).toHaveLength(1);
+    expect(s.tops()[0]).toBeCloseTo(1000 + 50 * s.perPixel);
+    // The bar rides 30px up under the pointer, as it does off the top of the
+    // page and at its end, and a diagram drawn below grows the card: the page
+    // still goes by the pointer alone, at the scale the press began with.
+    s.at.barTop -= 30;
+    s.at.cardHeight = 3600;
+    await s.measure();
+    s.move(startY + 60);
+    expect(s.tops()).toHaveLength(2);
+    expect(s.tops()[1]).toBeCloseTo(1000 + 60 * s.perPixel);
+  });
+
+  it("starts a drag beside the frame where a click there lands, within the page", async () => {
+    const view = await renderSpec("?v=2&file=design.md");
+    await waitFor(() => expect(strip(view)).not.toBeNull());
+    // Scrolled 900px into a card that starts 100px down a 3200px page, so a
+    // click at the bar's very top or foot would take the page past its ends.
+    const s = await stuckBar(view, -900, 3200);
+    const pageEnd = 3200 - window.innerHeight;
+
+    // A click beside the frame, then a press there dragged 50px: the drag
+    // starts where the click went, with one scroll for the move.
+    const beside = s.at.barTop + 400;
+    s.press(beside);
+    s.release(beside);
+    expect(s.tops()).toHaveLength(1);
+    const clicked = s.tops()[0] ?? Number.NaN;
+    expect(clicked).toBeGreaterThan(0);
+    expect(clicked).toBeLessThan(pageEnd);
+    s.press(beside);
+    s.move(beside + 50);
+    s.release(beside + 50);
+    expect(s.tops()).toHaveLength(2);
+    expect(s.tops()[1]).toBeCloseTo(clicked + 50 * s.perPixel);
+
+    // At the bar's very top and foot, from the end of the page it reaches.
+    const top = s.at.barTop + 2;
+    s.press(top);
+    s.move(top + 10);
+    s.release(top + 10);
+    expect(s.tops()).toHaveLength(3);
+    expect(s.tops()[2]).toBeCloseTo(10 * s.perPixel);
+    const foot = s.at.barTop + s.barHeight() - 2;
+    s.press(foot);
+    s.move(foot - 10);
+    s.release(foot - 10);
+    expect(s.tops()).toHaveLength(4);
+    expect(s.tops()[3]).toBeCloseTo(pageEnd - 10 * s.perPixel);
   });
 
   it("keeps a bar to click on however far down the page the card starts", async () => {
