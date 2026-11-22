@@ -26,7 +26,8 @@ import { renderWithProviders, testQueryClient } from "./render.tsx";
  * the fold block and the head's loading skeletons a unit's height. What
  * follows the list runs on far past the screen, unless the page declares
  * where its conversation ends, which is then the comment box's bottom with a
- * footer below it, the body's Edit button in the 40px right above the list.
+ * footer below it, the body's Edit button in the 40px right above the list,
+ * and a shell header over the screen's top where the case asks for one.
  * A frame delivers what a browser's next frame would: the scroll event of
  * whatever moved the page, then the resizes.
  */
@@ -78,11 +79,14 @@ type Options = {
   end?: boolean;
   /** Whether the head's pages wait for the test to let them through. */
   holdHead?: boolean;
+  /** How tall a shell header over the screen's top is, if there is one. */
+  header?: number;
 };
 
 /**
  * A page that declares its column as where its conversation ends, the card's
- * body, down to its Edit button, right above the list.
+ * body, down to its Edit button, right above the list, and the comment box
+ * right below it.
  */
 function Column({ children }: { children: ReactNode }) {
   const column = useRef<HTMLDivElement>(null);
@@ -91,6 +95,7 @@ function Column({ children }: { children: ReactNode }) {
     <div ref={column}>
       <button type="button">Edit</button>
       {children}
+      <textarea aria-label="Write a comment" />
     </div>
   );
 }
@@ -104,6 +109,7 @@ async function open({
   above = 0,
   end = false,
   holdHead = false,
+  header,
 }: Options = {}) {
   const items: TimelineItem[] = Array.from({ length: total }, (_, i) =>
     comment(i + 1, hidden.includes(i + 1)),
@@ -232,6 +238,10 @@ async function open({
         return box(state.above - state.y, listHeight() + COMPOSER);
       if (end && this === list.previousElementSibling)
         return box(state.above - 40 - state.y, 40);
+      if (end && this.matches('[aria-label="Write a comment"]'))
+        return box(state.above + listHeight() - state.y, COMPOSER);
+      if (header !== undefined && this.closest("header") !== null)
+        return box(0, header);
       let child: Element | null = this;
       while (child !== null && child.parentElement !== list)
         child = child.parentElement;
@@ -280,8 +290,18 @@ async function open({
       <Timeline slug="p" issueNumber={7} pendingComments={[]} />
     </RevealedRunsProvider>
   );
+  const content = end ? <Column>{timeline}</Column> : timeline;
   const view = renderWithProviders(
-    end ? <Column>{timeline}</Column> : timeline,
+    header === undefined ? (
+      content
+    ) : (
+      <>
+        <header>
+          <button type="button">Menu</button>
+        </header>
+        {content}
+      </>
+    ),
     client,
   );
   await view.findByText(`body ${total}`);
@@ -551,6 +571,17 @@ describe("the reader's place, kept by one owner", () => {
     expect(page.topOf(27)).toBe(before);
   });
 
+  it("keeps the tail when the reader presses the body above the list", async () => {
+    // The body's Edit button on screen, the seam in the upper half.
+    const page = await open({ head: 1, above: 300, end: true });
+    page.readerAt(250);
+    page.press(page.view.getByRole("button", { name: "Edit" }));
+    const before = page.topOf(27);
+    await page.arrive(31);
+    expect(page.unit(26)).toBeNull();
+    expect(page.topOf(27)).toBe(before);
+  });
+
   it("keeps the tail when the reader clicks into it with the body in view", async () => {
     const page = await open({ head: 1, above: 300 });
     page.readerAt(250);
@@ -744,6 +775,24 @@ describe("a card whose list starts on screen, read at its end", () => {
     window.scrollTo(0, page.at() + 30);
     await page.fillAll();
     expect(page.at()).toBe(page.endTarget() + 30);
+  });
+
+  it("keeps a reader at the end who pressed the comment box below the list", async () => {
+    const page = await shortCard();
+    page.press(page.view.getByRole("textbox", { name: "Write a comment" }));
+    await page.fillAll();
+    expect(page.unit("comment-1")?.hasAttribute("data-unfilled")).toBe(false);
+    expect(page.at()).toBe(page.endTarget());
+  });
+
+  it("keeps a reader at the end who pressed the header over the screen's top", async () => {
+    // The header precedes the list, its bottom the top overlays' edge.
+    const page = await shortCard({ header: 60 });
+    expect(page.at()).toBe(120);
+    page.press(page.view.getByRole("button", { name: "Menu" }));
+    await page.fillAll();
+    expect(page.unit("comment-1")?.hasAttribute("data-unfilled")).toBe(false);
+    expect(page.at()).toBe(page.endTarget());
   });
 
   it("leaves a reader at the end who pressed the body above the list to the browser", async () => {
