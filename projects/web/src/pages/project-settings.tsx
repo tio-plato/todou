@@ -47,6 +47,7 @@ import {
 } from "@/api/queries.ts";
 import { referenceConfigQuery } from "@/api/references.ts";
 import { userQuery } from "@/api/users.ts";
+import { DeleteProjectSection } from "@/components/settings/delete-project-section.tsx";
 import { LabelSetList } from "@/components/settings/label-set-list.tsx";
 import {
   StatusesSection,
@@ -168,6 +169,7 @@ export function ProjectGeneralSettingsPage() {
     <div className="space-y-10">
       <ProjectSection slug={slug} />
       <SlugSection slug={slug} />
+      <DeleteProjectSection slug={slug} />
     </div>
   );
 }
