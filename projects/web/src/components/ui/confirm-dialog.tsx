@@ -16,11 +16,15 @@ import {
  * is no trigger element left to own the open state by the time the dialog
  * appears.
  *
- * No type-the-name confirmation. That was written when the trash (T-145) was
- * the only caller and every action behind it was reversible; deleting a
- * comment (T-281) is not, and takes this same gate because the reversible
- * thing a reader almost always wants is `Hide`, which the wording points at.
- * A destructive action with no such alternative would deserve more than this.
+ * No type-the-name confirmation of its own. That was written when the trash
+ * (T-145) was the only caller and every action behind it was reversible;
+ * deleting a comment (T-281) is not, and takes this same gate because the
+ * reversible thing a reader almost always wants is `Hide`, which the wording
+ * points at. A destructive action with no such alternative deserves more: its
+ * caller puts the box to type into in `children`, holds the confirm button
+ * with `confirmDisabled` until it matches, and checks the match again in the
+ * box's own submit, which Enter reaches without the button. Deleting a
+ * project does.
  */
 export function ConfirmDialog({
   open,
@@ -31,6 +35,7 @@ export function ConfirmDialog({
   cancelLabel = "Cancel",
   destructive = false,
   pending = false,
+  confirmDisabled = false,
   onConfirm,
   container,
   children,
@@ -43,6 +48,8 @@ export function ConfirmDialog({
   cancelLabel?: string;
   destructive?: boolean;
   pending?: boolean;
+  /** Holds the confirm button for a caller's own gate, a typed name say. */
+  confirmDisabled?: boolean;
   onConfirm: () => void;
   /** Mount point other than this page's body — a floating window's (T-530). */
   container?: HTMLElement;
@@ -65,7 +72,7 @@ export function ConfirmDialog({
           </DialogClose>
           <Button
             variant={destructive ? "destructive" : "default"}
-            disabled={pending}
+            disabled={pending || confirmDisabled}
             onClick={onConfirm}
           >
             {confirmLabel}
