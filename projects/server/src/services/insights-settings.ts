@@ -187,12 +187,14 @@ export type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 /**
  * Runs `work` in a serializable transaction, retrying serialization
- * failures and deadlocks; once the retries are spent, a 503 saying `busy`.
+ * failures, deadlocks and any SQLSTATE the caller adds in `alsoRetry`; once
+ * the retries are spent, a 503 saying `busy`.
  */
 export async function inSerializableTransaction<T>(
   db: Db,
   busy: string,
   work: (tx: Tx) => Promise<T>,
+  alsoRetry: readonly string[] = [],
 ): Promise<T> {
   for (let attempt = 0; ; attempt += 1) {
     try {
@@ -205,7 +207,10 @@ export async function inSerializableTransaction<T>(
       });
     } catch (error) {
       const code = sqlStateOf(error);
-      if (!code || !RETRYABLE_SQLSTATES.has(code)) throw error;
+      const retryable =
+        code !== undefined &&
+        (RETRYABLE_SQLSTATES.has(code) || alsoRetry.includes(code));
+      if (!retryable) throw error;
       if (attempt >= MAX_TRANSACTION_RETRIES) {
         throw new DomainError(503, "service_unavailable", busy);
       }
