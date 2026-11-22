@@ -14,7 +14,7 @@ import {
 import { StatNumbers } from "@/components/timeline/spec-version-card.tsx";
 import { DELETION_CLASSES } from "@/lib/rehype-fold-unchanged.ts";
 import { parseSourceLoc, SOURCE_LINE_ATTR } from "@/lib/rehype-source-lines.ts";
-import { usableViewport } from "@/lib/scroll-insets.ts";
+import { restingScrollY, usableViewport } from "@/lib/scroll-insets.ts";
 import { CHANGED_SELECTOR, stopsIn } from "@/lib/spec-change-nav.ts";
 import type { OutlineHeading, SectionStat } from "@/lib/spec-outline.ts";
 import {
@@ -260,11 +260,14 @@ export function SpecChangeStrip({
     pointer: number;
     startY: number;
     moved: boolean;
+    /** Where the page is dragged from. */
+    from: number;
+    /** The scale at the press, which holds for the whole drag. */
+    cardHeight: number;
+    stripHeight: number;
   } | null>(null);
   /** The bar's height as last measured, for the frame between measurements. */
   const stripHeightRef = useRef(0);
-  /** Where the card started down the page when last measured. */
-  const cardTopRef = useRef<number | null>(null);
   /** Ends the watch for a release off the bar that the last press began. */
   const pressWatch = useRef<AbortController | null>(null);
   useEffect(() => () => pressWatch.current?.abort(), []);
@@ -276,26 +279,16 @@ export function SpecChangeStrip({
       const doc = renderedDocumentIn(card);
       if (card === null || doc === null) return;
       const box = paddingBoxOf(card);
-      const cardTop = box.top + window.scrollY;
       // Where things lie down the card only changes when something changes
-      // size or moves the card down the page; a scroll alone moves the frame
-      // and nothing else.
-      const moved =
-        cardTopRef.current === null ||
-        Math.abs(cardTop - cardTopRef.current) > 0.5;
-      if (resized || moved) {
-        cardTopRef.current = cardTop;
-        // Fixed for a given window and toolbar: the bar's height when the card
-        // sits as low as it ever does, at the top of the page, so that the
-        // whole bar shows there too. A card that starts so far down that this
-        // leaves less than half the height the bar has once stuck gets that
-        // half, and its foot shows once the page scrolls. Never taller than
-        // the card it runs down.
-        const stuck = window.innerHeight - stickyTop - 2 * gap;
-        const fits = window.innerHeight - cardTop - gap;
+      // size; a scroll alone moves the frame and nothing else.
+      if (resized) {
+        // Fixed for a given window and toolbar: once stuck, the bar runs from
+        // `gap` below the toolbar to `gap` above the window's foot, as the
+        // file rail does; until it sticks it rides lower with the card, its
+        // foot below the window. Never taller than the card it runs down.
         const stripHeight = Math.max(
           0,
-          Math.min(Math.max(fits, stuck / 2), box.height),
+          Math.min(window.innerHeight - stickyTop - 2 * gap, box.height),
         );
         stripHeightRef.current = stripHeight;
         const { marks, stopIndex } = collectMarks(
@@ -350,16 +343,21 @@ export function SpecChangeStrip({
     return { y, down, section, left: box.left };
   };
 
+  /**
+   * Where the page rests with a point of the card in the middle of what the
+   * toolbar leaves, by the rule ↑↓ land by.
+   */
+  const restingFor = (down: number): number | null => {
+    const card = cardRef.current;
+    if (card === null) return null;
+    const pageY = paddingBoxOf(card).top + window.scrollY + down;
+    return restingScrollY({ top: pageY, height: 0 }, usableViewport());
+  };
+
   /** Put a point of the card in the middle of what the toolbar leaves. */
   const scrollToPoint = (down: number, behavior: ScrollBehavior) => {
-    const card = cardRef.current;
-    if (card === null) return;
-    const usable = usableViewport();
-    const pageY = paddingBoxOf(card).top + window.scrollY + down;
-    window.scrollTo({
-      top: pageY - (usable.top + usable.height / 2),
-      behavior,
-    });
+    const top = restingFor(down);
+    if (top !== null) window.scrollTo({ top, behavior });
   };
 
   const click = (clientY: number) => {
@@ -391,7 +389,34 @@ export function SpecChangeStrip({
           const bar = event.currentTarget;
           bar.setPointerCapture(event.pointerId);
           const pointer = event.pointerId;
-          drag.current = { pointer, startY: event.clientY, moved: false };
+          // A drag moves the page by how far the pointer goes, as a
+          // scrollbar's thumb does, not to where the pointer is on the bar,
+          // which itself moves off the top of the page and at its end. It
+          // starts where the page is for a press on the frame; for one
+          // beside it, as on a scrollbar's track, where a click there would
+          // take the page, as far as the page goes.
+          const frame = frameRef.current?.getBoundingClientRect();
+          const onFrame =
+            frame !== undefined &&
+            event.clientY >= frame.top &&
+            event.clientY <= frame.bottom;
+          const at = onFrame ? null : pointAt(event.clientY);
+          const resting = at === null ? null : restingFor(at.down);
+          const pageEnd = Math.max(
+            0,
+            document.documentElement.scrollHeight - window.innerHeight,
+          );
+          drag.current = {
+            pointer,
+            startY: event.clientY,
+            moved: false,
+            from:
+              resting === null
+                ? window.scrollY
+                : Math.min(Math.max(resting, 0), pageEnd),
+            cardHeight: layout.cardHeight,
+            stripHeight: layout.stripHeight,
+          };
           // Without the capture, a release off the bar never reaches it, and
           // the tooltip would stay up until the pointer came back; a cancel
           // ends the press wherever it lands.
@@ -432,7 +457,6 @@ export function SpecChangeStrip({
             drag.current = null;
             return;
           }
-          if (at === null) return;
           if (
             !pressed.moved &&
             Math.abs(event.clientY - pressed.startY) < DRAG_SLOP
@@ -440,7 +464,16 @@ export function SpecChangeStrip({
             return;
           }
           pressed.moved = true;
-          scrollToPoint(at.down, "instant");
+          window.scrollTo({
+            top:
+              pressed.from +
+              stripToDocument(
+                event.clientY - pressed.startY,
+                pressed.cardHeight,
+                pressed.stripHeight,
+              ),
+            behavior: "instant",
+          });
         }}
         onPointerUp={(event) => {
           const pressed = drag.current;

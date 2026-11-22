@@ -5,10 +5,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { evaluate } from "../lib/browser-cdp.mjs";
 
 // The spec page's outline and change strip, where happy-dom cannot
-// look: the strip's place on the card's border and its scale while the page
-// scrolls, where a click on it lands, its tooltip over an open comment
-// popover, and the outline's landing on a folded heading and its current
-// row at real positions.
+// look: the strip's place on the card's border, its height once stuck and
+// its scale while the page scrolls, where a click on it lands, its tooltip
+// over an open comment popover, and the outline's landing on a folded
+// heading and its current row at real positions.
 const VIEWPORTS = [
   { width: 1280, height: 800 },
   { width: 1024, height: 768 },
@@ -308,6 +308,11 @@ function probeSource() {
         }),
       };
     };
+    /** The bar and the toolbar it stops below, against the window's height. */
+    const band = () => {
+      const b = bar(), toolbar = document.querySelector("div[data-header-follow]");
+      return b && toolbar ? { bar: box(b), toolbar: box(toolbar), innerHeight } : null;
+    };
     const settle = async () => {
       let last = null, same = 0;
       for (let frames = 0; frames < 600 && same < 6; frames += 1) {
@@ -405,7 +410,7 @@ function probeSource() {
       }
       return pick;
     };
-    window.__specOutline = { ready, layout, ticks, settle, restingFor, end, chipCenter, popover, tooltip, hits, rowCenter, current, expectedCurrent, folded, headingTop, stops: () => stops().length };
+    window.__specOutline = { ready, layout, ticks, band, settle, restingFor, end, chipCenter, popover, tooltip, hits, rowCenter, current, expectedCurrent, folded, headingTop, stops: () => stops().length };
   })()`;
 }
 
@@ -551,6 +556,23 @@ async function checkStrip(page, width) {
   await settle(page);
   const atTop = await evaluate(page, () => window.__specOutline.ticks());
   const end = await evaluate(page, () => window.__specOutline.end());
+  // Stuck mid-page, the bar runs from below the toolbar to as far above the
+  // window's foot, as the file rail does.
+  await evaluate(page, (y) => window.scrollTo(0, y), end / 2);
+  await settle(page);
+  const band = await evaluate(page, () => window.__specOutline.band());
+  const above = band ? band.bar.top - band.toolbar.bottom : null;
+  const below = band ? band.innerHeight - band.bar.bottom : null;
+  if (band === null || Math.abs(above - below) > EPSILON)
+    failures.push(
+      failure(
+        "strip-off-band",
+        band === null
+          ? "no bar or no toolbar"
+          : `${above}px below the toolbar, ${below}px above the window's foot`,
+        width,
+      ),
+    );
   await evaluate(page, () => window.scrollTo(0, window.__specOutline.end()));
   const bottomY = await settle(page);
   const atEnd = await evaluate(page, () => window.__specOutline.ticks());
