@@ -706,7 +706,36 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
       " [c]",
       { lineStart: 2, lineEnd: 2, colStart: 13, colEnd: 13 },
     ],
+    [
+      "a word after a fold tag in a comment a list item wraps",
+      "- a <!-- x\n  y <details> --> b\n",
+      " [b]",
+      { lineStart: 2, lineEnd: 2, colStart: 19, colEnd: 19 },
+    ],
+    [
+      "a word after a fold tag that never closes",
+      "<details>\nfoo bar\n",
+      "foo [bar]",
+      { lineStart: 2, lineEnd: 2, colStart: 5, colEnd: 7 },
+    ],
   ])("anchors %s to its own columns", async (_name, body, pick, anchor) => {
+    const { onStage, button } = await stageSelection(body, (container) =>
+      bracketedIn(container, pick),
+    );
+    fireEvent.click(button);
+    expect(onStage).toHaveBeenCalledWith(anchor);
+  });
+
+  // Where the columns cannot be worked out, the anchor is the lines of the
+  // block the selection sits in, never columns that point somewhere else.
+  it.each([
+    [
+      "a fold spanning lines in a quote",
+      "> <details>\n> <summary>Sum</summary>\n>\n> Body\n>\n> </details>\n",
+      "[Sum]",
+      { lineStart: 1, lineEnd: 6, colStart: null, colEnd: null },
+    ],
+  ])("falls back to the lines of %s", async (_name, body, pick, anchor) => {
     const { onStage, button } = await stageSelection(body, (container) =>
       bracketedIn(container, pick),
     );
