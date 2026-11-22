@@ -167,6 +167,7 @@ async function seedFixture(serverPort) {
     slug,
     cookie,
     login: viewer.login,
+    agent: agent.login,
     sidebar: sidebar.number,
     spec: specCard.number,
   };
@@ -379,6 +380,35 @@ function rowsFor(fixture) {
           pick: "last",
         },
       ],
+    },
+    {
+      id: "15",
+      path: `${project}/settings/statuses`,
+      width: 390,
+      height: 900,
+      must: [
+        {
+          label: "first edit status",
+          selector: 'button[aria-label^="edit status "]',
+        },
+        { label: "first move handle", selector: 'button[aria-label^="Move "]' },
+      ],
+    },
+    {
+      id: "16",
+      path: `${project}/settings/labels`,
+      width: 1280,
+      height: 900,
+      must: [
+        { label: "edit label", selector: 'button[aria-label^="edit label "]' },
+      ],
+    },
+    {
+      id: "17",
+      path: `/settings/agents/${fixture.agent}`,
+      width: 1280,
+      height: 900,
+      must: [{ label: "agent name", selector: "h1 a" }],
     },
   ];
 }
