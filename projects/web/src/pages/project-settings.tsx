@@ -51,6 +51,7 @@ import { referenceConfigQuery } from "@/api/references.ts";
 import { userQuery } from "@/api/users.ts";
 import { LabelChip } from "@/components/issue/label-chip.tsx";
 import { ColorSwatches } from "@/components/settings/color-swatches.tsx";
+import { DeleteProjectSection } from "@/components/settings/delete-project-section.tsx";
 import { StatusesSection } from "@/components/settings/statuses-section.tsx";
 import {
   SettingsLayout,
@@ -163,6 +164,7 @@ export function ProjectGeneralSettingsPage() {
     <div className="space-y-10">
       <ProjectSection slug={slug} />
       <SlugSection slug={slug} />
+      <DeleteProjectSection slug={slug} />
     </div>
   );
 }
