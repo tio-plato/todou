@@ -1669,6 +1669,38 @@ describe("whole-line annotations wash every block they cover", () => {
     expect(washed(container)).toEqual(["4-4", "5-5", "6-6"]);
   });
 
+  it("washes a table row holding a fold, and not the fold", async () => {
+    const table = [
+      "| k | v |",
+      "| --- | --- |",
+      "| <details><summary>Sum</summary>Body</details> | 1 |",
+      "| b | 2 |",
+      "",
+    ].join("\n");
+    const { container } = await renderDiff(table, table, [
+      wholeLines("comment", 3, 3),
+    ]);
+    expect(
+      [...container.querySelectorAll(".spec-annotated")].map(
+        (el) => `${el.tagName}@${el.getAttribute("data-loc")}`,
+      ),
+    ).toEqual(["TR@3-3"]);
+  });
+
+  it("washes an item nested in a fold that opens after text", async () => {
+    // The fold is part of line 1; the item on line 2 is a block of its own.
+    const list =
+      "- xx <details><summary>S</summary>\n  - nested\n  </details>\n";
+    const { container } = await renderDiff(list, list, [
+      wholeLines("comment", 2, 2),
+    ]);
+    expect(
+      [...container.querySelectorAll(".spec-annotated")].map(
+        (el) => `${el.tagName}@${el.getAttribute("data-loc")}`,
+      ),
+    ).toEqual(["LI@2-2"]);
+  });
+
   it("washes a block in the draft colour only while drafts alone cover it", async () => {
     const body = "One paragraph.\n";
     // The same document gains a comment, as a submitted review brings one.
