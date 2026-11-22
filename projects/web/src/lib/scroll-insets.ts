@@ -8,6 +8,7 @@ import {
 import {
   headerHidden,
   pageLands,
+  pageShifted,
   VIEWPORT_CHROME_EVENT,
   visualViewportClientTop,
   visualViewportInsets,
@@ -174,16 +175,49 @@ function clearingEveryOverlay(reveal: () => void) {
 
 /**
  * The page's one hold. Two at once would each put the viewport back on its
- * own target at every resize, so a newer landing retires the older one.
- * `placedAt` is where it last put the page, `placedHeight` how tall the page
- * was then.
+ * own target at every resize, so a newer landing retires the older one, which
+ * hands nothing over to the reader's place. `placedHeight` is how tall the
+ * page was when it last put the page somewhere.
  */
 let held: {
   release: () => void;
+  retire: () => void;
   onEnd: boolean;
-  placedAt: number;
   placedHeight: number;
 } | null = null;
+
+/**
+ * Where the page's owner last put the page: the hold's last placement, or the
+ * reader's place put back (`useReadingList`). One for both, since the reader's
+ * place stays still while a landing is held.
+ */
+let placedAt = 0;
+
+/**
+ * Whether the scroll that left the page at `y` is the owner's own. Every
+ * scroll the owner makes is instant, so its event finds the page where it put
+ * it; a landing that scrolled smoothly would have to be told apart here too.
+ */
+function ownScroll(y: number): boolean {
+  return Math.abs(y - placedAt) <= 1;
+}
+
+/**
+ * The page's reading list: told when a landing takes the page, so that it
+ * keeps nothing it would not use meanwhile, and when one lets go of it.
+ */
+let readingList: { drop: () => void; handOver: () => void } | null = null;
+
+/**
+ * A landing begun with no reading list on the page, waiting for the one its
+ * own commit declares: a card opened from the cache lands in the commit that
+ * mounts its list, ahead of the list's own effect.
+ */
+let awaitingList: ((list: NonNullable<typeof readingList>) => void) | null =
+  null;
+
+/** What the reader does that takes the page over from a landing. */
+const INPUTS = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
 
 /** How far short of a landing on the bottom still counts as at the end. */
 const END_SLACK = 40;
@@ -203,7 +237,7 @@ export function isHoldingTarget(): boolean {
  * back, or scroll anchoring moved it along with the end.
  */
 export function endHeldAt(): number | null {
-  return held?.onEnd ? held.placedAt : null;
+  return held?.onEnd ? placedAt : null;
 }
 
 /**
@@ -229,10 +263,17 @@ export function endHeldAt(): number | null {
  * than the page has grown since, or the other way. A page that grows before
  * the hold has put it back can still deliver the `scroll` of the last
  * placement, the target moved and nobody having moved the page. Scroll
- * anchoring, and the timeline keeping its place as its head mounts above,
- * move the page by what grew above what is on screen, which is never more
- * than all that grew, and usually move the target with it; a target above
- * what grew stays behind, to be put back once the hold hears of the growth.
+ * anchoring moves the page by what grew above what is on screen, which is
+ * never more than all that grew, and usually moves the target with it; a
+ * target above what grew stays behind, to be put back once the hold hears of
+ * the growth.
+ *
+ * However it lets go, but for a newer landing taking over, the page passes to
+ * the reader's place (`useReadingList`), picked where the page is then: the
+ * reading list there when the landing began, or declared in the same commit,
+ * not one a new page declared since. A card swapped for another releases its
+ * landing as it unmounts, after the next card's list is in, and that card has
+ * had no input yet.
  */
 function hold(
   container: Element,
@@ -240,23 +281,50 @@ function hold(
   onEnd = false,
   target?: () => number,
 ) {
-  held?.release();
+  held?.retire();
   if (typeof ResizeObserver === "undefined") return () => {}; // happy-dom
+  readingList?.drop();
+  let heir = readingList;
+  if (heir === null) {
+    const adopt = (list: NonNullable<typeof readingList>) => {
+      heir = list;
+    };
+    awaitingList = adopt;
+    // A commit's effects all run before any microtask.
+    queueMicrotask(() => {
+      if (awaitingList === adopt) awaitingList = null;
+    });
+  }
   const controller = new AbortController();
   const observer = new ResizeObserver(() => {
     place(release);
     if (held?.release !== release) return;
-    held.placedAt = window.scrollY;
+    placedAt = window.scrollY;
     held.placedHeight = document.documentElement.scrollHeight;
   });
-  const release = () => {
+  const end = (handOver: boolean) => {
+    if (controller.signal.aborted) return;
     observer.disconnect();
     controller.abort();
     if (held?.release === release) held = null;
+    if (handOver && heir !== null && readingList === heir) heir.handOver();
+  };
+  const release = () => end(true);
+  // The reader takes over the page as they last saw it: what grew since the
+  // last frame, before the observer could put the page back, is put back
+  // first, or their place would be picked off a page never drawn. The head
+  // arriving and the reader's first scroll can fall in one frame.
+  const takeOver = () => {
+    if (
+      held?.release === release &&
+      document.documentElement.scrollHeight !== held.placedHeight
+    )
+      place(release);
+    release();
   };
   observer.observe(container);
-  for (const type of ["wheel", "touchstart", "pointerdown", "keydown"]) {
-    window.addEventListener(type, release, {
+  for (const type of INPUTS) {
+    window.addEventListener(type, takeOver, {
       capture: true,
       passive: true,
       signal: controller.signal,
@@ -268,10 +336,10 @@ function hold(
       () => {
         if (held?.release !== release) return;
         const y = window.scrollY;
-        const moved = y - held.placedAt;
+        const moved = y - placedAt;
         const grown = document.documentElement.scrollHeight - held.placedHeight;
         if (
-          Math.abs(moved) > 1 &&
+          !ownScroll(y) &&
           Math.abs(y - target()) > END_SLACK &&
           (moved < Math.min(0, grown) - 1 || moved > Math.max(0, grown) + 1)
         )
@@ -282,10 +350,11 @@ function hold(
   }
   held = {
     release,
+    retire: () => end(false),
     onEnd,
-    placedAt: window.scrollY,
     placedHeight: document.documentElement.scrollHeight,
   };
+  placedAt = window.scrollY;
   return release;
 }
 
@@ -476,6 +545,229 @@ export function useOwnHold(): (release: () => void) => void {
     own.current();
     own.current = release;
   }, []);
+}
+
+/** A unit of the page's reading list, and where its top stood on screen. */
+export type ReadingUnit = { key: string; top: number };
+
+/**
+ * The unit the reader is reading, and the units beside it on screen to fall
+ * back on, nearest first: those below it, or above it for the last unit kept
+ * at the end of the conversation.
+ */
+export type ReadingPlace = ReadingUnit & { after: ReadingUnit[] };
+
+/** Each unit's top moved by `by`, as a scroll of the page moves it. */
+function scrolled(place: ReadingPlace, by: number): ReadingPlace {
+  return {
+    key: place.key,
+    top: place.top - by,
+    after: place.after.map((unit) => ({ key: unit.key, top: unit.top - by })),
+  };
+}
+
+/**
+ * Keep what the reader is reading where it is as the page changes around it.
+ * With the landings `hold` keeps, the one thing on the page that scrolls it
+ * by itself; one per page, declared by the page's reading list.
+ *
+ * `pick` names the unit being read in `list`, where its top is, and the units
+ * beside it; null when the reader is reading nothing in the list. Given the
+ * element a click landed on, it names that element's unit instead, or
+ * answers undefined when that is no unit, and the place is picked again as
+ * after a scroll. `locate` finds a unit again by its key.
+ *
+ * Nothing is picked before the reader's first input or the first landing to
+ * let go of the page: until then the page is still assembling itself, a
+ * comment link's folds opening toward their target say, and nobody's place
+ * is in it. From then on every scroll the owner did not make picks again,
+ * and so does an input that ends a landing or finds nothing kept; a typed
+ * key moves nothing, and one that scrolls is heard as its scroll. A click in
+ * the list takes the unit it landed on, so what it opens grows downward from
+ * where the reader pressed.
+ *
+ * While a landing is held it owns the page, and nothing is put back.
+ * Otherwise every resize of the page or of the list's column, and every
+ * commit of the component declaring the list, puts the unit back: a commit
+ * can move it with no resize at all, the tail sliding by an item as tall as
+ * the one arriving. The commit's layout effect is declared where this is
+ * called, so the caller's own effects declared after it measure the page put
+ * back. The column counts as well as the page: where the sidebar is the
+ * taller column, the page does not grow with the list's.
+ *
+ * Only what the content did is put back. Whatever scrolled the page since the
+ * owner last knew where it was is the reader's: a fling Firefox and iOS have
+ * applied before its scroll event, a caret CodeMirror revealed in an
+ * animation frame, find in page. So the browser's own scroll anchoring is off
+ * while a unit is kept, or its adjustments would be taken for the reader's
+ * and made twice. Put back toward the top it had when picked, every time, so
+ * that a scroll step's rounding never adds up; and at once, while the reader
+ * scrolls too, since what they read is what stays put, at the cost of a
+ * fling or smooth scroll cut short. Gone, the first unit after it still on
+ * the page stands in, and the reader's place is picked again from there;
+ * all gone, nothing moves until the next pick.
+ *
+ * The auto-hiding header is told how far the page really moved, which the
+ * page's ends can make less than asked: it is the page placing itself, not
+ * the reader scrolling, and never a landing, which would settle the header
+ * under a finger still dragging the page.
+ */
+export function useReadingList(
+  list: RefObject<HTMLElement | null>,
+  pick: (list: HTMLElement, at?: Element) => ReadingPlace | null | undefined,
+  locate: (list: HTMLElement, key: string) => HTMLElement | null,
+): void {
+  const latest = useRef({ pick, locate });
+  const sync = useRef<() => void>(() => {});
+
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    let started = false;
+    let place: ReadingPlace | null = null;
+    // Where the page was when this last knew, and whether the next scroll
+    // event may be the one its own put back made.
+    let seenY = window.scrollY;
+    let shifted = false;
+    const keep = (next: ReadingPlace | null) => {
+      if (next === null && place !== null)
+        root.style.removeProperty("overflow-anchor");
+      else if (next !== null && place === null)
+        root.style.setProperty("overflow-anchor", "none");
+      place = next;
+      seenY = window.scrollY;
+    };
+    const repick = () => {
+      const el = list.current;
+      keep(el === null ? null : (latest.current.pick(el) ?? null));
+    };
+    const onInput = () => {
+      // A landing letting go hands the page over itself.
+      if (held !== null) return;
+      started = true;
+      if (place === null) repick();
+    };
+    const onClick = (event: MouseEvent) => {
+      const el = list.current;
+      if (held !== null || el === null) return;
+      if (!(event.target instanceof Element) || !el.contains(event.target))
+        return;
+      started = true;
+      const picked = latest.current.pick(el, event.target);
+      if (picked === undefined) repick();
+      else keep(picked);
+    };
+    const onScroll = () => {
+      if (held !== null) return;
+      const own = shifted && ownScroll(window.scrollY);
+      shifted = false;
+      if (own) seenY = window.scrollY;
+      else if (started) repick();
+    };
+    const putBack = () => {
+      const el = list.current;
+      if (held !== null || place === null || el === null) return;
+      const { locate: find } = latest.current;
+      const y = window.scrollY;
+      const kept = scrolled(place, y - seenY);
+      seenY = y;
+      place = kept;
+      let unit = find(el, kept.key);
+      let wanted = kept.top;
+      let fellBack = false;
+      for (const next of kept.after) {
+        if (unit !== null) break;
+        unit = find(el, next.key);
+        wanted = next.top;
+        fellBack = true;
+      }
+      if (unit === null) {
+        keep(null);
+        return;
+      }
+      const delta = unit.getBoundingClientRect().top - wanted;
+      if (delta !== 0) {
+        window.scrollBy(0, delta);
+        seenY = window.scrollY;
+        if (seenY !== y) {
+          placedAt = seenY;
+          shifted = true;
+          pageShifted(seenY - y);
+        }
+      }
+      if (fellBack) {
+        repick();
+        return;
+      }
+      // What stands beside it moves against it as the unit itself grows.
+      place = {
+        key: kept.key,
+        top: kept.top,
+        after: kept.after.flatMap((next) => {
+          const found = find(el, next.key);
+          return found === null
+            ? []
+            : [{ key: next.key, top: found.getBoundingClientRect().top }];
+        }),
+      };
+    };
+    const own = {
+      drop: () => {
+        keep(null);
+        shifted = false;
+      },
+      handOver: () => {
+        started = true;
+        repick();
+      },
+    };
+    readingList = own;
+    awaitingList?.(own);
+    awaitingList = null;
+    const controller = new AbortController();
+    for (const type of INPUTS) {
+      window.addEventListener(type, onInput, {
+        capture: true,
+        passive: true,
+        signal: controller.signal,
+      });
+    }
+    window.addEventListener("click", onClick, {
+      capture: true,
+      passive: true,
+      signal: controller.signal,
+    });
+    window.addEventListener("scroll", onScroll, {
+      passive: true,
+      signal: controller.signal,
+    });
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(putBack);
+    observer?.observe(document.body);
+    let column: Element | null = null;
+    sync.current = () => {
+      const parent = list.current?.parentElement ?? null;
+      if (parent !== column) {
+        if (column !== null) observer?.unobserve(column);
+        if (parent !== null) observer?.observe(parent);
+        column = parent;
+      }
+      putBack();
+    };
+    return () => {
+      controller.abort();
+      observer?.disconnect();
+      sync.current = () => {};
+      keep(null);
+      if (readingList === own) readingList = null;
+    };
+  }, [list]);
+
+  useLayoutEffect(() => {
+    latest.current = { pick, locate };
+    sync.current();
+  });
 }
 
 export type ScrollInsetSources = {

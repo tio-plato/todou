@@ -38,15 +38,14 @@ import {
   type RenderUnit,
 } from "@/components/timeline/group-events.ts";
 import { HiddenBlock } from "@/components/timeline/hidden-block.tsx";
+import {
+  locateUnit,
+  pickReadingUnit,
+} from "@/components/timeline/reading-unit.ts";
 import { useRevealedRuns } from "@/components/timeline/revealed-runs.tsx";
 import { SpecVersionCard } from "@/components/timeline/spec-version-card.tsx";
-import {
-  readingFromTail,
-  TailSlideAnchor,
-} from "@/components/timeline/tail-slide-anchor.tsx";
 import { TimelineSettlementsProvider } from "@/components/timeline/timeline-answers.tsx";
 import { useBelowViewport } from "@/components/timeline/use-below-viewport.ts";
-import { useKeepReading } from "@/components/timeline/use-keep-reading.ts";
 import { useQuestionLanding } from "@/components/timeline/use-question-landing.ts";
 import { useReaderScroll } from "@/components/timeline/use-reader-scroll.ts";
 import { useTimelineAnchor } from "@/components/timeline/use-timeline-anchor.ts";
@@ -62,6 +61,7 @@ import {
   startTarget,
   usableViewport,
   useOwnHold,
+  useReadingList,
 } from "@/lib/scroll-insets.ts";
 import {
   commentAnchor,
@@ -189,15 +189,6 @@ export function Timeline({
     seen: ReadonlySet<string>;
   } | null>(null);
   const didInitialScroll = useRef(false);
-  const blockRef = useRef<HTMLDivElement>(null);
-  // Chunk-insert compensation, captured at click time (T-30): the document
-  // height baseline, and whether the tail side stays glued, which the block's
-  // place in the viewport says (`readingFromTail`).
-  const chunkAdjust = useRef<{ base: number; compensate: boolean } | null>(
-    null,
-  );
-  const lastScrollHeight = useRef(0);
-  const prevAboveCount = useRef(0);
 
   const { above, below } = mergeFolded(
     headEnabled ? (head.data?.pages ?? []) : [],
@@ -497,7 +488,6 @@ export function Timeline({
     }, 0);
     return () => clearTimeout(id);
   }, [fillIndex]);
-  useKeepReading(listRef, fillIndex > 0);
   const finishQuestionLanding = (error?: "unavailable" | "stalled") => {
     // revealBlock has already moved the viewport. Do not wait for a native
     // scroll event before restoring the ordinary follow-bottom policy.
@@ -516,9 +506,9 @@ export function Timeline({
         head.isFetchingNextPage,
       ready: timelineReady && !tail.isFetching && !head.isFetching,
       failed: tail.isError || head.isError,
-      // Anchor-driven expansion skips the compensation: the document stays
-      // anchored above the seam while chunks stream in, and the final
-      // scrollIntoView owns the viewport once the target renders.
+      // Anchor-driven expansion moves nothing by itself: a card opened at
+      // the link keeps no reader's place before their first input, and the
+      // final scrollIntoView owns the viewport once the target renders.
       expand: () => head.fetchNextPage({ cancelRefetch: false }),
       hiddenRunHolding: (commentId) => {
         for (const unit of [...unitsAbove, ...unitsBelow]) {
@@ -597,28 +587,21 @@ export function Timeline({
     router,
   ]);
 
-  // Insertions above the viewport must not shift what the reader sees.
-  useLayoutEffect(() => {
-    const doc = document.documentElement;
-    // The head mounting under an already-positioned viewport (bottom or
-    // anchor) is a prepend — keep the tail side glued, unconditionally.
-    if (above.length > 0 && prevAboveCount.current === 0) {
-      const delta = doc.scrollHeight - lastScrollHeight.current;
-      if (delta > 0) window.scrollBy(0, delta);
-    }
-    // Chunk insert settled — apply the verdict captured at click time.
-    // Consume only once the fetch settles: the fetching-state flip commits
-    // first with an unchanged document, and consuming it there would leave
-    // the actual insert uncompensated.
-    if (chunkAdjust.current !== null && !head.isFetchingNextPage) {
-      const { base, compensate } = chunkAdjust.current;
-      chunkAdjust.current = null;
-      const delta = doc.scrollHeight - base;
-      if (compensate && delta > 0) window.scrollBy(0, delta);
-    }
-    prevAboveCount.current = above.length;
-    lastScrollHeight.current = doc.scrollHeight;
-  });
+  // What the reader is reading stays where it is as the page changes around
+  // it. Ahead of the effects below that measure where things are, so that
+  // they read the page put back.
+  // The seam only where there is a head side above it, its skeletons
+  // standing in for it while it loads.
+  const hasHead = unitsAbove.length > 0 || (headEnabled && head.isPending);
+  const seam =
+    !hasHead || unitsBelow[0] === undefined
+      ? undefined
+      : unitKey(unitsBelow[0]);
+  useReadingList(
+    listRef,
+    (el, at) => pickReadingUnit(el, seam, at),
+    locateUnit,
+  );
 
   // New items at the END while the reader is at the end → keep following.
   // Keyed off identity, not the count: expanding the fold also grows the
@@ -858,12 +841,6 @@ export function Timeline({
   };
 
   const onLoadMore = useCallback(() => {
-    const blockTop =
-      blockRef.current?.getBoundingClientRect().top ?? Number.POSITIVE_INFINITY;
-    chunkAdjust.current = {
-      base: document.documentElement.scrollHeight,
-      compensate: readingFromTail(blockTop),
-    };
     // Successive clicks can outrun the isFetchingNextPage flip; without
     // this the second call cancels and re-issues the in-flight request
     // instead of piggybacking on it.
@@ -911,8 +888,16 @@ export function Timeline({
   const anchorTarget = parseTimelineAnchor(anchorHash ?? "");
   const anchorEventId =
     anchorTarget?.kind === "event" ? anchorTarget.id : undefined;
-  const placeholder = (key: string) => (
-    <div key={key} data-unit={key} className="pb-2" data-unfilled>
+  // One in front of a filled unit names it, so that a reader looking at the
+  // skeleton keeps the place of what replaces it.
+  const placeholder = (key: string, standsFor?: string) => (
+    <div
+      key={key}
+      data-unit={key}
+      data-placeholder-for={standsFor}
+      className="pb-2"
+      data-unfilled
+    >
       <Skeleton className="h-16 w-full" />
     </div>
   );
@@ -921,7 +906,10 @@ export function Timeline({
     if (unfilled.has(key)) return placeholder(key);
     if (!curtained.has(key)) return renderContent(unit, key);
     // The unit keeps its own key, so revealing it does not remount it.
-    return [placeholder(`${key}-placeholder`), renderContent(unit, key, true)];
+    return [
+      placeholder(`${key}-placeholder`, key),
+      renderContent(unit, key, true),
+    ];
   };
   const renderContent = (unit: RenderUnit, key: string, behind?: boolean) => {
     if (unit.kind === "item") return renderItem(unit.item, behind);
@@ -976,8 +964,9 @@ export function Timeline({
   }
 
   return (
-    // Native scroll anchoring would fight the manual insert compensation
-    // above, adjusting the viewport a second time for the same insertion.
+    // Only the reader's place moves the page for what changes in the list
+    // (`useReadingList`): native scroll anchoring would move it a second time
+    // for the same change.
     <TimelineSettlementsProvider settlements={settlements}>
       <div
         ref={attachList}
@@ -1014,7 +1003,7 @@ export function Timeline({
         )}
         {unitsAbove.flatMap(renderUnit)}
         {gap && (
-          <div ref={blockRef} className="pb-2">
+          <div className="pb-2">
             <FoldBlock
               remaining={remaining}
               loading={head.isFetchingNextPage}
@@ -1040,12 +1029,6 @@ export function Timeline({
         {/* The list's end, after the comments still being sent. */}
         <div ref={setListEnd} />
       </div>
-      <TailSlideAnchor
-        list={listRef}
-        tailUnits={unitsBelow.map(unitKey)}
-        tailItems={below.map(itemKey)}
-        present={new Set(items.map(itemKey))}
-      />
       {/* A sibling of the list, not its last child: a sticky box moves only
           within its parent, and the page's column is what lets this one
           float over the whole card, title and body included. It holds no

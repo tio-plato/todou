@@ -1,5 +1,5 @@
 import { fireEvent, render } from "@testing-library/react";
-import { createElement, useRef } from "react";
+import { createElement, useLayoutEffect, useRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   atConversationEnd,
@@ -7,15 +7,24 @@ import {
   holdRevealed,
   isHoldingTarget,
   landAtBottom,
+  type ReadingPlace,
   restingScrollY,
   revealAboveEnd,
   revealBlock,
   usableViewport,
+  useReadingList,
   useScrollInsets,
 } from "../src/lib/scroll-insets.ts";
 import { currentIndex } from "../src/lib/spec-change-nav.ts";
-import { VIEWPORT_CHROME_EVENT } from "../src/lib/viewport-chrome.ts";
-import { FakeResizeObserver, resizePage } from "./fake-resize-observer.ts";
+import {
+  useAutoHideHeader,
+  VIEWPORT_CHROME_EVENT,
+} from "../src/lib/viewport-chrome.ts";
+import {
+  FakeResizeObserver,
+  resizeElement,
+  resizePage,
+} from "./fake-resize-observer.ts";
 import { stubVisualViewport } from "./visual-viewport.ts";
 
 // The overlays measured on a 1280×800 screen: shell header 57, floating title
@@ -938,6 +947,412 @@ describe("landing on the end of the conversation", () => {
       const { moveTo } = page({ y: 2000 });
       moveTo(y);
       expect(atConversationEnd()).toBe(expected);
+    });
+  });
+});
+
+describe("the reader's place", () => {
+  const VIEWPORT = 800;
+  const ROW = 100;
+  const KEYS = ["a", "b", "c", "d", "e", "f", "g", "h"];
+
+  /**
+   * The first unit still showing, or the one a click landed in, and those
+   * after it to fall back on.
+   */
+  function firstShowing(
+    list: HTMLElement,
+    clicked?: Element,
+  ): ReadingPlace | null {
+    const units = [...list.children];
+    const at =
+      clicked === undefined
+        ? units.findIndex((u) => u.getBoundingClientRect().bottom > 0)
+        : units.findIndex((u) => u.contains(clicked));
+    const place = (el: Element) => ({
+      key: el.getAttribute("data-unit") ?? "",
+      top: el.getBoundingClientRect().top,
+    });
+    const unit = units[at];
+    if (unit === undefined) return null;
+    return { ...place(unit), after: units.slice(at + 1).map(place) };
+  }
+
+  /** A landing made as the page mounts, ahead of the list's own effect. */
+  function Landing() {
+    useLayoutEffect(() => {
+      releases.push(landAtBottom());
+    }, []);
+    return null;
+  }
+
+  function ReadingList({
+    keys,
+    header,
+    landFirst,
+  }: {
+    keys: string[];
+    header: boolean;
+    landFirst: boolean;
+  }) {
+    const list = useRef<HTMLDivElement>(null);
+    useAutoHideHeader(header);
+    useReadingList(list, firstShowing, (el, key) =>
+      el.querySelector<HTMLElement>(`[data-unit="${key}"]`),
+    );
+    return createElement(
+      "div",
+      { ref: list },
+      ...keys.map((key) => createElement("div", { key, "data-unit": key })),
+      landFirst ? createElement(Landing, { key: "landing" }) : null,
+    );
+  }
+
+  let releases: Array<() => void> = [];
+  afterEach(() => {
+    for (const release of releases) release();
+    releases = [];
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    FakeResizeObserver.instances = [];
+    for (const header of document.querySelectorAll("header")) header.remove();
+    document.documentElement.style.removeProperty("--header-hide");
+  });
+
+  /**
+   * The list's units, `ROW` tall one under the other from `above` down the
+   * page, followed by a long rest of the page, or a page `height` tall.
+   */
+  function mount({
+    y = 0,
+    above = 0,
+    height,
+    header = false,
+    whole = false,
+    landFirst = false,
+  }: {
+    y?: number;
+    above?: number;
+    height?: number;
+    header?: boolean;
+    /** Whether the page lands as it mounts, in the list's own commit. */
+    landFirst?: boolean;
+    /** Whether the page scrolls by whole pixels, as Chromium does. */
+    whole?: boolean;
+  } = {}) {
+    const page = {
+      y,
+      above,
+      keys: KEYS,
+      /** Heights past a unit's own row, by key. */
+      grown: {} as Record<string, number>,
+    };
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(VIEWPORT);
+    const heightOf = (key: string) => ROW + (page.grown[key] ?? 0);
+    const listHeight = () =>
+      page.keys.reduce((sum, key) => sum + heightOf(key), 0);
+    const docHeight = () => height ?? page.above + listHeight() + 2000;
+    vi.spyOn(
+      document.documentElement,
+      "scrollHeight",
+      "get",
+    ).mockImplementation(docHeight);
+    vi.spyOn(document.documentElement, "clientHeight", "get").mockReturnValue(
+      VIEWPORT,
+    );
+    vi.spyOn(window, "scrollY", "get").mockImplementation(() => page.y);
+    const clamp = (y: number) =>
+      Math.min(docHeight() - VIEWPORT, Math.max(0, y));
+    const scrollBy = vi
+      .spyOn(window, "scrollBy")
+      .mockImplementation((...args: unknown[]) => {
+        page.y = clamp(page.y + Number(args[1]));
+        if (whole) page.y = Math.round(page.y);
+      });
+    vi.spyOn(window, "scrollTo").mockImplementation((...args: unknown[]) => {
+      page.y = clamp(Number(args[1]));
+    });
+    vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {});
+    const measure = vi
+      .spyOn(Element.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: Element) {
+        const key = this.getAttribute("data-unit") ?? "";
+        const at = page.keys.indexOf(key);
+        if (at === -1) return { top: 0, bottom: 0, height: 0 } as DOMRect;
+        const before = page.keys.slice(0, at);
+        const top =
+          page.above + before.reduce((sum, k) => sum + heightOf(k), 0) - page.y;
+        return {
+          top,
+          bottom: top + heightOf(key),
+          height: heightOf(key),
+        } as DOMRect;
+      });
+    if (header) {
+      const el = document.createElement("header");
+      Object.defineProperty(el, "offsetHeight", { value: 93 });
+      document.body.append(el);
+    }
+    const list = (key: string) =>
+      createElement(ReadingList, { key, keys: page.keys, header, landFirst });
+    const view = render(list("page"));
+    return {
+      page,
+      view,
+      scrollBy,
+      measure,
+      /** The column the list stands in: its own parent. */
+      column: () => view.container,
+      /** Where a unit's top is on screen. */
+      topOf: (key: string) =>
+        view.container
+          .querySelector(`[data-unit="${key}"]`)
+          ?.getBoundingClientRect().top,
+      /** The page, minus `key`. */
+      remove: (key: string) => {
+        page.keys = page.keys.filter((k) => k !== key);
+        view.rerender(list("page"));
+      },
+      /** Another page's list in this one's place, in one commit. */
+      replace: () => view.rerender(list("next")),
+      /** The reader's own scroll, gesture first, as a browser delivers it. */
+      readerAt: (to: number) => {
+        fireEvent.wheel(window);
+        page.y = to;
+        fireEvent.scroll(window);
+      },
+    };
+  }
+
+  it("puts the unit a reader scrolled to back as the page grows above it", () => {
+    const { page, readerAt, topOf } = mount();
+    readerAt(450);
+    expect(topOf("e")).toBe(-50);
+    page.above += 300;
+    resizePage();
+    expect(page.y).toBe(750);
+    expect(topOf("e")).toBe(-50);
+  });
+
+  it("falls back on the unit after it once the one being read is gone", () => {
+    const { page, readerAt, topOf, remove } = mount();
+    readerAt(450);
+    expect(topOf("f")).toBe(50);
+    remove("e");
+    page.above += 300;
+    resizePage();
+    expect(topOf("f")).toBe(50);
+  });
+
+  it("leaves a landing on the end alone to hold the page", () => {
+    const { page, readerAt, scrollBy, remove } = mount();
+    readerAt(450);
+    releases.push(landAtBottom());
+    page.above += 300;
+    resizePage();
+    expect(scrollBy).not.toHaveBeenCalled();
+    expect(page.y).toBe(page.above + KEYS.length * ROW + 2000 - VIEWPORT);
+    // A commit moving the units, with no resize the hold would hear.
+    remove("a");
+    expect(scrollBy).not.toHaveBeenCalled();
+  });
+
+  it("picks at a press that scrolls nothing when nothing is kept yet", () => {
+    const { page, topOf } = mount({ y: 450 });
+    fireEvent.pointerDown(window);
+    page.above += 300;
+    resizePage();
+    expect(topOf("e")).toBe(-50);
+  });
+
+  it("measures nothing at a key the reader types once their place is kept", () => {
+    const { readerAt, measure } = mount();
+    readerAt(450);
+    measure.mockClear();
+    for (let i = 0; i < 5; i++) fireEvent.keyDown(window, { key: "a" });
+    expect(measure).not.toHaveBeenCalled();
+  });
+
+  it("keeps the reader's own scroll its event has yet to report", () => {
+    const { page, readerAt, topOf, remove } = mount();
+    readerAt(450);
+    // Applied before its scroll event, as Firefox and iOS apply a fling, or
+    // CodeMirror revealing a caret in an animation frame.
+    page.y += 50;
+    page.above += 300;
+    resizePage();
+    expect(topOf("e")).toBe(-100);
+    // The same through a commit, with the list itself changing.
+    page.y += 30;
+    remove("a");
+    expect(topOf("e")).toBe(-130);
+  });
+
+  it("turns the browser's anchoring off while it keeps a unit, and back on", () => {
+    const { readerAt, view } = mount();
+    const anchoring = () =>
+      document.documentElement.style.getPropertyValue("overflow-anchor");
+    expect(anchoring()).toBe("");
+    readerAt(450);
+    expect(anchoring()).toBe("none");
+    // Past every unit: nothing to keep.
+    readerAt(5000);
+    expect(anchoring()).toBe("");
+    // A landing holds the page and keeps no unit of the reader's meanwhile.
+    readerAt(450);
+    releases.push(landAtBottom());
+    expect(anchoring()).toBe("");
+    readerAt(450);
+    view.unmount();
+    expect(anchoring()).toBe("");
+  });
+
+  it("puts back when only the column holding the list resizes", () => {
+    const { page, readerAt, topOf, column } = mount();
+    readerAt(450);
+    // A taller sidebar sets the page's height: only the column grows.
+    page.above += 300;
+    resizeElement(column());
+    expect(topOf("e")).toBe(-50);
+  });
+
+  it("hands a landing over only to the list there when it began", () => {
+    const { page, scrollBy, replace } = mount();
+    const release = landAtBottom();
+    // The next page's list arrives, then the old page's landing lets go as
+    // the old page unmounts, the reader having touched neither.
+    replace();
+    release();
+    page.y = 450;
+    fireEvent.scroll(window);
+    page.above += 300;
+    resizePage();
+    expect(scrollBy).not.toHaveBeenCalled();
+  });
+
+  it("hands a landing begun in the commit declaring the list over to it", () => {
+    const { page, topOf } = mount({ landFirst: true });
+    // Let go with no input, as a route change or a target leaving would.
+    releases[0]?.();
+    page.y = 450;
+    fireEvent.scroll(window);
+    page.above += 300;
+    resizePage();
+    expect(topOf("e")).toBe(-50);
+  });
+
+  it("keeps the unit a click took through the scroll its last put back made", () => {
+    const { page, readerAt, topOf, view } = mount();
+    readerAt(450);
+    page.above += 300;
+    resizePage();
+    // A click on g before the scroll event of that put back arrives.
+    const g = view.container.querySelector('[data-unit="g"]');
+    if (g !== null) fireEvent.click(g);
+    expect(topOf("g")).toBe(150);
+    fireEvent.scroll(window);
+    // What lies between the top of the screen and g grows.
+    page.grown.f = 300;
+    resizePage();
+    expect(topOf("g")).toBe(150);
+  });
+
+  it("falls back on where the next unit stood as of the last put back", () => {
+    const { page, readerAt, topOf, remove } = mount();
+    readerAt(450);
+    expect(topOf("f")).toBe(50);
+    // An image loads in the unit being read: what follows it moves down.
+    page.grown.e = 300;
+    resizePage();
+    expect(topOf("f")).toBe(350);
+    remove("e");
+    expect(topOf("f")).toBe(350);
+  });
+
+  it("lets no scroll step's rounding add up over many small put backs", () => {
+    const { page, readerAt, topOf } = mount({ whole: true });
+    readerAt(450);
+    for (let i = 0; i < 50; i++) {
+      page.above += 0.4;
+      const before = page.y;
+      resizePage();
+      // The browser reports the owner's own scroll a frame later.
+      if (page.y !== before) fireEvent.scroll(window);
+    }
+    expect(Math.abs((topOf("e") ?? 0) + 50)).toBeLessThanOrEqual(0.5);
+  });
+
+  it("keeps the reader where a hold on a target that left the page let go", () => {
+    const { page, topOf } = mount({ y: 450 });
+    const target = document.createElement("div");
+    document.body.append(target);
+    releases.push(holdRevealed(target, document.body));
+    target.remove();
+    resizePage();
+    expect(topOf("e")).toBe(-50);
+    page.above += 300;
+    resizePage();
+    expect(topOf("e")).toBe(-50);
+  });
+
+  it("moves nothing before the reader's first input or a landing's end", () => {
+    const { page, scrollBy } = mount();
+    // A fold opened toward a comment link's target, say, with the page
+    // cut short by the browser meanwhile.
+    page.y = 450;
+    fireEvent.scroll(window);
+    page.above += 300;
+    resizePage();
+    expect(scrollBy).not.toHaveBeenCalled();
+    expect(page.y).toBe(450);
+  });
+
+  describe("and the auto-hiding header", () => {
+    const hidden = () =>
+      document.documentElement.style.getPropertyValue("--header-hide");
+    const touch = (type: "touchstart" | "touchmove") =>
+      window.dispatchEvent(new Event(type));
+    /** A finger dragging the page to `to`, still down. */
+    const drag = (page: { y: number }, to: number) => {
+      touch("touchstart");
+      touch("touchmove");
+      page.y = to;
+      window.dispatchEvent(new Event("scroll"));
+    };
+
+    it("stays where the reader's drag left it as the page keeps their place", () => {
+      const { page, topOf } = mount({ y: 2000, above: 1800, header: true });
+      drag(page, 2030);
+      expect(hidden()).toBe("30px");
+      page.above += 300;
+      resizePage();
+      expect(topOf("c")).toBe(-30);
+      // The scroll the owner made, a frame later.
+      window.dispatchEvent(new Event("scroll"));
+      expect(hidden()).toBe("30px");
+      // The drag goes on, and the header with it.
+      touch("touchmove");
+      page.y += 10;
+      window.dispatchEvent(new Event("scroll"));
+      expect(hidden()).toBe("40px");
+    });
+
+    it("hears how far the page really moved, short of the way at its end", () => {
+      // Its last offset is 4200, and the reader drags right down to near it.
+      const { page } = mount({
+        y: 4000,
+        above: 3900,
+        height: 5000,
+        header: true,
+      });
+      drag(page, 4100);
+      expect(hidden()).toBe("93px");
+      page.above += 300;
+      resizePage();
+      expect(page.y).toBe(4200);
+      window.dispatchEvent(new Event("scroll"));
+      expect(hidden()).toBe("93px");
     });
   });
 });
