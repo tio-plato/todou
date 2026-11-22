@@ -88,6 +88,19 @@ export function pageLands(): void {
   window.dispatchEvent(new Event(PAGE_LANDS_EVENT));
 }
 
+/** Fired on `window` by `pageShifted`, for the auto-hiding header. */
+const PAGE_SHIFTED_EVENT = "todou:page-shifted";
+
+/**
+ * Say that the page has just scrolled itself `by` pixels to keep the reader's
+ * place, whatever the reader is doing meanwhile. The header neither slides
+ * for it nor settles: what the reader sees has not moved, and a drag or a
+ * fling under way goes on moving the header as it did.
+ */
+export function pageShifted(by: number): void {
+  window.dispatchEvent(new CustomEvent(PAGE_SHIFTED_EVENT, { detail: by }));
+}
+
 /** Keep `--vv-top` / `--vv-bottom` current; mounted once, by the shell. */
 export function useVisualViewportInsets(): void {
   useEffect(() => {
@@ -158,11 +171,13 @@ const READER_WINDOW_MS = 600;
  * keeps counting, because each scroll it produces renews the window the drag
  * opened. Nothing else slides it in or out: a jump, a landing, a keyboard
  * opening and the caret brought into view are the page placing itself, and a
- * header that slid with them would cover what was just put in view. A tap or
- * a typed key opens no window; a click or a landing shuts an open one, until
- * the reader's next scroll. Only near the page's start, where sticky leaves
- * the header in the flow, does the page's own scrolling move it: there it is
- * the page's top, and goes and comes with it as any page header would.
+ * header that slid with them would cover what was just put in view. Nor does
+ * the page keeping the reader's place as content loads above them, which
+ * moves nothing they see and leaves an open window open (`pageShifted`). A
+ * tap or a typed key opens no window; a click or a landing shuts an open one,
+ * until the reader's next scroll. Only near the page's start, where sticky
+ * leaves the header in the flow, does the page's own scrolling move it: there
+ * it is the page's top, and goes and comes with it as any page header would.
  *
  * Once scrolling stops the header settles fully in or fully out, as Safari's
  * does; a header left half-cut reads as broken.
@@ -293,6 +308,14 @@ export function useAutoHideHeader(enabled: boolean, page?: string): void {
       signal,
     });
     window.addEventListener(PAGE_LANDS_EVENT, () => placing(false), { signal });
+    // Taken off the next scroll, which then carries only the reader's part.
+    window.addEventListener(
+      PAGE_SHIFTED_EVENT,
+      (event) => {
+        lastY += (event as CustomEvent<number>).detail;
+      },
+      { signal },
+    );
     window.addEventListener("touchstart", () => (touching = true), options);
     for (const type of ["touchend", "touchcancel"]) {
       window.addEventListener(
