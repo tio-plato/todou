@@ -13,7 +13,7 @@ import {
  * seam changes; in the lower half, they are reading the head side, and what
  * lies above the seam does not move by itself.
  */
-export function readingFromTail(seamTop: number): boolean {
+function readingFromTail(seamTop: number): boolean {
   return seamTop < window.innerHeight / 2;
 }
 

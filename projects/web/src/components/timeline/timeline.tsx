@@ -41,7 +41,6 @@ import { HiddenBlock } from "@/components/timeline/hidden-block.tsx";
 import {
   locateUnit,
   pickReadingUnit,
-  readingFromTail,
 } from "@/components/timeline/reading-unit.ts";
 import { useRevealedRuns } from "@/components/timeline/revealed-runs.tsx";
 import { SpecVersionCard } from "@/components/timeline/spec-version-card.tsx";
@@ -190,13 +189,6 @@ export function Timeline({
     seen: ReadonlySet<string>;
   } | null>(null);
   const didInitialScroll = useRef(false);
-  const blockRef = useRef<HTMLDivElement>(null);
-  // Chunk-insert compensation, captured at click time (T-30): the document
-  // height baseline, and whether the tail side stays glued, which the block's
-  // place in the viewport says (`readingFromTail`).
-  const chunkAdjust = useRef<{ base: number; compensate: boolean } | null>(
-    null,
-  );
 
   const { above, below } = mergeFolded(
     headEnabled ? (head.data?.pages ?? []) : [],
@@ -514,9 +506,9 @@ export function Timeline({
         head.isFetchingNextPage,
       ready: timelineReady && !tail.isFetching && !head.isFetching,
       failed: tail.isError || head.isError,
-      // Anchor-driven expansion skips the compensation: the document stays
-      // anchored above the seam while chunks stream in, and the final
-      // scrollIntoView owns the viewport once the target renders.
+      // Anchor-driven expansion moves nothing by itself: a card opened at
+      // the link keeps no reader's place before their first input, and the
+      // final scrollIntoView owns the viewport once the target renders.
       expand: () => head.fetchNextPage({ cancelRefetch: false }),
       hiddenRunHolding: (commentId) => {
         for (const unit of [...unitsAbove, ...unitsBelow]) {
@@ -594,21 +586,6 @@ export function Timeline({
     questionLanding.ownsScroll,
     router,
   ]);
-
-  // Insertions above the viewport must not shift what the reader sees.
-  useLayoutEffect(() => {
-    const doc = document.documentElement;
-    // Chunk insert settled — apply the verdict captured at click time.
-    // Consume only once the fetch settles: the fetching-state flip commits
-    // first with an unchanged document, and consuming it there would leave
-    // the actual insert uncompensated.
-    if (chunkAdjust.current !== null && !head.isFetchingNextPage) {
-      const { base, compensate } = chunkAdjust.current;
-      chunkAdjust.current = null;
-      const delta = doc.scrollHeight - base;
-      if (compensate && delta > 0) window.scrollBy(0, delta);
-    }
-  });
 
   // What the reader is reading stays where it is as the page changes around
   // it. Ahead of the effects below that measure where things are, so that
@@ -864,12 +841,6 @@ export function Timeline({
   };
 
   const onLoadMore = useCallback(() => {
-    const blockTop =
-      blockRef.current?.getBoundingClientRect().top ?? Number.POSITIVE_INFINITY;
-    chunkAdjust.current = {
-      base: document.documentElement.scrollHeight,
-      compensate: readingFromTail(blockTop),
-    };
     // Successive clicks can outrun the isFetchingNextPage flip; without
     // this the second call cancels and re-issues the in-flight request
     // instead of piggybacking on it.
@@ -993,8 +964,9 @@ export function Timeline({
   }
 
   return (
-    // Native scroll anchoring would fight the manual insert compensation
-    // above, adjusting the viewport a second time for the same insertion.
+    // Only the reader's place moves the page for what changes in the list
+    // (`useReadingList`): native scroll anchoring would move it a second time
+    // for the same change.
     <TimelineSettlementsProvider settlements={settlements}>
       <div
         ref={attachList}
@@ -1031,7 +1003,7 @@ export function Timeline({
         )}
         {unitsAbove.flatMap(renderUnit)}
         {gap && (
-          <div ref={blockRef} className="pb-2">
+          <div className="pb-2">
             <FoldBlock
               remaining={remaining}
               loading={head.isFetchingNextPage}
