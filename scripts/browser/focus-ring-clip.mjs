@@ -76,6 +76,13 @@ async function seedFixture(serverPort) {
     display_name: "Ring Agent",
   });
   await call("PUT", `${project}/members/${agent.id}`, { role: "writer" });
+  // An agent page whose name truncates at every width, outside the project so
+  // no other row's page changes.
+  const longAgent = await call("POST", "/agents", {
+    login: `ring-long-${randomUUID().slice(0, 6)}`,
+    display_name:
+      "Ring Agent whose display name is long enough to truncate on every width",
+  });
 
   // Every sidebar section is filled, but the twenty spec files live on their
   // own card: the sidebar lists the latest spec's files and would outgrow a
@@ -167,7 +174,7 @@ async function seedFixture(serverPort) {
     slug,
     cookie,
     login: viewer.login,
-    agent: agent.login,
+    agent: longAgent.login,
     sidebar: sidebar.number,
     spec: specCard.number,
   };
