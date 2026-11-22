@@ -120,6 +120,17 @@ function baselineParents(tree: Root): ReadonlyMap<Element, Root | Element> {
 }
 
 /**
+ * From mdast to the tree `MarkdownView` draws, as far as the folds: raw HTML
+ * left as `raw`, and only the tags `rehypeDetails` pairs made into elements.
+ * What builds that tree outside react-markdown, to read what the page shows,
+ * runs these.
+ */
+export const RENDERED_TREE_PLUGINS: PluggableList = [
+  [remarkRehype, { allowDangerousHtml: true }],
+  rehypeDetails,
+];
+
+/**
  * Parse a complete baseline document into the same safe HAST shape as
  * MarkdownView. Raw HTML stays as `raw` nodes; only the restricted details
  * syntax is converted to elements.
@@ -131,8 +142,7 @@ export function buildBaselineTree(
   const processor = unified()
     .use(remarkParse)
     .use(remarkPlugins)
-    .use(remarkRehype, { allowDangerousHtml: true })
-    .use(rehypeDetails);
+    .use(RENDERED_TREE_PLUGINS);
   const tree = processor.runSync(processor.parse(source), source) as Root;
   return {
     tree,

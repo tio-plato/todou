@@ -686,7 +686,10 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
     });
   });
 
-  // The page shows raw HTML as its source text, tags and all.
+  // The page shows raw HTML as its source text, tags and all, but for the
+  // tags of a fold, which become one.
+  const FOLD_ROW =
+    "| <details><summary>Sum</summary>Body</details> | cc |\n| - | - |\n| x | y |\n";
   it.each([
     [
       "a word after inline HTML",
@@ -712,7 +715,78 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
       " [c]",
       { lineStart: 2, lineEnd: 2, colStart: 13, colEnd: 13 },
     ],
+    [
+      "a word after a fold tag in a comment a list item wraps",
+      "- a <!-- x\n  y <details> --> b\n",
+      " [b]",
+      { lineStart: 2, lineEnd: 2, colStart: 19, colEnd: 19 },
+    ],
+    [
+      "a word after a fold tag that never closes",
+      "<details>\nfoo bar\n",
+      "foo [bar]",
+      { lineStart: 2, lineEnd: 2, colStart: 5, colEnd: 7 },
+    ],
+    [
+      "a table cell next to one holding a fold",
+      FOLD_ROW,
+      "[cc]",
+      { lineStart: 1, lineEnd: 1, colStart: 51, colEnd: 52 },
+    ],
+    [
+      "the summary of a fold in a row with another cell",
+      FOLD_ROW,
+      "[Sum]",
+      { lineStart: 1, lineEnd: 1, colStart: 21, colEnd: 23 },
+    ],
+    [
+      "a table cell next to one holding a fold in a fold",
+      "| <details><summary>A</summary><details><summary>B</summary>C</details></details> | cc |\n| - | - |\n",
+      "[cc]",
+      { lineStart: 1, lineEnd: 1, colStart: 85, colEnd: 86 },
+    ],
+    [
+      "the text before a fold in a tight list item",
+      "- xx <details><summary>Sum</summary>Body</details>\n- y\n",
+      "[xx]",
+      { lineStart: 1, lineEnd: 1, colStart: 3, colEnd: 4 },
+    ],
+    [
+      "the text before a fold, a reference in it showing a line break",
+      "- a&#10;b <details><summary>Sum</summary>Body</details>\n- y\n",
+      "a\n[b]",
+      { lineStart: 1, lineEnd: 1, colStart: 9, colEnd: 9 },
+    ],
   ])("anchors %s to its own columns", async (_name, body, pick, anchor) => {
+    const { onStage, button } = await stageSelection(body, (container) =>
+      bracketedIn(container, pick),
+    );
+    fireEvent.click(button);
+    expect(onStage).toHaveBeenCalledWith(anchor);
+  });
+
+  // Where the columns cannot be worked out, the anchor is the lines of the
+  // block the selection sits in, never columns that point somewhere else.
+  it.each([
+    [
+      "a fold spanning lines in a quote",
+      "> <details>\n> <summary>Sum</summary>\n>\n> Body\n>\n> </details>\n",
+      "[Sum]",
+      { lineStart: 1, lineEnd: 6, colStart: null, colEnd: null },
+    ],
+    [
+      "a fold after text in top-level HTML",
+      "<div>x <details><summary>Sum</summary>Body</details>\n",
+      "[Sum]",
+      { lineStart: 1, lineEnd: 1, colStart: null, colEnd: null },
+    ],
+    [
+      "a fold on its own line after HTML in a quote",
+      "> <div>x</div>\n> <details><summary>Sum</summary>Body</details>\n",
+      "[Sum]",
+      { lineStart: 2, lineEnd: 2, colStart: null, colEnd: null },
+    ],
+  ])("falls back to the lines of %s", async (_name, body, pick, anchor) => {
     const { onStage, button } = await stageSelection(body, (container) =>
       bracketedIn(container, pick),
     );
