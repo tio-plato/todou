@@ -646,6 +646,23 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
       "b [c]",
       { lineStart: 2, lineEnd: 2, colStart: 3, colEnd: 3 },
     ],
+    [
+      // A CRLF shows as one space, and a drag from it in Chromium or WebKit
+      // starts on its `\r`. Selecting from there names the next line's
+      // text, not the "> " in front of it.
+      "a selection starting on a quote's CRLF line break",
+      "> one\r\n> two three\r\n",
+      "one[\r\ntw]o",
+      { lineStart: 2, lineEnd: 2, colStart: 3, colEnd: 4 },
+    ],
+    [
+      // The line ending inside the code shows as a space. Selecting from it
+      // names the next line's code, not the item's indent.
+      "a selection starting in code folded at a CRLF in a list item",
+      "- a `co\r\n  de` b\r\n",
+      "co[ d]e",
+      { lineStart: 2, lineEnd: 2, colStart: 3, colEnd: 3 },
+    ],
   ])("anchors %s to its own columns", async (_name, body, pick, anchor) => {
     const { onStage, button } = await stageSelection(body, (container) =>
       bracketedIn(container, pick),
