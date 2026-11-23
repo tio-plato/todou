@@ -150,6 +150,17 @@ describe("frontmatter rendering", () => {
     ]);
   });
 
+  it("ends the fields at the closing fence past a lone \\r", async () => {
+    // A lone `\r` ends no line of the source: a field's value keeps it.
+    const container = await mount(
+      "---\ntitle: a\rb\nstatus: x\n---\n\nBody.\n",
+    );
+    expect(fieldsOf(container)).toEqual([
+      ["title", "a\rb"],
+      ["status", "x"],
+    ]);
+  });
+
   it("renders nothing at all for an empty block", async () => {
     const container = await mount("---\n---\n\nBody.\n");
     expect(gridOf(container)).toBeNull();
