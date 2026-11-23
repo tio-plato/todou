@@ -5,6 +5,7 @@ import {
   LINE_TYPE_ATTR,
   offsetInRow,
   rowAt,
+  trimLineEnd,
 } from "./pierre-rows.ts";
 import {
   CODE_CONTENT_START_ATTR,
@@ -567,12 +568,13 @@ function endpointOffset(
  * Source offsets of code the reader cannot have selected. In a block pierre
  * has drawn rows for, that is every line no row shows — the fence markers, a
  * patch's headers — and, on a line a row does show, the part in front of the
- * row's text: a list item's indent, a quote's `> `, a patch line's prefix. A
- * selection that stops at the edge of a row reaches into them only in the
- * source. A block with no rows yet hides nothing: its plain text is what is
- * on screen; nor does a block with a row that could not be placed hide any
- * line whole, since that row shows one of them. Worked out per block on
- * first ask, since only the blocks next to a selection's two ends are ever
+ * row's text: a list item's indent, a quote's `> `, a patch line's prefix;
+ * and behind it, the `\r`s a CRLF file's line ends in, which the row shows
+ * as a blank. A selection that stops at the edge of a row reaches into them
+ * only in the source. A block with no rows yet hides nothing: its plain text
+ * is what is on screen; nor does a block with a row that could not be placed
+ * hide any line whole, since that row shows one of them. Worked out per block
+ * on first ask, since only the blocks next to a selection's two ends are ever
  * asked about.
  */
 function hiddenInCode(
@@ -583,7 +585,10 @@ function hiddenInCode(
     el: Element;
     loc: { start: number; end: number };
   }> | null = null;
-  const hidden = new Map<Element, Map<number, [number, number]> | null>();
+  const hidden = new Map<
+    Element,
+    Map<number, Array<[number, number]>> | null
+  >();
   const hiddenOf = (el: Element, loc: { start: number; end: number }) => {
     if (hidden.has(el)) return hidden.get(el) ?? null;
     // Each drawn line, with where its row's text starts; null where the
@@ -601,7 +606,7 @@ function hiddenInCode(
         }
       }
     }
-    let spans: Map<number, [number, number]> | null = null;
+    let spans: Map<number, Array<[number, number]>> | null = null;
     if (drawn.size > 0) {
       spans = new Map();
       for (let line = loc.start; line <= loc.end; line++) {
@@ -614,9 +619,14 @@ function hiddenInCode(
           : unplaced
             ? null
             : end;
-        if (textStart != null && textStart > start) {
-          spans.set(line, [start, textStart]);
-        }
+        if (textStart == null) continue;
+        const parts: Array<[number, number]> = [];
+        if (textStart > start) parts.push([start, textStart]);
+        // The `\r`s a drawn line ends in show as a blank past its row's text.
+        const textEnd =
+          start + trimLineEnd(index.source.slice(start, end)).length;
+        if (drawn.has(line) && textEnd < end) parts.push([textEnd, end]);
+        if (parts.length > 0) spans.set(line, parts);
       }
     }
     hidden.set(el, spans);
@@ -632,8 +642,11 @@ function hiddenInCode(
     const { line } = lineColAt(index, offset);
     return blocks.some(({ el, loc }) => {
       if (line < loc.start || line > loc.end) return false;
-      const span = hiddenOf(el, loc)?.get(line);
-      return span !== undefined && offset >= span[0] && offset < span[1];
+      return (
+        hiddenOf(el, loc)
+          ?.get(line)
+          ?.some(([from, to]) => offset >= from && offset < to) === true
+      );
     });
   };
 }

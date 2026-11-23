@@ -2,6 +2,7 @@ import {
   DELETION_LINE_TYPE,
   LINE_TYPE_ATTR,
   rowLineText,
+  trimLineEnd,
 } from "./pierre-rows.ts";
 
 /**
@@ -59,8 +60,9 @@ const FILE_HEADER =
   /^(index |old mode |new mode |deleted file mode |new file mode |similarity index |dissimilarity index |rename from |rename to |copy from |copy to |Binary files |GIT binary patch|--- |\+\+\+ )/;
 
 function parse(value: string): ParsedFence {
-  // A CRLF fence's body keeps each `\r\n`, and pierre's rows have no `\r`.
-  const lines = value.split(/\r?\n/);
+  // A CRLF fence's body keeps each `\r\n`, and a CRLF file's patch adds the
+  // `\r` its lines end in; rows are read without either.
+  const lines = value.split("\n").map(trimLineEnd);
   const hunkLines: HunkLine[] = [];
   const inFile = new Array<boolean>(lines.length).fill(false);
   let i = 0;
