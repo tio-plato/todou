@@ -782,9 +782,7 @@ describe("baseline comments in the rendered comparison", () => {
         ].map((mark) => mark.textContent),
       ).toEqual(["brown"]),
     );
-    expect(
-      await view.findByRole("button", { name: "1 comment(s) on this block" }),
-    ).toBeTruthy();
+    expect(await view.findByRole("button", { name: "1 comment" })).toBeTruthy();
   });
 
   it("paints a renamed file's comment from under its old path", async () => {
@@ -839,9 +837,9 @@ describe("baseline comments in the rendered comparison", () => {
     await waitFor(() =>
       expect(
         view
-          .queryAllByRole("button", { name: /comment\(s\) on this block/ })
+          .queryAllByRole("button", { name: /^\d+ comments?$/ })
           .map((chip) => chip.getAttribute("aria-label")),
-      ).toEqual(["1 comment(s) on this block", "1 comment(s) on this block"]),
+      ).toEqual(["1 comment", "1 comment"]),
     );
     expect(
       view.getByText(/Comments without a place in v2/).parentElement
@@ -865,9 +863,9 @@ describe("baseline comments in the rendered comparison", () => {
     await waitFor(() =>
       expect(
         view
-          .queryAllByRole("button", { name: /comment\(s\) on this block/ })
+          .queryAllByRole("button", { name: /^\d+ comments?$/ })
           .map((chip) => chip.getAttribute("aria-label")),
-      ).toEqual(["1 comment(s) on this block"]),
+      ).toEqual(["1 comment"]),
     );
     expect(view.queryByText("settled on delta")).toBeNull();
   });
@@ -911,7 +909,7 @@ describe("baseline notes on text kept as it was", () => {
     expect(classesOf(view, "Inserted line.")).not.toContain("spec-annotated");
     expect(
       await view.findAllByRole("button", {
-        name: "1 comment(s) on this block",
+        name: "1 comment",
       }),
     ).toHaveLength(1);
   });

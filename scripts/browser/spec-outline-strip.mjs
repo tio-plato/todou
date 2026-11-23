@@ -277,7 +277,7 @@ function probeSource() {
       const s = strip(), c = card(), b = bar();
       return !!s && !!c && !!b && b.getBoundingClientRect().height > 0 &&
         b.querySelectorAll("[data-stop-index]").length > 0 &&
-        !!document.querySelector('[aria-label$="on this block"]') &&
+        !!document.querySelector('[data-testid="annotated-markdown"] [aria-label$=" comment"], [data-testid="annotated-markdown"] [aria-label$=" comments"]') &&
         !!document.querySelector("[data-spec-outline]");
     };
     const ticks = () => {
@@ -334,7 +334,7 @@ function probeSource() {
         : block.top + block.height / 2 - (u.top + u.height / 2);
       return Math.min(Math.max(0, resting), end());
     };
-    const chip = () => document.querySelector('[aria-label$="on this block"]');
+    const chip = () => document.querySelector('[data-testid="annotated-markdown"] [aria-label$=" comment"], [data-testid="annotated-markdown"] [aria-label$=" comments"]');
     const chipCenter = () => {
       const c = chip();
       if (!c) return null;
@@ -611,7 +611,11 @@ async function checkStrip(page, width) {
   const chipHit = await evaluate(
     page,
     ({ x, y }) =>
-      window.__specOutline.hits(x, y, '[aria-label$="on this block"]'),
+      window.__specOutline.hits(
+        x,
+        y,
+        '[data-testid="annotated-markdown"] [aria-label$=" comment"], [data-testid="annotated-markdown"] [aria-label$=" comments"]',
+      ),
     chipAt,
   );
   if (!chipHit.inside)

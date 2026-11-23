@@ -267,7 +267,7 @@ describe("spec annotation headers carry the id and time (T-435)", () => {
   it("gives the rendered document's published bubble the same pair", async () => {
     mockSpec([ON_DESIGN]);
     const view = await page("?v=2&view=rendered&file=design.md");
-    fireEvent.click(await view.findByLabelText("1 comment(s) on this block"));
+    fireEvent.click(await view.findByLabelText("1 comment"));
     const popover = await waitFor(() => {
       const el = document.querySelector("[data-slot='popover-content']");
       expect(el).not.toBeNull();
@@ -379,7 +379,7 @@ describe("spec annotation headers carry the id and time (T-435)", () => {
         onResolve={() => {}}
       />,
     );
-    fireEvent.click(await view.findByLabelText(/comment\(s\) on this block/));
+    fireEvent.click(await view.findByLabelText(/^\d+ comments?$/));
     const popover = await waitFor(() => {
       const el = document.querySelector("[data-slot='popover-content']");
       expect(el).not.toBeNull();
@@ -464,7 +464,7 @@ describe("spec annotation headers split in two below sm (T-445)", () => {
   it("splits the rendered document's published bubble", async () => {
     mockSpec([ON_DESIGN]);
     const view = await page("?v=2&view=rendered&file=design.md");
-    fireEvent.click(await view.findByLabelText("1 comment(s) on this block"));
+    fireEvent.click(await view.findByLabelText("1 comment"));
     const popover = await waitFor(() => {
       const el = document.querySelector("[data-slot='popover-content']");
       expect(el).not.toBeNull();
@@ -530,7 +530,7 @@ describe("the popover's locate control holds where it lands (T-527)", () => {
     vi.stubGlobal("ResizeObserver", FakeResizeObserver);
     mockSpec([ON_DESIGN]);
     const view = await page("?v=2&view=rendered&file=design.md");
-    fireEvent.click(await view.findByLabelText("1 comment(s) on this block"));
+    fireEvent.click(await view.findByLabelText("1 comment"));
     const popover = await waitFor(() => {
       const el = document.querySelector("[data-slot='popover-content']");
       expect(el).not.toBeNull();
@@ -570,7 +570,7 @@ describe("the popover's locate control holds where it lands (T-527)", () => {
       annotation(406, { line_start: 3, line_end: 3, col_start: 1, col_end: 7 }),
     ]);
     const view = await page("?v=2&view=rendered&file=design.md");
-    fireEvent.click(await view.findByLabelText("1 comment(s) on this block"));
+    fireEvent.click(await view.findByLabelText("1 comment"));
     const popover = await waitFor(() => {
       const el = document.querySelector("[data-slot='popover-content']");
       expect(el).not.toBeNull();

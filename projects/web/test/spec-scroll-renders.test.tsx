@@ -227,7 +227,7 @@ describe("scrolling the spec page (T-601)", () => {
   it("moves the change counter without re-rendering the document or its chips", async () => {
     const view = renderSpec();
     await view.findByText("bravo");
-    await view.findByRole("button", { name: "1 comment(s) on this block" });
+    await view.findByRole("button", { name: "1 comment" });
     const counter = () =>
       view.container.querySelector('[data-toolbar-slot="change-count"]')
         ?.textContent;
@@ -247,7 +247,7 @@ describe("scrolling the spec page (T-601)", () => {
   it("keeps the chips still when the page re-renders around them", async () => {
     const view = renderSpec();
     await view.findByText("bravo");
-    await view.findByRole("button", { name: "1 comment(s) on this block" });
+    await view.findByRole("button", { name: "1 comment" });
     await act(async () => {});
     const annotated = counts.annotated;
     const chips = counts.chips;
@@ -293,7 +293,7 @@ describe("scrolling the spec page (T-601)", () => {
       );
     }
     const view = renderWithProviders(<Harness />);
-    await view.findByRole("button", { name: "1 comment(s) on this block" });
+    await view.findByRole("button", { name: "1 comment" });
     await act(async () => {});
     const annotated = counts.annotated;
     const chips = counts.chips;

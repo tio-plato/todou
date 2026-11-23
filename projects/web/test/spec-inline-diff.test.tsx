@@ -1830,7 +1830,7 @@ describe("whole-line annotations wash every block they cover", () => {
         wholeLines("comment", 2, 6),
       ]);
       const chip = await view.findByRole("button", {
-        name: /comment\(s\) on this block/,
+        name: /^\d+ comments?$/,
       });
       expect(chip.style.top).toBe("60px");
     } finally {
@@ -1855,7 +1855,7 @@ describe("whole-line annotations wash every block they cover", () => {
         },
       ]);
       const chip = await view.findByRole("button", {
-        name: /comment\(s\) on this block/,
+        name: /^\d+ comments?$/,
       });
       expect(chip.style.top).toBe("120px");
     } finally {
@@ -1915,7 +1915,7 @@ async function chipTops(container: HTMLElement) {
   await settleChips();
   return [
     ...container.querySelectorAll<HTMLElement>(
-      "[aria-label$='comment(s) on this block']",
+      "[aria-label$=' comment'], [aria-label$=' comments']",
     ),
   ].map((chip) => chip.style.top);
 }
@@ -1999,10 +1999,10 @@ describe("chips on a block's later lines", () => {
     expect(
       [
         ...container.querySelectorAll(
-          "[aria-label$='comment(s) on this block']",
+          "[aria-label$=' comment'], [aria-label$=' comments']",
         ),
       ].map((chip) => chip.getAttribute("aria-label")),
-    ).toEqual(["2 comment(s) on this block"]);
+    ).toEqual(["2 comments"]);
   });
 
   it("hangs a baseline annotation by the line its removed word is put back on", async () => {
@@ -2114,21 +2114,21 @@ describe("chips on a block's later lines", () => {
     const chips = () =>
       [
         ...container.querySelectorAll<HTMLElement>(
-          "[aria-label$='comment(s) on this block']",
+          "[aria-label$=' comment'], [aria-label$=' comments']",
         ),
       ].map((chip) => [chip.style.top, chip.getAttribute("aria-label")]);
     await settleChips();
     expect(chips()).toEqual([
-      ["76px", "2 comment(s) on this block"],
-      ["120px", "1 comment(s) on this block"],
+      ["76px", "2 comments"],
+      ["120px", "1 comment"],
     ]);
 
     act(() => setViewportWidth(1024));
     await waitFor(() =>
       expect(chips()).toEqual([
-        ["76px", "1 comment(s) on this block"],
-        ["98px", "1 comment(s) on this block"],
-        ["120px", "1 comment(s) on this block"],
+        ["76px", "1 comment"],
+        ["98px", "1 comment"],
+        ["120px", "1 comment"],
       ]),
     );
   });
@@ -2183,7 +2183,7 @@ describe("chips follow the document's height", () => {
       wholeLines("comment", 1, 1),
     ]);
     const chip = await view.findByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chip.style.top).toBe("100px");
 
@@ -3357,10 +3357,10 @@ describe("baseline annotations on deleted text", () => {
       [onBaseline("draft", WORD_BEFORE, 1, "brown")],
     );
     const chips = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
-      "2 comment(s) on this block",
+      "2 comments",
     ]);
   });
 
@@ -3380,7 +3380,7 @@ describe("baseline annotations on deleted text", () => {
       [onBaseline("comment", PARAGRAPH_BEFORE, 5, "with")],
     );
     const chips = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chips.map((chip) => chip.style.top)).toEqual(["100px", "300px"]);
     expect(chips.map((chip) => chip.textContent)).toEqual(["1", "1"]);
@@ -3397,10 +3397,10 @@ describe("baseline annotations on deleted text", () => {
       ],
     );
     const chips = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
-      "2 comment(s) on this block",
+      "2 comments",
     ]);
   });
 
@@ -3414,9 +3414,7 @@ describe("baseline annotations on deleted text", () => {
       [onBaseline("comment", before, 3)],
     );
     expect(container.querySelector(".spec-del-structure img")).not.toBeNull();
-    expect(
-      await view.findByRole("button", { name: "1 comment(s) on this block" }),
-    ).toBeTruthy();
+    expect(await view.findByRole("button", { name: "1 comment" })).toBeTruthy();
   });
 
   it("shares one chip where a restored block starts a current one", async () => {
@@ -3441,10 +3439,10 @@ describe("baseline annotations on deleted text", () => {
       container.querySelector("li > .spec-del-structure:first-child"),
     ).not.toBeNull();
     const chips = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
-      "2 comment(s) on this block",
+      "2 comments",
     ]);
   });
 
@@ -3471,10 +3469,10 @@ describe("baseline annotations on deleted text", () => {
       ],
     );
     const chips = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
-      "2 comment(s) on this block",
+      "2 comments",
     ]);
   });
 
@@ -3507,19 +3505,19 @@ describe("baseline annotations on deleted text", () => {
       ],
     );
     const chips = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
-      "2 comment(s) on this block",
+      "2 comments",
     ]);
 
     act(() => setViewportWidth(1024));
     await waitFor(() =>
       expect(
         view
-          .getAllByRole("button", { name: /comment\(s\) on this block/ })
+          .getAllByRole("button", { name: /^\d+ comments?$/ })
           .map((chip) => chip.getAttribute("aria-label")),
-      ).toEqual(["1 comment(s) on this block", "1 comment(s) on this block"]),
+      ).toEqual(["1 comment", "1 comment"]),
     );
   });
 
@@ -3550,19 +3548,19 @@ describe("baseline annotations on deleted text", () => {
       ],
     );
     const chips = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
-      "2 comment(s) on this block",
+      "2 comments",
     ]);
 
     act(() => setViewportWidth(1024));
     await waitFor(() =>
       expect(
         view
-          .getAllByRole("button", { name: /comment\(s\) on this block/ })
+          .getAllByRole("button", { name: /^\d+ comments?$/ })
           .map((chip) => chip.getAttribute("aria-label")),
-      ).toEqual(["1 comment(s) on this block", "1 comment(s) on this block"]),
+      ).toEqual(["1 comment", "1 comment"]),
     );
   });
 
@@ -3590,11 +3588,11 @@ describe("baseline annotations on deleted text", () => {
       ],
     );
     const chips = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
-      "1 comment(s) on this block",
-      "1 comment(s) on this block",
+      "1 comment",
+      "1 comment",
     ]);
   });
 
@@ -3630,10 +3628,10 @@ describe("baseline annotations on deleted text", () => {
     expect(
       [
         ...container.querySelectorAll<HTMLElement>(
-          "[aria-label$='comment(s) on this block']",
+          "[aria-label$=' comment'], [aria-label$=' comments']",
         ),
       ].map((chip) => [chip.style.top, chip.getAttribute("aria-label")]),
-    ).toEqual([["322.4px", "3 comment(s) on this block"]]);
+    ).toEqual([["322.4px", "3 comments"]]);
   });
 
   it("joins a restored block's chip to the nearer of the two chips around it", async () => {
@@ -3666,12 +3664,12 @@ describe("baseline annotations on deleted text", () => {
     expect(
       [
         ...container.querySelectorAll<HTMLElement>(
-          "[aria-label$='comment(s) on this block']",
+          "[aria-label$=' comment'], [aria-label$=' comments']",
         ),
       ].map((chip) => [chip.style.top, chip.getAttribute("aria-label")]),
     ).toEqual([
-      ["290px", "1 comment(s) on this block"],
-      ["315px", "2 comment(s) on this block"],
+      ["290px", "1 comment"],
+      ["315px", "2 comments"],
     ]);
   });
 
@@ -3710,12 +3708,12 @@ describe("baseline annotations on deleted text", () => {
       expect(
         [
           ...container.querySelectorAll<HTMLElement>(
-            "[aria-label$='comment(s) on this block']",
+            "[aria-label$=' comment'], [aria-label$=' comments']",
           ),
         ].map((chip) => [chip.style.top, chip.getAttribute("aria-label")]),
       ).toEqual([
-        ["100px", "2 comment(s) on this block"],
-        ["125px", "1 comment(s) on this block"],
+        ["100px", "2 comments"],
+        ["125px", "1 comment"],
       ]);
     },
   );
@@ -3758,12 +3756,12 @@ describe("baseline annotations on deleted text", () => {
       expect(
         [
           ...container.querySelectorAll<HTMLElement>(
-            "[aria-label$='comment(s) on this block']",
+            "[aria-label$=' comment'], [aria-label$=' comments']",
           ),
         ].map((chip) => [chip.style.top, chip.getAttribute("aria-label")]),
       ).toEqual([
-        ["100px", "2 comment(s) on this block"],
-        [`${lower}px`, "1 comment(s) on this block"],
+        ["100px", "2 comments"],
+        [`${lower}px`, "1 comment"],
       ]);
     },
   );
@@ -3786,7 +3784,7 @@ describe("baseline annotations on deleted text", () => {
     );
     expect(container.querySelector("table.spec-del-structure")).not.toBeNull();
     const chips = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chips.map((chip) => chip.style.top)).toEqual(["340px"]);
   });
@@ -3812,7 +3810,7 @@ describe("baseline annotations on deleted text", () => {
     );
     expect(container.querySelector("tr.spec-del-row")).not.toBeNull();
     const chips = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chips.map((chip) => chip.style.top)).toEqual(["380px"]);
   });
@@ -3825,9 +3823,9 @@ describe("baseline annotations on deleted text", () => {
       [onBaseline("comment", PARAGRAPH_BEFORE, 3, "First")],
     );
     await settleChips();
-    expect(
-      view.queryAllByRole("button", { name: /comment\(s\) on this block/ }),
-    ).toEqual([]);
+    expect(view.queryAllByRole("button", { name: /^\d+ comments?$/ })).toEqual(
+      [],
+    );
   });
 });
 

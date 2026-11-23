@@ -1570,7 +1570,7 @@ const AnnotationChip = memo(function AnnotationChip({
             : "border-amber-500/60 bg-amber-500/10 text-amber-700 max-sm:bg-[color-mix(in_srgb,var(--color-amber-500)_10%,var(--background))] dark:text-amber-400",
         )}
         style={{ top: chip.top }}
-        aria-label={`${chip.items.length} comment(s) on this block`}
+        aria-label={`${chip.items.length} comment${chip.items.length === 1 ? "" : "s"}`}
       >
         <MessageSquareTextIcon className="size-3.5 max-sm:hidden" />
         {chip.items.length}
@@ -1579,7 +1579,7 @@ const AnnotationChip = memo(function AnnotationChip({
         ref={contentRef}
         side="left"
         // From `sm` up, the one layout that handles collisions (below): a
-        // thread belongs to its chip's block. The popover layer's "always"
+        // thread belongs beside its chip. The popover layer's "always"
         // keeps the surface on screen after the chip has scrolled away, which
         // pins it to the viewport edge over unrelated text; "partial" still
         // pushes it back while part of the chip shows, then lets it follow.

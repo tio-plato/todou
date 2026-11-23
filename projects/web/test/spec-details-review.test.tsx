@@ -226,9 +226,9 @@ describe("chips of neighbouring blocks", () => {
     await waitFor(() =>
       expect(
         view
-          .getAllByRole("button", { name: /comment\(s\) on this block/ })
+          .getAllByRole("button", { name: /^\d+ comments?$/ })
           .map((chip) => [chip.style.top, chip.getAttribute("aria-label")]),
-      ).toEqual([["300px", "3 comment(s) on this block"]]),
+      ).toEqual([["300px", "3 comments"]]),
     );
   });
 });
@@ -332,7 +332,7 @@ describe("an annotation card names its author with a link (T-391)", () => {
       annotations: [annotation(1)],
     });
 
-    fireEvent.click(await view.findByLabelText("1 comment(s) on this block"));
+    fireEvent.click(await view.findByLabelText("1 comment"));
 
     // The popover holds the annotation cards and nothing else, and this
     // block carries exactly one annotation — so the author's chip is the
