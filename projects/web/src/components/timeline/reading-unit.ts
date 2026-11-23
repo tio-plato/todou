@@ -103,6 +103,20 @@ export function pickReadingUnit(
   seam: string | undefined,
   at?: Element,
 ): ReadingPlace | null | undefined {
+  let child: Element | null = at ?? null;
+  while (child !== null && child.parentElement !== list)
+    child = child.parentElement;
+  if (at !== undefined && child === null) {
+    // Outside the list only what precedes it, its ancestors aside, can let
+    // go; anything else, each key typed in the comment box say, is answered
+    // before a thing is measured.
+    const where = list.compareDocumentPosition(at);
+    if (
+      (where & Node.DOCUMENT_POSITION_PRECEDING) === 0 ||
+      (where & Node.DOCUMENT_POSITION_CONTAINS) !== 0
+    )
+      return undefined;
+  }
   const usable = usableViewport();
   const units = unitsIn(list);
   const bodyInView = listTopShows(list);
@@ -113,20 +127,12 @@ export function pickReadingUnit(
     seamUnit !== undefined &&
     readingFromTail(seamUnit.el.getBoundingClientRect().top);
   if (at !== undefined) {
-    let child: Element | null = at;
-    while (child !== null && child.parentElement !== list)
-      child = child.parentElement;
-    if (child === null) {
-      // What precedes the list in the document, its ancestors aside.
-      const where = list.compareDocumentPosition(at);
+    if (child === null)
       return bodyInView &&
         !fromTail &&
-        (where & Node.DOCUMENT_POSITION_PRECEDING) !== 0 &&
-        (where & Node.DOCUMENT_POSITION_CONTAINS) === 0 &&
         at.getBoundingClientRect().bottom > usable.top
         ? null
         : undefined;
-    }
     const key = unitOf(child);
     const clicked = key === null ? -1 : units.findIndex((u) => u.key === key);
     if (clicked === -1) return undefined;
