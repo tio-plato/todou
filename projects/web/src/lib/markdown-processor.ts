@@ -8,6 +8,7 @@ import {
   FRONTMATTER_FLAVOURS,
   remarkFrontmatterTable,
 } from "./remark-frontmatter-table.ts";
+import { remarkLineFeedPositions } from "./remark-line-feed-positions.ts";
 import { remarkRejectedUrlsAsText } from "./remark-rejected-urls.ts";
 
 /**
@@ -21,9 +22,11 @@ import { remarkRejectedUrlsAsText } from "./remark-rejected-urls.ts";
  * The order is significant. Rejected URLs are restored to source text before
  * later tokenizers see them, and `remarkFrontmatterTable` consumes the nodes
  * produced by `remarkFrontmatter`. Without that tokenizer, frontmatter lines
- * that begin with digits are parsed as ordered-list items (T-383).
+ * that begin with digits are parsed as ordered-list items (T-383). Lines are
+ * recounted by line feeds alone first, so every later pass reads those.
  */
 export const MARKDOWN_SYNTAX_PLUGINS: PluggableList = [
+  remarkLineFeedPositions,
   remarkGfm,
   remarkRejectedUrlsAsText,
   [remarkFrontmatter, FRONTMATTER_FLAVOURS],
