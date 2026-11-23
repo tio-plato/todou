@@ -857,8 +857,8 @@ describe("a card whose list starts on screen, read at its end", () => {
     const edit = page.view.getByRole("button", { name: "Edit" });
     const before = edit.getBoundingClientRect().top;
     page.press(column(page));
-    // Focus moved into the body by the keyboard.
-    fireEvent.keyDown(edit, { key: "Tab" });
+    // Typed in the body, the focus moved there by the keyboard.
+    fireEvent.keyDown(edit, { key: "a" });
     await page.fillAll();
     expect(page.unit("comment-1")?.hasAttribute("data-unfilled")).toBe(false);
     expect(edit.getBoundingClientRect().top).toBe(before);
