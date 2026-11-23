@@ -1026,7 +1026,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     // places go in one pass, whatever block they are in, so a place joins
     // the chip of the block above it as readily as its own block's. A block
     // put back of the baseline joins only its own places here; further down,
-    // `near` joins it to another chip it would draw over.
+    // `near` joins it to the nearest chip it would draw over.
     const byBlock = new Map<string, Place[]>();
     for (const place of places.values()) {
       const group = place.old ? place.block : "";
@@ -1052,11 +1052,19 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       }
       (group[0]?.old ? oldChips : next).push(...kept);
     }
-    for (const chip of oldChips) {
-      // A block put back where another chip hangs — first in a current
+    // Top to bottom, so that which chip one joins rests on where the chips
+    // hang, not on the order their annotations came in. A chip it joins, a
+    // current one or a restored one above it, joins no other after: every
+    // annotation stays less than a chip's height from its own block.
+    for (const chip of oldChips.sort((a, b) => a.top - b.top)) {
+      // A block put back where other chips hang — first in a current
       // block, inside another restored one, under the same closed fold —
-      // would draw its chip over that one: it joins it instead.
-      const near = next.find((other) => Math.abs(other.top - chip.top) < tall);
+      // would draw its chip over them: it joins the nearest instead, the
+      // upper of two as near, as a place joins the one above it.
+      const off = (other: Chip) => Math.abs(other.top - chip.top);
+      const near = next
+        .filter((other) => off(other) < tall)
+        .sort((a, b) => off(a) - off(b) || a.top - b.top)[0];
       if (near !== undefined) {
         near.items = [...near.items, ...chip.items];
         continue;
