@@ -782,9 +782,7 @@ describe("baseline comments in the rendered comparison", () => {
         ].map((mark) => mark.textContent),
       ).toEqual(["brown"]),
     );
-    expect(
-      await view.findByRole("button", { name: "1 comment(s) on this block" }),
-    ).toBeTruthy();
+    expect(await view.findByRole("button", { name: "1 comment" })).toBeTruthy();
   });
 
   it("paints a renamed file's comment from under its old path", async () => {
@@ -911,7 +909,7 @@ describe("baseline notes on text kept as it was", () => {
     expect(classesOf(view, "Inserted line.")).not.toContain("spec-annotated");
     expect(
       await view.findAllByRole("button", {
-        name: "1 comment(s) on this block",
+        name: "1 comment",
       }),
     ).toHaveLength(1);
   });

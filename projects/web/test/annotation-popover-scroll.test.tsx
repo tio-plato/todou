@@ -60,7 +60,7 @@ describe("annotation chip popover", () => {
         onResolve={() => {}}
       />,
     );
-    const chip = await view.findByLabelText(/comment\(s\) on this block/);
+    const chip = await view.findByLabelText(/^\d+ comments?$/);
     let chipTop = 100;
     chip.getBoundingClientRect = () => new DOMRect(700, chipTop, 30, 22);
     fireEvent.click(chip);
