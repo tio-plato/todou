@@ -98,4 +98,18 @@ describe("fence frames (T-706)", () => {
     expect(wrapper?.getAttribute("data-loc-content-start")).toBe("4");
     expect(wrapper?.querySelector(".fence-head")).not.toBeNull();
   });
+
+  it("counts the stamps' lines by line feeds past a lone \\r", async () => {
+    // micromark ends a line at a lone `\r` as well; the source's lines, and
+    // the server's, end at `\n` alone.
+    const md = "intro\rmore\n\n```text\nalpha\rbeta\n```\n\nafter\n";
+    const container = await mount(md);
+    const wrapper = container.querySelector("div.markdown-fence");
+    expect(wrapper?.getAttribute("data-loc")).toBe("3-5");
+    expect(wrapper?.getAttribute("data-loc-content-start")).toBe("4");
+    const after = [...container.querySelectorAll("p[data-loc]")].find(
+      (p) => p.textContent === "after",
+    );
+    expect(after?.getAttribute("data-loc")).toBe("7-7");
+  });
 });
