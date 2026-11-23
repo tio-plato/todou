@@ -1024,14 +1024,16 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       (group[0]?.old ? oldChips : next).push(...kept);
     }
     // Top to bottom, so that which chip one joins rests on where the chips
-    // hang, not on the order their annotations came in. A chip it joins, a
-    // current one or a restored one above it, joins no other after: every
-    // annotation stays less than a chip's height from its own block.
+    // hang, not on the order their annotations came in; chips at one height
+    // still go in that order, which picks whose key the joined chip keeps.
+    // A chip it joins, a current one or a restored one above it, joins no
+    // other after: every annotation stays less than a chip's height from
+    // its own block.
     for (const chip of oldChips.sort((a, b) => a.top - b.top)) {
       // A block put back where other chips hang — first in a current
       // block, inside another restored one, under the same closed fold —
-      // would draw its chip over them: it joins the nearest instead, the
-      // upper of two as near, as a place joins the one above it.
+      // would draw its chip over them: it joins the nearest instead, and of
+      // two as near the upper one.
       const off = (other: Chip) => Math.abs(other.top - chip.top);
       const near = next
         .filter((other) => off(other) < tall)

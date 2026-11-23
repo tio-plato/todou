@@ -3542,7 +3542,8 @@ describe("baseline annotations on deleted text", () => {
 
   it("joins a restored block's chip to the nearer of the two chips around it", async () => {
     // A restored block 15px under one current paragraph and 10px over the
-    // next, which hang 25px apart: its chip joins the lower one.
+    // next, both inside a 22px chip; the paragraphs hang 25px apart. Its
+    // chip joins the lower one.
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
       function (this: HTMLElement) {
         const text = this.textContent ?? "";
@@ -3581,8 +3582,9 @@ describe("baseline annotations on deleted text", () => {
   it.each(["A", "B"])(
     "joins a restored block's chip to the nearest chip whatever order its annotations come in (%s's first)",
     async (first) => {
-      // Restored blocks A and B 10px apart, B 15px over a current paragraph
-      // that hangs 25px under A: A keeps its chip, and B's joins it.
+      // 22px chips: restored blocks A and B 10px apart, B 15px over a
+      // current paragraph that hangs 25px under A. A keeps its chip, and
+      // B's joins it.
       vi.spyOn(
         HTMLElement.prototype,
         "getBoundingClientRect",
@@ -3623,8 +3625,8 @@ describe("baseline annotations on deleted text", () => {
   );
 
   it("joins a restored block's chip to the upper of two chips as near", async () => {
-    // Restored block B as far under restored block A as over a current
-    // paragraph, which hangs 23px under A: B's chip joins A's.
+    // 22px chips: restored block B as far under restored block A as over a
+    // current paragraph, which hangs 23px under A. B's chip joins A's.
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
       function (this: HTMLElement) {
         const text = this.textContent ?? "";
