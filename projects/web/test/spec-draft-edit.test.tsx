@@ -57,7 +57,7 @@ describe("draft chip Edit affordance", () => {
         onResolve={() => {}}
       />,
     );
-    const chip = await view.findByLabelText(/comment\(s\) on this block/);
+    const chip = await view.findByLabelText(/^\d+ comments?$/);
     fireEvent.click(chip);
     return view;
   }

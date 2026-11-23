@@ -20,7 +20,7 @@ const EPSILON = 0.5;
 const CHIPS = 2;
 const PATH = "design.md";
 const FAULT_CSS =
-  '[aria-label$="on this block"] { right: 0 !important; translate: none !important; }';
+  '[data-testid="annotated-markdown"] [aria-label$=" comment"], [data-testid="annotated-markdown"] [aria-label$=" comments"] { right: 0 !important; translate: none !important; }';
 
 const narrow = (width) => width < SM;
 
@@ -119,7 +119,7 @@ function probeSource(fault) {
         container,
         card: container?.parentElement ?? null,
         body: container?.querySelector('.markdown-body') ?? null,
-        chips: container ? [...container.querySelectorAll('[aria-label$="on this block"]')] : [],
+        chips: container ? [...container.querySelectorAll('[aria-label$=" comment"], [aria-label$=" comments"]')] : [],
       };
     };
     const sized = element => {
