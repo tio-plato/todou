@@ -71,10 +71,10 @@ function childFor(list: HTMLElement, key: string): HTMLElement | null {
  *   overlays, the reader can see the card's title, body or attachments above
  *   it, and nothing should push those away for what grows there: editing the
  *   body grows the page above the list. At the end of the conversation, the
- *   unit the rule below takes,
- *   moving with the list's top (`withList`): what grows above the list moves
- *   it along, and only what grows in the list is put back. Anywhere else
- *   none, and the browser keeps what precedes the list where it is.
+ *   unit the rule below takes, moving with the list's top (`withList`): what
+ *   grows above the list moves it along, and only what grows in the list is
+ *   put back. Anywhere else none, and the browser keeps what precedes the
+ *   list where it is.
  * - At the end of the conversation, the last unit showing above the bottom
  *   overlays: the reader is at the end, the comment box under their hand, and
  *   whatever loads above them, the first load's skeletons filled in included,
