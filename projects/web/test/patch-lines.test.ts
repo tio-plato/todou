@@ -118,6 +118,16 @@ describe("patchLineOfRow", () => {
     ).toBe(lines.indexOf("+more b"));
   });
 
+  it("finds a CRLF fence's last line that ends in its own \\r", () => {
+    // A CRLF file's hunk line keeps its own `\r`. On the fence's last line
+    // no `\n` follows it, and pierre draws that line without it.
+    const signature = lines.indexOf("-- ");
+    const crcr = `${lines.slice(0, signature).join("\r\n")}\r`;
+    expect(patchLineOfRow(crcr, row("diff", 13, "tail b", "context"))).toBe(
+      lines.indexOf(" tail b"),
+    );
+  });
+
   it("counts past a no-newline marker and stops before the signature", () => {
     const patch = [
       "diff --git a/c.txt b/c.txt",
