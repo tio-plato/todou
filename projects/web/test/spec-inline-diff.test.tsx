@@ -3624,11 +3624,18 @@ describe("baseline annotations on deleted text", () => {
     },
   );
 
-  it("joins a restored block's chip to the upper of two chips as near", async () => {
-    // 22px chips: restored block B as far under restored block A as over a
-    // current paragraph, which hangs 23px under A. B's chip joins A's.
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
-      function (this: HTMLElement) {
+  it.each([
+    ["measured even", 123],
+    ["measured a hair nearer the lower, as Firefox may", 122.99998],
+  ])(
+    "joins a restored block's chip to the upper of two chips as near (%s)",
+    async (_, lower) => {
+      // 22px chips: restored block B as far under restored block A as over
+      // a current paragraph, which hangs 23px under A. B's chip joins A's.
+      vi.spyOn(
+        HTMLElement.prototype,
+        "getBoundingClientRect",
+      ).mockImplementation(function (this: HTMLElement) {
         const text = this.textContent ?? "";
         const y = this.classList.contains("spec-del-structure")
           ? text.startsWith("Old A")
@@ -3637,33 +3644,33 @@ describe("baseline annotations on deleted text", () => {
           : this.tagName !== "P"
             ? 0
             : text.startsWith("Para two")
-              ? 123
+              ? lower
               : 0;
         return DOMRect.fromRect({ y });
-      },
-    );
-    const before = "Para one.\n\nOld A here.\n\nOld B here.\n\nPara two.\n";
-    const { container } = await renderDiff(
-      before,
-      "Para one.\n\nPara two.\n",
-      [wholeLines("comment", 3, 3)],
-      [
-        onBaseline("comment", before, 3, "A"),
-        onBaseline("comment", before, 5, "B"),
-      ],
-    );
-    await settleChips();
-    expect(
-      [
-        ...container.querySelectorAll<HTMLElement>(
-          "[aria-label$='comment(s) on this block']",
-        ),
-      ].map((chip) => [chip.style.top, chip.getAttribute("aria-label")]),
-    ).toEqual([
-      ["100px", "2 comment(s) on this block"],
-      ["123px", "1 comment(s) on this block"],
-    ]);
-  });
+      });
+      const before = "Para one.\n\nOld A here.\n\nOld B here.\n\nPara two.\n";
+      const { container } = await renderDiff(
+        before,
+        "Para one.\n\nPara two.\n",
+        [wholeLines("comment", 3, 3)],
+        [
+          onBaseline("comment", before, 3, "A"),
+          onBaseline("comment", before, 5, "B"),
+        ],
+      );
+      await settleChips();
+      expect(
+        [
+          ...container.querySelectorAll<HTMLElement>(
+            "[aria-label$='comment(s) on this block']",
+          ),
+        ].map((chip) => [chip.style.top, chip.getAttribute("aria-label")]),
+      ).toEqual([
+        ["100px", "2 comment(s) on this block"],
+        [`${lower}px`, "1 comment(s) on this block"],
+      ]);
+    },
+  );
 
   it("hangs a baseline comment on the innermost restored block it reaches", async () => {
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
