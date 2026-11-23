@@ -781,6 +781,24 @@ describe("a card whose list starts on screen, read at its end", () => {
     expect(page.topOf(7)).toBe(before);
   });
 
+  it("measures the end from the screen once the divider is under the top overlays", async () => {
+    // The divider carries the hidden count; the list's own top still shows.
+    const page = await shortCard({
+      divider: true,
+      hidden: [7],
+      grown: { ...SHORT, "hidden-7": -ROW / 2 },
+    });
+    page.readerAt(300);
+    expect(
+      page.view.getByTestId("timeline-divider").getBoundingClientRect().top,
+    ).toBe(0);
+    expect(
+      page.view.getByTestId("timeline-scroll").getBoundingClientRect().top,
+    ).toBe(16);
+    await page.growAbove(40);
+    expect(page.at()).toBe(340);
+  });
+
   it("puts back what grows in the list, and leaves what grows above it, at the end", async () => {
     const page = await shortCard();
     page.press(column(page));
