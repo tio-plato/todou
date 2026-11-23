@@ -1,8 +1,8 @@
 import {
   atConversationEnd,
+  listTopShows,
   type ReadingPlace,
   type ReadingUnit,
-  topShows,
   type UsableViewport,
   usableViewport,
 } from "@/lib/scroll-insets.ts";
@@ -67,10 +67,11 @@ function childFor(list: HTMLElement, key: string): HTMLElement | null {
  *   above it: the first unit below the seam showing under the top overlays.
  *   Ahead of the rule below, so a short head side with the card's body still
  *   in view keeps the tail too.
- * - While the list's top shows below the top overlays, the reader can see
- *   the card's title, body or attachments above it, and nothing should push
- *   those away for what grows there: editing the body grows the page above
- *   the list. At the end of the conversation, the unit the rule below takes,
+ * - While the list's top (`listTop`, its divider line's) shows below the top
+ *   overlays, the reader can see the card's title, body or attachments above
+ *   it, and nothing should push those away for what grows there: editing the
+ *   body grows the page above the list. At the end of the conversation, the
+ *   unit the rule below takes,
  *   moving with the list's top (`withList`): what grows above the list moves
  *   it along, and only what grows in the list is put back. Anywhere else
  *   none, and the browser keeps what precedes the list where it is.
@@ -104,7 +105,7 @@ export function pickReadingUnit(
 ): ReadingPlace | null | undefined {
   const usable = usableViewport();
   const units = unitsIn(list);
-  const bodyInView = topShows(list);
+  const bodyInView = listTopShows(list);
   const seamAt =
     seam === undefined ? -1 : units.findIndex((u) => u.key === seam);
   const seamUnit = units[seamAt];

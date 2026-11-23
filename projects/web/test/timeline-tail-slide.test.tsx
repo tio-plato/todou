@@ -8,6 +8,7 @@ import { type ReactNode, useRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RevealedRunsProvider } from "../src/components/timeline/revealed-runs.tsx";
 import { Timeline } from "../src/components/timeline/timeline.tsx";
+import { TimelineDivider } from "../src/components/timeline/timeline-divider.tsx";
 import { endHeldAt, useScrollInsets } from "../src/lib/scroll-insets.ts";
 import { FakeResizeObserver } from "./fake-resize-observer.ts";
 import { renderWithProviders, testQueryClient } from "./render.tsx";
@@ -27,7 +28,9 @@ import { renderWithProviders, testQueryClient } from "./render.tsx";
  * follows the list runs on far past the screen, unless the page declares
  * where its conversation ends, which is then the comment box's bottom with a
  * footer below it, the body's Edit button in the 40px right above the list,
- * and a shell header over the screen's top where the case asks for one.
+ * and a shell header over the screen's top where the case asks for one. The
+ * timeline's divider line, where the case asks for it, stands right before
+ * the list: 16px while it carries the hidden count, 1px as a plain rule.
  * A frame delivers what a browser's next frame would: the scroll event of
  * whatever moved the page, then the resizes.
  */
@@ -73,7 +76,7 @@ type Options = {
   hidden?: number[];
   /** Heights past a unit's own, by unit key. */
   grown?: Record<string, number>;
-  /** How far down the page the list starts. */
+  /** How far down the page the list starts, its divider line first. */
   above?: number;
   /** Whether the page declares where its conversation ends. */
   end?: boolean;
@@ -81,6 +84,8 @@ type Options = {
   holdHead?: boolean;
   /** How tall a shell header over the screen's top is, if there is one. */
   header?: number;
+  /** Whether the timeline's divider line stands right before the list. */
+  divider?: boolean;
 };
 
 /**
@@ -110,6 +115,7 @@ async function open({
   end = false,
   holdHead = false,
   header,
+  divider = false,
 }: Options = {}) {
   const items: TimelineItem[] = Array.from({ length: total }, (_, i) =>
     comment(i + 1, hidden.includes(i + 1)),
@@ -185,8 +191,16 @@ async function open({
   };
   const listHeight = () =>
     [...(listOf()?.children ?? [])].reduce((sum, c) => sum + heightOf(c), 0);
+  /** The divider line's height: the hidden count's row, or a rule. */
+  const leadHeight = () => {
+    if (!divider) return 0;
+    const lead = listOf()?.previousElementSibling;
+    return lead?.getAttribute("data-testid") === "timeline-divider" ? 16 : 1;
+  };
+  /** Where the list itself starts on the page, below its divider line. */
+  const listAt = () => state.above + leadHeight();
   const docHeight = () =>
-    state.above + listHeight() + (end ? COMPOSER + FOOTER : BELOW);
+    listAt() + listHeight() + (end ? COMPOSER + FOOTER : BELOW);
   const max = () => Math.max(0, docHeight() - VIEWPORT);
   const clamp = (y: number) => Math.min(max(), Math.max(0, y));
 
@@ -233,20 +247,25 @@ async function open({
     function (this: Element) {
       const list = listOf();
       if (list === null) return unplaced.call(this);
-      if (this === list) return box(state.above - state.y, listHeight());
+      if (this === list) return box(listAt() - state.y, listHeight());
       if (end && this === list.parentElement)
-        return box(state.above - state.y, listHeight() + COMPOSER);
-      if (end && this === list.previousElementSibling)
+        return box(
+          state.above - state.y,
+          leadHeight() + listHeight() + COMPOSER,
+        );
+      if (end && this === list.parentElement?.firstElementChild)
         return box(state.above - 40 - state.y, 40);
+      if (divider && this === list.previousElementSibling)
+        return box(state.above - state.y, leadHeight());
       if (end && this.matches('[aria-label="Write a comment"]'))
-        return box(state.above + listHeight() - state.y, COMPOSER);
+        return box(listAt() + listHeight() - state.y, COMPOSER);
       if (header !== undefined && this.closest("header") !== null)
         return box(0, header);
       let child: Element | null = this;
       while (child !== null && child.parentElement !== list)
         child = child.parentElement;
       if (child === null) return unplaced.call(this);
-      let top = state.above;
+      let top = listAt();
       for (const before of list.children) {
         if (before === child) break;
         top += heightOf(before);
@@ -287,6 +306,7 @@ async function open({
   const client = testQueryClient();
   const timeline = (
     <RevealedRunsProvider card="p/7">
+      {divider && <TimelineDivider />}
       <Timeline slug="p" issueNumber={7} pendingComments={[]} />
     </RevealedRunsProvider>
   );
@@ -330,7 +350,7 @@ async function open({
     at: () => state.y,
     max,
     /** Where a landing on the end puts the page, with an end declared. */
-    endTarget: () => clamp(state.above + listHeight() + COMPOSER - VIEWPORT),
+    endTarget: () => clamp(listAt() + listHeight() + COMPOSER - VIEWPORT),
     scrollTo,
     scrollBy,
     /** The page as tall as all it holds, the way the browser reports it. */
@@ -741,6 +761,22 @@ describe("a card whose list starts on screen, read at its end", () => {
     page.press(page.view.getByRole("button", { name: "Reveal" }));
     await page.view.findByText("body 7");
     await page.settle();
+    await page.fillAll();
+    expect(page.topOf(7)).toBe(before);
+  });
+
+  it("opens the card's last hidden comment where its run was as the divider shrinks", async () => {
+    const page = await shortCard({
+      divider: true,
+      hidden: [7],
+      grown: { ...SHORT, "hidden-7": -ROW / 2, "comment-7": 200 },
+    });
+    expect(page.view.queryByTestId("timeline-divider")).not.toBeNull();
+    const before = page.topOf("hidden-7");
+    page.press(page.view.getByRole("button", { name: "Reveal" }));
+    await page.view.findByText("body 7");
+    await page.settle();
+    expect(page.view.queryByTestId("timeline-divider")).toBeNull();
     await page.fillAll();
     expect(page.topOf(7)).toBe(before);
   });

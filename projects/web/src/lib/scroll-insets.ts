@@ -97,9 +97,22 @@ export function usableViewport(): UsableViewport {
   };
 }
 
-/** Whether `el`'s top shows below the top overlays. */
-export function topShows(el: Element): boolean {
-  return el.getBoundingClientRect().top > usableViewport().top;
+/**
+ * Where a reading list starts on screen: at the element right before it when
+ * that is marked `data-list-lead` as the list's own opening line (the
+ * timeline's divider), else at the list's top. Found again on every call,
+ * since the lead can be swapped for another element.
+ */
+export function listTop(list: Element): number {
+  const lead = list.previousElementSibling;
+  return (
+    lead?.hasAttribute("data-list-lead") ? lead : list
+  ).getBoundingClientRect().top;
+}
+
+/** Whether a reading list's start shows below the top overlays. */
+export function listTopShows(list: Element): boolean {
+  return listTop(list) > usableViewport().top;
 }
 
 /** One-shot highlight; restartable when the same target is revealed again. */
@@ -560,10 +573,10 @@ export type ReadingUnit = { key: string; top: number };
  * back on, nearest first: those below it, or above it for the last unit kept
  * at the end of the conversation.
  *
- * `withList` marks a place that moves with the list's top: whatever moves
- * that top on screen, the page above the list growing or a scroll, moves the
- * units with it, and only what moves them within the list is put back. Their
- * tops are on screen all the same.
+ * `withList` marks a place that moves with the list's top (`listTop`):
+ * whatever moves that top on screen, the page above the list growing or a
+ * scroll, moves the units with it, and only what moves them within the list
+ * is put back. Their tops are on screen all the same.
  */
 export type ReadingPlace = ReadingUnit & {
   after: ReadingUnit[];
@@ -630,7 +643,9 @@ function scrolled(place: ReadingPlace, by: number): ReadingPlace {
  * with the list's top instead (`withList`): what grows above the list and
  * the reader's own scrolls move that top and the place with it, so only what
  * moves the unit within the list is put back, and editing the body pushes
- * nobody. Once a put back has taken the list's top under the top overlays,
+ * nobody. The top is the divider line's, which belongs to the list: as it
+ * shrinks with the card's last hidden comment revealed, what was pressed is
+ * put back. Once a put back has taken the list's top under the top overlays,
  * the place is measured from the screen like any other.
  *
  * The auto-hiding header is told how far the page really moved, which the
@@ -662,7 +677,7 @@ export function useReadingList(
         root.style.setProperty("overflow-anchor", "none");
       place = next;
       seenY = window.scrollY;
-      seenListTop = list.current?.getBoundingClientRect().top ?? 0;
+      seenListTop = list.current === null ? 0 : listTop(list.current);
     };
     const repick = () => {
       const el = list.current;
@@ -712,9 +727,7 @@ export function useReadingList(
       const y = window.scrollY;
       const kept = scrolled(
         place,
-        place.withList
-          ? seenListTop - el.getBoundingClientRect().top
-          : y - seenY,
+        place.withList ? seenListTop - listTop(el) : y - seenY,
       );
       seenY = y;
       place = kept;
@@ -742,7 +755,7 @@ export function useReadingList(
         }
       }
       // Its own scroll moved the list's top too, and is no move within it.
-      seenListTop = el.getBoundingClientRect().top;
+      seenListTop = listTop(el);
       if (fellBack) {
         repick();
         return;
@@ -760,7 +773,7 @@ export function useReadingList(
       };
       // Once the list's top has gone under the top overlays, the body out of
       // view, the place is measured from the screen like any other.
-      if (kept.withList && topShows(el)) place.withList = true;
+      if (kept.withList && listTopShows(el)) place.withList = true;
     };
     const own = {
       drop: () => {
