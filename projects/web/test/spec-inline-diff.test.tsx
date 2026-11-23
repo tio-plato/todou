@@ -3664,12 +3664,12 @@ describe("baseline annotations on deleted text", () => {
     expect(
       [
         ...container.querySelectorAll<HTMLElement>(
-          "[aria-label$='comment(s) on this block']",
+          "[aria-label$=' comment'], [aria-label$=' comments']",
         ),
       ].map((chip) => [chip.style.top, chip.getAttribute("aria-label")]),
     ).toEqual([
-      ["290px", "1 comment(s) on this block"],
-      ["315px", "2 comment(s) on this block"],
+      ["290px", "1 comment"],
+      ["315px", "2 comments"],
     ]);
   });
 
@@ -3708,12 +3708,12 @@ describe("baseline annotations on deleted text", () => {
       expect(
         [
           ...container.querySelectorAll<HTMLElement>(
-            "[aria-label$='comment(s) on this block']",
+            "[aria-label$=' comment'], [aria-label$=' comments']",
           ),
         ].map((chip) => [chip.style.top, chip.getAttribute("aria-label")]),
       ).toEqual([
-        ["100px", "2 comment(s) on this block"],
-        ["125px", "1 comment(s) on this block"],
+        ["100px", "2 comments"],
+        ["125px", "1 comment"],
       ]);
     },
   );
@@ -3756,12 +3756,12 @@ describe("baseline annotations on deleted text", () => {
       expect(
         [
           ...container.querySelectorAll<HTMLElement>(
-            "[aria-label$='comment(s) on this block']",
+            "[aria-label$=' comment'], [aria-label$=' comments']",
           ),
         ].map((chip) => [chip.style.top, chip.getAttribute("aria-label")]),
       ).toEqual([
-        ["100px", "2 comment(s) on this block"],
-        [`${lower}px`, "1 comment(s) on this block"],
+        ["100px", "2 comments"],
+        [`${lower}px`, "1 comment"],
       ]);
     },
   );

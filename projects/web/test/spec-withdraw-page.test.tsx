@@ -1074,7 +1074,7 @@ describe("staged comments on a newer version", () => {
     await waitFor(() => expect(shownTitle()).toBe("Version 2"));
 
     // Kept: drawn on the line its paragraph moved to.
-    fireEvent.click(await screen.findByLabelText("1 comment(s) on this block"));
+    fireEvent.click(await screen.findByLabelText("1 comment"));
     expect(await screen.findByRole("button", { name: "L5" })).toBeTruthy();
     expect(screen.getAllByText("On kept")).toHaveLength(1);
 
@@ -1169,7 +1169,7 @@ describe("staged comments on a newer version", () => {
       filesFor: movingFiles,
       stagedDrafts: [onV2],
     });
-    expect(screen.queryByLabelText(/comment\(s\) on this block/)).toBeNull();
+    expect(screen.queryByLabelText(/^\d+ comments?$/)).toBeNull();
     expect(unplacedSection()).toBeNull();
     expect(page.reads).not.toContain(`${page.base}/spec/files?version=2`);
   });

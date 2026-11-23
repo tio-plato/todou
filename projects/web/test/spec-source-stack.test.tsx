@@ -837,9 +837,9 @@ describe("baseline comments in the rendered comparison", () => {
     await waitFor(() =>
       expect(
         view
-          .queryAllByRole("button", { name: /comment\(s\) on this block/ })
+          .queryAllByRole("button", { name: /^\d+ comments?$/ })
           .map((chip) => chip.getAttribute("aria-label")),
-      ).toEqual(["1 comment(s) on this block", "1 comment(s) on this block"]),
+      ).toEqual(["1 comment", "1 comment"]),
     );
     expect(
       view.getByText(/Comments without a place in v2/).parentElement
@@ -863,9 +863,9 @@ describe("baseline comments in the rendered comparison", () => {
     await waitFor(() =>
       expect(
         view
-          .queryAllByRole("button", { name: /comment\(s\) on this block/ })
+          .queryAllByRole("button", { name: /^\d+ comments?$/ })
           .map((chip) => chip.getAttribute("aria-label")),
-      ).toEqual(["1 comment(s) on this block"]),
+      ).toEqual(["1 comment"]),
     );
     expect(view.queryByText("settled on delta")).toBeNull();
   });

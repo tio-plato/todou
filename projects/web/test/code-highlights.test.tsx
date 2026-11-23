@@ -787,7 +787,7 @@ describe("chips on code rows", () => {
     if (wrapper === undefined) throw new Error("no fence");
     const shadow = await drawRows(wrapper, SIX_ROWS);
     const [chip] = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     if (chip === undefined) throw new Error("no chip");
     const popover = await openPopover(chip);

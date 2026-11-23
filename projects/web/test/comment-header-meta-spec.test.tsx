@@ -570,7 +570,7 @@ describe("the popover's locate control holds where it lands (T-527)", () => {
       annotation(406, { line_start: 3, line_end: 3, col_start: 1, col_end: 7 }),
     ]);
     const view = await page("?v=2&view=rendered&file=design.md");
-    fireEvent.click(await view.findByLabelText("1 comment(s) on this block"));
+    fireEvent.click(await view.findByLabelText("1 comment"));
     const popover = await waitFor(() => {
       const el = document.querySelector("[data-slot='popover-content']");
       expect(el).not.toBeNull();
