@@ -804,6 +804,29 @@ describe("a card whose list starts on screen, read at its end", () => {
     expect(page.unit("comment-1")?.hasAttribute("data-unfilled")).toBe(false);
     expect(edit.getBoundingClientRect().top).toBe(before);
   });
+
+  it("keeps the body's editor put when the reader types after pressing it", async () => {
+    const page = await shortCard();
+    const edit = page.view.getByRole("button", { name: "Edit" });
+    const before = edit.getBoundingClientRect().top;
+    page.press(edit);
+    fireEvent.keyDown(edit, { key: "a" });
+    await page.fillAll();
+    expect(page.unit("comment-1")?.hasAttribute("data-unfilled")).toBe(false);
+    expect(edit.getBoundingClientRect().top).toBe(before);
+  });
+
+  it("lets go of the end when a key lands on the body", async () => {
+    const page = await shortCard();
+    const edit = page.view.getByRole("button", { name: "Edit" });
+    const before = edit.getBoundingClientRect().top;
+    page.press(column(page));
+    // Focus moved into the body by the keyboard.
+    fireEvent.keyDown(edit, { key: "Tab" });
+    await page.fillAll();
+    expect(page.unit("comment-1")?.hasAttribute("data-unfilled")).toBe(false);
+    expect(edit.getBoundingClientRect().top).toBe(before);
+  });
 });
 
 describe("the head arriving under a landing on the end", () => {
