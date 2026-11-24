@@ -640,6 +640,33 @@ describe("chips on code rows", () => {
     await waitFor(() => expect(chipsOf(view)).toEqual([["220px", 1]]));
   });
 
+  it("lists a row's note before the deleted row's below it, in one chip", async () => {
+    layOutRows();
+    // Rows 20px apart share a chip; each is a line of its own, so the
+    // baseline's note on the deleted second row comes after the first's.
+    const { view, wrappers } = await renderDocument(
+      EDITED_AFTER,
+      [wholeLines("comment", 4, 4)],
+      {
+        baselineBody: EDITED_BEFORE,
+        baselineAnnotations: [wholeLines("comment", 7, 7)],
+      },
+    );
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    await drawRows(wrapper, EDITED_ROWS);
+    const chip = await view.findByRole("button", { name: /^2 comment/ });
+    const popover = await openPopover(chip);
+    expect(
+      [
+        ...popover.querySelectorAll(
+          "button[title='Scroll to what this points at']",
+        ),
+      ].map((button) => button.textContent),
+    ).toEqual(["L4", "L7"]);
+    await closePopover(popover);
+  });
+
   it("hangs a baseline annotation by its row of a restored block", async () => {
     layOutRows();
     // v1's line 5 is "more();", the second row of the block v2 removed.
