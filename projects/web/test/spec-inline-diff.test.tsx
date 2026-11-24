@@ -2132,6 +2132,59 @@ describe("chips on a block's later lines", () => {
       ]),
     );
   });
+
+  it.each([
+    [
+      "in other columns",
+      "its second line runs on here,",
+      [
+        ["comment", "line"],
+        ["comment", "its"],
+        ["comment", "lin"],
+      ],
+      ["L4:12–15", "L4:1–3", "L4:12–14"],
+    ],
+    [
+      "a draft after the comments",
+      "its second line runs on here,",
+      [
+        ["comment", "line"],
+        ["comment", "its"],
+        ["draft", "lin"],
+      ],
+      ["L4:12–15", "L4:1–3", "L4:12–14"],
+    ],
+    [
+      "one in inline code, drawn lower",
+      "then `inline code` on a second line,",
+      [
+        ["comment", "inline"],
+        ["comment", "then"],
+      ],
+      ["L4:7–12", "L4:1–4"],
+    ],
+  ] as const)(
+    "lists the notes on a later line in the order they were written (%s)",
+    async (_, line, notes, labels) => {
+      // Each note hangs by its first character; all are on the paragraph's
+      // second line, so one chip holds them.
+      placeLines();
+      const body = [
+        "Intro.",
+        "",
+        "The first line of a paragraph,",
+        line,
+        "its third line.",
+        "",
+      ].join("\n");
+      const { view } = await renderDiff(
+        body,
+        body,
+        notes.map(([kind, text]) => onBaseline(kind, body, 4, text)),
+      );
+      expect(await popoverLabels(view)).toEqual(labels);
+    },
+  );
 });
 
 /**
@@ -3824,6 +3877,29 @@ describe("baseline annotations on deleted text", () => {
       [onBaseline("comment", before, 4, "doomed")],
     );
     expect(await popoverLabels(view)).toEqual(["L3", "L4:25–30"]);
+  });
+
+  it("lists the notes on a line's removed words in the order they were written", async () => {
+    // Both removed words are put back on the paragraph's second line, each
+    // run a place of its own.
+    placeLines();
+    const before =
+      "Intro.\n\nThe first line of a paragraph,\nits second line has an old word and a stale word here,\nits third line.\n";
+    const { view } = await renderDiff(
+      before,
+      before.replace("an old word and a stale word", "a word and a word"),
+      [],
+      [
+        onBaseline("comment", before, 4, "stale"),
+        onBaseline("comment", before, 4, "old"),
+        onBaseline("comment", before, 4, "sta"),
+      ],
+    );
+    expect(await popoverLabels(view)).toEqual([
+      "L4:39–43",
+      "L4:24–26",
+      "L4:39–41",
+    ]);
   });
 
   it("lists a restored block's notes by the line they start on", async () => {

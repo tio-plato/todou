@@ -1088,22 +1088,51 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     // A chip lists its notes in the order their places come on the page:
     // top to bottom, and at one height, as under a shut fold, in the
     // document's. So a chip lists what the chips it stands for would, one
-    // after another, whichever joined which. Within one block at one height
-    // the baseline's notes go first, as the text they are on is drawn before
-    // the text that replaced it, and as they were written first: a version
-    // takes no notes once a newer one is pushed. Then each version's go by
-    // the line they start on, and notes on one line keep the order they came
-    // in.
+    // after another, whichever joined which. A block's places less than half
+    // a line apart are on one line of text, at the height of its top one:
+    // inline code is drawn a few pixels below the text beside it, and in
+    // WebKit a removed word a hair below. On one line of one block the
+    // baseline's notes go first, as the text they are on is drawn before the
+    // text that replaced it, and as they were written first: a version takes
+    // no notes once a newer one is pushed. Then each version's go by the
+    // line of source they start on, and those starting on one go in the
+    // order they were written, drafts last, as the lists they came in hold
+    // them.
     const onBaseline = new Set(baselineAnnotations);
+    const byEl = new Map<HTMLElement, Place[]>();
+    for (const place of places.values()) {
+      byEl.set(place.el, [...(byEl.get(place.el) ?? []), place]);
+    }
+    const lineOf = new Map<Place, number>();
+    for (const [el, group] of byEl) {
+      // Half a line is half the block's first character, as `textLine`
+      // takes it for the first line; none where nothing lined the block up,
+      // so that only places at one height share a line there.
+      const half = (texts.get(el)?.first.height ?? 0) / 2;
+      let line: number | undefined;
+      for (const place of group.sort((a, b) => a.top - b.top)) {
+        // From the line's top place, not the last one on it, so that places
+        // in a row never string two lines into one.
+        if (line === undefined || place.top - line >= half) line = place.top;
+        lineOf.set(place, line);
+      }
+    }
+    const lineTop = (place: Place) => lineOf.get(place) ?? place.top;
+    const written = new Map(
+      [...annotations, ...baselineAnnotations].map(
+        (item, i) => [item, i] as const,
+      ),
+    );
     const rank = new Map(
       [...places.values()]
         .flatMap((place) => place.items.map((item) => ({ place, item })))
         .sort(
           (a, b) =>
-            a.place.top - b.place.top ||
+            lineTop(a.place) - lineTop(b.place) ||
             documentOrder(a.place.el, b.place.el) ||
             Number(onBaseline.has(b.item)) - Number(onBaseline.has(a.item)) ||
-            a.item.start - b.item.start,
+            a.item.start - b.item.start ||
+            (written.get(a.item) ?? 0) - (written.get(b.item) ?? 0),
         )
         .map(({ item }, i) => [item, i] as const),
     );
