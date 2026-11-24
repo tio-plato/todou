@@ -5,6 +5,7 @@ import {
   atConversationEnd,
   blockFor,
   GLIDE_END_EVENT,
+  glideToY,
   holdRevealed,
   isGliding,
   isHoldingTarget,
@@ -1091,6 +1092,22 @@ describe("landing on the end of the conversation", () => {
       expect(targets.at(-1)).toBe(4000 - VIEWPORT);
       expect(ended).toHaveBeenCalledTimes(1);
       window.removeEventListener(GLIDE_END_EVENT, ended);
+    });
+
+    it("stops where it got to once the point it glides to is gone", () => {
+      glide();
+      const { targets } = page({ y: 4000 });
+      let gone = false;
+      glideToY(() => (gone ? null : 3000));
+      frames(3);
+      const placed = [...targets];
+      expect(placed.at(-1)).toBeGreaterThan(0);
+      // What the point was measured from has left the page.
+      gone = true;
+      frames(10);
+      resizePage();
+      expect(targets).toEqual(placed);
+      expect(isGliding()).toBe(false);
     });
 
     it("goes straight to the stop at a frame later than the whole glide", () => {

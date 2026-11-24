@@ -747,17 +747,26 @@ export function revealAboveEnd(
  * Glide to the page offset `destination()` gives, asked again for every
  * frame and every placing after, and hold the page there as `landAtBottom`
  * holds the end; see `hold`. Where it does not glide, it goes there at once.
+ * Null from it means what it measures from is gone, and so is the hold.
  */
-export function glideToY(destination: () => number): () => void {
-  const stop = () => onPage(destination());
-  const place = () => {
+export function glideToY(destination: () => number | null): () => void {
+  const stop = () => {
+    const y = destination();
+    return y === null ? null : onPage(y);
+  };
+  const place = (release: () => void) => {
     // Before anything is measured: the header settles first (see `pageLands`).
     pageLands();
-    window.scrollTo(0, stop());
+    const y = stop();
+    if (y === null) release();
+    else window.scrollTo(0, y);
   };
-  if (glides(true, stop)) return hold(document.body, place, false, stop, stop);
-  place();
-  return hold(document.body, place, false, stop);
+  const target = () => stop() ?? window.scrollY;
+  if (glides(true, stop))
+    return hold(document.body, place, false, target, stop);
+  if (stop() === null) return () => {};
+  place(() => {});
+  return hold(document.body, place, false, target);
 }
 
 /**

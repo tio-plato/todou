@@ -380,7 +380,7 @@ export function SpecChangeStrip({
     if (tick !== undefined) land(tick.target);
     // Glided to and held there like a tick's landing (T-211), the point
     // measured again as the card moves down the page.
-    else keepHold(glideToY(() => restingFor(at.down) ?? window.scrollY));
+    else keepHold(glideToY(() => restingFor(at.down)));
   };
 
   const heading = hover === null ? undefined : headings[hover.section];
