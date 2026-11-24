@@ -498,8 +498,9 @@ export function Timeline({
     return () => clearTimeout(id);
   }, [fillIndex]);
   const finishQuestionLanding = (error?: "unavailable" | "stalled") => {
-    // revealBlock has already moved the viewport. Do not wait for a native
-    // scroll event before restoring the ordinary follow-bottom policy.
+    // A landing at once has already moved the viewport. Do not wait for a
+    // native scroll event before restoring the ordinary follow-bottom policy;
+    // one that glides is read again, here too, once it ends.
     atEndRef.current = whereReaderIs();
     questionLanding.finish(error);
   };
