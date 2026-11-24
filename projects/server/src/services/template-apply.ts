@@ -345,6 +345,11 @@ function asDrawn(
  * drew the project as once applied, when it sent that. It is compared
  * before any deletion is skipped: a status that took issues since the
  * preview is not the page drawing it wrong.
+ *
+ * A selected label deletion is carried out only on as many issues, trashed
+ * ones included, as `labelIssues` says the page showed it coming off: a
+ * label on any other number now refuses the whole selection, and so does a
+ * label deletion `labelIssues` has no number for.
  */
 export function applySelection(
   state: ProjectState,
@@ -352,6 +357,7 @@ export function applySelection(
   rows: readonly ChangeRow[],
   selected: readonly string[],
   drawn?: TemplateApplyInput["drawn"],
+  labelIssues: Readonly<Record<string, number>> = {},
 ): ApplyOutcome {
   const chosen = new Set(selected);
   const byId = new Map(rows.map((row) => [row.id, row]));
@@ -373,11 +379,39 @@ export function applySelection(
       );
     }
   }
+  const picked = rows.filter((row) => chosen.has(row.id));
+  const labelDeletes = picked.filter(
+    (row): row is Extract<ChangeRow, { type: "label_delete" }> =>
+      row.type === "label_delete",
+  );
+  const uncounted = labelDeletes
+    .filter((row) => !Object.hasOwn(labelIssues, row.id))
+    .map((row) => row.id);
+  if (uncounted.length > 0) {
+    const one = uncounted.length === 1;
+    throw new ValidationFailedError(
+      `${uncounted.join(", ")} ${one ? "needs" : "need"} label_issues: ` +
+        `how many issues the preview showed ${one ? "it" : "each"} coming off`,
+      { missing: uncounted },
+    );
+  }
   const layout = applyLayout(projectSnapshot(state), template, rows);
   if (drawn !== undefined && !asDrawn(applyResult(layout, chosen), drawn)) {
     throw new DrawnMismatchError();
   }
-  const picked = rows.filter((row) => chosen.has(row.id));
+  const moved = labelDeletes.find(
+    (row) => row.issues + row.trashed !== labelIssues[row.id],
+  );
+  if (moved !== undefined) {
+    throw new ConflictError(
+      `label "${moved.name}" is on other issues than previewed — preview again`,
+      {
+        id: moved.id,
+        shown: labelIssues[moved.id],
+        now: moved.issues + moved.trashed,
+      },
+    );
+  }
   const { keyOf } = pairStatuses(state.statuses, template);
 
   const skipped: string[] = [];
@@ -489,7 +523,8 @@ export const TEMPLATE_APPLY_RULES = 2;
  * stored roles and labels, the template with its revision, and the rules.
  * Issue counts are left out — anyone editing a card would otherwise void
  * every preview — so a status that took issues after the preview is skipped
- * instead.
+ * instead, and a selected label deletion is held to the count the page sends
+ * back for it.
  */
 export function templateApplyDigest(
   state: ProjectState,
@@ -523,16 +558,7 @@ export function templateApplyDigest(
     .digest("base64url");
 }
 
-/**
- * `labelCounts` reads how many cards carry each label, which only the
- * preview shows: the apply leaves them out, so a card relabelled meanwhile
- * does not conflict with its serializable transaction.
- */
-async function readState(
-  db: Db,
-  projectId: number,
-  { labelCounts }: { labelCounts: boolean },
-): Promise<ProjectState> {
+async function readState(db: Db, projectId: number): Promise<ProjectState> {
   // One after another: inside the apply's transaction these share a single
   // connection, which takes one query at a time.
   const statusRows = await db
@@ -553,24 +579,22 @@ async function readState(
     .from(labels)
     .where(eq(labels.projectId, projectId));
   const statusUsage = await statusUsageRows(db, projectId);
-  const labelUsage = labelCounts ? await labelUsageRows(db, projectId) : [];
+  const labelUsage = await labelUsageRows(db, projectId);
   // Deleting a label takes it off trashed cards too, which the Labels
   // page's count leaves out.
-  const labelTrash = !labelCounts
-    ? []
-    : await db
-        .select({
-          id: issueLabels.labelId,
-          trashed: sql<number>`count(*)::int`,
-        })
-        .from(issueLabels)
-        .innerJoin(
-          issues,
-          and(eq(issues.id, issueLabels.issueId), isNotNull(issues.deletedAt)),
-        )
-        .innerJoin(labels, eq(labels.id, issueLabels.labelId))
-        .where(eq(labels.projectId, projectId))
-        .groupBy(issueLabels.labelId);
+  const labelTrash = await db
+    .select({
+      id: issueLabels.labelId,
+      trashed: sql<number>`count(*)::int`,
+    })
+    .from(issueLabels)
+    .innerJoin(
+      issues,
+      and(eq(issues.id, issueLabels.issueId), isNotNull(issues.deletedAt)),
+    )
+    .innerJoin(labels, eq(labels.id, issueLabels.labelId))
+    .where(eq(labels.projectId, projectId))
+    .groupBy(issueLabels.labelId);
   const roleOf = new Map(
     insightsSettingsResponse(statusRows, saved[0]).roles.map((entry) => [
       entry.status_id,
@@ -620,7 +644,7 @@ export async function previewTemplateApply(
   );
   const template = await resolveTemplate(ctx, actor, ref);
   const db = await ctx.router.forProject(routeInfoOf(project));
-  const state = await readState(db, project.id, { labelCounts: true });
+  const state = await readState(db, project.id);
   return {
     expected: templateApplyDigest(state, template.body, template.revision),
     project: projectSnapshot(state),
@@ -649,6 +673,11 @@ type Written = {
  * foreign key violation (23503), not a serialization failure. A card's
  * status is the only foreign key this transaction can break, so that is
  * retried too, and the retry reads the card and skips the status as in use.
+ *
+ * A card given a label after the read is read the same way by the cascade
+ * that deletes the label, which fails as a serialization failure (40001).
+ * The retry counts the card, which the page did not show the label coming
+ * off, and refuses the whole apply.
  */
 export async function applyTemplate(
   ctx: AppContext,
@@ -669,7 +698,7 @@ export async function applyTemplate(
     db,
     "the project is busy — preview again shortly",
     async (tx) => {
-      const state = await readState(tx, project.id, { labelCounts: false });
+      const state = await readState(tx, project.id);
       if (
         templateApplyDigest(state, template.body, template.revision) !==
         input.expected
@@ -683,6 +712,7 @@ export async function applyTemplate(
         rows,
         input.selected,
         input.drawn,
+        input.label_issues,
       );
       return write(tx, project.id, state, outcome);
     },

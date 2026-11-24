@@ -431,6 +431,14 @@ export const TemplateApplyInput = z.object({
       default: StatusKey.nullable(),
     })
     .optional(),
+  /**
+   * For each ticked label deletion, by its row id, how many issues the page
+   * showed it coming off, trashed ones included: the row's `issues + trashed`.
+   * The apply refuses the whole selection when one of those labels is on
+   * another number of issues by then; a ticked label deletion missing here is
+   * refused as invalid. Keys for any other row are ignored.
+   */
+  label_issues: z.record(z.string(), z.number().int().nonnegative()).optional(),
 });
 export type TemplateApplyInput = z.infer<typeof TemplateApplyInput>;
 

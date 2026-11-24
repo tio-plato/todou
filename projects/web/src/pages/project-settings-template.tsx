@@ -331,6 +331,13 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
       return;
     }
     const { result } = statuses;
+    // What the page showed each ticked label deletion coming off, which the
+    // apply holds it to.
+    const shown = ticked.flatMap((row) =>
+      row.type === "label_delete"
+        ? [[row.id, row.issues + row.trashed] as const]
+        : [],
+    );
     apply.mutate({
       slug,
       input: {
@@ -342,6 +349,7 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
           line: result.line,
           default: result.default,
         },
+        ...(shown.length > 0 && { label_issues: Object.fromEntries(shown) }),
       },
       rows,
     });

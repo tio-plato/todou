@@ -90,6 +90,7 @@ describe.skipIf(!PG_URL)("applying a template on PostgreSQL", () => {
         template: "basic",
         expected,
         selected: [`status.delete:${parked.id}`, `label.delete:${docs.id}`],
+        label_issues: { [`label.delete:${docs.id}`]: 0 },
       });
       await expect
         .poll(waitersOnHolder, { timeout: 5000, interval: 10 })
@@ -110,5 +111,55 @@ describe.skipIf(!PG_URL)("applying a template on PostgreSQL", () => {
     expect(statuses.map((x: { id: number }) => x.id)).toContain(parked.id);
     const labels = await json(await call("GET", `/projects/${slug}/labels`));
     expect(labels.map((x: { id: number }) => x.id)).not.toContain(docs.id);
+  });
+
+  it("refuses an apply whose ticked label is put on a card while it deletes it", async () => {
+    const s = `${slug}-label`;
+    await created("/projects", { slug: s, name: s });
+    // Not in Basic and on no card, so the preview offers to delete it off none.
+    const docs = await created(`/projects/${s}/labels`, { name: "kind:docs" });
+    const card = await created(`/projects/${s}/issues`, { title: "labelled" });
+    const preview = await call("POST", `/projects/${s}/template/preview`, {
+      template: "basic",
+    });
+    expect(preview.status).toBe(200);
+    const { expected } = await json(preview);
+
+    // The card's label, not yet committed: the apply's snapshot misses it,
+    // and its delete of the label waits on it.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        "INSERT INTO issue_labels (issue_id, label_id) VALUES ($1, $2)",
+        [card.id, docs.id],
+      );
+      pending = call("POST", `/projects/${s}/template/apply`, {
+        template: "basic",
+        expected,
+        selected: [`label.delete:${docs.id}`],
+        label_issues: { [`label.delete:${docs.id}`]: 0 },
+      });
+      await expect
+        .poll(waitersOnHolder, { timeout: 5000, interval: 10 })
+        .toBe(1);
+      await holder.query("COMMIT");
+      const res = await pending;
+      expect(res.status).toBe(409);
+      // Counted again on the retry, so the card the label went on is in it.
+      expect((await json(res)).error).toMatchObject({
+        code: "conflict",
+        details: { id: `label.delete:${docs.id}`, shown: 0, now: 1 },
+      });
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+    const labels = await json(await call("GET", `/projects/${s}/labels`));
+    expect(labels.map((x: { id: number }) => x.id)).toContain(docs.id);
+    const after = await json(
+      await call("GET", `/projects/${s}/issues/${card.number}`),
+    );
+    expect(after.labels.map((x: { id: number }) => x.id)).toEqual([docs.id]);
   });
 });
