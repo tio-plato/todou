@@ -323,9 +323,12 @@ describe("invalidationsFor (SSE → invalidation descriptors)", () => {
     // project list goes stale with it (T-122) — as does the agent Projects
     // column, whose rows are memberships of exactly this kind (T-227), and
     // the declined-request list, which travels under this entity (T-280).
+    // The project itself goes with them: a revocation leaves it out of the
+    // reader's sight, and an open page learns that from its read.
     expect(
       invalidationsFor({ entity: "member", id: 1, action: "deleted" }, "p"),
     ).toEqual([
+      { key: ["project", "p"], scope: "refetch" },
       { key: ["members", "p"], scope: "refetch" },
       { key: ["access-denials", "p"], scope: "refetch" },
       { key: ["projects"], scope: "refetch" },

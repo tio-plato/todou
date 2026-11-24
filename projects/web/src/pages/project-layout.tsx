@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Link,
   Outlet,
@@ -7,9 +7,11 @@ import {
   useParams,
   useRouterState,
 } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { projectQueries, projectSlugs } from "@/api/project-cache.ts";
 import { projectQuery } from "@/api/queries.ts";
 import { useRecordProjectVisit } from "@/api/useProjectOrder.ts";
+import { PagePending } from "@/components/page-skeleton.tsx";
 import { Button } from "@/components/ui/button";
 import { statusOf } from "@/lib/http-status.ts";
 
@@ -42,12 +44,68 @@ export function ProjectLayout() {
       // and throwing here would replace the whole shell — the guard and
       // every draft under this layout with it — via ProjectRouteError's
       // non-404 rethrow. The check below is the cold-start question only:
-      // has this query ever answered?
+      // has this query ever answered? A warm 404, and an answer naming
+      // another project, are the reset's below, which sends them down this
+      // cold-start path.
       if (query.state.data !== undefined) return false;
       return statusOf(error) !== 404 || !childOwnsMiss;
     },
   });
   const canonical = project.data?.slug;
+
+  // The project this address has shown. Recorded during render, as
+  // `sessionLoss` is in router.tsx, and per slug: moving to another project
+  // keeps this layout mounted, and its first render there still holds the
+  // project left behind.
+  const queryClient = useQueryClient();
+  const [shown, setShown] = useState<{
+    slug: string;
+    id: number;
+    slugs: string[];
+  } | null>(null);
+  if (project.data !== undefined && (shown === null || shown.slug !== slug)) {
+    setShown({
+      slug,
+      id: project.data.id,
+      slugs: projectSlugs(slug, project.data),
+    });
+  }
+  // Set while the read that follows a reset is out, and cleared by its
+  // answer: a project, or an error a card route answers for itself.
+  const [reloading, setReloading] = useState(false);
+  if (reloading && (project.data !== undefined || project.isError)) {
+    setReloading(false);
+  }
+  const current = shown?.slug === slug ? shown : null;
+  // That project has left this address: deleted, or out of the reader's
+  // reach — the server answers 404 to both — or its slug now names another
+  // project, one that took it over or that held it before. Any other failure
+  // keeps the page on the last good answer.
+  const gone =
+    current !== null &&
+    project.data !== undefined &&
+    ((project.isError && statusOf(project.error) === 404) ||
+      project.data.id !== current.id);
+
+  useEffect(() => {
+    if (!gone || current === null) return;
+    // Forgotten, or the answer the reload brings would read as gone too and
+    // reset again, without end.
+    setShown(null);
+    setReloading(true);
+    // Back to how a reload of this address finds it: with nothing cached,
+    // the project's read is a cold start again, which answers a 404 with
+    // the route's error and anything else with whatever now holds the
+    // address. Reset rather than removed, so whatever still reads it hears
+    // of it; every slug of the project, so none answers Back with what is
+    // gone. The page under this layout is already down (below), so its
+    // reads are not refetched with the project's: answered 404 they would
+    // stay cached as errors, which react-query throws again, unfetched, at
+    // whatever page next reads them here, even once the address answers.
+    // Reads outside it, the header's and the tab title's, are refetched, as
+    // on a reload.
+    void queryClient.resetQueries(projectQueries(current.slugs));
+  }, [gone, current, queryClient]);
 
   useEffect(() => {
     if (canonical === undefined || canonical === slug) return;
@@ -66,6 +124,9 @@ export function ProjectLayout() {
   // retired slug never earns its own entry in the switcher's history.
   useRecordProjectVisit(canonical);
 
+  // What the shell draws while a page loads, as a reload would, until the
+  // project's own read has answered.
+  if (gone || reloading) return <PagePending />;
   return <Outlet />;
 }
 
