@@ -1054,6 +1054,21 @@ describe("landing on the end of the conversation", () => {
       window.removeEventListener(GLIDE_END_EVENT, ended);
     });
 
+    // The observer's report as it starts observing comes in the first frame,
+    // after the frame's callback and before the placement after it: placed
+    // there, iOS can draw the sticky header a frame late.
+    it("puts nothing in the frame at the observer's first report, the page not grown", () => {
+      glide();
+      const { targets } = page({ y: 4000 });
+      landAtBottom({ glide: true });
+      now += 16;
+      vi.advanceTimersToNextTimer();
+      resizePage();
+      expect(targets).toEqual([]);
+      vi.advanceTimersToNextTimer();
+      expect(targets).toHaveLength(1);
+    });
+
     it("goes straight to the stop at a frame later than the whole glide", () => {
       glide();
       const { targets } = page({ y: 4000 });

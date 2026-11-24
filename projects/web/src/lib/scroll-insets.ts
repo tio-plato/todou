@@ -409,7 +409,18 @@ function hold(
       }, 0);
     });
   };
-  const observer = new ResizeObserver(placeNow);
+  // Mid-glide, only a page that grew is put back on the path in the frame:
+  // the observer reports once as soon as it starts observing, grown or not,
+  // and that report would place every glide's first frame in the frame.
+  const observer = new ResizeObserver(() => {
+    if (
+      path !== null &&
+      held?.release === release &&
+      document.documentElement.scrollHeight === held.placedHeight
+    )
+      return;
+    placeNow();
+  });
   const end = (handOver: boolean) => {
     if (controller.signal.aborted) return;
     observer.disconnect();
