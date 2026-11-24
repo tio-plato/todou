@@ -212,6 +212,15 @@ function chipHeight(wide: boolean, rem: number): number {
   return wide ? 1.25 * rem + 2 : 1.5 * rem;
 }
 
+/**
+ * How much less than a chip's height apart two chips can measure and still
+ * only touch. Firefox hands positions back as single-precision floats, which
+ * can put two places a chip's height apart up to 0.012px nearer 65,536px
+ * from the window's top. Chromium and WebKit lay out in 64ths of a pixel, so
+ * it stays under one: two chips that overlap there by a 64th still join.
+ */
+const HAIR = 0.015;
+
 /** Runs of removed text, which say where in the baseline they start. */
 const OLD_RUNS = `[${OLD_FLAT_ATTR}], [${OLD_SOURCE_ATTR}]`;
 
@@ -1020,13 +1029,16 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       wide,
       Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
     );
+    // Less than a chip's height apart, two chips overlap; a hair less is
+    // Firefox measuring two that only touch.
+    const overlaps = (gap: number) => gap < tall - HAIR;
     const next: Chip[] = [];
     const oldChips: Chip[] = [];
     for (const group of byBlock.values()) {
       const kept: Chip[] = [];
       for (const place of group.sort((a, b) => a.top - b.top)) {
         const above = kept.at(-1);
-        if (above !== undefined && place.top - above.top < tall) {
+        if (above !== undefined && overlaps(place.top - above.top)) {
           above.items = [...above.items, ...place.items];
           continue;
         }
@@ -1050,7 +1062,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       // one of them: less than a thousandth of a pixel apart is as near.
       const nearer = (a: Chip, b: Chip) =>
         Math.abs(off(a) - off(b)) < 0.001 ? a.top - b.top : off(a) - off(b);
-      const near = next.filter((other) => off(other) < tall).sort(nearer)[0];
+      const near = next.filter((other) => overlaps(off(other))).sort(nearer)[0];
       if (near !== undefined) {
         near.items = [...near.items, ...chip.items];
         continue;
