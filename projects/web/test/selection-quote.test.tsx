@@ -276,6 +276,18 @@ describe("quotableSelection", () => {
     });
   });
 
+  it("cuts a word after a CRLF soft break to its characters", async () => {
+    const { a } = await renderTwo(
+      comment(1, "> one\r\n> two three\r\n"),
+      comment(2, B),
+    );
+    const second = a.querySelector("p[data-loc]")?.lastChild;
+    if (!(second instanceof Text)) throw new Error("no second line");
+    expect(
+      quoted(quotableSelection(select(second, 0, second, 2), document)),
+    ).toBe("tw");
+  });
+
   it("anchors a word before a fold on an item's second line to its columns", async () => {
     // A message's line break cuts its text apart, into pieces with no
     // position: the fold after `xx` is part of that line all the same.
