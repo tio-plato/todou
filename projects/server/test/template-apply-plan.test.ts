@@ -327,8 +327,19 @@ describe("planTemplateApply", () => {
 });
 
 describe("applySelection", () => {
-  const apply = (state: ProjectState, selected: string[]) =>
-    applySelection(state, BASIC, planTemplateApply(state, BASIC), selected);
+  const apply = (
+    state: ProjectState,
+    selected: string[],
+    labelIssues?: Record<string, number>,
+  ) =>
+    applySelection(
+      state,
+      BASIC,
+      planTemplateApply(state, BASIC),
+      selected,
+      undefined,
+      labelIssues,
+    );
 
   it("puts an added status after the one it follows in the template", () => {
     const state = drifted();
@@ -402,7 +413,9 @@ describe("applySelection", () => {
   it("deletes only the label it was asked to", () => {
     const state = drifted();
     const docs = state.labels.find((l) => l.name === "kind:docs")?.id;
-    const outcome = apply(state, [`label.delete:${docs}`]);
+    const outcome = apply(state, [`label.delete:${docs}`], {
+      [`label.delete:${docs}`]: 2,
+    });
     expect(outcome.deleteLabelIds).toEqual([docs]);
     expect(outcome.updateLabels).toEqual([]);
   });

@@ -786,6 +786,7 @@ describe("applying a template", () => {
     await waitFor(() => expect(server.applies()).toHaveLength(1));
     expect(server.applies()[0]?.body).toMatchObject({
       selected: [...DEFAULT_SELECTED, "label.delete:42"],
+      label_issues: { "label.delete:42": 2 },
     });
   });
 
@@ -797,6 +798,9 @@ describe("applying a template", () => {
     fireEvent.click(applyButton());
     await waitFor(() => expect(server.applies()).toHaveLength(1));
     expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+    expect(server.applies()[0]?.body).toMatchObject({
+      label_issues: { "label.delete:43": 0 },
+    });
   });
 
   it("asks too before taking a label off trashed cards alone", async () => {

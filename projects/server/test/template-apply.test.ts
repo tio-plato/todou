@@ -128,12 +128,14 @@ describe.each(PLACEMENTS)("applying a template (%s placement)", (placement) => {
     selected: string[],
     template: unknown = "basic",
     drawn?: Drawn,
+    labelIssues?: Record<string, number>,
   ) =>
     call("POST", `/projects/${s}/template/apply`, {
       template,
       expected,
       selected,
       ...(drawn && { drawn }),
+      ...(labelIssues && { label_issues: labelIssues }),
     });
 
   /** Everything an apply could change, to compare before and after. */
@@ -153,7 +155,9 @@ describe.each(PLACEMENTS)("applying a template (%s placement)", (placement) => {
       `label.delete:${p.docs}`,
       `status.delete:${p.parked}`,
     ];
-    const res = await apply(p.s, plan.expected, selected);
+    const res = await apply(p.s, plan.expected, selected, "basic", undefined, {
+      [`label.delete:${p.docs}`]: 1,
+    });
     expect(res.status).toBe(200);
     expect(await json(res)).toEqual({ skipped: [] });
 
@@ -499,10 +503,14 @@ describe.each(PLACEMENTS)("applying a template (%s placement)", (placement) => {
     const plan = await preview(p.s);
     const row = plan.changes.find((r) => r.id === `status.delete:${p.discard}`);
     expect(row?.selectable).toBe(false);
-    const res = await apply(p.s, plan.expected, [
-      `status.delete:${p.discard}`,
-      `label.delete:${p.docs}`,
-    ]);
+    const res = await apply(
+      p.s,
+      plan.expected,
+      [`status.delete:${p.discard}`, `label.delete:${p.docs}`],
+      "basic",
+      undefined,
+      { [`label.delete:${p.docs}`]: 1 },
+    );
     expect(res.status).toBe(200);
     expect(await json(res)).toEqual({
       skipped: [`status.delete:${p.discard}`],
@@ -531,6 +539,108 @@ describe.each(PLACEMENTS)("applying a template (%s placement)", (placement) => {
       skipped: [`status.delete:${p.parked}`],
     });
     expect(await p.statusId("Parked")).toBe(p.parked);
+  });
+
+  it("refuses an apply whose ticked label deletion now comes off another number of issues, and applies with the number it comes off", async () => {
+    const p = await drifted();
+    const wontfix = await created(`/projects/${p.s}/labels`, {
+      name: "wontfix",
+    });
+    const plan = await preview(p.s);
+    const id = `label.delete:${wontfix.id}`;
+    expect(plan.changes.find((r) => r.id === id)).toMatchObject({
+      issues: 0,
+      trashed: 0,
+    });
+    expect(
+      (
+        await call("PATCH", `/projects/${p.s}/issues/${p.parkedCard}`, {
+          label_ids: [wontfix.id],
+        })
+      ).status,
+    ).toBe(200);
+    const selected = ["status.add:Invalid", id];
+    const before = await snapshot(p.s);
+    const refused = await apply(
+      p.s,
+      plan.expected,
+      selected,
+      "basic",
+      undefined,
+      { [id]: 0 },
+    );
+    expect(refused.status).toBe(409);
+    expect((await json(refused)).error).toMatchObject({
+      code: "conflict",
+      details: { id, shown: 0, now: 1 },
+    });
+    expect(await snapshot(p.s)).toEqual(before);
+    const parked = await get(`/projects/${p.s}/issues/${p.parkedCard}`);
+    expect(parked.labels.map((l: { name: string }) => l.name)).toEqual([
+      "wontfix",
+    ]);
+
+    // Its one card goes to the trash, which a preview still counts, and a
+    // card takes kind:docs, whose deletion is not ticked.
+    expect(
+      (await call("DELETE", `/projects/${p.s}/issues/${p.parkedCard}`)).status,
+    ).toBe(204);
+    await created(`/projects/${p.s}/issues`, {
+      title: "docs",
+      label_ids: [p.docs],
+    });
+    const res = await apply(p.s, plan.expected, selected, "basic", undefined, {
+      [id]: 1,
+    });
+    expect(res.status).toBe(200);
+    expect(await json(res)).toEqual({ skipped: [] });
+    const labels = (await get(`/projects/${p.s}/labels`)).map(
+      (l: { name: string }) => l.name,
+    );
+    expect(labels).not.toContain("wontfix");
+    expect(labels).toContain("kind:docs");
+    expect(await p.statusId("Invalid")).toEqual(expect.any(Number));
+  });
+
+  it("refuses too when a ticked label came off issues since the preview", async () => {
+    const p = await drifted();
+    const plan = await preview(p.s);
+    const id = `label.delete:${p.docs}`;
+    expect(plan.changes.find((r) => r.id === id)).toMatchObject({
+      issues: 1,
+      trashed: 0,
+    });
+    expect(
+      (
+        await call("PATCH", `/projects/${p.s}/issues/${p.card}`, {
+          label_ids: [p.web],
+        })
+      ).status,
+    ).toBe(200);
+    const before = await snapshot(p.s);
+    const res = await apply(p.s, plan.expected, [id], "basic", undefined, {
+      [id]: 1,
+    });
+    expect(res.status).toBe(409);
+    expect((await json(res)).error).toMatchObject({
+      code: "conflict",
+      details: { id, shown: 1, now: 0 },
+    });
+    expect(await snapshot(p.s)).toEqual(before);
+  });
+
+  it("refuses a ticked label deletion that does not say how many issues it was shown, and changes nothing", async () => {
+    const p = await drifted();
+    const plan = await preview(p.s);
+    const id = `label.delete:${p.docs}`;
+    const before = await snapshot(p.s);
+    const res = await apply(p.s, plan.expected, [id]);
+    expect(res.status).toBe(422);
+    expect((await json(res)).error).toMatchObject({
+      code: "validation_failed",
+      details: { missing: [id] },
+    });
+    expect(await snapshot(p.s)).toEqual(before);
   });
 
   it("is an admin's to preview and to apply", async () => {
