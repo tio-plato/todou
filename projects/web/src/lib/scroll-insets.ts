@@ -133,11 +133,9 @@ export function revealBlock(
   el: HTMLElement,
   {
     mode = "auto",
-    behavior,
     flash: highlight = true,
   }: {
     mode?: RevealMode;
-    behavior?: ScrollBehavior;
     flash?: boolean;
   } = {},
 ): void {
@@ -150,14 +148,14 @@ export function revealBlock(
     usableViewport(),
     mode,
   );
-  clearingEveryOverlay(() => el.scrollIntoView({ block, behavior }));
+  clearingEveryOverlay(() => el.scrollIntoView({ block }));
   if (highlight) flash(el);
 }
 
 /**
  * Run `reveal` against every overlay's inset, then hand `<html>` back the one
  * the browser's own reveals use. Every engine fixes where `scrollIntoView`
- * ends when it is called, a smooth one included.
+ * ends when it is called.
  */
 function clearingEveryOverlay(reveal: () => void) {
   if (landingInsets === null) return reveal();
@@ -494,9 +492,8 @@ export function holdRevealed(
   target: HTMLElement | (() => HTMLElement | null),
   container: Element,
   mode: RevealMode = "auto",
-  behavior?: ScrollBehavior,
 ): () => void {
-  return hold(container, revealing(finder(target), mode, behavior));
+  return hold(container, revealing(finder(target), mode));
 }
 
 /**
@@ -541,13 +538,12 @@ function finder(
 function revealing(
   find: () => HTMLElement | null,
   mode: RevealMode,
-  behavior?: ScrollBehavior,
 ): (release: () => void) => void {
   return (release) => {
     const el = find();
     // Gone, as with a route change nobody touched the page for.
     if (el === null) release();
-    else revealBlock(el, { mode, behavior, flash: false });
+    else revealBlock(el, { mode, flash: false });
   };
 }
 

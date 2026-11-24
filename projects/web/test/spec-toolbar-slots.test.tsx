@@ -622,33 +622,72 @@ describe("spec toolbar fixed slots (T-190)", () => {
     );
   });
 
-  it("holds the change n lands on while the page goes on loading (T-527)", async () => {
+  it("glides to the change n lands on, and holds it while the page goes on loading (T-211, T-527)", async () => {
     vi.stubGlobal("ResizeObserver", FakeResizeObserver);
     const view = await toolbar("?v=2&file=design.md");
     stubTops(view, [500, 700, 900]);
     await waitFor(() => expect(countSlot(view)?.textContent).toBe("0/3"));
-    const reveals: { el: Element; behavior?: ScrollBehavior }[] = [];
+    // A tall page, the first change 2500 down it, scrolled to its top.
+    const page = { y: 0 };
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(800);
+    vi.spyOn(window, "scrollY", "get").mockImplementation(() => page.y);
+    vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
+      10_000,
+    );
+    vi.spyOn(document.documentElement, "clientHeight", "get").mockReturnValue(
+      800,
+    );
+    const first = view.container.querySelector<HTMLElement>(".spec-changed");
+    if (first === null) throw new Error("no change");
+    first.getBoundingClientRect = () =>
+      ({ top: 2_500 - page.y, height: 20 }) as DOMRect;
+    const glided: number[] = [];
+    vi.spyOn(window, "scrollTo").mockImplementation((...args: unknown[]) => {
+      page.y = Number(args[1]);
+      glided.push(page.y);
+    });
+    const reveals: Element[] = [];
     vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
       this: Element,
-      arg?: boolean | ScrollIntoViewOptions,
     ) {
-      reveals.push({
-        el: this,
-        behavior: typeof arg === "object" ? arg.behavior : undefined,
-      });
+      reveals.push(this);
     });
-    const first = view.container.querySelector(".spec-changed");
-
-    fireEvent.keyDown(document.body, { key: "n" });
-    expect(reveals.map((r) => r.el)).toEqual([first]);
-    resizePage();
-    // Again, and as smoothly: an instant re-reveal would cut the glide short.
-    expect(reveals.map((r) => r.el)).toEqual([first, first]);
-    expect(reveals.at(-1)?.behavior).toBe("smooth");
-
-    fireEvent.wheel(window);
-    resizePage();
-    expect(reveals).toHaveLength(2);
+    // Frames as the test runs them: each frame's callback, then the
+    // placement once it is drawn, on the clock the glide reads.
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    vi.useFakeTimers({
+      toFake: [
+        "requestAnimationFrame",
+        "cancelAnimationFrame",
+        "setTimeout",
+        "clearTimeout",
+      ],
+    });
+    const frame = (ms = 16) => {
+      now += ms;
+      vi.advanceTimersByTime(17);
+      fireEvent.scroll(window);
+    };
+    try {
+      fireEvent.keyDown(document.body, { key: "n" });
+      expect(reveals).toEqual([]);
+      for (let i = 0; i < 4; i++) frame();
+      expect(reveals).toEqual([]);
+      expect(glided).toHaveLength(4);
+      for (let i = 1; i < glided.length; i++)
+        expect(glided[i]).toBeGreaterThan(glided[i - 1]);
+      frame(1_000);
+      expect(reveals).toEqual([first]);
+      // Put back on it as the page grows, until the reader's own input.
+      resizePage();
+      expect(reveals).toEqual([first, first]);
+      fireEvent.wheel(window);
+      resizePage();
+      expect(reveals).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("holds the first change of the file n crossed into (T-527)", async () => {
