@@ -1060,16 +1060,16 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     // A chip lists its notes in the order their places come on the page:
     // top to bottom, and at one height, as under a shut fold, in the
     // document's. So a chip lists what the chips it stands for would, one
-    // after another, whichever joined which. A block's places less than half
-    // a line apart are on one line of text, at the height of its top one:
-    // inline code is drawn a few pixels below the text beside it, and in
-    // WebKit a removed word a hair below. On one line of one block the
-    // baseline's notes go first, as the text they are on is drawn before the
-    // text that replaced it, and as they were written first: a version takes
-    // no notes once a newer one is pushed. Then each version's go by the
-    // line of source they start on, and those starting on one go in the
-    // order they were written, drafts last, as the lists they came in hold
-    // them.
+    // after another, whichever joined which. In a block, a place less than
+    // half a line below the top place of a line of text is on that line, at
+    // that place's height: inline code is drawn a few pixels below the text
+    // beside it, and in WebKit a removed word a hair below. On one line of
+    // one block the baseline's notes go first, as the text they are on is
+    // drawn before the text that replaced it, and as they were written
+    // first: a version takes no notes once a newer one is pushed. Then each
+    // version's go by the line of source they start on, and those starting
+    // on one go in the order they were written, drafts last, as the lists
+    // they came in hold them.
     const onBaseline = new Set(baselineAnnotations);
     const byEl = new Map<HTMLElement, Place[]>();
     for (const place of places.values()) {
