@@ -131,4 +131,18 @@ describe("card reads racing a status going away", () => {
     expect(res.status).toBe(200);
     expect((await json(res)).status.id).toBe(after);
   });
+
+  it("answers a move whose source project went away 404", async () => {
+    const source = await createProject("move-from");
+    const target = await createProject("move-to");
+    const card = await createIssue(source, "doomed");
+    pending.beforeStatusRead = () => deleteProject(source);
+
+    const res = await req(`/projects/${source}/issues/${card.number}/move`, {
+      method: "POST",
+      body: JSON.stringify({ to_project: target }),
+    });
+    expect(pending.beforeStatusRead).toBeUndefined();
+    expect(res.status).toBe(404);
+  });
 });
