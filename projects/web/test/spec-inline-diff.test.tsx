@@ -1837,8 +1837,9 @@ describe("whole-line annotations wash every block they cover", () => {
  * inline code, as its smaller font and padding put it; a block sits at
  * `blockTop(block)`, 2px above its first line of text, unless told
  * otherwise; everything else, the container included, at 0. A picture
- * `picture` px tall, where given, is drawn at 100 as itself, and makes its
- * line as much taller than 22px, pushing the lines below it down.
+ * `picture` px tall, where given, is drawn at 100 as itself, and every
+ * block's first line is as much taller than 22px, as if a picture opened
+ * each, pushing the lines below it down.
  */
 function placeLines(
   blockTop: (el: HTMLElement) => number = () => 98,
