@@ -2321,12 +2321,12 @@ describe("the card's own question badge", () => {
 });
 
 /**
- * A jump on a card that has already landed glides there (T-211), and what
+ * A jump on a card that has already landed glides there, and what
  * the glide carries the page past is not read: a phone's reader in the
  * sidebar below the comment box, New messages pointing up at what arrived,
  * presses the badge for a question above.
  */
-describe("gliding on a card that has landed (T-211)", () => {
+describe("gliding on a card that has landed", () => {
   // Page coordinates of a laid-out card: the conversation ends at 8600, a
   // sidebar 1400 tall below it.
   const TOPS: Record<string, number> = {

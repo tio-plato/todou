@@ -804,7 +804,7 @@ describe("chips on code rows", () => {
     await closePopover(popover);
   });
 
-  it("glides to an annotation's row screens away, finding it again as pierre draws it anew (T-211)", async () => {
+  it("glides to an annotation's row screens away, finding it again as pierre draws it anew", async () => {
     vi.stubGlobal("ResizeObserver", FakeResizeObserver);
     // A tall page whose code block sits 2800 down, scrolled to its top.
     const page = { y: 0 };

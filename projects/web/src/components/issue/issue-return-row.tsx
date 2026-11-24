@@ -115,7 +115,7 @@ export function IssueReturnRow({
           // offers in place of the heading it replaced. The two controls it
           // carries go somewhere else entirely and stop the click here
           // themselves, which is the arrangement the reveal eye already used.
-          // Glided and held there like any other jump on the card (T-211).
+          // Glided and held there like any other jump on the card.
           onClick={() => keepHold(glideToY(() => 0))}
         >
           {carriesBack && (

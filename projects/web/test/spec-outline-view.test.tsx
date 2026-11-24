@@ -693,7 +693,7 @@ describe("the change strip", () => {
     expect(reveals.map((r) => r.el)).toEqual([stops[2], stops[0], removal]);
   });
 
-  it("glides to where a click off the ticks points, following the card down the page (T-211)", async () => {
+  it("glides to where a click off the ticks points, following the card down the page", async () => {
     const view = await renderSpec("?v=2&file=design.md");
     await waitFor(() => expect(strip(view)).not.toBeNull());
     const box = card(view) as HTMLElement;

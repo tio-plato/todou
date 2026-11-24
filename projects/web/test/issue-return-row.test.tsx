@@ -204,7 +204,7 @@ afterEach(() => {
 /**
  * A page scrolled `y` down whose scrolls land where they aim, every place it
  * was put recorded, and frames that run only as the test runs them, on the
- * clock a glide reads (T-211): each frame's callback, then the placement made
+ * clock a glide reads: each frame's callback, then the placement made
  * once it is drawn.
  */
 function scrolledTo(y: number) {
@@ -337,7 +337,7 @@ describe("IssueReturnRow (T-154)", () => {
     expect(await view.findByText("#16")).toBeTruthy();
   });
 
-  it("glides back to the top when clicked (T-211)", async () => {
+  it("glides back to the top when clicked", async () => {
     const { bar } = await renderBar();
     setIntersecting(false);
     const page = scrolledTo(3_000);

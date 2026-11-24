@@ -944,7 +944,7 @@ describe("landing on the end of the conversation", () => {
    * placement made once the frame is drawn, then delivers the scroll that
    * made, as the browser does at the start of the next frame.
    */
-  describe("gliding to its stop (T-211)", () => {
+  describe("gliding to its stop", () => {
     let now = 0;
 
     function glide() {

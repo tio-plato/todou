@@ -378,7 +378,7 @@ export function SpecChangeStrip({
     if (at === null) return;
     const tick = tickAt(layout.ticks, at.y, LANDING_KINDS, HIT_SLOP);
     if (tick !== undefined) land(tick.target);
-    // Glided to and held there like a tick's landing (T-211), the point
+    // Glided to and held there like a tick's landing, the point
     // measured again as the card moves down the page.
     else keepHold(glideToY(() => restingFor(at.down)));
   };

@@ -193,7 +193,7 @@ export function Timeline({
   const didInitialScroll = useRef(false);
   // Whether the card has landed once: on its end as it opened, or on what
   // its address or a question badge named. Arriving on the card lands at
-  // once; a jump on the card after that glides (T-211).
+  // once; a jump on the card after that glides.
   const landed = useRef(false);
 
   const { above, below } = mergeFolded(

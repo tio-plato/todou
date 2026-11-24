@@ -592,7 +592,7 @@ describe("QuestionsCard gated submit (T-517)", () => {
     expect(reveals).toEqual(["schema", "schema"]);
   });
 
-  it("glides to that question when it is screens away (T-211)", async () => {
+  it("glides to that question when it is screens away", async () => {
     stubFetch();
     vi.stubGlobal("ResizeObserver", FakeResizeObserver);
     const view = renderCard();

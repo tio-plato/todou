@@ -334,7 +334,7 @@ function countShown(view: ReturnType<typeof renderWithProviders>) {
 
 /**
  * Frames only as the test advances them, from here on, with the clock a glide
- * reads (T-211): the frame callbacks and the placements after them. Not before
+ * reads: the frame callbacks and the placements after them. Not before
  * the card is open, since the waits for it run on real timers.
  */
 function framesOnDemand() {

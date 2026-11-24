@@ -75,7 +75,7 @@ type AnchorRequest = {
  *
  * `landed` says whether the card has landed anywhere yet. A target found
  * once it has, a question badge pressed or a comment link followed on the
- * card, is glided to (T-211); the first landing, arriving on the card, lands
+ * card, is glided to; the first landing, arriving on the card, lands
  * at once, and sets it.
  *
  * Returns whether an anchor is being targeted, so the caller can skip its

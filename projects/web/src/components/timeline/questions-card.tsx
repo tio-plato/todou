@@ -514,7 +514,7 @@ function AnswerForm({
         `[data-question-key="${q.key}"]`,
       );
     if (!row) return;
-    // Glided to, and held in place while this page reflows (T-211); the
+    // Glided to, and held in place while this page reflows; the
     // floating window has no timeline loading around it, and scrolls itself.
     if (pip.window) revealBlock(row);
     else keepHold(glideToRevealed(row));

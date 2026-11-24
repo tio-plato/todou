@@ -622,7 +622,7 @@ describe("spec toolbar fixed slots (T-190)", () => {
     );
   });
 
-  it("glides to the change n lands on, and holds it while the page goes on loading (T-211, T-527)", async () => {
+  it("glides to the change n lands on, and holds it while the page goes on loading (T-527)", async () => {
     vi.stubGlobal("ResizeObserver", FakeResizeObserver);
     const view = await toolbar("?v=2&file=design.md");
     stubTops(view, [500, 700, 900]);
