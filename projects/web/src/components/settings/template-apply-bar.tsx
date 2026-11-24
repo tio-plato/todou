@@ -1,6 +1,6 @@
 import type { ChangeRow } from "@todou/shared";
 import type { CSSProperties } from "react";
-import { useId } from "react";
+import { useId, useLayoutEffect, useRef } from "react";
 import { LabelChip } from "@/components/issue/label-chip.tsx";
 import { plural } from "@/components/settings/status-set-list.tsx";
 import {
@@ -126,6 +126,15 @@ export function ApplyBar({
     (row): row is LabelLoss => row.issues + row.trashed > 0,
   );
   const note = useId();
+  const applyButton = useRef<HTMLButtonElement>(null);
+  // Withdrawn, the question takes its Cancel away, and the focus with it:
+  // that focus goes to Apply. Focus the reader put elsewhere stays there.
+  useLayoutEffect(() => {
+    const focus = document.activeElement;
+    if (moved && (focus === null || focus === document.body)) {
+      applyButton.current?.focus();
+    }
+  }, [moved]);
   const what = [
     statuses.length > 0 &&
       `${statuses.length} ${statuses.length === 1 ? "status" : "statuses"}`,
@@ -172,9 +181,9 @@ export function ApplyBar({
             )}
           </p>
           <Button
+            ref={applyButton}
             disabled={disabled || count === 0}
             onClick={onApply}
-            autoFocus={moved}
             aria-describedby={moved ? note : undefined}
           >
             {count === 0 ? "Apply" : `Apply ${plural(count, "change")}`}

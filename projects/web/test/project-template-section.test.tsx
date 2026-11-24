@@ -913,6 +913,33 @@ describe("applying a template", () => {
     ).toBeTruthy();
   });
 
+  it("leaves the focus where the reader moved it when the question is withdrawn", async () => {
+    const plans = { ...PLANS };
+    fakeServer({ plans });
+    renderPage();
+    await pickKanban();
+    fireEvent.click(
+      box("Delete label kind:docs — comes off 2 issues (1 in the trash)"),
+    );
+    fireEvent.click(applyButton());
+    await screen.findByRole("button", { name: "Cancel" });
+    // The reader went on to name a template meanwhile.
+    const name = screen.getByLabelText("Name");
+    name.focus();
+
+    plans["7"] = {
+      ...PLAN_7,
+      changes: PLAN_7.changes.map((change) =>
+        change.id === "label.delete:42" ? { ...change, issues: 3 } : change,
+      ),
+    };
+    fireEvent(window, new Event("visibilitychange"));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull(),
+    );
+    expect(document.activeElement).toBe(name);
+  });
+
   it("applies at once a deletion that takes a label off no card", async () => {
     const server = fakeServer();
     renderPage();
