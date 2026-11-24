@@ -940,6 +940,36 @@ describe("applying a template", () => {
     expect(document.activeElement).toBe(name);
   });
 
+  it("stops saying why the question was withdrawn once the ticks or the template change", async () => {
+    const plans = { ...PLANS };
+    fakeServer({ plans });
+    renderPage();
+    await pickKanban();
+    const withdraw = async (issues: number) => {
+      fireEvent.click(applyButton());
+      await screen.findByRole("button", { name: "Cancel" });
+      plans["7"] = {
+        ...PLAN_7,
+        changes: PLAN_7.changes.map((change) =>
+          change.id === "label.delete:42" ? { ...change, issues } : change,
+        ),
+      };
+      fireEvent(window, new Event("visibilitychange"));
+      expect(await screen.findByText(/The preview changed/)).toBeTruthy();
+    };
+    fireEvent.click(
+      box("Delete label kind:docs — comes off 2 issues (1 in the trash)"),
+    );
+
+    await withdraw(3);
+    fireEvent.click(box("Recolour status Done"));
+    expect(screen.queryByText(/The preview changed/)).toBeNull();
+
+    await withdraw(5);
+    fireEvent.click(option("Basic"));
+    expect(screen.queryByText(/The preview changed/)).toBeNull();
+  });
+
   it("applies at once a deletion that takes a label off no card", async () => {
     const server = fakeServer();
     renderPage();
