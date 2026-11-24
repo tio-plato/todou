@@ -1078,9 +1078,11 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     const lineOf = new Map<Place, number>();
     for (const [el, group] of byEl) {
       // Half a line is half the block's first character, as `textLine`
-      // takes it for the first line; none where nothing lined the block up,
-      // so that only places at one height share a line there.
-      const half = (texts.get(el)?.first.height ?? 0) / 2;
+      // takes it for the first line, but never more than half a chip: a
+      // picture opening the block is its first character, and half of it
+      // would take lines one chip joins for one. None where nothing lined
+      // the block up, so that only places at one height share a line there.
+      const half = Math.min(texts.get(el)?.first.height ?? 0, tall) / 2;
       let line: number | undefined;
       for (const place of group.sort((a, b) => a.top - b.top)) {
         // From the line's top place, not the last one on it, so that places

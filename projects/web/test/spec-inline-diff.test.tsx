@@ -1836,9 +1836,16 @@ describe("whole-line annotations wash every block they cover", () => {
  * 100 + 22k, 18px tall, and so does a run of removed text, but 3px lower in
  * inline code, as its smaller font and padding put it; a block sits at
  * `blockTop(block)`, 2px above its first line of text, unless told
- * otherwise; everything else, the container included, at 0.
+ * otherwise; everything else, the container included, at 0. A picture
+ * `picture` px tall, where given, is drawn at 100 as itself, and makes its
+ * line as much taller than 22px, pushing the lines below it down.
  */
-function placeLines(blockTop: (el: HTMLElement) => number = () => 98) {
+function placeLines(
+  blockTop: (el: HTMLElement) => number = () => 98,
+  picture = 0,
+) {
+  const lineTop = (k: number) =>
+    100 + 22 * k + (k > 0 ? Math.max(0, picture - 22) : 0);
   /** Line breaks from the start of `el`'s block to `node`, `offset`. */
   const breaksBefore = (node: Node, offset: number) => {
     const near = node instanceof Element ? node : node.parentElement;
@@ -1851,13 +1858,17 @@ function placeLines(blockTop: (el: HTMLElement) => number = () => 98) {
   };
   vi.spyOn(Range.prototype, "getBoundingClientRect").mockImplementation(
     function (this: Range) {
+      const picked = this.startContainer.childNodes[this.startOffset];
+      if (picture > 0 && picked instanceof HTMLImageElement) {
+        return DOMRect.fromRect({ y: 100, width: picture, height: picture });
+      }
       const k = breaksBefore(this.startContainer, this.startOffset);
       const near =
         this.startContainer instanceof Element
           ? this.startContainer
           : this.startContainer.parentElement;
       const code = near?.closest("code") != null ? 3 : 0;
-      return DOMRect.fromRect({ y: 100 + 22 * k + code, width: 8, height: 18 });
+      return DOMRect.fromRect({ y: lineTop(k) + code, width: 8, height: 18 });
     },
   );
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
@@ -1866,7 +1877,7 @@ function placeLines(blockTop: (el: HTMLElement) => number = () => 98) {
         const parent = this.parentNode;
         const at = parent === null ? 0 : [...parent.childNodes].indexOf(this);
         const k = parent === null ? 0 : breaksBefore(parent, at);
-        return DOMRect.fromRect({ y: 100 + 22 * k, height: 18 });
+        return DOMRect.fromRect({ y: lineTop(k), height: 18 });
       }
       if (this.hasAttribute("data-loc")) {
         return DOMRect.fromRect({ y: blockTop(this), height: 120 });
@@ -3806,6 +3817,22 @@ describe("baseline annotations on deleted text", () => {
       "L4:24–26",
       "L4:39–41",
     ]);
+  });
+
+  it("lists a line's note before a removed word's below it, under a tall picture", async () => {
+    // The picture opening the paragraph is its first character, 120px tall:
+    // no measure of a line of text. Lines 22px apart share a phone's chip.
+    setViewportWidth(390);
+    placeLines(undefined, 120);
+    const before =
+      "Intro.\n\n![pic](pic.png) The first line of a paragraph,\nits second line,\nits third line holds a doomed word,\nits fourth line.\n";
+    const { view } = await renderDiff(
+      before,
+      before.replace("a doomed word", "a word"),
+      [wholeLines("comment", 4, 4)],
+      [onBaseline("comment", before, 5, "doomed")],
+    );
+    expect(await popoverLabels(view)).toEqual(["L4", "L5:24–29"]);
   });
 
   it("lists a restored block's notes by the line they start on", async () => {
