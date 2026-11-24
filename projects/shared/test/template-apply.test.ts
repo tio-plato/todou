@@ -10,11 +10,19 @@ import {
   statusMovers,
 } from "../src/template-apply.ts";
 
-/** A project with these statuses in this order, ids from 1. */
-function project(names: string[], line: string | null = null): ApplyProject {
-  const statuses = names.map((name, i) => ({
+/**
+ * A project with these statuses in this order, ids from 1, those named in
+ * `closed` closed and the rest open.
+ */
+function project(
+  names: string[],
+  line: string | null = null,
+  closed: string[] = [],
+): ApplyProject {
+  const statuses = names.map((name, i): ApplyProject["statuses"][number] => ({
     id: i + 1,
     name,
+    category: closed.includes(name) ? "closed" : "open",
     is_default: i === 0,
   }));
   return {
@@ -115,6 +123,24 @@ function orderOf(
   return result.order.map((key) => nameOf(p, key));
 }
 
+/**
+ * The project once the rows ticked by default are applied: the status the
+ * line is on, the statuses above it, and those from it down, by name.
+ */
+function sidesOf(p: ApplyProject, t: TemplateBody) {
+  const rows = rowsFor(p, t);
+  const ticked = rows.filter((r) => r.default_selected).map((r) => r.id);
+  const result = applyResult(applyLayout(p, t, rows), new Set(ticked));
+  const names = result.order.map((key) => nameOf(p, key));
+  const at =
+    result.line === null ? names.length : result.order.indexOf(result.line);
+  return {
+    line: result.line === null ? null : nameOf(p, result.line),
+    above: names.slice(0, at),
+    below: names.slice(at),
+  };
+}
+
 const nameOf = (p: ApplyProject, key: StatusKey) =>
   typeof key === "number" ? p.statuses.find((s) => s.id === key)?.name : key;
 
@@ -176,6 +202,33 @@ describe("applying a template's order", () => {
     const p = project(["Backlog", "In Progress", "Next", "Done"]);
     const t = template(["Backlog", "Next", "In Progress", "Done"]);
     expect([...statusMovers(p.statuses, t)]).toEqual([idOf(p, "In Progress")]);
+  });
+
+  it("keeps each status the template lacks on the side of the line it is on", () => {
+    // Sent and Mailed are open, yet below the line: their cards are cleared.
+    const p = project(
+      ["Open", "Waiting", "Closed", "Sent", "Mailed"],
+      "Closed",
+      ["Closed"],
+    );
+    const { line, above, below } = sidesOf(p, BASIC);
+    expect(line).toBe("Shipped");
+    expect(above).toEqual(expect.arrayContaining(["Open", "Waiting"]));
+    expect(below).toEqual(expect.arrayContaining(["Closed", "Sent", "Mailed"]));
+  });
+
+  it("without a line, sides them by category, inside the template's order", () => {
+    const p = project(
+      ["Open", "Closed", "Archived", "Waiting", "Done", "Parked"],
+      null,
+      ["Closed", "Archived", "Done"],
+    );
+    const t = template(["Backlog", "Shipped", "Done"], "Shipped");
+    const { line, above, below } = sidesOf(p, t);
+    expect(line).toBe("Shipped");
+    expect(above).toEqual(expect.arrayContaining(["Open", "Waiting"]));
+    // Done follows Shipped as in the template, and Parked, after Done, too.
+    expect(below).toEqual(expect.arrayContaining(["Done", "Parked"]));
   });
 
   it("keeps the line on its status as the status moves, drawn right above it", () => {

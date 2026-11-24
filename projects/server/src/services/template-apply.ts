@@ -513,7 +513,7 @@ function canonicalJson(value: unknown): string {
  * carried out under rules it was not drawn by. The digests before 2 hashed
  * none.
  */
-export const TEMPLATE_APPLY_RULES = 2;
+export const TEMPLATE_APPLY_RULES = 3;
 
 /**
  * What a plan was computed from, hashed: the project's statuses, line,
