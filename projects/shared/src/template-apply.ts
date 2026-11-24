@@ -188,12 +188,12 @@ function placeLineStatus(
   const cleared = (key: StatusKey) => {
     const index = project.statuses.findIndex((s) => s.id === key);
     return project.line === null
-      ? project.statuses[index]?.category === "closed"
+      ? project.statuses[index].category === "closed"
       : index >= lineIndex;
   };
   let after = lo;
   for (let index = hi - 1; index > lo; index -= 1) {
-    if (!cleared(base[index] as StatusKey)) {
+    if (!cleared(base[index])) {
       after = index;
       break;
     }
