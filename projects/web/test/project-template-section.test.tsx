@@ -790,6 +790,129 @@ describe("applying a template", () => {
     });
   });
 
+  it("withdraws the question when a preview read again changes it, and asks again with the new count", async () => {
+    const plans = { ...PLANS };
+    const server = fakeServer({ plans });
+    renderPage();
+    await pickKanban();
+    fireEvent.click(
+      box("Delete label kind:docs — comes off 2 issues (1 in the trash)"),
+    );
+    fireEvent.click(applyButton());
+    await screen.findByRole("button", { name: "Cancel" });
+    // Every text the question showed while it was up.
+    const shown = new Set<string>();
+    const record = () => {
+      const question = screen.queryByText("This cannot be undone.");
+      if (question) shown.add(question.closest("p")?.textContent ?? "");
+    };
+    record();
+    const observer = new MutationObserver(record);
+    observer.observe(document.body, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
+
+    // kind:docs went on two more cards: the same plan, another count.
+    plans["7"] = {
+      ...PLAN_7,
+      changes: PLAN_7.changes.map((change) =>
+        change.id === "label.delete:42" ? { ...change, issues: 3 } : change,
+      ),
+    };
+    fireEvent(window, new Event("visibilitychange"));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull(),
+    );
+    observer.disconnect();
+    expect([...shown]).toEqual([
+      "kind:docscomes off 2 issues (1 in the trash).This cannot be undone.",
+    ]);
+    expect(server.applies()).toEqual([]);
+    const again = screen.getByRole("button", {
+      name: "Apply 7 changes",
+      description:
+        "The preview changed before you confirmed. Nothing was applied.",
+    });
+    expect(document.activeElement).toBe(again);
+
+    fireEvent.click(applyButton());
+    expect(
+      await screen.findByText("comes off 4 issues (1 in the trash)."),
+    ).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Delete and apply 7 changes" }),
+    );
+    await waitFor(() => expect(server.applies()).toHaveLength(1));
+    expect(server.applies()[0]?.body).toMatchObject({
+      label_issues: { "label.delete:42": 4 },
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull(),
+    );
+    expect(screen.queryByText(/The preview changed/)).toBeNull();
+  });
+
+  it("does not ask again by itself when the counts come back to what it said", async () => {
+    const plans = { ...PLANS };
+    fakeServer({ plans });
+    renderPage();
+    await pickKanban();
+    fireEvent.click(
+      box("Delete label kind:docs — comes off 2 issues (1 in the trash)"),
+    );
+    fireEvent.click(applyButton());
+    await screen.findByRole("button", { name: "Cancel" });
+
+    plans["7"] = {
+      ...PLAN_7,
+      changes: PLAN_7.changes.map((change) =>
+        change.id === "label.delete:42" ? { ...change, issues: 3 } : change,
+      ),
+    };
+    fireEvent(window, new Event("visibilitychange"));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull(),
+    );
+
+    plans["7"] = PLAN_7;
+    fireEvent(window, new Event("visibilitychange"));
+    await screen.findByRole("checkbox", {
+      name: "Delete label kind:docs — comes off 2 issues (1 in the trash)",
+    });
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+  });
+
+  it("withdraws the question when the number of changes it names moves", async () => {
+    const plans = { ...PLANS };
+    fakeServer({ plans });
+    renderPage();
+    await pickKanban();
+    fireEvent.click(
+      box("Delete label kind:docs — comes off 2 issues (1 in the trash)"),
+    );
+    fireEvent.click(applyButton());
+    await screen.findByRole("button", { name: "Delete and apply 7 changes" });
+
+    // urgent was recoloured to the template's colour meanwhile: one change
+    // fewer, the label counts as they were.
+    plans["7"] = {
+      ...PLAN_7,
+      expected: "plan-7-again",
+      changes: PLAN_7.changes.filter(
+        (change) => change.id !== "label.change:40",
+      ),
+    };
+    fireEvent(window, new Event("visibilitychange"));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull(),
+    );
+    expect(
+      screen.getByRole("button", { name: "Apply 6 changes" }),
+    ).toBeTruthy();
+  });
+
   it("applies at once a deletion that takes a label off no card", async () => {
     const server = fakeServer();
     renderPage();

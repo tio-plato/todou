@@ -1,5 +1,6 @@
 import type { ChangeRow } from "@todou/shared";
 import type { CSSProperties } from "react";
+import { useId } from "react";
 import { LabelChip } from "@/components/issue/label-chip.tsx";
 import { plural } from "@/components/settings/status-set-list.tsx";
 import {
@@ -105,6 +106,7 @@ export function ApplyBar({
   onApply,
   onConfirm,
   onCancel,
+  moved,
 }: {
   /** The ticked rows. */
   count: number;
@@ -115,12 +117,15 @@ export function ApplyBar({
   onApply: () => void;
   onConfirm: () => void;
   onCancel: () => void;
+  /** The question was withdrawn because what it would say changed. */
+  moved: boolean;
 }) {
   const statuses = deletes.filter((row) => row.type === "status_delete");
   const labels = deletes.filter((row) => row.type === "label_delete");
   const losses = labels.filter(
     (row): row is LabelLoss => row.issues + row.trashed > 0,
   );
+  const note = useId();
   const what = [
     statuses.length > 0 &&
       `${statuses.length} ${statuses.length === 1 ? "status" : "statuses"}`,
@@ -159,8 +164,19 @@ export function ApplyBar({
         <>
           <p className="text-sm text-destructive">
             {what.length > 0 && `Deletes ${what.join(" and ")}.`}
+            {moved && (
+              <span id={note}>
+                {" "}
+                The preview changed before you confirmed. Nothing was applied.
+              </span>
+            )}
           </p>
-          <Button disabled={disabled || count === 0} onClick={onApply}>
+          <Button
+            disabled={disabled || count === 0}
+            onClick={onApply}
+            autoFocus={moved}
+            aria-describedby={moved ? note : undefined}
+          >
             {count === 0 ? "Apply" : `Apply ${plural(count, "change")}`}
           </Button>
         </>

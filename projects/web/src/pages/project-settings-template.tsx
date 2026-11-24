@@ -233,8 +233,12 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
       ? null
       : { template: kept.template, rows: new Map(kept.rows) },
   );
-  // Labels coming off cards are asked about once more before Apply.
-  const [confirming, setConfirming] = useState(false);
+  // Labels coming off cards are asked about once more before Apply: while
+  // it asks, the question as it was when it opened.
+  const [asked, setAsked] = useState<string | null>(null);
+  const confirming = asked !== null;
+  // The question was withdrawn because what it would say changed.
+  const [moved, setMoved] = useState(false);
   const chosen =
     choices?.template === template ? choices.rows : new Map<string, boolean>();
   const selected =
@@ -261,7 +265,8 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
     const touched = rows.filter(
       (row) => next.has(row.id) !== selected.has(row.id),
     );
-    setConfirming(false);
+    setAsked(null);
+    setMoved(false);
     setChoices({
       template,
       rows: new Map([
@@ -272,7 +277,8 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
   };
   const pick = (ref: TemplateRef | null) => {
     setTemplate(ref);
-    setConfirming(false);
+    setAsked(null);
+    setMoved(false);
     // Picking the template again to leave it forgets what was ticked in it.
     if (ref === null) setChoices(null);
   };
@@ -286,6 +292,16 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
   const asks = deletes.some(
     (row) => row.type === "label_delete" && row.issues + row.trashed > 0,
   );
+  // What the page shows each ticked label deletion coming off, which the
+  // apply holds it to.
+  const shown = ticked.flatMap((row) =>
+    row.type === "label_delete"
+      ? [[row.id, row.issues + row.trashed] as const]
+      : [],
+  );
+  // What the question would say now: the changes Apply makes, and the cards
+  // each ticked label comes off, known by id.
+  const question = JSON.stringify([ticked.length, shown]);
 
   const apply = useMutation({
     mutationFn: (vars: {
@@ -305,13 +321,13 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
       queryClient.invalidateQueries({ queryKey: ["issue"] });
       queryClient.invalidateQueries({ queryKey: previewKey(slug) });
       setChoices(forgetTicks);
-      setConfirming(false);
+      setAsked(null);
       const text = appliedText(vars.input.selected, result, vars.rows);
       if (result.skipped.length > 0) toast.warning(text);
       else toast.success(text);
     },
     onError: (error, vars) => {
-      setConfirming(false);
+      setAsked(null);
       if (error instanceof TodouError && error.code === "drawn_mismatch") {
         setMismatch(true);
         return;
@@ -326,18 +342,21 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
     },
   });
 
+  // A preview read again can change what the question would say. It is
+  // withdrawn in this same render: an effect would come a frame late, a
+  // frame in which the question shows what it never asked and can be
+  // confirmed. Once answered, the apply on its way carries what it said,
+  // which the server checks.
+  if (asked !== null && asked !== question && !apply.isPending) {
+    setAsked(null);
+    setMoved(true);
+  }
+
   const send = () => {
     if (plan === undefined || template === null || statuses === undefined) {
       return;
     }
     const { result } = statuses;
-    // What the page showed each ticked label deletion coming off, which the
-    // apply holds it to.
-    const shown = ticked.flatMap((row) =>
-      row.type === "label_delete"
-        ? [[row.id, row.issues + row.trashed] as const]
-        : [],
-    );
     apply.mutate({
       slug,
       input: {
@@ -410,9 +429,14 @@ function ApplyTemplateSection({ slug }: { slug: string }) {
             disabled={
               plan === undefined || preview.isFetching || apply.isPending
             }
-            onApply={() => (asks ? setConfirming(true) : send())}
+            onApply={() => {
+              setMoved(false);
+              if (asks) setAsked(question);
+              else send();
+            }}
             onConfirm={send}
-            onCancel={() => setConfirming(false)}
+            onCancel={() => setAsked(null)}
+            moved={moved}
           />
         </>
       )}
