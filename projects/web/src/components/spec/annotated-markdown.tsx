@@ -459,6 +459,14 @@ export function chipTop(containerRect: { top: number }, el: Element): number {
   return el.getBoundingClientRect().top - containerRect.top;
 }
 
+/** Below 0 where `a` comes first in the document, an ancestor before what it holds. */
+function documentOrder(a: Node, b: Node): number {
+  if (a === b) return 0;
+  return a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING
+    ? -1
+    : 1;
+}
+
 /**
  * The outermost fold standing between `el` and the reader, or `el` itself.
  *
@@ -753,6 +761,8 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       block: string;
       /** Whether that block is one put back of the baseline. */
       old: boolean;
+      /** That block's element, where the place sits in the document. */
+      el: HTMLElement;
       top: number;
       items: DisplayedAnnotation[];
     };
@@ -777,6 +787,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
           key,
           block: block.key,
           old: block.old,
+          el: block.el,
           // The key still names the block the annotation belongs to; only
           // what gets measured moves when the reader shuts a fold over it.
           top: line?.top ?? chipTop(containerRect, visibleAnchor(block.el)),
@@ -1073,6 +1084,33 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         continue;
       }
       next.push(chip);
+    }
+    // A chip lists its notes in the order their places come on the page:
+    // top to bottom, and at one height, as under a shut fold, in the
+    // document's. So a chip lists what the chips it stands for would, one
+    // after another, whichever joined which. Within one block at one height
+    // the baseline's notes go first, as the text they are on is drawn before
+    // the text that replaced it, and as they were written first: a version
+    // takes no notes once a newer one is pushed. Then each version's go by
+    // the line they start on, and notes on one line keep the order they came
+    // in.
+    const onBaseline = new Set(baselineAnnotations);
+    const rank = new Map(
+      [...places.values()]
+        .flatMap((place) => place.items.map((item) => ({ place, item })))
+        .sort(
+          (a, b) =>
+            a.place.top - b.place.top ||
+            documentOrder(a.place.el, b.place.el) ||
+            Number(onBaseline.has(b.item)) - Number(onBaseline.has(a.item)) ||
+            a.item.start - b.item.start,
+        )
+        .map(({ item }, i) => [item, i] as const),
+    );
+    for (const chip of next) {
+      chip.items = chip.items.toSorted(
+        (a, b) => (rank.get(a) ?? 0) - (rank.get(b) ?? 0),
+      );
     }
     placeOf.current = jumps;
     next.sort((a, b) => a.top - b.top);
