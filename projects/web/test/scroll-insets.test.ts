@@ -1029,30 +1029,34 @@ describe("landing on the end of the conversation", () => {
     it.each([
       ["between two frames", 0],
       ["between a frame and the placement after it", 1],
-    ])("stops where it got to at the reader's input %s", (_, callbacks) => {
-      glide();
-      const end = { y: 4000 };
-      const { targets } = page(end);
-      const ended = vi.fn();
-      window.addEventListener(GLIDE_END_EVENT, ended);
-      landAtBottom({ glide: true });
-      frames(3);
-      // The next frame's callback has run, its placement still to come.
-      for (let i = 0; i < callbacks; i++) {
-        now += 16;
-        vi.advanceTimersToNextTimer();
-      }
-      const placed = [...targets];
-      fireEvent.wheel(window);
-      frames(40);
-      end.y = 4400;
-      resizePage();
-      expect(targets).toEqual(placed);
-      expect(placed.at(-1)).toBeLessThan(4000 - VIEWPORT);
-      expect(ended).toHaveBeenCalledTimes(1);
-      expect(isGliding()).toBe(false);
-      window.removeEventListener(GLIDE_END_EVENT, ended);
-    });
+    ])(
+      "stops where it got to at the reader's input %s",
+      async (_, callbacks) => {
+        glide();
+        const end = { y: 4000 };
+        const { targets } = page(end);
+        const ended = vi.fn();
+        window.addEventListener(GLIDE_END_EVENT, ended);
+        landAtBottom({ glide: true });
+        frames(3);
+        // The next frame's callback has run, its placement still to come.
+        for (let i = 0; i < callbacks; i++) {
+          now += 16;
+          vi.advanceTimersToNextTimer();
+        }
+        const placed = [...targets];
+        fireEvent.wheel(window);
+        frames(40);
+        end.y = 4400;
+        resizePage();
+        await Promise.resolve();
+        expect(targets).toEqual(placed);
+        expect(placed.at(-1)).toBeLessThan(4000 - VIEWPORT);
+        expect(ended).toHaveBeenCalledTimes(1);
+        expect(isGliding()).toBe(false);
+        window.removeEventListener(GLIDE_END_EVENT, ended);
+      },
+    );
 
     // The observer's report as it starts observing comes in the first frame,
     // after the frame's callback and before the placement after it: placed
@@ -1067,6 +1071,26 @@ describe("landing on the end of the conversation", () => {
       expect(targets).toEqual([]);
       vi.advanceTimersToNextTimer();
       expect(targets).toHaveLength(1);
+    });
+
+    it("announces no end while a glide that takes over goes on", async () => {
+      glide();
+      const { targets } = page({ y: 4000 });
+      const ended = vi.fn();
+      window.addEventListener(GLIDE_END_EVENT, ended);
+      landAtBottom({ glide: true });
+      frames(3);
+      // A comment link's landing: the old one let go of, the new one begun.
+      const release = landAtBottom({ glide: true });
+      release();
+      landAtBottom({ glide: true });
+      await Promise.resolve();
+      expect(ended).not.toHaveBeenCalled();
+      frames(40);
+      await Promise.resolve();
+      expect(targets.at(-1)).toBe(4000 - VIEWPORT);
+      expect(ended).toHaveBeenCalledTimes(1);
+      window.removeEventListener(GLIDE_END_EVENT, ended);
     });
 
     it("goes straight to the stop at a frame later than the whole glide", () => {

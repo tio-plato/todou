@@ -220,7 +220,10 @@ const INPUTS = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
 /** How far short of a landing on the bottom still counts as at the end. */
 const END_SLACK = 40;
 
-/** Fired on `window` when a glide ends, arrived or stopped where it got to. */
+/**
+ * Fired on `window` once a glide has ended, arrived or stopped where it got
+ * to, unless another has taken over meanwhile.
+ */
 export const GLIDE_END_EVENT = "todou:glide-end";
 
 /** Whether a landing is gliding to its stop; see `hold`. */
@@ -378,7 +381,12 @@ function hold(
     clearTimeout(path.task);
     path = null;
     gliding = false;
-    window.dispatchEvent(new Event(GLIDE_END_EVENT));
+    // Told once whatever ended it has run: a landing that takes over with a
+    // glide of its own, as a comment link does after the old one is released,
+    // ends the move where that glide stops, not here.
+    queueMicrotask(() => {
+      if (!gliding) window.dispatchEvent(new Event(GLIDE_END_EVENT));
+    });
   };
   // Where the page was put, which its scroll and the growth after it are
   // read against.
