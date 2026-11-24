@@ -52,7 +52,6 @@ const DECLARED: Record<string, string> = {
   "services/insights-settings.ts":
     "`statusId` here is a filter parameter over the project's own status " +
     "ids, deciding which ones the chart counts",
-  "services/move/plan.ts": "decides the mapping; copy.ts performs the write",
   "services/move/copy.ts":
     "writes the mapped status into the destination; execute.ts re-evaluates " +
     "against that project once the move has committed",

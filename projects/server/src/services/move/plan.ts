@@ -19,10 +19,11 @@ import {
   IssueDeletedError,
   IssueMovedError,
   IssueMovingError,
+  NotFoundError,
   ValidationFailedError,
 } from "../../errors.ts";
 import { type ProjectRow, requireCapability, routeInfoOf } from "../access.ts";
-import { loadIssueRow } from "../issues.ts";
+import { currentStatusesOf, loadIssueRow } from "../issues.ts";
 import { lineageOf, movedInHistory, tombstoneNumberOf } from "../relocation.ts";
 import { assertIssueWritable } from "../trash.ts";
 import { getUserRefs } from "../users.ts";
@@ -96,6 +97,7 @@ export async function planMove(
   }
   const targetDb = await ctx.router.forProject(routeInfoOf(target));
 
+  await ctx.testHooks?.beforeStatusRead?.();
   const status = await mapStatus(sourceDb, targetDb, source.id, target.id, row);
   const labelMap = await mapLabels(sourceDb, targetDb, target.id, row);
   const assigneeMap = await mapAssignees(
@@ -279,14 +281,16 @@ async function mapStatus(
   targetId: number,
   row: IssueRow,
 ): Promise<{ from: StatusRow; to: StatusRow }> {
-  const fromRows = await sourceDb
-    .select()
-    .from(statuses)
-    .where(
-      and(eq(statuses.projectId, sourceId), eq(statuses.id, row.statusId)),
-    );
-  const from = fromRows[0];
-  if (from === undefined) throw new Error("issue has unknown status");
+  // The card can be gone by now: `planMove` reads it holding nothing, and a
+  // cross-database move holds it in `replanHeld` only by the freeze, which a
+  // project's deletion does not wait for. (A move within one database holds
+  // the row lock, which the deletion does wait for.) Nothing has been
+  // written yet; the cross-database path's catch around `replanHeld` takes
+  // back its freeze and registration.
+  const from = (await currentStatusesOf(sourceDb, [sourceId], [row.id])).get(
+    row.id,
+  );
+  if (from === undefined) throw new NotFoundError("issue not found");
 
   const candidates = await targetDb
     .select()
