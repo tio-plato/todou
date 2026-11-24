@@ -782,7 +782,8 @@ describe("a card whose list starts on screen, read at its end", () => {
   });
 
   it("measures the end from the screen once the divider is under the top overlays", async () => {
-    // The divider carries the hidden count; the list's own top still shows.
+    // The divider, as tall as the hidden count makes it, under the top
+    // overlays: the body out of view, though the list's own top shows.
     const page = await shortCard({
       divider: true,
       hidden: [7],
