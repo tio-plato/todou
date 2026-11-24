@@ -1476,6 +1476,7 @@ describe("selection endpoints across a shadow boundary (T-164)", () => {
     focusNode: Node;
     focusOffset?: number;
     isCollapsed: boolean;
+    text?: string;
     composed?: StaticRangeLike[];
     onComposed?: (options: { shadowRoots?: ShadowRoot[] }) => void;
   }): Selection {
@@ -1493,7 +1494,7 @@ describe("selection endpoints across a shadow boundary (T-164)", () => {
       getRangeAt: () => range,
       // What the trigger reads to tell an empty selection from a live one,
       // and the legacy collapse is exactly the lie it must not believe.
-      toString: () => "selected",
+      toString: () => over.text ?? "selected",
       ...(composed === undefined
         ? {}
         : {
@@ -1609,6 +1610,206 @@ describe("selection endpoints across a shadow boundary (T-164)", () => {
     // narrows to the columns they cover — the legacy collapse that used to
     // decide this had no columns to give.
     expect(await view.findByText(/Comment L1:1–L3:6/)).not.toBeNull();
+  });
+
+  /** Two paragraphs, rendered, with their text nodes. */
+  async function twoParagraphs() {
+    const view = renderWithProviders(
+      <AnnotatedMarkdown
+        slug="p"
+        issueNumber={1}
+        body={"first paragraph.\n\nsecond paragraph.\n"}
+        annotations={[]}
+        onStage={() => {}}
+        onEditDraft={() => {}}
+        onRemoveDraft={() => {}}
+        onResolve={() => {}}
+      />,
+    );
+    const container = await waitFor(() => {
+      const el = view.getByTestId("annotated-markdown");
+      if (!el.querySelector("p[data-loc]")) throw new Error("not rendered");
+      return el;
+    });
+    const paragraphs = container.querySelectorAll("p[data-loc]");
+    return {
+      view,
+      container,
+      start: paragraphs[0]?.firstChild as Node,
+      end: paragraphs[1]?.firstChild as Node,
+    };
+  }
+
+  /** Both paragraphs' text, from the first's start to the second's sixth. */
+  const across = (start: Node, end: Node): StaticRangeLike[] => [
+    {
+      startContainer: start,
+      startOffset: 0,
+      endContainer: end,
+      endOffset: 6,
+      collapsed: false,
+    },
+  ];
+
+  /**
+   * A caret inside a code row's shadow root, appended to `container`. Asked
+   * without that root, the API widens it to its host's edges.
+   */
+  function caretInShadow(container: HTMLElement): Selection {
+    const host = document.createElement("div");
+    const row = document.createElement("span");
+    row.textContent = "$ hello";
+    host.attachShadow({ mode: "open" }).append(row);
+    container.append(host);
+    const code = row.firstChild as Node;
+    const at = Array.prototype.indexOf.call(container.childNodes, host);
+    return {
+      anchorNode: code,
+      anchorOffset: 2,
+      focusNode: code,
+      focusOffset: 2,
+      isCollapsed: true,
+      rangeCount: 1,
+      getRangeAt: () => document.createRange(),
+      toString: () => "",
+      getComposedRanges: (options: { shadowRoots?: ShadowRoot[] } = {}) =>
+        (options.shadowRoots ?? []).length > 0
+          ? [
+              {
+                startContainer: code,
+                startOffset: 2,
+                endContainer: code,
+                endOffset: 2,
+                collapsed: true,
+              },
+            ]
+          : [
+              {
+                startContainer: container,
+                startOffset: at,
+                endContainer: container,
+                endOffset: at + 1,
+                collapsed: false,
+              },
+            ],
+    } as unknown as Selection;
+  }
+
+  it("offers the comment button for a selection Firefox reads as empty", async () => {
+    const { view, start, end } = await twoParagraphs();
+    vi.spyOn(window, "getSelection").mockReturnValue(
+      stubSelection({
+        // What Firefox reports after a shift-click or a Shift+Up across a
+        // shadow boundary: no text, and the legacy range collapsed.
+        anchorNode: end,
+        anchorOffset: 6,
+        focusNode: end,
+        focusOffset: 6,
+        isCollapsed: true,
+        text: "",
+        composed: across(start, end),
+      }),
+    );
+    fireEvent(document, new Event("selectionchange"));
+    expect(await view.findByText(/Comment L1:1–L3:6/)).not.toBeNull();
+  });
+
+  it("keeps the anchor through a press that leaves a caret in a code row", async () => {
+    const { view, container, start, end } = await twoParagraphs();
+    const getSelection = vi.spyOn(window, "getSelection");
+    getSelection.mockReturnValue(
+      stubSelection({
+        anchorNode: start,
+        focusNode: end,
+        focusOffset: 6,
+        isCollapsed: false,
+        composed: across(start, end),
+      }),
+    );
+    fireEvent(document, new Event("selectionchange"));
+    const button = await view.findByText(/Comment L1:1–L3:6/);
+
+    fireEvent.pointerDown(button, { pointerType: "touch" });
+    getSelection.mockReturnValue(caretInShadow(container));
+    fireEvent(document, new Event("selectionchange"));
+    await settle();
+    expect(view.queryByText(/Comment L1:1–L3:6/)).not.toBeNull();
+  });
+
+  it("drops the entry as soon as a mouse press leaves a caret in a code row", async () => {
+    const { view, container, start, end } = await twoParagraphs();
+    const getSelection = vi.spyOn(window, "getSelection");
+    getSelection.mockReturnValue(
+      stubSelection({
+        anchorNode: start,
+        focusNode: end,
+        focusOffset: 6,
+        isCollapsed: false,
+        composed: across(start, end),
+      }),
+    );
+    fireEvent(document, new Event("selectionchange"));
+    await view.findByText(/Comment L1:1–L3:6/);
+
+    // The press starts a new drag; the pointer has not lifted yet.
+    fireEvent.pointerDown(container, { pointerType: "mouse" });
+    getSelection.mockReturnValue(caretInShadow(container));
+    fireEvent(document, new Event("selectionchange"));
+    await settle();
+    expect(view.queryByText(/Comment L/)).toBeNull();
+  });
+
+  it("offers nothing for a selection with no text that spans something", async () => {
+    const { view, start, end } = await twoParagraphs();
+    vi.spyOn(window, "getSelection").mockReturnValue(
+      stubSelection({
+        // A legacy range across both paragraphs with no text in it, as
+        // around an image selected alone.
+        anchorNode: start,
+        focusNode: end,
+        focusOffset: 6,
+        isCollapsed: false,
+        text: "",
+        composed: across(start, end),
+      }),
+    );
+    fireEvent(document, new Event("selectionchange"));
+    await settle();
+    expect(view.queryByText(/Comment L/)).toBeNull();
+  });
+
+  it("walks no shadow root for a caret outside them", async () => {
+    const { container, start } = await twoParagraphs();
+    const host = document.createElement("div");
+    host.attachShadow({ mode: "open" }).append("$ hello");
+    container.append(host);
+    const handed: ShadowRoot[] = [];
+    vi.spyOn(window, "getSelection").mockReturnValue(
+      stubSelection({
+        // A caret in the prose, as typing or a click leaves it.
+        anchorNode: start,
+        anchorOffset: 3,
+        focusNode: start,
+        focusOffset: 3,
+        isCollapsed: true,
+        text: "",
+        composed: [
+          {
+            startContainer: start,
+            startOffset: 3,
+            endContainer: start,
+            endOffset: 3,
+            collapsed: true,
+          },
+        ],
+        onComposed: (options) => {
+          handed.push(...(options.shadowRoots ?? []));
+        },
+      }),
+    );
+    fireEvent(document, new Event("selectionchange"));
+    await settle();
+    expect(handed).toEqual([]);
   });
 });
 
