@@ -564,6 +564,92 @@ describe("the popover's locate control holds where it lands (T-527)", () => {
     expect(reveals).toHaveLength(2);
   });
 
+  it("glides to the annotated block when it is screens away, flashing it as it sets out", async () => {
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    mockSpec([ON_DESIGN]);
+    const view = await page("?v=2&view=rendered&file=design.md");
+    fireEvent.click(await view.findByLabelText("1 comment(s) on this block"));
+    const popover = await waitFor(() => {
+      const el = document.querySelector("[data-slot='popover-content']");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    const locate = popover.querySelector<HTMLElement>(
+      "button[title='Scroll to what this points at']",
+    );
+    if (locate === null) throw new Error("no locate control");
+    // A tall page, the document's blocks from 3000 down, scrolled to its top.
+    const at = { y: 0 };
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(800);
+    vi.spyOn(window, "scrollY", "get").mockImplementation(() => at.y);
+    vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
+      10_000,
+    );
+    vi.spyOn(document.documentElement, "clientHeight", "get").mockReturnValue(
+      800,
+    );
+    const blocks = [
+      ...view.container.querySelectorAll<HTMLElement>(
+        "[data-testid='annotated-markdown'] [data-loc]",
+      ),
+    ];
+    for (const [i, block] of blocks.entries()) {
+      block.getBoundingClientRect = () => {
+        const top = 3000 + 40 * i - at.y;
+        return { top, bottom: top + 30, height: 30 } as DOMRect;
+      };
+    }
+    const glided: number[] = [];
+    vi.spyOn(window, "scrollTo").mockImplementation((...args: unknown[]) => {
+      at.y = Number(args[1]);
+      glided.push(at.y);
+    });
+    const reveals: Element[] = [];
+    vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+      this: Element,
+    ) {
+      reveals.push(this);
+    });
+    // Frames as the test runs them: each frame's callback, then the
+    // placement once it is drawn, on the clock the glide reads.
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    vi.useFakeTimers({
+      toFake: [
+        "requestAnimationFrame",
+        "cancelAnimationFrame",
+        "setTimeout",
+        "clearTimeout",
+      ],
+    });
+    const frame = (ms = 16) => {
+      now += ms;
+      vi.advanceTimersByTime(17);
+      fireEvent.scroll(window);
+    };
+    try {
+      fireEvent.click(locate);
+      expect(reveals).toEqual([]);
+      const flashed = view.container.querySelector(".anchor-flash");
+      expect(flashed).not.toBeNull();
+      for (let i = 0; i < 4; i++) frame();
+      expect(reveals).toEqual([]);
+      expect(glided).toHaveLength(4);
+      for (let i = 1; i < glided.length; i++)
+        expect(glided[i]).toBeGreaterThan(glided[i - 1]);
+      frame(1_000);
+      expect(reveals).toEqual([flashed]);
+    } finally {
+      vi.useRealTimers();
+    }
+    fireEvent.keyDown(popover, { key: "Escape" });
+    await waitFor(() =>
+      expect(
+        document.querySelector("[data-slot='popover-content']"),
+      ).toBeNull(),
+    );
+  });
+
   it("holds a comment's own words, not the block they sit in", async () => {
     vi.stubGlobal("ResizeObserver", FakeResizeObserver);
     mockSpec([

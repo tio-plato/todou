@@ -2339,20 +2339,28 @@ describe("gliding on a card that has landed", () => {
   const ROW = 100;
 
   /** Where a reveal centres `el` in what the overlays leave. */
-  const centred = (el: Element) => {
+  const centred = (el: Element, tops = TOPS) => {
     const usable = usableViewport();
-    return (TOPS[el.id] ?? 0) + ROW / 2 - (usable.top + usable.height / 2);
+    return (tops[el.id] ?? 0) + ROW / 2 - (usable.top + usable.height / 2);
   };
 
-  /** The rows in `TOPS` measured where the page is scrolled to. */
-  function layOut(scroll: Scrolling) {
+  /**
+   * The rows in `tops` measured where the page is scrolled to, each `ROW`
+   * tall unless `heights` says otherwise.
+   */
+  function layOut(
+    scroll: Scrolling,
+    tops = TOPS,
+    heights: Record<string, number> = {},
+  ) {
     const spy = vi.mocked(Element.prototype.getBoundingClientRect);
     const rest = spy.getMockImplementation();
     spy.mockImplementation(function (this: Element) {
-      const top = TOPS[this.id];
+      const top = tops[this.id];
       if (top === undefined) return rest?.call(this) ?? new DOMRect();
       const y = top - scroll.position();
-      return { top: y, bottom: y + ROW, height: ROW } as DOMRect;
+      const height = heights[this.id] ?? ROW;
+      return { top: y, bottom: y + height, height } as DOMRect;
     });
   }
 
@@ -2479,6 +2487,58 @@ describe("gliding on a card that has landed", () => {
     await frame(1_000, { quiet: true });
     await landed(view, scroll, 10);
     expect(newMessagesShown(view)).toBe(true);
+  });
+
+  // The end, where New messages goes, reached by a glide whose last steps
+  // move the page less than a pixel: no scroll comes after it.
+  it("lets New messages go once a glide stops at the end, with no scroll after it", async () => {
+    // The first arrival long, its start out of sight above the end.
+    const tops = { "comment-30": 6_800, "comment-31": 8_400 };
+    const model = card([question(10)]);
+    serve({ "p/7": model });
+    const scroll = scrolling({
+      below: BELOW,
+      revealedAt: (el) => centred(el, tops),
+    });
+    layOut(scroll, tops, { "comment-30": 1_500 });
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText("Decision 10?");
+    await waitFor(() => expect(scroll.bottoms()).toBe(1));
+    scroll.userAt(2_000);
+    await arrive(view, model);
+    expect(shownAs(view)).toBe("2 new messages");
+
+    const frame = frameByFrame();
+    await navigate(view, "comment-31");
+    await waitFor(() => expect(flashed(view, 31)).toBe(true));
+    for (let i = 0; i < 8; i++) await frame();
+    expect(newMessagesShown(view)).toBe(true);
+    await frame(1_000, { quiet: true });
+    await landed(view, scroll, 31);
+    expect(newMessagesShown(view)).toBe(false);
+  });
+
+  it("lands on the end at once when a question landing finds none on arriving, and glides there after", async () => {
+    const model = card([], [comment(1), comment(2)]);
+    serve({ "p/7": model });
+    const scroll = scrolling();
+    const view = renderAt();
+    await waitFor(() => expect(scroll.bottoms()).toBe(1));
+    await waitFor(() => expect(view.router.state.location.hash).toBe(""));
+    // Arriving: straight to the end, nothing on the way.
+    expect(scroll.events).toEqual(["bottom"]);
+    scroll.userAt(0);
+
+    const frame = frameByFrame();
+    await navigate(view, ENTRY);
+    await waitFor(() => expect(view.router.state.location.hash).toBe(""));
+    for (let i = 0; i < 4; i++) await frame();
+    expect(scroll.bottoms()).toBe(1);
+    expect(scroll.events.slice(1).some((e) => e.startsWith("scroll:"))).toBe(
+      true,
+    );
+    await frame(1_000);
+    expect(scroll.bottoms()).toBe(2);
   });
 
   it("glides to a comment a link on the card names", async () => {

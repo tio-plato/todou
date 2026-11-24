@@ -1027,6 +1027,22 @@ describe("landing on the end of the conversation", () => {
       expect(targets.at(-1)).toBe(4400 - VIEWPORT);
     });
 
+    it("puts the page back on the path, not the stop, as the reader's input finds it grown", () => {
+      glide();
+      const end = { y: 4000 };
+      const { targets, setHeight } = page(end);
+      landAtBottom({ glide: true });
+      frames(3);
+      const before = targets.at(-1) ?? 0;
+      // 400 grows above the end, and the reader's wheel comes before the
+      // observer hears of it.
+      end.y = 4400;
+      setHeight(HEIGHT + 400);
+      fireEvent.wheel(window);
+      expect(targets.at(-1)).toBe(before + 400);
+      expect(targets.at(-1)).toBeLessThan(4400 - VIEWPORT);
+    });
+
     it.each([
       ["between two frames", 0],
       ["between a frame and the placement after it", 1],
