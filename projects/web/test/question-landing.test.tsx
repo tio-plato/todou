@@ -36,6 +36,7 @@ import { questionsQuery } from "../src/api/questions.ts";
 import { UnsavedChangesGuard } from "../src/components/shared/unsaved-guard.tsx";
 import { QUESTION_LANDING_ROUTE_ID } from "../src/components/timeline/use-question-landing.ts";
 import { selectNextQuestionLanding } from "../src/lib/question-landing.ts";
+import { isGliding, usableViewport } from "../src/lib/scroll-insets.ts";
 import { registerDirtySource } from "../src/lib/unsaved-guard.ts";
 import { IssueDetailPage } from "../src/pages/issue-detail.tsx";
 import { IssueRouteError } from "../src/pages/issue-route-error.tsx";
@@ -603,8 +604,15 @@ type Scrolling = {
 /** happy-dom cannot lay out the page. Observe production reveal/flash and
  * scroll order, modelling the viewport change without firing a native scroll
  * event; releasing landing ownership must reconcile follow-bottom itself.
- * `below` is what follows the page's column: a phone's sidebar. */
-function scrolling({ below = 0 }: { below?: number } = {}): Scrolling {
+ * `below` is what follows the page's column: a phone's sidebar. `revealedAt`
+ * is where a reveal leaves the page. */
+function scrolling({
+  below = 0,
+  revealedAt = () => 1_500,
+}: {
+  below?: number;
+  revealedAt?: (el: Element) => number;
+} = {}): Scrolling {
   const state = { y: 0, height: 10_000, events: [] as string[] };
   const commits: Scrolling["commits"] = [];
   vi.spyOn(window, "innerHeight", "get").mockReturnValue(800);
@@ -648,7 +656,7 @@ function scrolling({ below = 0 }: { below?: number } = {}): Scrolling {
       current: document.getElementById(this.id),
       connected: this.isConnected,
     });
-    state.y = 1_500;
+    state.y = revealedAt(this);
   });
   return {
     events: state.events,
@@ -2309,5 +2317,190 @@ describe("the card's own question badge", () => {
       answered(question(14), 15),
     ]);
     expect(selectNextQuestionLanding(one, 12)).toBe(12);
+  });
+});
+
+/**
+ * A jump on a card that has already landed glides there (T-211), and what
+ * the glide carries the page past is not read: a phone's reader in the
+ * sidebar below the comment box, New messages pointing up at what arrived,
+ * presses the badge for a question above.
+ */
+describe("gliding on a card that has landed (T-211)", () => {
+  // Page coordinates of a laid-out card: the conversation ends at 8600, a
+  // sidebar 1400 tall below it.
+  const TOPS: Record<string, number> = {
+    "comment-10": 1_000,
+    "comment-14": 7_000,
+    "comment-30": 7_300,
+    "comment-31": 8_400,
+  };
+  const BELOW = 1_400;
+  const ROW = 100;
+
+  /** Where a reveal centres `el` in what the overlays leave. */
+  const centred = (el: Element) => {
+    const usable = usableViewport();
+    return (TOPS[el.id] ?? 0) + ROW / 2 - (usable.top + usable.height / 2);
+  };
+
+  /** The rows in `TOPS` measured where the page is scrolled to. */
+  function layOut(scroll: Scrolling) {
+    const spy = vi.mocked(Element.prototype.getBoundingClientRect);
+    const rest = spy.getMockImplementation();
+    spy.mockImplementation(function (this: Element) {
+      const top = TOPS[this.id];
+      if (top === undefined) return rest?.call(this) ?? new DOMRect();
+      const y = top - scroll.position();
+      return { top: y, bottom: y + ROW, height: ROW } as DOMRect;
+    });
+  }
+
+  /**
+   * From here on, frames only as the test runs them, and the clock a glide
+   * reads: each frame's callback, the placement made once it is drawn, and
+   * the scroll that made, unless `quiet`. Not before the card is open, which
+   * runs on real timers.
+   */
+  function frameByFrame() {
+    let clock = performance.now();
+    vi.spyOn(performance, "now").mockImplementation(() => clock);
+    vi.useFakeTimers({
+      toFake: ["requestAnimationFrame", "cancelAnimationFrame"],
+    });
+    return async (ms = 16, { quiet = false } = {}) => {
+      clock += ms;
+      await act(async () => {
+        vi.advanceTimersByTime(16);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (!quiet) fireEvent.scroll(window);
+      });
+    };
+  }
+
+  const shownAs = (view: View) =>
+    newMessagesShown(view)
+      ? view
+          .getByRole("button", { name: /^(New messages|\d+ new messages?)$/ })
+          .getAttribute("aria-label")
+      : null;
+
+  const flashed = (view: View, id: number) =>
+    view.container
+      .querySelector(`#comment-${id}`)
+      ?.classList.contains("anchor-flash") === true;
+
+  async function pressBadge(view: View) {
+    const badge = within(view.getByTestId("issue-title-block")).getByRole(
+      "link",
+      { name: /unanswered question/ },
+    );
+    await act(async () => {
+      fireEvent.click(badge);
+    });
+  }
+
+  /** Two from someone else, below the reader's screen. */
+  async function arrive(view: View, model: Card) {
+    model.items.push(theirs(30), theirs(31));
+    await refetchTail(view);
+    await view.findByText("comment body 31");
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("lands on the comment a link names at once, then glides to the badge's next question, reading only where it stops", async () => {
+    const model = card([question(10), question(14)]);
+    serve({ "p/7": model });
+    const scroll = scrolling({ below: BELOW, revealedAt: centred });
+    layOut(scroll);
+    const view = renderAt("/projects/p/issues/7#comment-10");
+    await landed(view, scroll, 10);
+    // Arriving on the card: straight there, nothing on the way.
+    expect(scroll.events).toEqual(["reveal:comment-10"]);
+    scroll.userAt(10_000 - 800);
+    await arrive(view, model);
+    expect(shownAs(view)).toBe("2 new messages");
+
+    const frame = frameByFrame();
+    await pressBadge(view);
+    await waitFor(() => expect(flashed(view, 14)).toBe(true));
+    expect(scroll.reveals("comment-14")).toBe(0);
+    const glided: number[] = [];
+    for (let i = 0; i < 8; i++) {
+      await frame();
+      glided.push(scroll.position());
+    }
+    // The later arrival on screen on the way, and not read.
+    const { top, height } = usableViewport();
+    const onScreen = (y: number) =>
+      TOPS["comment-31"] - y >= top && TOPS["comment-31"] - y < top + height;
+    expect(glided.some(onScreen)).toBe(true);
+    expect(scroll.reveals("comment-14")).toBe(0);
+    expect(shownAs(view)).toBe("2 new messages");
+    // Late past its end: the last placement, and no scroll after it.
+    await frame(1_000, { quiet: true });
+    await landed(view, scroll, 14);
+    expect(scroll.position()).toBe(
+      centred(view.container.querySelector("#comment-14") as Element),
+    );
+    expect(isGliding()).toBe(false);
+    // Read where it stopped: the arrival just below the question.
+    expect(shownAs(view)).toBe("1 new message");
+  });
+
+  it("keeps New messages up through a glide that passes the end", async () => {
+    const model = card([question(10), question(14)]);
+    serve({ "p/7": model });
+    const scroll = scrolling({ below: BELOW, revealedAt: centred });
+    layOut(scroll);
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText("Decision 14?");
+    await waitFor(() => expect(scroll.bottoms()).toBe(1));
+    scroll.userAt(10_000 - 800);
+    await arrive(view, model);
+    expect(newMessagesShown(view)).toBe(true);
+
+    const frame = frameByFrame();
+    await pressBadge(view);
+    await waitFor(() => expect(flashed(view, 10)).toBe(true));
+    const glided: number[] = [];
+    for (let i = 0; i < 12; i++) {
+      await frame();
+      glided.push(scroll.position());
+    }
+    // Frames on the way, through the end and above it.
+    expect(scroll.reveals("comment-10")).toBe(0);
+    expect(new Set(glided).size).toBeGreaterThan(5);
+    expect(Math.min(...glided)).toBeLessThan(8_600 - 800 - 40);
+    expect(newMessagesShown(view)).toBe(true);
+    await frame(1_000, { quiet: true });
+    await landed(view, scroll, 10);
+    expect(newMessagesShown(view)).toBe(true);
+  });
+
+  it("glides to a comment a link on the card names", async () => {
+    const model = card([question(10), question(14)]);
+    serve({ "p/7": model });
+    const scroll = scrolling({ below: BELOW, revealedAt: centred });
+    layOut(scroll);
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText("Decision 14?");
+    await waitFor(() => expect(scroll.bottoms()).toBe(1));
+
+    const frame = frameByFrame();
+    await navigate(view, "comment-10");
+    await waitFor(() => expect(flashed(view, 10)).toBe(true));
+    expect(scroll.reveals("comment-10")).toBe(0);
+    await frame();
+    await frame();
+    expect(scroll.reveals("comment-10")).toBe(0);
+    await frame(1_000);
+    await landed(view, scroll, 10);
+    expect(scroll.position()).toBe(
+      centred(view.container.querySelector("#comment-10") as Element),
+    );
   });
 });

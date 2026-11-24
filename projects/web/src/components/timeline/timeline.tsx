@@ -191,6 +191,10 @@ export function Timeline({
     seen: ReadonlySet<string>;
   } | null>(null);
   const didInitialScroll = useRef(false);
+  // Whether the card has landed once: on its end as it opened, or on what
+  // its address or a question badge named. Arriving on the card lands at
+  // once; a jump on the card after that glides (T-211).
+  const landed = useRef(false);
 
   const { above, below } = mergeFolded(
     headEnabled ? (head.data?.pages ?? []) : [],
@@ -551,6 +555,7 @@ export function Timeline({
         },
     // The address may still name the comment the last landing chose.
     questionLanding.intent,
+    landed,
   );
 
   useEffect(() => {
@@ -560,7 +565,8 @@ export function Timeline({
       !tail.isFetching &&
       !head.isFetching
     ) {
-      scrollToBottom();
+      scrollToBottom(landed.current);
+      landed.current = true;
       didInitialScroll.current = true;
       setLastSeen(null);
       finishQuestionLanding();
@@ -580,6 +586,7 @@ export function Timeline({
         !questionLanding.intent
       ) {
         scrollToBottom();
+        landed.current = true;
         landAfterArrival.current = router.state.status === "pending";
       }
     }
