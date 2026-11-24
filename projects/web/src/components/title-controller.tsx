@@ -128,7 +128,8 @@ export function TitleController() {
     refPrefix,
     refLeads,
     login,
-    templateName: templates.data?.find((t) => String(t.ref) === template)?.name,
+    templateName:
+      templates.data?.find((t) => String(t.ref) === template)?.name ?? template,
   });
 
   useEffect(() => {
