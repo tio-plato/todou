@@ -97,6 +97,24 @@ export function usableViewport(): UsableViewport {
   };
 }
 
+/**
+ * Where a reading list starts on screen: at the element right before it when
+ * that is marked `data-list-lead` as the list's own opening line (the
+ * timeline's divider), else at the list's top. Found again on every call,
+ * since the lead can be swapped for another element.
+ */
+export function listTop(list: Element): number {
+  const lead = list.previousElementSibling;
+  return (
+    lead?.hasAttribute("data-list-lead") ? lead : list
+  ).getBoundingClientRect().top;
+}
+
+/** Whether a reading list's start shows below the top overlays. */
+export function listTopShows(list: Element): boolean {
+  return listTop(list) > usableViewport().top;
+}
+
 /** One-shot highlight; restartable when the same target is revealed again. */
 function flash(el: HTMLElement) {
   el.classList.remove("anchor-flash");
@@ -582,13 +600,21 @@ export type ReadingUnit = { key: string; top: number };
  * The unit the reader is reading, and the units beside it on screen to fall
  * back on, nearest first: those below it, or above it for the last unit kept
  * at the end of the conversation.
+ *
+ * `withList` marks a place that moves with the list's top (`listTop`):
+ * whatever moves that top on screen, the page above the list growing or a
+ * scroll, moves the units with it, and only what moves them within the list
+ * is put back. Their tops are on screen all the same.
  */
-export type ReadingPlace = ReadingUnit & { after: ReadingUnit[] };
+export type ReadingPlace = ReadingUnit & {
+  after: ReadingUnit[];
+  withList?: true;
+};
 
 /** Each unit's top moved by `by`, as a scroll of the page moves it. */
 function scrolled(place: ReadingPlace, by: number): ReadingPlace {
   return {
-    key: place.key,
+    ...place,
     top: place.top - by,
     after: place.after.map((unit) => ({ key: unit.key, top: unit.top - by })),
   };
@@ -603,7 +629,10 @@ function scrolled(place: ReadingPlace, by: number): ReadingPlace {
  * beside it; null when the reader is reading nothing in the list. Given the
  * element a click landed on, it names that element's unit instead, or
  * answers undefined when that is no unit, and the place is picked again as
- * after a scroll. `locate` finds a unit again by its key.
+ * after a scroll. A click or a typed key outside the list is put to it too:
+ * null lets go of the place, the reader having pressed or typed on what
+ * precedes the list, and any other answer leaves it as it is. `locate` finds
+ * a unit again by its key.
  *
  * Nothing is picked before the reader's first input or the first landing to
  * let go of the page: until then the page is still assembling itself, a
@@ -612,7 +641,10 @@ function scrolled(place: ReadingPlace, by: number): ReadingPlace {
  * and so does an input that ends a landing or finds nothing kept; a typed
  * key moves nothing, and one that scrolls is heard as its scroll. A click in
  * the list takes the unit it landed on, so what it opens grows downward from
- * where the reader pressed.
+ * where the reader pressed. A click or a typed key on what precedes the list
+ * lets go instead, the key landing where the focus is: what the reader opened
+ * or types in the card's body stays put while the list changes. A scroll is
+ * picked by where the page is, whatever made it.
  *
  * While a landing is held it owns the page, and nothing is put back.
  * Otherwise every resize of the page or of the list's column, and every
@@ -635,6 +667,15 @@ function scrolled(place: ReadingPlace, by: number): ReadingPlace {
  * the page stands in, and the reader's place is picked again from there;
  * all gone, nothing moves until the next pick.
  *
+ * A place kept at the end with the body above the list still in view moves
+ * with the list's top instead (`withList`): what grows above the list and
+ * the reader's own scrolls move that top and the place with it, so only what
+ * moves the unit within the list is put back, and editing the body pushes
+ * nobody. The top is the divider line's, which belongs to the list: as it
+ * shrinks with the card's last hidden comment revealed, what was pressed is
+ * put back. Once a put back has taken the list's top under the top overlays,
+ * the place is measured from the screen like any other.
+ *
  * The auto-hiding header is told how far the page really moved, which the
  * page's ends can make less than asked: it is the page placing itself, not
  * the reader scrolling, and never a landing, which would settle the header
@@ -652,9 +693,10 @@ export function useReadingList(
     const root = document.documentElement;
     let started = false;
     let place: ReadingPlace | null = null;
-    // Where the page was when this last knew, and whether the next scroll
-    // event may be the one its own put back made.
+    // Where the page and the list's top were when this last knew, and
+    // whether the next scroll event may be the one its own put back made.
     let seenY = window.scrollY;
+    let seenListTop = 0;
     let shifted = false;
     const keep = (next: ReadingPlace | null) => {
       if (next === null && place !== null)
@@ -663,22 +705,40 @@ export function useReadingList(
         root.style.setProperty("overflow-anchor", "none");
       place = next;
       seenY = window.scrollY;
+      seenListTop = list.current === null ? 0 : listTop(list.current);
     };
     const repick = () => {
       const el = list.current;
       keep(el === null ? null : (latest.current.pick(el) ?? null));
     };
-    const onInput = () => {
+    // Whether a click or a key landed outside the list on what `pick` lets
+    // go for.
+    const landsAbove = (target: EventTarget | null) => {
+      const el = list.current;
+      return (
+        el !== null &&
+        target instanceof Element &&
+        !el.contains(target) &&
+        latest.current.pick(el, target) === null
+      );
+    };
+    const onInput = (event: Event) => {
       // A landing letting go hands the page over itself.
       if (held !== null) return;
       started = true;
-      if (place === null) repick();
+      // Only a key: a press, a wheel or a touch on the body may scroll
+      // nothing and bring no click, and nothing would pick the place again.
+      if (event.type === "keydown" && landsAbove(event.target)) keep(null);
+      else if (place === null) repick();
     };
     const onClick = (event: MouseEvent) => {
       const el = list.current;
       if (held !== null || el === null) return;
-      if (!(event.target instanceof Element) || !el.contains(event.target))
+      if (!(event.target instanceof Element)) return;
+      if (!el.contains(event.target)) {
+        if (landsAbove(event.target)) keep(null);
         return;
+      }
       started = true;
       const picked = latest.current.pick(el, event.target);
       if (picked === undefined) repick();
@@ -696,7 +756,10 @@ export function useReadingList(
       if (held !== null || place === null || el === null) return;
       const { locate: find } = latest.current;
       const y = window.scrollY;
-      const kept = scrolled(place, y - seenY);
+      const kept = scrolled(
+        place,
+        place.withList ? seenListTop - listTop(el) : y - seenY,
+      );
       seenY = y;
       place = kept;
       let unit = find(el, kept.key);
@@ -722,6 +785,8 @@ export function useReadingList(
           pageShifted(seenY - y);
         }
       }
+      // Its own scroll moved the list's top too, and is no move within it.
+      seenListTop = listTop(el);
       if (fellBack) {
         repick();
         return;
@@ -737,6 +802,9 @@ export function useReadingList(
             : [{ key: next.key, top: found.getBoundingClientRect().top }];
         }),
       };
+      // Once the list's top has gone under the top overlays, the body out of
+      // view, the place is measured from the screen like any other.
+      if (kept.withList && listTopShows(el)) place.withList = true;
     };
     const own = {
       drop: () => {

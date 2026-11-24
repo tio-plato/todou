@@ -1,5 +1,6 @@
 import {
   atConversationEnd,
+  listTopShows,
   type ReadingPlace,
   type ReadingUnit,
   type UsableViewport,
@@ -66,23 +67,34 @@ function childFor(list: HTMLElement, key: string): HTMLElement | null {
  *   above it: the first unit below the seam showing under the top overlays.
  *   Ahead of the rule below, so a short head side with the card's body still
  *   in view keeps the tail too.
- * - None while the list's top shows below the top overlays: the reader can
- *   see the card's title, body or attachments above it, and the browser keeps
- *   those where they are. Editing the body grows the page above the list, and
- *   nothing should push the editor away for it.
+ * - While the list's top (`listTop`, its divider line's) shows below the top
+ *   overlays, the reader can see the card's title, body or attachments above
+ *   it, and nothing should push those away for what grows there: editing the
+ *   body grows the page above the list. At the end of the conversation, the
+ *   unit the rule below takes, moving with the list's top (`withList`): what
+ *   grows above the list moves it along, and only what grows in the list is
+ *   put back. Anywhere else none, and the browser keeps what precedes the
+ *   list where it is.
  * - At the end of the conversation, the last unit showing above the bottom
  *   overlays: the reader is at the end, the comment box under their hand, and
  *   whatever loads above them, the first load's skeletons filled in included,
- *   leaves them there. The tail's rule takes this one too.
+ *   leaves them there. The rules above take this one too.
  * - Otherwise the first unit showing under the top overlays. With the seam in
  *   the lower half, the head side's last unit ends above it, so whatever goes
  *   into the seam pushes nobody.
  *
- * Given `at`, an element a click landed on, the unit holding it instead: what
- * the click opens grows downward from where the reader pressed. With the body
- * in view that is nothing, as above, unless the tail's rule holds. Undefined
- * when the click landed on no unit, such as the fold block's Load more, for
- * the rules above to decide.
+ * Given `at`, an element a click or a typed key landed on, the unit holding
+ * it instead: what the click opens grows downward from where the reader
+ * pressed. With the body in view, unless the tail's rule holds, that unit
+ * moves with the list's top at the end, and is none anywhere else, as above.
+ * Undefined when the click landed on no unit, such as the fold block's Load
+ * more, for the rules above to decide. Outside the list, none for what
+ * precedes it, showing under the top overlays, with the body in view and the
+ * tail's rule not holding: the reader pressed or typed on the card's title,
+ * body or attachments, and what that opens grows downward from there, at the
+ * end too. An ancestor of the list precedes nothing, so a press on blank
+ * space in its column keeps the end. Undefined for anything else outside the
+ * list.
  *
  * A placeholder counts as the unit it stands for, so a reader looking at a
  * skeleton keeps the place of what fills it.
@@ -92,9 +104,23 @@ export function pickReadingUnit(
   seam: string | undefined,
   at?: Element,
 ): ReadingPlace | null | undefined {
+  let child: Element | null = at ?? null;
+  while (child !== null && child.parentElement !== list)
+    child = child.parentElement;
+  if (at !== undefined && child === null) {
+    // Outside the list only what precedes it, its ancestors aside, can let
+    // go; anything else, each key typed in the comment box say, is answered
+    // before a thing is measured.
+    const where = list.compareDocumentPosition(at);
+    if (
+      (where & Node.DOCUMENT_POSITION_PRECEDING) === 0 ||
+      (where & Node.DOCUMENT_POSITION_CONTAINS) !== 0
+    )
+      return undefined;
+  }
   const usable = usableViewport();
   const units = unitsIn(list);
-  const bodyInView = list.getBoundingClientRect().top > usable.top;
+  const bodyInView = listTopShows(list);
   const seamAt =
     seam === undefined ? -1 : units.findIndex((u) => u.key === seam);
   const seamUnit = units[seamAt];
@@ -102,21 +128,36 @@ export function pickReadingUnit(
     seamUnit !== undefined &&
     readingFromTail(seamUnit.el.getBoundingClientRect().top);
   if (at !== undefined) {
-    let child: Element | null = at;
-    while (child !== null && child.parentElement !== list)
-      child = child.parentElement;
-    const key = child === null ? null : unitOf(child);
+    if (child === null)
+      return bodyInView &&
+        !fromTail &&
+        at.getBoundingClientRect().bottom > usable.top
+        ? null
+        : undefined;
+    const key = unitOf(child);
     const clicked = key === null ? -1 : units.findIndex((u) => u.key === key);
     if (clicked === -1) return undefined;
-    return bodyInView && !fromTail ? null : placeAt(units, clicked, 1, usable);
+    return bodyInView && !fromTail
+      ? atEndWithList(() => placeAt(units, clicked, 1, usable))
+      : placeAt(units, clicked, 1, usable);
   }
   if (fromTail)
     return atConversationEnd()
       ? placeAtBottom(units, usable)
       : placeAt(units, firstShowing(units, seamAt, usable), 1, usable);
-  if (bodyInView) return null;
+  if (bodyInView) return atEndWithList(() => placeAtBottom(units, usable));
   if (atConversationEnd()) return placeAtBottom(units, usable);
   return placeAt(units, firstShowing(units, 0, usable), 1, usable);
+}
+
+/**
+ * With the body above the list in view, `place()` moving with the list's top
+ * at the end of the conversation, and nothing anywhere else.
+ */
+function atEndWithList(place: () => ReadingPlace | null): ReadingPlace | null {
+  if (!atConversationEnd()) return null;
+  const at = place();
+  return at === null ? null : { ...at, withList: true };
 }
 
 /** A child of the list standing for a unit, and the unit's key. */
