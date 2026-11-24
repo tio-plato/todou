@@ -4,7 +4,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   atConversationEnd,
   blockFor,
+  GLIDE_END_EVENT,
   holdRevealed,
+  isGliding,
   isHoldingTarget,
   landAtBottom,
   type ReadingPlace,
@@ -933,6 +935,138 @@ describe("landing on the end of the conversation", () => {
     fireEvent.scroll(window);
     resizePage();
     expect(targets).toEqual([2000 - VIEWPORT, 2600 - VIEWPORT]);
+  });
+
+  /**
+   * A landing asked to glide, frame by frame. `now` is the clock the glide
+   * reads; each frame advances it, runs the frame's callback and the
+   * placement made once the frame is drawn, then delivers the scroll that
+   * made, as the browser does at the start of the next frame.
+   */
+  describe("gliding to its stop (T-211)", () => {
+    let now = 0;
+
+    function glide() {
+      vi.useFakeTimers({
+        toFake: [
+          "requestAnimationFrame",
+          "cancelAnimationFrame",
+          "setTimeout",
+          "clearTimeout",
+        ],
+      });
+      now = 0;
+      vi.spyOn(performance, "now").mockImplementation(() => now);
+    }
+
+    function frames(count: number, ms = 16) {
+      for (let i = 0; i < count; i++) {
+        now += ms;
+        // The frame's callback, then the placement once it is drawn.
+        vi.advanceTimersToNextTimer();
+        vi.advanceTimersToNextTimer();
+        fireEvent.scroll(window);
+      }
+    }
+
+    function reducedMotion(reduce: boolean) {
+      vi.stubGlobal("matchMedia", (query: string) => ({
+        matches: reduce && query === "(prefers-reduced-motion: reduce)",
+      }));
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("comes closer every frame and stops where landing at once would, then holds it", () => {
+      glide();
+      const end = { y: 4000 };
+      const { targets } = page(end);
+      landAtBottom({ glide: true });
+      // Nothing moves before the first frame.
+      expect(targets).toEqual([]);
+      frames(40);
+      const stop = 4000 - VIEWPORT;
+      expect(targets.length).toBeGreaterThan(5);
+      for (let i = 1; i < targets.length; i++)
+        expect(targets[i]).toBeGreaterThan(targets[i - 1]);
+      expect(targets[0]).toBeGreaterThan(0);
+      expect(targets.at(-1)).toBe(stop);
+      // Not let go by its own frames' scrolls: the page growing is followed.
+      end.y = 4400;
+      resizePage();
+      expect(targets.at(-1)).toBe(4400 - VIEWPORT);
+      expect(isGliding()).toBe(false);
+    });
+
+    it("lands at once for a reader who asked for less motion", () => {
+      glide();
+      reducedMotion(true);
+      const { targets } = page({ y: 4000 });
+      landAtBottom({ glide: true });
+      expect(targets).toEqual([4000 - VIEWPORT]);
+    });
+
+    it("carries the path along when the page grows above the stop, and still stops on it", () => {
+      glide();
+      const end = { y: 4000 };
+      const { targets, setHeight } = page(end);
+      landAtBottom({ glide: true });
+      frames(3);
+      const before = targets.at(-1) ?? 0;
+      // 400 grows above the end before the next frame.
+      end.y = 4400;
+      setHeight(HEIGHT + 400);
+      resizePage();
+      // On the path, moved with the stop, not on the stop.
+      expect(targets.at(-1)).toBe(before + 400);
+      expect(targets.at(-1)).toBeLessThan(4400 - VIEWPORT);
+      frames(40);
+      expect(targets.at(-1)).toBe(4400 - VIEWPORT);
+    });
+
+    it.each([
+      ["between two frames", 0],
+      ["between a frame and the placement after it", 1],
+    ])("stops where it got to at the reader's input %s", (_, callbacks) => {
+      glide();
+      const end = { y: 4000 };
+      const { targets } = page(end);
+      const ended = vi.fn();
+      window.addEventListener(GLIDE_END_EVENT, ended);
+      landAtBottom({ glide: true });
+      frames(3);
+      // The next frame's callback has run, its placement still to come.
+      for (let i = 0; i < callbacks; i++) {
+        now += 16;
+        vi.advanceTimersToNextTimer();
+      }
+      const placed = [...targets];
+      fireEvent.wheel(window);
+      frames(40);
+      end.y = 4400;
+      resizePage();
+      expect(targets).toEqual(placed);
+      expect(placed.at(-1)).toBeLessThan(4000 - VIEWPORT);
+      expect(ended).toHaveBeenCalledTimes(1);
+      expect(isGliding()).toBe(false);
+      window.removeEventListener(GLIDE_END_EVENT, ended);
+    });
+
+    it("goes straight to the stop at a frame later than the whole glide", () => {
+      glide();
+      const { targets } = page({ y: 4000 });
+      landAtBottom({ glide: true });
+      frames(2);
+      // A second's long task holds the next frame back.
+      frames(1, 1000);
+      expect(targets).toHaveLength(3);
+      expect(targets.at(-1)).toBe(4000 - VIEWPORT);
+      expect(isGliding()).toBe(false);
+      frames(10);
+      expect(targets).toHaveLength(3);
+    });
   });
 
   describe("atConversationEnd", () => {
