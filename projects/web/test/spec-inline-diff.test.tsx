@@ -2148,10 +2148,10 @@ describe("chips on a block's later lines", () => {
     expect(
       [
         ...container.querySelectorAll(
-          "[aria-label$='comment(s) on this block']",
+          "[aria-label$=' comment'], [aria-label$=' comments']",
         ),
       ].map((chip) => chip.getAttribute("aria-label")),
-    ).toEqual(["1 comment(s) on this block", "1 comment(s) on this block"]);
+    ).toEqual(["1 comment", "1 comment"]);
   });
 });
 
@@ -3674,11 +3674,11 @@ describe("baseline annotations on deleted text", () => {
       ],
     );
     const chips = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
-      "1 comment(s) on this block",
-      "1 comment(s) on this block",
+      "1 comment",
+      "1 comment",
     ]);
   });
 
