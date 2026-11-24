@@ -1,5 +1,9 @@
 import type { AnchorRange } from "@/components/spec/selection-entry.tsx";
-import { codeRowSource, stampedAbove } from "./code-rows.ts";
+import {
+  type CodeRowSource,
+  codeRowSource,
+  stampedAbove,
+} from "./code-rows.ts";
 import {
   DELETION_LINE_TYPE,
   LINE_TYPE_ATTR,
@@ -579,15 +583,19 @@ function endpointOffset(
  * hide any line whole, since that row shows one of them. Worked out per block
  * on first ask, since only the blocks next to a selection's two ends are ever
  * asked about.
+ *
+ * `blocks` lists the code blocks' wrappers with the lines of `index` each
+ * spans, asked for on the first offset. `place` says where a row's text sits
+ * in `index`: its `line` and `textStart` as `codeRowSource` gives them, a
+ * null `line` for a row that shows a line of the block no-one can name, and
+ * null as a whole for a row that shows no line of `index` at all.
  */
-function hiddenInCode(
-  container: Element,
+export function hiddenInRows(
   index: SegmentIndex,
+  blocks: () => Array<{ el: Element; loc: { start: number; end: number } }>,
+  place: (row: Element) => Pick<CodeRowSource, "line" | "textStart"> | null,
 ): (offset: number) => boolean {
-  let blocks: Array<{
-    el: Element;
-    loc: { start: number; end: number };
-  }> | null = null;
+  let listed: ReturnType<typeof blocks> | null = null;
   const hidden = new Map<
     Element,
     Map<number, Array<[number, number]>> | null
@@ -601,12 +609,10 @@ function hiddenInCode(
     for (const host of el.querySelectorAll("diffs-container")) {
       for (const row of host.shadowRoot?.querySelectorAll("[data-line]") ??
         []) {
-        const source = codeRowSource(index, row);
-        if (source?.line != null) drawn.set(source.line, source.textStart);
-        // A deletion in a compared fence has no current line to show.
-        else if (row.getAttribute(LINE_TYPE_ATTR) !== DELETION_LINE_TYPE) {
-          unplaced = true;
-        }
+        const source = place(row);
+        if (source === null) continue;
+        if (source.line !== null) drawn.set(source.line, source.textStart);
+        else unplaced = true;
       }
     }
     let spans: Map<number, Array<[number, number]>> | null = null;
@@ -636,14 +642,9 @@ function hiddenInCode(
     return spans;
   };
   return (offset) => {
-    blocks ??= [
-      ...container.querySelectorAll(`[${CODE_CONTENT_START_ATTR}]`),
-    ].flatMap((el) => {
-      const loc = parseSourceLoc(el.getAttribute(SOURCE_LINE_ATTR));
-      return loc === null ? [] : [{ el, loc }];
-    });
+    listed ??= blocks();
     const { line } = lineColAt(index, offset);
-    return blocks.some(({ el, loc }) => {
+    return listed.some(({ el, loc }) => {
       if (line < loc.start || line > loc.end) return false;
       return (
         hiddenOf(el, loc)
@@ -652,6 +653,31 @@ function hiddenInCode(
       );
     });
   };
+}
+
+/** `hiddenInRows` for the version shown, its blocks as they are stamped. */
+function hiddenInCode(
+  container: Element,
+  index: SegmentIndex,
+): (offset: number) => boolean {
+  return hiddenInRows(
+    index,
+    () =>
+      [...container.querySelectorAll(`[${CODE_CONTENT_START_ATTR}]`)].flatMap(
+        (el) => {
+          const loc = parseSourceLoc(el.getAttribute(SOURCE_LINE_ATTR));
+          return loc === null ? [] : [{ el, loc }];
+        },
+      ),
+    (row) => {
+      const source = codeRowSource(index, row);
+      if (source?.line != null) return source;
+      // A deletion in a compared fence has no current line to show.
+      return row.getAttribute(LINE_TYPE_ATTR) === DELETION_LINE_TYPE
+        ? null
+        : { line: null, textStart: null };
+    },
+  );
 }
 
 /**
