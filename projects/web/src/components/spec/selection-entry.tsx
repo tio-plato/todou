@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import {
   elementNear,
+  plainlyEmpty,
   type SelectionEndpoints,
   selectionEndpoints,
 } from "@/lib/selection-endpoints.ts";
@@ -94,16 +95,26 @@ export function useSelectionEntry<A extends AnchorRange>(
       const container = containerRef.current;
       if (!container) return;
       const selection = window.getSelection();
+      // A press on the entry itself collapses the selection before the
+      // click lands. The anchor is already stored in `pending`, and the
+      // click reads it from there, so the press window keeps it (T-60).
+      const nothingSelected = () => {
+        if (!keepOnEmpty && !pressingUiRef.current) setPending(null);
+      };
       // The cheap branch. `selectionchange` arrives every frame of a drag,
       // while a full recompute walks every open shadow root under the
       // container, so emptiness is settled before anything is measured —
       // by `toString()` rather than `isCollapsed`, which lies about shadow
       // selections (T-164) and would take a live selection's entry with it.
-      if (selection === null || selection.toString() === "") {
-        // A press on the entry itself collapses the selection before the
-        // click lands. The anchor is already stored in `pending`, and the
-        // click reads it from there, so the press window keeps it (T-60).
-        if (!keepOnEmpty && !pressingUiRef.current) setPending(null);
+      // Where `toString()` is empty the composed range may still hold one;
+      // a drag asks once the pointer lifts.
+      if (
+        selection === null ||
+        (draggingRef.current
+          ? selection.toString() === ""
+          : plainlyEmpty(selection))
+      ) {
+        nothingSelected();
         return;
       }
       // During a mouse or pen drag the entry would sit under the words
@@ -111,8 +122,10 @@ export function useSelectionEntry<A extends AnchorRange>(
       // `pointerup` schedules the one that counts.
       if (draggingRef.current) return;
       const ends = selectionEndpoints(selection, container);
+      // A caret inside a shadow root is not plainly empty: its endpoints
+      // are what show that nothing is selected.
       if (ends === null || ends.collapsed) {
-        setPending(null);
+        nothingSelected();
         return;
       }
       const anchor = resolve(container, ends);
