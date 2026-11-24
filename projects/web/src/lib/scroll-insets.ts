@@ -723,11 +723,19 @@ export function revealAboveEnd(
     window.scrollTo(0, y);
     return onEnd;
   };
-  const stop = () => (el.isConnected ? spot().y : null);
+  let own: (() => void) | null = null;
+  // Measured again for each frame of a glide, which tells the hold too
+  // whether the stop is now short at the bottom.
+  const stop = () => {
+    if (!el.isConnected) return null;
+    const { y, onEnd } = spot();
+    if (own !== null && held?.release === own) held.onEnd = onEnd;
+    return y;
+  };
   const glided = glides(glide, stop);
   // Placed before it is held, so the hold starts from where it put the page.
   const onEnd = glided ? spot().onEnd : place();
-  return hold(
+  own = hold(
     document.body,
     (release) => {
       // Gone with a route change nobody touched the page for.
@@ -741,6 +749,7 @@ export function revealAboveEnd(
     () => spot().y,
     glided ? stop : undefined,
   );
+  return own;
 }
 
 /**

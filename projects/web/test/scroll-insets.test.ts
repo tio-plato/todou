@@ -1094,6 +1094,26 @@ describe("landing on the end of the conversation", () => {
       window.removeEventListener(GLIDE_END_EVENT, ended);
     });
 
+    // What arrives meanwhile is followed only while the stop is short at the
+    // bottom, which the page growing can change on the way.
+    it("tells whether its stop is short at the bottom as the page grows on the way", () => {
+      glide();
+      const end = { y: 4000 };
+      const { setHeight } = page(end);
+      const el = document.createElement("div");
+      el.dataset.top = "3500";
+      document.body.append(el);
+      revealAboveEnd(el, { glide: true });
+      frames(2);
+      // Too little follows it: a landing on the end for now.
+      expect(isHoldingTarget()).toBe(false);
+      end.y = 5000;
+      setHeight(HEIGHT + 1000);
+      frames(1);
+      expect(isGliding()).toBe(true);
+      expect(isHoldingTarget()).toBe(true);
+    });
+
     it("stops where it got to once the point it glides to is gone", () => {
       glide();
       const { targets } = page({ y: 4000 });
