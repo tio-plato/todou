@@ -1,10 +1,15 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { render, screen, waitFor } from "@testing-library/react";
-import type { Me, MePrefs } from "@todou/shared";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import type { Me, MePrefs, ProjectTemplate } from "@todou/shared";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { prefsQuery } from "../src/api/prefs.ts";
-import { meQuery, projectsQuery } from "../src/api/queries.ts";
+import {
+  api,
+  meQuery,
+  projectsQuery,
+  projectTemplatesQuery,
+} from "../src/api/queries.ts";
 import { router } from "../src/router.tsx";
 import { restoreAppRouterPage, teardownAppRouter } from "./app-router.tsx";
 import { testQueryClient } from "./render.tsx";
@@ -42,12 +47,16 @@ const prefs: MePrefs = {
   spec_strip_changes: true,
 };
 
-/** The app's own route tree, entered at `path`. */
-function mountAt(path: string) {
+/**
+ * The app's own route tree, entered at `path`. Without `templates` the
+ * template list is not cached, so a page that needs it fetches it.
+ */
+function mountAt(path: string, templates?: ProjectTemplate[]) {
   const client = testQueryClient();
   client.setQueryData(meQuery.queryKey, me);
   client.setQueryData(prefsQuery.queryKey, prefs);
   client.setQueryData(projectsQuery.queryKey, []);
+  if (templates) client.setQueryData(projectTemplatesQuery.queryKey, templates);
   render(
     <QueryClientProvider client={client}>
       <RouterProvider router={router} />
@@ -94,6 +103,59 @@ describe("project settings routes (T-712)", () => {
       expect(router.state.location.pathname).toBe(
         "/projects/p/settings/statuses",
       ),
+    );
+  });
+});
+
+describe("a project template's tab title (TOD-277)", () => {
+  const kanban: ProjectTemplate = {
+    ref: 7,
+    name: "Kanban",
+    builtin: false,
+    revision: 0,
+    body: {
+      statuses: [
+        {
+          name: "Todo",
+          category: "open",
+          color: "#6b7280",
+          chart_role: "remaining",
+        },
+      ],
+      labels: [],
+    },
+  };
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("names the template, or the address when it matches none", async () => {
+    mountAt("/settings/templates/7", [kanban]);
+    await waitFor(() =>
+      expect(document.title).toBe("Kanban · Project templates · todou"),
+    );
+
+    void router
+      .navigate({ href: "/settings/templates/999" })
+      .catch(() => undefined);
+    await screen.findByText("You have no template at this address.");
+    expect(document.title).toBe("999 · Project templates · todou");
+  });
+
+  it("names it by the address until the list arrives", async () => {
+    let arrive: (templates: ProjectTemplate[]) => void = () => undefined;
+    vi.spyOn(api, "listProjectTemplates").mockReturnValue(
+      new Promise((resolve) => {
+        arrive = resolve;
+      }),
+    );
+    mountAt("/settings/templates/7");
+    await waitFor(() =>
+      expect(document.title).toBe("7 · Project templates · todou"),
+    );
+
+    arrive([kanban]);
+    await waitFor(() =>
+      expect(document.title).toBe("Kanban · Project templates · todou"),
     );
   });
 });
