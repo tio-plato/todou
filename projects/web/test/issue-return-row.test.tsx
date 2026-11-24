@@ -30,7 +30,7 @@ import {
   returnLabelOf,
 } from "../src/lib/return-view.ts";
 import { writeReturnEntry } from "../src/lib/return-view-history.ts";
-import { useScrollInsets } from "../src/lib/scroll-insets.ts";
+import { isGliding, useScrollInsets } from "../src/lib/scroll-insets.ts";
 import { IssueDetailPage } from "../src/pages/issue-detail.tsx";
 import { render, renderWithProviders, testQueryClient } from "./render.tsx";
 
@@ -193,11 +193,61 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   // testing-library removes only the container it made, and the stub is
   // appended beside it.
   for (const header of document.querySelectorAll("header")) header.remove();
 });
+
+/**
+ * A page scrolled `y` down whose scrolls land where they aim, every place it
+ * was put recorded, and frames that run only as the test runs them, on the
+ * clock a glide reads: each frame's callback, then the placement made
+ * once it is drawn.
+ */
+function scrolledTo(y: number) {
+  const page = { y, seen: [y] };
+  vi.spyOn(window, "scrollY", "get").mockImplementation(() => page.y);
+  vi.spyOn(window, "innerHeight", "get").mockReturnValue(800);
+  vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
+    10_000,
+  );
+  vi.spyOn(document.documentElement, "clientHeight", "get").mockReturnValue(
+    800,
+  );
+  vi.stubGlobal(
+    "scrollTo",
+    vi.fn((...args: unknown[]) => {
+      const [first, second] = args;
+      page.y =
+        typeof first === "object" && first !== null
+          ? ((first as ScrollToOptions).top ?? page.y)
+          : Number(second);
+      page.seen.push(page.y);
+    }),
+  );
+  let clock = 0;
+  vi.spyOn(performance, "now").mockImplementation(() => clock);
+  vi.useFakeTimers({
+    toFake: ["requestAnimationFrame", "cancelAnimationFrame"],
+  });
+  return {
+    seen: page.seen,
+    at: () => page.y,
+    moveTo: (to: number) => {
+      page.y = to;
+    },
+    frames: async (count: number, ms = 16) => {
+      for (let i = 0; i < count; i++) {
+        clock += ms;
+        vi.advanceTimersByTime(16);
+        await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+      }
+    },
+  };
+}
 
 describe("IssueReturnRow (T-154)", () => {
   it("appears once the real title scrolls past the shell header", async () => {
@@ -287,15 +337,19 @@ describe("IssueReturnRow (T-154)", () => {
     expect(await view.findByText("#16")).toBeTruthy();
   });
 
-  it("scrolls back to the top when clicked", async () => {
+  it("glides back to the top when clicked", async () => {
     const { bar } = await renderBar();
     setIntersecting(false);
+    const page = scrolledTo(3_000);
 
     fireEvent.click(bar);
-    expect(window.scrollTo).toHaveBeenCalledWith({
-      top: 0,
-      behavior: "smooth",
-    });
+    expect(page.at()).toBe(3_000);
+    await page.frames(3);
+    expect(page.at()).toBeGreaterThan(0);
+    expect(page.at()).toBeLessThan(3_000);
+    // A frame late past the glide's end lands on the top.
+    await page.frames(1, 1_000);
+    expect(page.at()).toBe(0);
   });
 
   it("renders inert where IntersectionObserver is missing", async () => {
@@ -488,23 +542,26 @@ describe("the way back (T-407, T-461)", () => {
     });
 
     setIntersecting(false);
+    const page = scrolledTo(3_000);
+    const between = (y: number) => y > 0 && y < 3_000;
+    // The mirror's own click glides by every place in between.
+    fireEvent.click(bar);
+    await page.frames(3);
+    expect(page.seen.filter(between)).not.toEqual([]);
+    fireEvent.pointerDown(window);
+
+    page.moveTo(3_000);
+    const before = page.seen.length;
     fireEvent.click(link);
+    expect(isGliding()).toBe(false);
+    await page.frames(5);
     // The two halves share one row, so the failure mode is one inheriting the
     // other's handler: back would send the reader to the top of the card they
-    // are leaving instead of to the list. Asserted against the mirror's exact
-    // call rather than against `scrollTo` having run at all, because the
-    // router resets the scroll of the page it navigates to — `{left: 0,
-    // top: 0}`, no behaviour — and that one is not this row's doing.
-    expect(window.scrollTo).not.toHaveBeenCalledWith({
-      top: 0,
-      behavior: "smooth",
-    });
-
-    fireEvent.click(bar);
-    expect(window.scrollTo).toHaveBeenCalledWith({
-      top: 0,
-      behavior: "smooth",
-    });
+    // are leaving instead of to the list. Asserted against the glide's way
+    // there rather than against the page reaching the top, because the router
+    // resets the scroll of the page it navigates to, at once, and that one is
+    // not this row's doing.
+    expect(page.seen.slice(before).filter(between)).toEqual([]);
   });
 
   it("leaves nothing focusable behind while the mirror is hidden", async () => {

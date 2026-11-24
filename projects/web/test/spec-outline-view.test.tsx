@@ -702,6 +702,94 @@ describe("the change strip", () => {
     expect(reveals.map((r) => r.el)).toEqual([stops[2], stops[0], removal]);
   });
 
+  it("glides to where a click off the ticks points, following the card down the page", async () => {
+    const view = await renderSpec("?v=2&file=design.md");
+    await waitFor(() => expect(strip(view)).not.toBeNull());
+    const box = card(view) as HTMLElement;
+    const bar = strip(view)?.firstElementChild as HTMLElement;
+    // A 6000px card 200px down a tall page, scrolled to its top.
+    const page = { y: 0, cardTop: 200 };
+    vi.spyOn(window, "scrollY", "get").mockImplementation(() => page.y);
+    vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
+      10_000,
+    );
+    vi.spyOn(document.documentElement, "clientHeight", "get").mockReturnValue(
+      768,
+    );
+    box.getBoundingClientRect = () => {
+      const top = page.cardTop - page.y;
+      return {
+        top,
+        height: 6000,
+        bottom: top + 6000,
+        left: 0,
+        right: 900,
+      } as DOMRect;
+    };
+    Object.defineProperty(box, "clientHeight", { value: 6000 });
+    bar.getBoundingClientRect = () =>
+      ({ top: 0, height: 752, bottom: 752, left: 893, right: 907 }) as DOMRect;
+    await act(async () => {
+      window.dispatchEvent(new Event("resize"));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    const glided: number[] = [];
+    vi.spyOn(window, "scrollTo").mockImplementation((...args: unknown[]) => {
+      const [first, second] = args;
+      page.y =
+        typeof first === "object" && first !== null
+          ? ((first as ScrollToOptions).top ?? page.y)
+          : Number(second);
+      glided.push(page.y);
+    });
+    // Frames as the test runs them: each frame's callback, then the
+    // placement once it is drawn, on the clock the glide reads.
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    vi.useFakeTimers({
+      toFake: [
+        "requestAnimationFrame",
+        "cancelAnimationFrame",
+        "setTimeout",
+        "clearTimeout",
+      ],
+    });
+    const frame = (ms = 16) => {
+      now += ms;
+      vi.advanceTimersByTime(17);
+      fireEvent.scroll(window);
+    };
+    // Far below every tick, which all sit at the bar's top here.
+    const clickOffTheTicks = () => {
+      fireEvent.pointerDown(bar, { button: 0, pointerId: 1, clientY: 500 });
+      fireEvent.pointerUp(bar, { button: 0, pointerId: 1, clientY: 500 });
+    };
+    try {
+      clickOffTheTicks();
+      expect(glided).toEqual([]);
+      for (let i = 0; i < 3; i++) frame();
+      expect(glided).toHaveLength(3);
+      for (let i = 1; i < glided.length; i++)
+        expect(glided[i]).toBeGreaterThan(glided[i - 1]);
+      frame(1_000);
+      const stop = page.y;
+      expect(stop).toBeGreaterThan(glided[2] ?? 0);
+
+      // Again from the top, the card moving 500 down the page on the way.
+      fireEvent.wheel(window);
+      page.y = 0;
+      clickOffTheTicks();
+      frame();
+      frame();
+      page.cardTop = 700;
+      frame();
+      frame(1_000);
+      expect(page.y).toBe(stop + 500);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps dragging while the button is down, even when the browser drops its capture", async () => {
     const view = await renderSpec("?v=2&file=design.md");
     await waitFor(() => expect(strip(view)).not.toBeNull());
@@ -787,7 +875,11 @@ describe("the change strip", () => {
       measure,
       perPixel: 3000 / barHeight(),
       tops: () =>
-        scrolls.mock.calls.map(([options]) => (options as ScrollToOptions).top),
+        scrolls.mock.calls.map(([options, y]: unknown[]) =>
+          typeof options === "object"
+            ? (options as ScrollToOptions).top
+            : (y as number),
+        ),
       press: (y: number) =>
         fireEvent.pointerDown(bar, {
           button: 0,
@@ -839,7 +931,12 @@ describe("the change strip", () => {
     const pageEnd = 3200 - window.innerHeight;
 
     // A click beside the frame, then a press there dragged 50px: the drag
-    // starts where the click went, with one scroll for the move.
+    // starts where the click went, with one scroll for the move. The click
+    // lands at once for a reader who asked for less motion, rather than
+    // gliding there.
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query === "(prefers-reduced-motion: reduce)",
+    }));
     const beside = s.at.barTop + 400;
     s.press(beside);
     s.release(beside);

@@ -91,9 +91,8 @@ import {
   SOURCE_LINE_ATTR,
 } from "@/lib/rehype-source-lines.ts";
 import {
-  holdRevealed,
+  glideToRevealed,
   openEnclosingFolds,
-  revealBlock,
   useOwnHold,
 } from "@/lib/scroll-insets.ts";
 import {
@@ -1382,14 +1381,10 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       // The walk up to a shut fold that `revealBlock` takes stops at pierre's
       // shadow root, so a row's folds are opened from its block.
       if (row !== null && block !== null) openEnclosingFolds(block);
-      revealBlock(target, { behavior: "smooth", flash: target !== row });
       keepHold(
-        holdRevealed(
-          () => find()?.target ?? null,
-          document.body,
-          "auto",
-          "smooth",
-        ),
+        glideToRevealed(() => find()?.target ?? null, {
+          flash: target !== row,
+        }),
       );
     },
     [keepHold],

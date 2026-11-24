@@ -804,6 +804,72 @@ describe("chips on code rows", () => {
     await closePopover(popover);
   });
 
+  it("glides to an annotation's row screens away, finding it again as pierre draws it anew", async () => {
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    // A tall page whose code block sits 2800 down, scrolled to its top.
+    const page = { y: 0 };
+    layOutRows(() => 2_800 - page.y);
+    const { view, wrappers } = await renderDocument(SIX_FENCE, [
+      wholeLines("comment", 5, 5),
+    ]);
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    const shadow = await drawRows(wrapper, SIX_ROWS);
+    const [chip] = await view.findAllByRole("button", {
+      name: /^\d+ comments?$/,
+    });
+    if (chip === undefined) throw new Error("no chip");
+    const popover = await openPopover(chip);
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(800);
+    vi.spyOn(window, "scrollY", "get").mockImplementation(() => page.y);
+    vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
+      10_000,
+    );
+    vi.spyOn(document.documentElement, "clientHeight", "get").mockReturnValue(
+      800,
+    );
+    const glided: number[] = [];
+    vi.spyOn(window, "scrollTo").mockImplementation((...args: unknown[]) => {
+      page.y = Number(args[1]);
+      glided.push(page.y);
+    });
+    const reveals = revealsSpy();
+    // Frames as the test runs them: each frame's callback, then the
+    // placement once it is drawn, on the clock the glide reads.
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    vi.useFakeTimers({
+      toFake: [
+        "requestAnimationFrame",
+        "cancelAnimationFrame",
+        "setTimeout",
+        "clearTimeout",
+      ],
+    });
+    const frame = (ms = 16) => {
+      now += ms;
+      vi.advanceTimersByTime(17);
+      fireEvent.scroll(window);
+    };
+    try {
+      fireEvent.click(locateIn(popover, "L5"));
+      for (let i = 0; i < 3; i++) frame();
+      expect(reveals).toEqual([]);
+      // pierre draws the rows again on the way.
+      shadow.innerHTML = SIX_ROWS;
+      for (let i = 0; i < 3; i++) frame();
+      expect(reveals).toEqual([]);
+      expect(glided).toHaveLength(6);
+      for (let i = 1; i < glided.length; i++)
+        expect(glided[i]).toBeGreaterThan(glided[i - 1]);
+      frame(1_000);
+      expect(reveals).toEqual([shadow.querySelector("[data-line='2']")]);
+    } finally {
+      vi.useRealTimers();
+    }
+    await closePopover(popover);
+  });
+
   it("hangs a row's chip by the fold shut over it, and opens it to scroll to the row", async () => {
     layOutRows();
     // Line 6 is the block's second row, inside the fold.

@@ -4,7 +4,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   atConversationEnd,
   blockFor,
+  GLIDE_END_EVENT,
+  glideToY,
   holdRevealed,
+  isGliding,
   isHoldingTarget,
   landAtBottom,
   type ReadingPlace,
@@ -933,6 +936,229 @@ describe("landing on the end of the conversation", () => {
     fireEvent.scroll(window);
     resizePage();
     expect(targets).toEqual([2000 - VIEWPORT, 2600 - VIEWPORT]);
+  });
+
+  /**
+   * A landing asked to glide, frame by frame. `now` is the clock the glide
+   * reads; each frame advances it, runs the frame's callback and the
+   * placement made once the frame is drawn, then delivers the scroll that
+   * made, as the browser does at the start of the next frame.
+   */
+  describe("gliding to its stop", () => {
+    let now = 0;
+
+    function glide() {
+      vi.useFakeTimers({
+        toFake: [
+          "requestAnimationFrame",
+          "cancelAnimationFrame",
+          "setTimeout",
+          "clearTimeout",
+        ],
+      });
+      now = 0;
+      vi.spyOn(performance, "now").mockImplementation(() => now);
+    }
+
+    function frames(count: number, ms = 16) {
+      for (let i = 0; i < count; i++) {
+        now += ms;
+        // The frame's callback, then the placement once it is drawn.
+        vi.advanceTimersToNextTimer();
+        vi.advanceTimersToNextTimer();
+        fireEvent.scroll(window);
+      }
+    }
+
+    function reducedMotion(reduce: boolean) {
+      vi.stubGlobal("matchMedia", (query: string) => ({
+        matches: reduce && query === "(prefers-reduced-motion: reduce)",
+      }));
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("comes closer every frame and stops where landing at once would, then holds it", () => {
+      glide();
+      const end = { y: 4000 };
+      const { targets } = page(end);
+      landAtBottom({ glide: true });
+      // Nothing moves before the first frame.
+      expect(targets).toEqual([]);
+      frames(40);
+      const stop = 4000 - VIEWPORT;
+      expect(targets.length).toBeGreaterThan(5);
+      for (let i = 1; i < targets.length; i++)
+        expect(targets[i]).toBeGreaterThan(targets[i - 1]);
+      expect(targets[0]).toBeGreaterThan(0);
+      expect(targets.at(-1)).toBe(stop);
+      // Not let go by its own frames' scrolls: the page growing is followed.
+      end.y = 4400;
+      resizePage();
+      expect(targets.at(-1)).toBe(4400 - VIEWPORT);
+      expect(isGliding()).toBe(false);
+    });
+
+    it("lands at once for a reader who asked for less motion", () => {
+      glide();
+      reducedMotion(true);
+      const { targets } = page({ y: 4000 });
+      landAtBottom({ glide: true });
+      expect(targets).toEqual([4000 - VIEWPORT]);
+    });
+
+    it("carries the path along when the page grows above the stop, and still stops on it", () => {
+      glide();
+      const end = { y: 4000 };
+      const { targets, setHeight } = page(end);
+      landAtBottom({ glide: true });
+      frames(3);
+      const before = targets.at(-1) ?? 0;
+      // 400 grows above the end before the next frame.
+      end.y = 4400;
+      setHeight(HEIGHT + 400);
+      resizePage();
+      // On the path, moved with the stop, not on the stop.
+      expect(targets.at(-1)).toBe(before + 400);
+      expect(targets.at(-1)).toBeLessThan(4400 - VIEWPORT);
+      frames(40);
+      expect(targets.at(-1)).toBe(4400 - VIEWPORT);
+    });
+
+    it("puts the page back on the path, not the stop, as the reader's input finds it grown", () => {
+      glide();
+      const end = { y: 4000 };
+      const { targets, setHeight } = page(end);
+      landAtBottom({ glide: true });
+      frames(3);
+      const before = targets.at(-1) ?? 0;
+      // 400 grows above the end, and the reader's wheel comes before the
+      // observer hears of it.
+      end.y = 4400;
+      setHeight(HEIGHT + 400);
+      fireEvent.wheel(window);
+      expect(targets.at(-1)).toBe(before + 400);
+      expect(targets.at(-1)).toBeLessThan(4400 - VIEWPORT);
+    });
+
+    it.each([
+      ["between two frames", 0],
+      ["between a frame and the placement after it", 1],
+    ])(
+      "stops where it got to at the reader's input %s",
+      async (_, callbacks) => {
+        glide();
+        const end = { y: 4000 };
+        const { targets } = page(end);
+        const ended = vi.fn();
+        window.addEventListener(GLIDE_END_EVENT, ended);
+        landAtBottom({ glide: true });
+        frames(3);
+        // The next frame's callback has run, its placement still to come.
+        for (let i = 0; i < callbacks; i++) {
+          now += 16;
+          vi.advanceTimersToNextTimer();
+        }
+        const placed = [...targets];
+        fireEvent.wheel(window);
+        frames(40);
+        end.y = 4400;
+        resizePage();
+        await Promise.resolve();
+        expect(targets).toEqual(placed);
+        expect(placed.at(-1)).toBeLessThan(4000 - VIEWPORT);
+        expect(ended).toHaveBeenCalledTimes(1);
+        expect(isGliding()).toBe(false);
+        window.removeEventListener(GLIDE_END_EVENT, ended);
+      },
+    );
+
+    // The observer's report as it starts observing comes in the first frame,
+    // after the frame's callback and before the placement after it: placed
+    // there, iOS can draw the sticky header a frame late.
+    it("puts nothing in the frame at the observer's first report, the page not grown", () => {
+      glide();
+      const { targets } = page({ y: 4000 });
+      landAtBottom({ glide: true });
+      now += 16;
+      vi.advanceTimersToNextTimer();
+      resizePage();
+      expect(targets).toEqual([]);
+      vi.advanceTimersToNextTimer();
+      expect(targets).toHaveLength(1);
+    });
+
+    it("announces no end while a glide that takes over goes on", async () => {
+      glide();
+      const { targets } = page({ y: 4000 });
+      const ended = vi.fn();
+      window.addEventListener(GLIDE_END_EVENT, ended);
+      landAtBottom({ glide: true });
+      frames(3);
+      // A comment link's landing: the old one let go of, the new one begun.
+      const release = landAtBottom({ glide: true });
+      release();
+      landAtBottom({ glide: true });
+      await Promise.resolve();
+      expect(ended).not.toHaveBeenCalled();
+      frames(40);
+      await Promise.resolve();
+      expect(targets.at(-1)).toBe(4000 - VIEWPORT);
+      expect(ended).toHaveBeenCalledTimes(1);
+      window.removeEventListener(GLIDE_END_EVENT, ended);
+    });
+
+    // What arrives meanwhile is followed only while the stop is short at the
+    // bottom, which the page growing can change on the way.
+    it("tells whether its stop is short at the bottom as the page grows on the way", () => {
+      glide();
+      const end = { y: 4000 };
+      const { setHeight } = page(end);
+      const el = document.createElement("div");
+      el.dataset.top = "3500";
+      document.body.append(el);
+      revealAboveEnd(el, { glide: true });
+      frames(2);
+      // Too little follows it: a landing on the end for now.
+      expect(isHoldingTarget()).toBe(false);
+      end.y = 5000;
+      setHeight(HEIGHT + 1000);
+      frames(1);
+      expect(isGliding()).toBe(true);
+      expect(isHoldingTarget()).toBe(true);
+    });
+
+    it("stops where it got to once the point it glides to is gone", () => {
+      glide();
+      const { targets } = page({ y: 4000 });
+      let gone = false;
+      glideToY(() => (gone ? null : 3000));
+      frames(3);
+      const placed = [...targets];
+      expect(placed.at(-1)).toBeGreaterThan(0);
+      // What the point was measured from has left the page.
+      gone = true;
+      frames(10);
+      resizePage();
+      expect(targets).toEqual(placed);
+      expect(isGliding()).toBe(false);
+    });
+
+    it("goes straight to the stop at a frame later than the whole glide", () => {
+      glide();
+      const { targets } = page({ y: 4000 });
+      landAtBottom({ glide: true });
+      frames(2);
+      // A second's long task holds the next frame back.
+      frames(1, 1000);
+      expect(targets).toHaveLength(3);
+      expect(targets.at(-1)).toBe(4000 - VIEWPORT);
+      expect(isGliding()).toBe(false);
+      frames(10);
+      expect(targets).toHaveLength(3);
+    });
   });
 
   describe("atConversationEnd", () => {

@@ -14,7 +14,12 @@ import {
 import { StatNumbers } from "@/components/timeline/spec-version-card.tsx";
 import { DELETION_CLASSES } from "@/lib/rehype-fold-unchanged.ts";
 import { parseSourceLoc, SOURCE_LINE_ATTR } from "@/lib/rehype-source-lines.ts";
-import { restingScrollY, usableViewport } from "@/lib/scroll-insets.ts";
+import {
+  glideToY,
+  restingScrollY,
+  usableViewport,
+  useOwnHold,
+} from "@/lib/scroll-insets.ts";
 import { CHANGED_SELECTOR, stopsIn } from "@/lib/spec-change-nav.ts";
 import type { OutlineHeading, SectionStat } from "@/lib/spec-outline.ts";
 import {
@@ -271,6 +276,7 @@ export function SpecChangeStrip({
   /** Ends the watch for a release off the bar that the last press began. */
   const pressWatch = useRef<AbortController | null>(null);
   useEffect(() => () => pressWatch.current?.abort(), []);
+  const keepHold = useOwnHold();
 
   useLayoutTick(
     contentRef,
@@ -354,18 +360,14 @@ export function SpecChangeStrip({
     return restingScrollY({ top: pageY, height: 0 }, usableViewport());
   };
 
-  /** Put a point of the card in the middle of what the toolbar leaves. */
-  const scrollToPoint = (down: number, behavior: ScrollBehavior) => {
-    const top = restingFor(down);
-    if (top !== null) window.scrollTo({ top, behavior });
-  };
-
   const click = (clientY: number) => {
     const at = pointAt(clientY);
     if (at === null) return;
     const tick = tickAt(layout.ticks, at.y, LANDING_KINDS, HIT_SLOP);
     if (tick !== undefined) land(tick.target);
-    else scrollToPoint(at.down, "smooth");
+    // Glided to and held there like a tick's landing, the point
+    // measured again as the card moves down the page.
+    else keepHold(glideToY(() => restingFor(at.down)));
   };
 
   const heading = hover === null ? undefined : headings[hover.section];

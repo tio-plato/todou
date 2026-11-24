@@ -152,6 +152,7 @@ import {
   shownLines,
 } from "@/lib/diff-shown-lines.ts";
 import {
+  glideToRevealed,
   holdRevealed,
   type RevealMode,
   restingScrollY,
@@ -1007,10 +1008,8 @@ function SpecViewBody({
   const keepHold = useOwnHold();
   // Stable: the outline is handed it.
   const flashTo = useCallback(
-    (target: HTMLElement, mode: RevealMode = "auto", highlight = true) => {
-      revealBlock(target, { mode, behavior: "smooth", flash: highlight });
-      keepHold(holdRevealed(target, document.body, mode, "smooth"));
-    },
+    (target: HTMLElement, mode: RevealMode = "auto", highlight = true) =>
+      keepHold(glideToRevealed(target, { mode, flash: highlight })),
     [keepHold],
   );
   const jumpToSection = useCallback(
