@@ -3136,6 +3136,38 @@ function onBaseline(
     : { ...at1, kind, draft: { id: key, anchor, quote: "", body: "note" } };
 }
 
+/**
+ * Opens the one chip on the page and reads its popover's notes, top to
+ * bottom, by where each points.
+ */
+async function popoverLabels(view: ReturnType<typeof render>) {
+  await settleChips();
+  const chips = view.getAllByRole("button", { name: /comment/ });
+  expect(chips).toHaveLength(1);
+  act(() => chips[0]?.click());
+  const popover = await waitFor(() => {
+    const el = document.querySelector("[data-slot='popover-content']");
+    if (el === null) throw new Error("no popover");
+    return el;
+  });
+  const labels = [
+    ...popover.querySelectorAll(
+      "button[title='Scroll to what this points at']",
+    ),
+  ].map((button) => button.textContent);
+  // Radix's portal and happy-dom disagree about who owns a detached
+  // content node, so an open popover throws out of `cleanup`.
+  act(() => {
+    popover.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+  });
+  await waitFor(() =>
+    expect(document.querySelector("[data-slot='popover-content']")).toBeNull(),
+  );
+  return labels;
+}
+
 /** Let a frame pass, so that a chip that would show has. */
 async function settleChips(): Promise<void> {
   await act(async () => {
@@ -3502,7 +3534,7 @@ describe("baseline annotations on deleted text", () => {
     ]);
   });
 
-  it("joins a restored block's chip to the current version's chip their places joined into", async () => {
+  it("joins a restored block's chip to the current version's chip their places joined into, listing its note first", async () => {
     // One line apart on a phone, inside a 24px badge: a restored block, then
     // two current paragraphs. The paragraphs' chips join; the restored
     // block's joins theirs, where it hangs, rather than the first paragraph
@@ -3524,12 +3556,14 @@ describe("baseline annotations on deleted text", () => {
     );
     setViewportWidth(390);
     const before = "Old A here.\n\nPara one.\n\nPara two.\n";
-    const { container } = await renderDiff(
+    const { view, container } = await renderDiff(
       before,
       "Para one.\n\nPara two.\n",
       [wholeLines("comment", 1, 1), wholeLines("comment", 3, 3)],
       [onBaseline("comment", before, 1, "A")],
     );
+    // Its popover lists the notes as the blocks come down the page.
+    expect(await popoverLabels(view)).toEqual(["L1:5–5", "L1", "L3"]);
     await settleChips();
     expect(
       [
@@ -3669,6 +3703,106 @@ describe("baseline annotations on deleted text", () => {
         ["100px", "2 comment(s) on this block"],
         [`${lower}px`, "1 comment(s) on this block"],
       ]);
+    },
+  );
+
+  it("lists a removed word's note before the current version's on its line", async () => {
+    const { view } = await renderDiff(
+      WORD_BEFORE,
+      WORD_AFTER,
+      [wholeLines("comment", 1, 1)],
+      [onBaseline("comment", WORD_BEFORE, 1, "brown")],
+    );
+    expect(await popoverLabels(view)).toEqual(["L1:11–15", "L1"]);
+  });
+
+  it("lists a line's note before a removed word's on the line below", async () => {
+    // A phone's 24px chip joins lines 22px apart; the line above comes
+    // first, though the baseline's note would where both hang level.
+    setViewportWidth(390);
+    placeLines();
+    const before =
+      "Intro.\n\nThe first line of a paragraph,\nits second line holds a doomed word,\nits third line.\n";
+    const { view } = await renderDiff(
+      before,
+      before.replace("a doomed word", "a word"),
+      [wholeLines("comment", 3, 3)],
+      [onBaseline("comment", before, 4, "doomed")],
+    );
+    expect(await popoverLabels(view)).toEqual(["L3", "L4:25–30"]);
+  });
+
+  it("lists a restored block's notes by the line they start on", async () => {
+    // Put back whole, a block hangs all its notes by its top; the note on
+    // its second line was written first.
+    const before = "Para one.\n\nOld A here,\nits second line.\n\nPara two.\n";
+    const { view } = await renderDiff(
+      before,
+      "Para one.\n\nPara two.\n",
+      [],
+      [
+        onBaseline("comment", before, 4, "second"),
+        onBaseline("comment", before, 3, "A"),
+      ],
+    );
+    expect(await popoverLabels(view)).toEqual(["L3:5–5", "L4:5–10"]);
+  });
+
+  it.each([
+    [
+      "with a restored block",
+      "Para one.\n\nOld A here.\n\nPara two.\n\n",
+      "Para one.\n\nPara two.\n\n",
+      [8, 6],
+      ["L6", "L8:5–5", "L8"],
+    ],
+    [
+      "on the lines of one block",
+      "Para one.\nIts second line.\n\n",
+      "Para one.\nIts second line.\n\n",
+      [7, 6],
+      ["L6", "L7"],
+    ],
+  ])(
+    "lists a shut fold's notes in the document's order (%s)",
+    async (_, was, is, lines, labels) => {
+      // Open, each block hangs a chip of its own; shut, all of them hang by
+      // the fold. The notes on the current version come in bottom first.
+      vi.spyOn(
+        HTMLElement.prototype,
+        "getBoundingClientRect",
+      ).mockImplementation(function (this: HTMLElement) {
+        const text = this.textContent ?? "";
+        const y =
+          this.tagName === "DETAILS"
+            ? 300
+            : this.tagName !== "P"
+              ? 0
+              : text.startsWith("Para one")
+                ? 400
+                : text.startsWith("Old A")
+                  ? 500
+                  : text.startsWith("Para two")
+                    ? 600
+                    : 0;
+        return DOMRect.fromRect({ y });
+      });
+      const fold = (inside: string) =>
+        `Intro.\n\n<details>\n<summary>More</summary>\n\n${inside}</details>\n`;
+      const before = fold(was);
+      const { view, container } = await renderDiff(
+        before,
+        fold(is),
+        lines.map((line) => wholeLines("comment", line, line)),
+        was === is ? [] : [onBaseline("comment", before, 8, "A")],
+      );
+      const details = container.querySelector("details");
+      if (details === null) throw new Error("no fold");
+      act(() => {
+        details.removeAttribute("open");
+        details.dispatchEvent(new Event("toggle"));
+      });
+      expect(await popoverLabels(view)).toEqual(labels);
     },
   );
 
