@@ -115,6 +115,16 @@ describe("Quote reply channel", () => {
     );
   });
 
+  it("writes a quote with CRLF line ends into the comment box", async () => {
+    const { view, api } = mount(true);
+    await waitFor(() => expect(api().available).toBe(true));
+
+    api().quote("one\r\ntwo three\r\n");
+    await waitFor(() =>
+      expect(cmGetValue(view.container)).toBe("> one\n> two three\n\n"),
+    );
+  });
+
   it("keeps a blank line between what was already typed and the quote", async () => {
     const { view, api } = mount(true);
     await waitFor(() => expect(api().available).toBe(true));
