@@ -42,7 +42,11 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog.tsx";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useRefCompletion } from "@/lib/editor/ref-completion.ts";
 import type { QuotePart } from "@/lib/quote-questions.ts";
-import { holdRevealed, revealBlock, useOwnHold } from "@/lib/scroll-insets.ts";
+import {
+  glideToRevealed,
+  revealBlock,
+  useOwnHold,
+} from "@/lib/scroll-insets.ts";
 import { formatTimelineTime } from "@/lib/timeline-time.ts";
 import { useDirtySource } from "@/lib/unsaved-guard.ts";
 import { documentPip, useDocumentPip } from "@/lib/use-document-pip.ts";
@@ -510,10 +514,10 @@ function AnswerForm({
         `[data-question-key="${q.key}"]`,
       );
     if (!row) return;
-    revealBlock(row);
-    // The hold keeps the row in place while this page reflows; the floating
-    // window has no timeline loading around it.
-    if (!pip.window) keepHold(holdRevealed(row, document.body));
+    // Glided to, and held in place while this page reflows (T-211); the
+    // floating window has no timeline loading around it, and scrolls itself.
+    if (pip.window) revealBlock(row);
+    else keepHold(glideToRevealed(row));
   };
   const popOut = () => {
     const rect = root.current?.getBoundingClientRect();

@@ -592,6 +592,80 @@ describe("QuestionsCard gated submit (T-517)", () => {
     expect(reveals).toEqual(["schema", "schema"]);
   });
 
+  it("glides to that question when it is screens away (T-211)", async () => {
+    stubFetch();
+    vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+    const view = renderCard();
+    await view.findByText("awaiting answer");
+    // A page laid out around the card: the question 3000 down, the reader at
+    // the top.
+    const page = { y: 0 };
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(800);
+    vi.spyOn(window, "scrollY", "get").mockImplementation(() => page.y);
+    vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
+      10_000,
+    );
+    vi.spyOn(document.documentElement, "clientHeight", "get").mockReturnValue(
+      800,
+    );
+    const row = view.container.querySelector('[data-question-key="schema"]');
+    const measure = Element.prototype.getBoundingClientRect;
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: Element) {
+        const top = 3_000 - page.y;
+        return this === row
+          ? ({ top, bottom: top + 100, height: 100 } as DOMRect)
+          : measure.call(this);
+      },
+    );
+    const glided: number[] = [];
+    vi.spyOn(window, "scrollTo").mockImplementation((...args: unknown[]) => {
+      page.y = Number(args[1]);
+      glided.push(page.y);
+    });
+    const reveals: string[] = [];
+    vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+      this: Element,
+    ) {
+      reveals.push(this.getAttribute("data-question-key") ?? this.id);
+      page.y = 2_650;
+    });
+    // Frames as the test runs them: each frame's callback, then the
+    // placement once it is drawn, on the clock the glide reads.
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    vi.useFakeTimers({
+      toFake: [
+        "requestAnimationFrame",
+        "cancelAnimationFrame",
+        "setTimeout",
+        "clearTimeout",
+      ],
+    });
+    const frame = (ms = 16) => {
+      now += ms;
+      vi.advanceTimersByTime(17);
+      fireEvent.scroll(window);
+    };
+    try {
+      fireEvent.pointerDown(submitButton(view));
+      fireEvent.click(submitButton(view));
+      expect(reveals).toEqual([]);
+      expect(row?.classList.contains("anchor-flash")).toBe(true);
+      for (let i = 0; i < 4; i++) frame();
+      expect(reveals).toEqual([]);
+      expect(glided).toHaveLength(4);
+      for (let i = 1; i < glided.length; i++)
+        expect(glided[i]).toBeGreaterThan(glided[i - 1]);
+      expect(glided[0]).toBeGreaterThan(0);
+      frame(1_000);
+      expect(reveals).toEqual(["schema"]);
+      expect(page.y).toBe(2_650);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("force-submits through the confirm, declining only the unanswered", async () => {
     const posts = stubFetch();
     const view = renderCard();
