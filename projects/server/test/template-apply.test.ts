@@ -589,8 +589,11 @@ describe.each(PLACEMENTS)("applying a template (%s placement)", (placement) => {
       title: "docs",
       label_ids: [p.docs],
     });
+    // The number sent for kind:docs, the one it was previewed on, is not
+    // held against a deletion nobody ticked.
     const res = await apply(p.s, plan.expected, selected, "basic", undefined, {
       [id]: 1,
+      [`label.delete:${p.docs}`]: 1,
     });
     expect(res.status).toBe(200);
     expect(await json(res)).toEqual({ skipped: [] });

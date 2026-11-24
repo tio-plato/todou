@@ -420,6 +420,31 @@ describe("applySelection", () => {
     expect(outcome.updateLabels).toEqual([]);
   });
 
+  it("names every label deletion sent without a count, and the first whose count moved", () => {
+    const state = drifted();
+    const idOf = (name: string) =>
+      state.labels.find((l) => l.name === name)?.id;
+    const docs = `label.delete:${idOf("kind:docs")}`;
+    const web = `label.delete:${idOf("area:web")}`;
+    const refusal = (labelIssues?: Record<string, number>) => {
+      try {
+        apply(state, [web, docs], labelIssues);
+      } catch (error) {
+        return error;
+      }
+      throw new Error("applied");
+    };
+    expect(refusal()).toMatchObject({
+      code: "validation_failed",
+      details: { missing: expect.arrayContaining([docs, web]) },
+    });
+    // kind:docs comes first among the rows, whatever order they are sent in.
+    expect(refusal({ [docs]: 0, [web]: 0 })).toMatchObject({
+      code: "conflict",
+      details: { id: docs, shown: 0, now: 2 },
+    });
+  });
+
   it("moves the line down off a deleted status, unless the line row is taken", () => {
     const state = project(
       [...FLOW.map((name) => ({ name })), { name: "Gate" }, { name: "Done" }],

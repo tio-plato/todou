@@ -146,7 +146,11 @@ describe.skipIf(!PG_URL)("applying a template on PostgreSQL", () => {
       await holder.query("COMMIT");
       const res = await pending;
       expect(res.status).toBe(409);
-      expect((await json(res)).error.code).toBe("conflict");
+      // Counted again on the retry, so the card the label went on is in it.
+      expect((await json(res)).error).toMatchObject({
+        code: "conflict",
+        details: { id: `label.delete:${docs.id}`, shown: 0, now: 1 },
+      });
     } finally {
       await holder.query("ROLLBACK");
       await Promise.allSettled([pending]);
