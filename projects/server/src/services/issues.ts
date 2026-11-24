@@ -300,18 +300,57 @@ export async function loadIssueRow(
 }
 
 /**
+ * Each card's status as it is now, read in one statement with the card.
+ * The card rows a caller holds come from an earlier statement, and a commit
+ * in between can leave one pointing at a status that is gone: the project's
+ * deletion, or the card leaving a status that is then deleted.
+ * One statement sees one snapshot, so a card is either absent here (gone,
+ * statuses and all) or comes back with the status it has now.
+ *
+ * A card that is here with a status outside `projectIds` is broken data,
+ * not a race, and still throws.
+ */
+export async function currentStatusesOf(
+  db: Db,
+  projectIds: number[],
+  issueIds: number[],
+): Promise<Map<number, StatusRow>> {
+  const found = await db
+    .select({ id: issues.id, status: statuses })
+    .from(issues)
+    .leftJoin(
+      statuses,
+      and(
+        eq(statuses.id, issues.statusId),
+        inArray(statuses.projectId, projectIds),
+      ),
+    )
+    .where(inArray(issues.id, issueIds));
+  const byIssue = new Map<number, StatusRow>();
+  for (const { id, status } of found) {
+    if (status === null) throw new Error(`issue ${id} has unknown status`);
+    byIssue.set(id, status);
+  }
+  return byIssue;
+}
+
+/**
  * Bulk-assemble DTO parts for a set of issue rows (2 project-db queries).
  *
  * `projectIds` is a set so the inbox can bundle every project sharing one
  * database in a single pass (T-278). Single-project callers pass
  * `[project.id]`; ids are unique per database, so merging the status and
  * move lookups across projects cannot cross wires.
+ *
+ * A card gone by the time its status is read is left out, so there can be
+ * fewer bundles than rows: a caller finds a card's bundle by its row, never
+ * by position.
  */
 export async function bundleIssues(
   ctx: AppContext,
   db: Db,
   projectIds: number[],
-  rows: IssueRow[],
+  read: IssueRow[],
   /** Whose view this is; decides which move sources may be named. */
   actor: UserRow,
   /**
@@ -323,14 +362,21 @@ export async function bundleIssues(
    */
   opts?: { metadata?: MetadataNamespaceSelector },
 ): Promise<IssueBundle[]> {
+  if (read.length === 0) return [];
+
+  await ctx.testHooks?.beforeStatusRead?.();
+  const statusById = await currentStatusesOf(
+    db,
+    projectIds,
+    read.map((r) => r.id),
+  );
+  // A card gone by now is left out, which is what a caller reading it a
+  // moment later would have got. The rest keep the row the caller read
+  // rather than a fresh one: that is the row its checks (trash, card scope,
+  // the list's filters) were made against.
+  const rows = read.filter((r) => statusById.has(r.id));
   if (rows.length === 0) return [];
   const ids = rows.map((r) => r.id);
-
-  const statusRows = await db
-    .select()
-    .from(statuses)
-    .where(inArray(statuses.projectId, projectIds));
-  const statusById = new Map(statusRows.map((s) => [s.id, toStatus(s)]));
 
   const labelRows = await db
     .select({ issueId: issueLabels.issueId, label: labels })
@@ -381,8 +427,8 @@ export async function bundleIssues(
   });
 
   return rows.map((row) => {
-    const status = statusById.get(row.statusId);
-    if (!status) throw new Error(`issue ${row.id} has unknown status`);
+    // Every row left is one `currentStatusesOf` answered for.
+    const status = toStatus(statusById.get(row.id) as StatusRow);
     return {
       row,
       status,
@@ -749,7 +795,7 @@ export async function createIssue(
   );
   const bundles = await bundleIssues(ctx, db, [project.id], [row], actor);
   const bundle = bundles[0];
-  if (!bundle) throw new Error("bundle missing");
+  if (!bundle) throw new NotFoundError("issue not found");
   return toIssue(bundle);
 }
 
@@ -770,7 +816,7 @@ export async function getIssue(
   const bundle = (
     await bundleIssues(ctx, db, [project.id], [row], actor, opts)
   )[0];
-  if (!bundle) throw new Error("bundle missing");
+  if (!bundle) throw new NotFoundError("issue not found");
   return toIssue(bundle);
 }
 
@@ -1518,7 +1564,7 @@ export async function updateIssue(
 
   const after = await loadIssueRow(db, project.id, number);
   const bundle = (await bundleIssues(ctx, db, [project.id], [after], actor))[0];
-  if (!bundle) throw new Error("bundle missing");
+  if (!bundle) throw new NotFoundError("issue not found");
   return toIssue(bundle);
 }
 
@@ -1677,6 +1723,6 @@ export async function restoreIssue(
     agentContext,
   );
   const bundle = (await bundleIssues(ctx, db, [project.id], [row], actor))[0];
-  if (!bundle) throw new Error("bundle missing");
+  if (!bundle) throw new NotFoundError("issue not found");
   return toIssue(bundle);
 }
