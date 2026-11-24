@@ -215,20 +215,35 @@ describe("applying a template's order", () => {
     expect(line).toBe("Shipped");
     expect(above).toEqual(expect.arrayContaining(["Open", "Waiting"]));
     expect(below).toEqual(expect.arrayContaining(["Closed", "Sent", "Mailed"]));
+    // With the line on the first status, none of them blocks.
+    const q = project(["Closed", "Sent"], "Closed", ["Closed"]);
+    expect(sidesOf(q, BASIC).below).toEqual(
+      expect.arrayContaining(["Closed", "Sent"]),
+    );
   });
 
   it("without a line, sides them by category, inside the template's order", () => {
     const p = project(
-      ["Open", "Closed", "Archived", "Waiting", "Done", "Parked"],
+      ["Open", "Closed", "Archived", "Waiting", "Dropped", "Done", "Parked"],
       null,
-      ["Closed", "Archived", "Done"],
+      ["Closed", "Archived", "Dropped", "Done"],
     );
     const t = template(["Backlog", "Shipped", "Done"], "Shipped");
     const { line, above, below } = sidesOf(p, t);
     expect(line).toBe("Shipped");
     expect(above).toEqual(expect.arrayContaining(["Open", "Waiting"]));
     // Done follows Shipped as in the template, and Parked, after Done, too.
-    expect(below).toEqual(expect.arrayContaining(["Done", "Parked"]));
+    expect(below).toEqual(
+      expect.arrayContaining(["Dropped", "Done", "Parked"]),
+    );
+  });
+
+  it("keeps the line's status below a status the template has above it", () => {
+    const p = project(["Open", "Closed", "Kept"], "Closed", ["Closed"]);
+    const t = template(["Kept", "Shipped", "Done"], "Shipped");
+    const { line, above } = sidesOf(p, t);
+    expect(line).toBe("Shipped");
+    expect(above).toContain("Kept");
   });
 
   it("keeps the line on its status as the status moves, drawn right above it", () => {
