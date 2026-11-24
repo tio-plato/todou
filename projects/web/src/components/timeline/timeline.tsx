@@ -55,6 +55,8 @@ import { aboveDock } from "@/lib/dock-cover.ts";
 import {
   atConversationEnd,
   endHeldAt,
+  GLIDE_END_EVENT,
+  isGliding,
   isHoldingTarget,
   landAtBottom,
   revealAboveEnd,
@@ -296,10 +298,13 @@ export function Timeline({
   // (T-527). It is the page scrolling itself, however soon after the reader's
   // last input it comes, so that input is not taken for its direction.
   const keepHold = useOwnHold();
-  const scrollToBottom = useCallback(() => {
-    forgetScroll();
-    keepHold(landAtBottom());
-  }, [keepHold, forgetScroll]);
+  const scrollToBottom = useCallback(
+    (glide = false) => {
+      forgetScroll();
+      keepHold(landAtBottom({ glide }));
+    },
+    [keepHold, forgetScroll],
+  );
   // Once it has rendered an arrival, the router scrolls the page to the top,
   // from a listener it registered when it was created, so ahead of this one.
   // A card whose timeline is cached mounts in that same render and lands
@@ -691,11 +696,14 @@ export function Timeline({
     const record = () => {
       atEndRef.current = whereReaderIs();
     };
+    // A glide carrying the page through the end is not the reader back at
+    // it: where it stops is read once it ends.
     const onScroll = () => {
       record();
-      if (atEndRef.current.atEnd) setLastSeen(null);
+      if (atEndRef.current.atEnd && !isGliding()) setLastSeen(null);
     };
     window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener(GLIDE_END_EVENT, onScroll);
     let width: { list?: number; window: number } | undefined;
     const observer =
       list === null || typeof ResizeObserver === "undefined"
@@ -715,6 +723,7 @@ export function Timeline({
     if (list !== null) observer?.observe(list);
     return () => {
       window.removeEventListener("scroll", onScroll);
+      window.removeEventListener(GLIDE_END_EVENT, onScroll);
       observer?.disconnect();
     };
   }, [list]);
@@ -725,7 +734,9 @@ export function Timeline({
   // the header and the comment box. Not one above it, which the reader may
   // have skipped: past the end, in a phone's sidebar, every new item is
   // above them. Measured before paint whenever the unseen change, so one
-  // arriving with its start on screen never shows the button.
+  // arriving with its start on screen never shows the button. Nor what a
+  // glide carries past on its way, which the reader has not read: where it
+  // stops is measured once it ends.
   const unseenKeys = unseen.map(itemKey).join(" ");
   // Where each lands, as of the last commit: the listeners below outlive the
   // render that set them up, and a render thrown away is never committed.
@@ -737,6 +748,7 @@ export function Timeline({
     if (!newBelow) return;
     const keys = unseenKeys === "" ? [] : unseenKeys.split(" ");
     const measure = () => {
+      if (isGliding()) return;
       const list = listRef.current;
       if (list !== null)
         setPastEnd(list.getBoundingClientRect().bottom < usableViewport().top);
@@ -764,10 +776,12 @@ export function Timeline({
     observer?.observe(document.body);
     window.addEventListener("scroll", measure, { passive: true });
     window.addEventListener("resize", measure);
+    window.addEventListener(GLIDE_END_EVENT, measure);
     return () => {
       observer?.disconnect();
       window.removeEventListener("scroll", measure);
       window.removeEventListener("resize", measure);
+      window.removeEventListener(GLIDE_END_EVENT, measure);
     };
   }, [newBelow, unseenKeys]);
 
@@ -790,7 +804,7 @@ export function Timeline({
     shown ? "translate-y-0 opacity-100" : "opacity-0 motion-safe:translate-y-2",
   );
   const toBottom = () => {
-    scrollToBottom();
+    scrollToBottom(true);
     setLastSeen(null);
     setRevealed(false);
   };
@@ -835,7 +849,7 @@ export function Timeline({
       return;
     }
     forgetScroll();
-    keepHold(revealAboveEnd(el));
+    keepHold(revealAboveEnd(el, { glide: true }));
     setLastSeen(null);
     setRevealed(false);
   };
