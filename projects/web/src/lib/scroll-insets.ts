@@ -382,8 +382,9 @@ function hold(
     path = null;
     gliding = false;
     // Told once whatever ended it has run: a landing that takes over with a
-    // glide of its own, as a comment link does after the old one is released,
-    // ends the move where that glide stops, not here.
+    // glide of its own and no input from the reader, as Back to a comment's
+    // address does after the old one is released, ends the move where that
+    // glide stops, not here. The reader's own input ends it here.
     queueMicrotask(() => {
       if (!gliding) window.dispatchEvent(new Event(GLIDE_END_EVENT));
     });
