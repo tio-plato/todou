@@ -3382,6 +3382,143 @@ describe("anchoring a compared document", () => {
     expect(quoted(before, selected)).toBe("more");
   });
 
+  it.each([
+    ["an LF body", "\n", ""],
+    ["a CRLF body, its patch's lines keeping their file's \\r", "\r\n", "\r"],
+  ])(
+    "leaves the next row's prefix and the line's \\r out of a baseline anchor, in %s",
+    async (_name, eol, cr) => {
+      const before = [
+        "Intro.",
+        "",
+        "```patch",
+        "--- a/a.txt",
+        "+++ b/a.txt",
+        "@@ -1,1 +1,1 @@",
+        `-old words${cr}`,
+        `+new words${cr}`,
+        "```",
+        "",
+        "Outro.",
+        "",
+      ].join(eol);
+      const after = ["Intro.", "", "Outro.", ""].join(eol);
+      const { container, anchor } = await compared(
+        before,
+        after,
+        "[data-old-loc].markdown-fence",
+      );
+      // pierre shows a line's own `\r` as the `\n` the HTML parser makes it.
+      const shown = cr === "" ? "" : "\n";
+      const shadow = drawRows(
+        container.querySelector("[data-old-loc].markdown-fence"),
+        `<pre data-diff=""><div data-line="1" data-line-type="change-deletion">old words${shown}</div><div data-line="1" data-line-type="change-addition">new words${shown}</div></pre>`,
+      );
+      const [old, added] = [...shadow.querySelectorAll("[data-line]")].map(
+        (row) => row.firstChild,
+      );
+      // Let go at the next row's start: neither its `+` nor this line's
+      // `\r`s, which the page does not show.
+      expect(quoted(before, anchor(ends(old, 4, added, 0)))).toBe("words");
+    },
+  );
+
+  it("leaves the lines no row shows out of a baseline anchor crossing them", async () => {
+    const before = [
+      "Intro.",
+      "",
+      "Removed para.",
+      "",
+      "```patch",
+      "From: alice <noreply@example.com>",
+      "Subject: [PATCH] change a file",
+      "",
+      "Explain the change.",
+      "---",
+      "diff --git a/a.txt b/a.txt",
+      "--- a/a.txt",
+      "+++ b/a.txt",
+      "@@ -1,1 +1,1 @@",
+      "-old words",
+      "+new words",
+      "```",
+      "",
+      "Outro.",
+      "",
+    ].join("\n");
+    const after = "Intro.\n\nOutro.\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-old-loc].markdown-fence",
+    );
+    const shadow = drawRows(
+      container.querySelector("[data-old-loc].markdown-fence"),
+      `<pre data-file=""><div data-line="1" data-line-type="context">Explain the change.</div></pre><pre data-diff=""><div data-line="1" data-line-type="change-deletion">old words</div><div data-line="1" data-line-type="change-addition">new words</div></pre>`,
+    );
+    const [message, old] = [...shadow.querySelectorAll("[data-line]")].map(
+      (row) => row.firstChild,
+    );
+    // From the message to the start of the first hunk row: not the patch's
+    // headers between them, nor the row's `-`.
+    expect(quoted(before, anchor(ends(message, 0, old, 0)))).toBe(
+      "Explain the change.",
+    );
+    // From the paragraph removed with the block to the message's start: not
+    // the fence's marker, nor the mail headers.
+    const para = textAt(container, "p.spec-del-structure", "Removed para.");
+    expect(quoted(before, anchor(ends(para.node, para.at, message, 0)))).toBe(
+      "Removed para.",
+    );
+  });
+
+  it("keeps a context row between two deleted rows in a baseline anchor, without the next row's indent", async () => {
+    const before =
+      "- item text\n\n  ```ts\n  keep();\n  drop1();\n  mid();\n  drop2();\n  ```\n";
+    const after = "- item text\n\n  ```ts\n  keep();\n  mid();\n  ```\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    const shadow = drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-line-type="context">keep();</div>
+       <div data-line="2" data-line-type="change-deletion">drop1();</div>
+       <div data-line="2" data-line-type="context">mid();</div>
+       <div data-line="4" data-line-type="change-deletion">drop2();</div>`,
+    );
+    const rows = [...shadow.querySelectorAll("[data-line]")];
+    const [drop1, drop2] = [rows[1], rows[3]].map((row) => row?.firstChild);
+    expect(quoted(before, anchor(ends(drop1, 0, drop2, 0)))).toBe(
+      "drop1();\n  mid();",
+    );
+  });
+
+  it("leaves an edited block's closing marker out of a current anchor past its last row", async () => {
+    const before = "Intro.\n\n```ts\na();\nb();\n```\n\nOutro.\n";
+    const after = "Intro.\n\n```ts\na();\nc();\n```\n\nOutro.\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    const shadow = drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-line-type="context">a();</div>
+       <div data-line="2" data-line-type="change-deletion">b();</div>
+       <div data-line="2" data-line-type="change-addition">c();</div>`,
+    );
+    const added = shadow.querySelector("[data-line-type='change-addition']");
+    const outro = textAt(container, "p", "Outro.");
+    // The deletion row shows no current line, and keeps no line of the
+    // version shown from being hidden whole.
+    const selected = anchor(ends(added?.firstChild, 1, outro.node, outro.at));
+    expect(selected?.baseline).toBeUndefined();
+    if (selected === null) throw new Error("no anchor");
+    expect(cut(after.split("\n"), selected)).toBe("();");
+  });
+
   it("anchors a selection running out of removed text to the current text", async () => {
     const before = "Intro.\n\nThe quick brown fox jumps.\n";
     const after = "Intro.\n\nThe quick red fox jumps.\n";
