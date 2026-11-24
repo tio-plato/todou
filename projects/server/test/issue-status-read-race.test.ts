@@ -1,5 +1,8 @@
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { TestHooks } from "../src/bootstrap.ts";
+import { issues } from "../src/db/project-schema.ts";
+import { getProjectByRef, routeInfoOf } from "../src/services/access.ts";
 import { makeTestApp, type TestApp } from "./helpers.ts";
 
 // biome-ignore lint/suspicious/noExplicitAny: test-side response poking
@@ -144,5 +147,24 @@ describe("card reads racing a status going away", () => {
     });
     expect(pending.beforeStatusRead).toBeUndefined();
     expect(res.status).toBe(404);
+  });
+
+  it("still fails a card whose status is another project's", async () => {
+    const slug = await createProject("broken");
+    const other = await createProject("broken-other");
+    const card = await createIssue(slug, "broken");
+    const foreign = (await createIssue(other, "foreign")).status.id;
+    const project = await getProjectByRef(t.ctx, slug);
+    const db = await t.ctx.router.forProject(routeInfoOf(project));
+    await db
+      .update(issues)
+      .set({ statusId: foreign })
+      .where(
+        and(eq(issues.projectId, project.id), eq(issues.number, card.number)),
+      );
+
+    // Broken data, not a race: reported, never hidden or dressed up.
+    const res = await req(`/projects/${slug}/issues/${card.number}`);
+    expect(res.status).toBe(500);
   });
 });
