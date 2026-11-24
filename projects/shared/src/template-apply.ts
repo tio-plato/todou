@@ -36,7 +36,12 @@ type ProjectStatus = { id: number; name: string };
 /** What the order rules read of a project. */
 export type ApplyProject = {
   /** In board order. */
-  statuses: ReadonlyArray<ProjectStatus & { is_default: boolean }>;
+  statuses: ReadonlyArray<
+    ProjectStatus & {
+      is_default: boolean;
+      category: TemplateStatus["category"];
+    }
+  >;
   /** The status the block clear line is on; null when there is no line. */
   line: number | null;
 };
@@ -159,10 +164,52 @@ const LINE = Symbol("line");
 type Slot = StatusKey | typeof LINE;
 
 /**
+ * `base` with the status the line goes on put in, when `base` lacks it and
+ * `mergeOrder` would place it: between its neighbours in `incoming` that
+ * `base` holds, right after the last status there whose cards block now,
+ * else at the top of that range, where `mergeOrder` would have put it. So a
+ * status the template lacks keeps its side of the line wherever those
+ * neighbours leave room.
+ */
+function placeLineStatus(
+  project: ApplyProject,
+  base: readonly StatusKey[],
+  incoming: readonly StatusKey[],
+  lineAt: StatusKey | null,
+): StatusKey[] {
+  if (lineAt === null || base.includes(lineAt)) return [...base];
+  const at = incoming.indexOf(lineAt);
+  const held = (keys: readonly StatusKey[]) =>
+    keys.map((key) => base.indexOf(key)).filter((index) => index !== -1);
+  const lo = Math.max(-1, ...held(incoming.slice(0, at)));
+  const hi = Math.min(base.length, ...held(incoming.slice(at + 1)));
+  // Cleared as the line reads now: at or below the line's status, or closed
+  // where there is no line.
+  const lineIndex = project.statuses.findIndex((s) => s.id === project.line);
+  const cleared = (key: StatusKey) => {
+    const index = project.statuses.findIndex((s) => s.id === key);
+    return project.line === null
+      ? project.statuses[index].category === "closed"
+      : index >= lineIndex;
+  };
+  let after = lo;
+  for (let index = hi - 1; index > lo; index -= 1) {
+    if (!cleared(base[index])) {
+      after = index;
+      break;
+    }
+  }
+  const result = [...base];
+  result.splice(after + 1, 0, lineAt);
+  return result;
+}
+
+/**
  * The table's rows, whatever is ticked: the project's statuses in its order
  * down the left, and down the right the order with every row of `rows`
  * ticked, the two merged so that what both sides hold in the same place
- * shares a row.
+ * shares a row. Where `mergeOrder` would place the status the line goes on,
+ * that status has its place chosen first (`placeLineStatus`).
  */
 export function applyLayout(
   project: ApplyProject,
@@ -188,11 +235,17 @@ export function applyLayout(
   const left: Slot[] = project.statuses.flatMap((s) =>
     s.id === project.line ? [LINE, s.id] : [s.id],
   );
-  const right: Slot[] = mergeOrder<StatusKey>(
-    project.statuses.filter((s) => !movers.has(s.id)).map((s) => s.id),
-    template.statuses.map(keyOf),
-  );
+  const incoming = template.statuses.map(keyOf);
   const lineAt = lineRow === null ? project.line : lineTemplate;
+  const right: Slot[] = mergeOrder<StatusKey>(
+    placeLineStatus(
+      project,
+      project.statuses.filter((s) => !movers.has(s.id)).map((s) => s.id),
+      incoming,
+      lineAt,
+    ),
+    incoming,
+  );
   if (lineAt !== null && right.includes(lineAt)) {
     right.splice(right.indexOf(lineAt), 0, LINE);
   }
