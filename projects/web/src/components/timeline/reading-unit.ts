@@ -83,17 +83,18 @@ function childFor(list: HTMLElement, key: string): HTMLElement | null {
  *   the lower half, the head side's last unit ends above it, so whatever goes
  *   into the seam pushes nobody.
  *
- * Given `at`, an element a click landed on, the unit holding it instead: what
- * the click opens grows downward from where the reader pressed. With the body
- * in view, unless the tail's rule holds, that unit moves with the list's top
- * at the end, and is none anywhere else, as above. Undefined when the click
- * landed on no unit, such as the fold block's Load more, for the rules above
- * to decide. Outside the list, none for a click on what precedes it, showing
- * under the top overlays, with the body in view and the tail's rule not
- * holding: the reader pressed the card's title, body or attachments, and
- * what that opens grows downward from there, at the end too. An ancestor of
- * the list precedes nothing, so a press on blank space in its column keeps
- * the end. Undefined for any other click outside the list.
+ * Given `at`, an element a click or a typed key landed on, the unit holding
+ * it instead: what the click opens grows downward from where the reader
+ * pressed. With the body in view, unless the tail's rule holds, that unit
+ * moves with the list's top at the end, and is none anywhere else, as above.
+ * Undefined when the click landed on no unit, such as the fold block's Load
+ * more, for the rules above to decide. Outside the list, none for what
+ * precedes it, showing under the top overlays, with the body in view and the
+ * tail's rule not holding: the reader pressed or typed on the card's title,
+ * body or attachments, and what that opens grows downward from there, at the
+ * end too. An ancestor of the list precedes nothing, so a press on blank
+ * space in its column keeps the end. Undefined for anything else outside the
+ * list.
  *
  * A placeholder counts as the unit it stands for, so a reader looking at a
  * skeleton keeps the place of what fills it.

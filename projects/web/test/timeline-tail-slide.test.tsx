@@ -870,6 +870,20 @@ describe("a card whose list starts on screen, read at its end", () => {
     expect(edit.getBoundingClientRect().top).toBe(before);
   });
 
+  it("keeps the end through a press, a wheel and a touch on the body that scroll nothing", async () => {
+    const page = await shortCard();
+    const edit = page.view.getByRole("button", { name: "Edit" });
+    page.press(column(page));
+    // None followed by a click or by a scroll of the page: a swipe across a
+    // code block, a sideways wheel.
+    fireEvent.pointerDown(edit);
+    fireEvent.wheel(edit);
+    fireEvent.touchStart(edit);
+    await page.fillAll();
+    expect(page.unit("comment-1")?.hasAttribute("data-unfilled")).toBe(false);
+    expect(page.at()).toBe(page.endTarget());
+  });
+
   it("lets go of the end when a key lands on the body", async () => {
     const page = await shortCard();
     const edit = page.view.getByRole("button", { name: "Edit" });

@@ -601,8 +601,8 @@ function scrolled(place: ReadingPlace, by: number): ReadingPlace {
  * beside it; null when the reader is reading nothing in the list. Given the
  * element a click landed on, it names that element's unit instead, or
  * answers undefined when that is no unit, and the place is picked again as
- * after a scroll. A click or another input outside the list is put to it
- * too: null lets go of the place, the reader having pressed or typed on what
+ * after a scroll. A click or a typed key outside the list is put to it too:
+ * null lets go of the place, the reader having pressed or typed on what
  * precedes the list, and any other answer leaves it as it is. `locate` finds
  * a unit again by its key.
  *
@@ -613,10 +613,10 @@ function scrolled(place: ReadingPlace, by: number): ReadingPlace {
  * and so does an input that ends a landing or finds nothing kept; a typed
  * key moves nothing, and one that scrolls is heard as its scroll. A click in
  * the list takes the unit it landed on, so what it opens grows downward from
- * where the reader pressed. A click or an input on what precedes the list
- * lets go instead, a typed key landing where the focus is: what the reader
- * opened or types in the card's body stays put while the list changes. A
- * scroll is picked by where the page is, whatever made it.
+ * where the reader pressed. A click or a typed key on what precedes the list
+ * lets go instead, the key landing where the focus is: what the reader opened
+ * or types in the card's body stays put while the list changes. A scroll is
+ * picked by where the page is, whatever made it.
  *
  * While a landing is held it owns the page, and nothing is put back.
  * Otherwise every resize of the page or of the list's column, and every
@@ -683,7 +683,8 @@ export function useReadingList(
       const el = list.current;
       keep(el === null ? null : (latest.current.pick(el) ?? null));
     };
-    // Whether an input landed outside the list on what `pick` lets go for.
+    // Whether a click or a key landed outside the list on what `pick` lets
+    // go for.
     const landsAbove = (target: EventTarget | null) => {
       const el = list.current;
       return (
@@ -697,7 +698,9 @@ export function useReadingList(
       // A landing letting go hands the page over itself.
       if (held !== null) return;
       started = true;
-      if (landsAbove(event.target)) keep(null);
+      // Only a key: a press, a wheel or a touch on the body may scroll
+      // nothing and bring no click, and nothing would pick the place again.
+      if (event.type === "keydown" && landsAbove(event.target)) keep(null);
       else if (place === null) repick();
     };
     const onClick = (event: MouseEvent) => {
