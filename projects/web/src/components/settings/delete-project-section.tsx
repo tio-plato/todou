@@ -9,6 +9,7 @@ import { Trash2Icon } from "lucide-react";
 import { useId, useState } from "react";
 import { toast } from "sonner";
 import { issueCountsQuery } from "@/api/issues.ts";
+import { projectQueries, projectSlugs } from "@/api/project-cache.ts";
 import {
   api,
   membersQuery,
@@ -67,12 +68,7 @@ export function DeleteProjectSection({ slug }: { slug: string }) {
       // once the page has gone, so nothing mounted fetches it back; should
       // the redirect fail, the page fetching it finds it gone and says so.
       const forget = () => {
-        queryClient.removeQueries({
-          predicate: (query) => {
-            const key = query.queryKey[1];
-            return typeof key === "string" && doomed.slugs.includes(key);
-          },
-        });
+        queryClient.removeQueries(projectQueries(doomed.slugs));
         queryClient.invalidateQueries();
       };
       // Wherever the reader is by now: the page they opened this on is gone.
@@ -105,7 +101,7 @@ export function DeleteProjectSection({ slug }: { slug: string }) {
     remove.mutate({
       id: project.data.id,
       name: project.data.name,
-      slugs: [slug, project.data.slug, ...(project.data.former_slugs ?? [])],
+      slugs: projectSlugs(slug, project.data),
     });
   };
 
