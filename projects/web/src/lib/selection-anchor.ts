@@ -247,7 +247,9 @@ function withAtoms(
  * as text first, since a blank between two emphases is the source's, and
  * only when that fails is it taken as inserted. Inserted ones sit on block
  * edges, where the segments never start with a blank — mdast keeps none at
- * the start of a paragraph or after a hard break.
+ * the start of a paragraph or after a hard break. A soft line break in a
+ * message shows as a `<br>` and a line feed (`remarkBreaks`): a CRLF in the
+ * source there lines up with that line feed as well.
  *
  * A link or a document card carries its source span (`SOURCE_SPAN_ATTR`).
  * One whose text reads like the source in its span — a plain link, an
@@ -400,6 +402,7 @@ function lineUp(
       joined.startsWith(data, at) &&
       !atomAt.some((p) => p >= at && p < at + data.length);
     if (fits) at += data.length;
+    else if (data === "\n" && joined.startsWith("\r\n", at)) at += 2;
     else if (/\S/.test(data)) return null;
     else inserted.add(item);
   }
