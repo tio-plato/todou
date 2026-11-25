@@ -1,4 +1,3 @@
-import { readingFromTail } from "@/components/timeline/tail-slide-anchor.tsx";
 import {
   atConversationEnd,
   listTopShows,
@@ -7,6 +6,17 @@ import {
   type UsableViewport,
   usableViewport,
 } from "@/lib/scroll-insets.ts";
+
+/**
+ * Whether the seam between the head and the tail, `seamTop` down the
+ * viewport, says the reader came up from the tail (T-30). In the upper half,
+ * the tail side is what they are reading, and it stays where it is as the
+ * seam changes; in the lower half, they are reading the head side, and what
+ * lies above the seam does not move by itself.
+ */
+export function readingFromTail(seamTop: number): boolean {
+  return seamTop < window.innerHeight / 2;
+}
 
 /**
  * The unit a child of the timeline's list stands for: its own, or for a
@@ -49,8 +59,9 @@ function childFor(list: HTMLElement, key: string): HTMLElement | null {
  * side at all.
  *
  * - With the seam in the screen's upper half, the reader came up from the
- *   tail, which stays where it is as the seam changes (T-30): the first unit
- *   below the seam showing under the top overlays.
+ *   tail, which stays where it is as the seam changes (T-30), and as its
+ *   oldest item slides into the fold with an arrival, whatever else changes
+ *   above it: the first unit below the seam showing under the top overlays.
  *   Ahead of the rule below, so a short head side with the card's body still
  *   in view keeps the tail too.
  * - While the list's top (`listTop`, its divider line's) shows below the top
