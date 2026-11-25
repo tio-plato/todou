@@ -783,7 +783,7 @@ describe("question landing through the real issue route", () => {
     expect(scroll.reveals("comment-10")).toBe(0);
     expect(scroll.reveals("comment-126")).toBe(0);
     expect(scroll.reveals("comment-5")).toBe(0);
-    // Head prepend compensation is allowed before the final anchor reveal.
+    // However the page moves while the head expands, the reveal comes last.
     expect(scroll.events.at(-1)).toBe("reveal:comment-125");
   });
 
