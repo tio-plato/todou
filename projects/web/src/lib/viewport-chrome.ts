@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { acceptsShortcut } from "@/lib/spec-change-nav.ts";
 
 /**
  * How the visual viewport sits inside the layout viewport, published on
@@ -74,6 +75,19 @@ function announce() {
   window.dispatchEvent(new Event(VIEWPORT_CHROME_EVENT));
 }
 
+/** Fired on `window` by `pageLands`, for the auto-hiding header. */
+const PAGE_LANDS_EVENT = "todou:page-lands";
+
+/**
+ * Say that the page is about to place itself; a landing calls it before it
+ * scrolls. The page's own scrolling never slides the auto-hiding header in or
+ * out, so the header settles where it stands, fully in or out, and the insets
+ * are measured against it before the landing reads them.
+ */
+export function pageLands(): void {
+  window.dispatchEvent(new Event(PAGE_LANDS_EVENT));
+}
+
 /** Keep `--vv-top` / `--vv-bottom` current; mounted once, by the shell. */
 export function useVisualViewportInsets(): void {
   useEffect(() => {
@@ -102,8 +116,24 @@ export function useVisualViewportInsets(): void {
   }, []);
 }
 
-/** Input that marks the scrolling which follows as the reader's own. */
-const READER_INPUT = ["touchstart", "wheel", "keydown", "pointerdown"];
+/** Keys that scroll the page when nothing on it takes them. */
+const SCROLL_KEYS = [
+  "PageUp",
+  "PageDown",
+  "ArrowUp",
+  "ArrowDown",
+  "Home",
+  "End",
+  " ",
+];
+
+/**
+ * A key that scrolls the page, not one typed, moving a caret or stepping
+ * through a menu: those scroll too, revealing what they reached.
+ */
+function scrollsPage(event: KeyboardEvent): boolean {
+  return SCROLL_KEYS.includes(event.key) && acceptsShortcut(event);
+}
 
 /** The settling transition's length in styles.css, plus a frame. */
 const SETTLE_MS = 170;
@@ -123,10 +153,16 @@ const READER_WINDOW_MS = 600;
  * `page` resets it: the header arrives in view on every new page, the same
  * as it would after a full load.
  *
- * Only the reader's own scrolling moves it: a landing at the end of the
- * timeline or an anchor jump is the page placing itself, and arriving to a
- * vanished header would read as a fault. Momentum keeps counting, because
- * each scroll it produces renews the window the touch opened.
+ * Only the reader's own scrolling moves it: a finger dragging the page, with
+ * the momentum after it, the wheel, the page keys, the scrollbar. Momentum
+ * keeps counting, because each scroll it produces renews the window the drag
+ * opened. Nothing else slides it in or out: a jump, a landing, a keyboard
+ * opening and the caret brought into view are the page placing itself, and a
+ * header that slid with them would cover what was just put in view. A tap or
+ * a typed key opens no window; a click or a landing shuts an open one, until
+ * the reader's next scroll. Only near the page's start, where sticky leaves
+ * the header in the flow, does the page's own scrolling move it: there it is
+ * the page's top, and goes and comes with it as any page header would.
  *
  * Once scrolling stops the header settles fully in or fully out, as Safari's
  * does; a header left half-cut reads as broken.
@@ -165,19 +201,34 @@ export function useAutoHideHeader(enabled: boolean, page?: string): void {
       if (animate) settled = window.setTimeout(announce, SETTLE_MS);
       else announce();
     };
+    // Near the top there is no room to keep it hidden: what it covers is the
+    // start of the page itself.
+    const settledAt = (height: number) =>
+      hidden > height / 2 && window.scrollY > height ? height : 0;
+    // Partly out only because the page's start took it along: sticky leaves
+    // it at its place in the flow, where it is the page's own top.
+    const carried = (height: number, y: number) =>
+      hidden > 0 && hidden < height && hidden >= Math.max(0, y);
     const snap = () => {
-      const height = header.offsetHeight;
-      // Near the top there is no room to keep it hidden: what it covers is
-      // the start of the page itself.
-      const out = hidden > height / 2 && window.scrollY > height;
-      publish(out ? height : 0, true);
+      publish(settledAt(header.offsetHeight), true);
     };
     const onScroll = () => {
       const y = window.scrollY;
       const dy = y - lastY;
+      const from = lastY;
       lastY = y;
       const now = performance.now();
-      if (now > readerUntil) return;
+      if (now > readerUntil) {
+        const height = header.offsetHeight;
+        const top = Math.max(0, y);
+        // The variable follows what sticky shows: no more of the header out
+        // than the page above it, and one the page's start carries goes and
+        // comes with it, never left half out on top. The reader's own scroll
+        // is held to the same bound below, so it is not held here twice.
+        if (carried(height, from) || hidden > top)
+          publish(Math.min(height, top), false);
+        return;
+      }
       readerUntil = now + READER_WINDOW_MS;
       const height = header.offsetHeight;
       // Overscroll at either end bounces `scrollY` past the range; the bounce
@@ -191,16 +242,57 @@ export function useAutoHideHeader(enabled: boolean, page?: string): void {
       settleSoon();
     };
 
-    for (const type of READER_INPUT) {
-      window.addEventListener(
-        type,
-        () => {
-          readerUntil = performance.now() + READER_WINDOW_MS;
-        },
-        { capture: true, passive: true, signal },
-      );
-    }
+    // The page placing itself: the header settles where it stands and stays
+    // there until the reader scrolls again.
+    const placing = (click: boolean) => {
+      readerUntil = Number.NEGATIVE_INFINITY;
+      window.clearTimeout(settle);
+      const height = header.offsetHeight;
+      // A click leaves one the page's start carries where it is; one the
+      // reader's own slide cut, it settles. A landing settles either.
+      if (
+        hidden > 0 &&
+        hidden < height &&
+        !(click && carried(height, window.scrollY))
+      )
+        publish(settledAt(height), false);
+      // Mid-transition its edge reads half way through the slide.
+      root.removeAttribute("data-header-settling");
+      announce();
+    };
+    const reading = () => {
+      readerUntil = performance.now() + READER_WINDOW_MS;
+    };
     const options = { capture: true, passive: true, signal };
+    // A finger that moves, not one that lands: a tap scrolls nothing itself,
+    // and what follows it is a jump or a keyboard opening.
+    window.addEventListener("touchmove", reading, options);
+    window.addEventListener("wheel", reading, options);
+    // Only the keys that scroll the page: see `scrollsPage`.
+    window.addEventListener(
+      "keydown",
+      (event) => {
+        if (scrollsPage(event)) reading();
+      },
+      options,
+    );
+    // A press on the page's scrollbar, which Chromium and Firefox both
+    // deliver to <html> (measured on T-527); one on the content is a click or
+    // a selection.
+    window.addEventListener(
+      "pointerdown",
+      (event) => {
+        if (event.target === root) reading();
+      },
+      options,
+    );
+    // Before a link's default action and the app's own handlers: whatever
+    // scrolls after a click answers it.
+    window.addEventListener("click", () => placing(true), {
+      capture: true,
+      signal,
+    });
+    window.addEventListener(PAGE_LANDS_EVENT, () => placing(false), { signal });
     window.addEventListener("touchstart", () => (touching = true), options);
     for (const type of ["touchend", "touchcancel"]) {
       window.addEventListener(
