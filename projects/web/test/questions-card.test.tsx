@@ -10,7 +10,7 @@ import { Window as HappyWindow } from "happy-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QuestionsCard } from "../src/components/timeline/questions-card.tsx";
 import { formatTimelineTime } from "../src/lib/timeline-time.ts";
-import { cmPressKey, cmSetValue } from "./cm.ts";
+import { cmPressKey, cmSetValue, cmView } from "./cm.ts";
 import { FakeResizeObserver, resizePage } from "./fake-resize-observer.ts";
 import { renderWithProviders } from "./render.tsx";
 
@@ -1002,5 +1002,161 @@ describe("QuestionsCard (floating window)", () => {
     expect(stub.posts).toHaveLength(1);
     expect(pip.close).toHaveBeenCalled();
     expect(view.queryByText("Answering in a floating window")).toBeNull();
+  });
+});
+
+describe("QuestionsCard follow-up questions", () => {
+  const yesNo = (after: string) => [
+    { label: `Yes after ${after}` },
+    { label: `No after ${after}` },
+  ];
+  // q2 follows q1 = a, q3 follows q1 = b.
+  const cascade: QuestionsComponent = {
+    type: "questions",
+    questions: [
+      {
+        key: "q1",
+        question: "Which way?",
+        multiple: false,
+        options: [{ label: "Way a" }, { label: "Way b" }, { label: "Way c" }],
+      },
+      {
+        key: "q2",
+        question: "After a?",
+        multiple: false,
+        options: yesNo("a"),
+        when: { key: "q1", selected: [0] },
+      },
+      {
+        key: "q3",
+        question: "After b?",
+        multiple: false,
+        options: yesNo("b"),
+        when: { key: "q1", selected: [1] },
+      },
+    ],
+  };
+
+  it("shows a follow-up while its option is picked, and keeps its draft", async () => {
+    stubFetch(null, cascade);
+    const view = renderCard(cascade);
+    await view.findByText("awaiting answer");
+    expect(view.getByText("Which way?")).toBeTruthy();
+    expect(view.queryByText("After a?")).toBeNull();
+    expect(view.queryByText("After b?")).toBeNull();
+
+    fireEvent.click(optionButton(view, "Way a"));
+    await view.findByText("After a?");
+    expect(view.queryByText("After b?")).toBeNull();
+    fireEvent.click(optionButton(view, "Yes after a"));
+    // q1's Other box is editor 0, q2's is editor 1.
+    cmSetValue(view.container, "a note on a", 1);
+
+    fireEvent.click(optionButton(view, "Way b"));
+    await view.findByText("After b?");
+    expect(view.queryByText("After a?")).toBeNull();
+
+    fireEvent.click(optionButton(view, "Way a"));
+    await view.findByText("After a?");
+    expect(optionButton(view, "Yes after a").getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+    expect(cmView(view.container, 1).state.doc.toString()).toBe("a note on a");
+  });
+
+  it("gates and submits only the questions the picks ask", async () => {
+    const posts = stubFetch(null, cascade);
+    const view = renderCard(cascade);
+    await view.findByText("awaiting answer");
+
+    fireEvent.click(optionButton(view, "Way a"));
+    fireEvent.click(await view.findByText("Yes after a"));
+    fireEvent.click(optionButton(view, "Way b"));
+    await view.findByText("After b?");
+    // q2 is answered, but it is no longer asked; q3 is.
+    expect(submitButton(view).textContent).toBe("Answer all to submit");
+
+    fireEvent.click(optionButton(view, "No after b"));
+    const submit = await view.findByText("Submit answers");
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]).toEqual({
+      answers: [
+        { key: "q1", selected: [1], declined: false },
+        { key: "q3", selected: [1], declined: false },
+      ],
+    });
+  });
+
+  it("skips and declines only the asked questions left open", async () => {
+    const posts = stubFetch(null, cascade);
+    const view = renderCard(cascade);
+    await view.findByText("awaiting answer");
+
+    fireEvent.click(optionButton(view, "Way a"));
+    await view.findByText("After a?");
+    fireEvent.click(view.getByRole("button", { name: "Skip unanswered…" }));
+    expect(
+      await view.findByText(
+        /This will decline to answer the 1 unanswered question for you/,
+      ),
+    ).toBeTruthy();
+    fireEvent.click(view.getByRole("button", { name: "Submit anyway" }));
+
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]).toEqual({
+      answers: [
+        { key: "q1", selected: [0], declined: false },
+        { key: "q2", selected: [], declined: true },
+      ],
+    });
+  });
+
+  it("settled and unknown cards show only the questions that were asked", async () => {
+    stubFetch(
+      {
+        event_id: 7,
+        actor: user,
+        created_at: "2026-08-12T01:00:00Z",
+        answers: [
+          {
+            key: "q1",
+            selected: [{ index: 1, label: "Way b" }],
+            other: null,
+            declined: false,
+          },
+          {
+            key: "q3",
+            selected: [{ index: 0, label: "Yes after b" }],
+            other: null,
+            declined: false,
+          },
+        ],
+      },
+      cascade,
+    );
+    const answeredView = renderCard(cascade);
+    await answeredView.findByText("answered by");
+    expect(answeredView.getByText("After b?")).toBeTruthy();
+    expect(answeredView.queryByText("After a?")).toBeNull();
+    answeredView.unmount();
+    vi.unstubAllGlobals();
+
+    stubFetch(null, cascade, withdrawal);
+    const withdrawnView = renderCard(cascade);
+    await withdrawnView.findByText("withdrawn by");
+    expect(withdrawnView.getByText("Which way?")).toBeTruthy();
+    expect(withdrawnView.queryByText("After a?")).toBeNull();
+    expect(withdrawnView.queryByText("After b?")).toBeNull();
+    withdrawnView.unmount();
+    vi.unstubAllGlobals();
+
+    deferredFetch(cascade);
+    const unknownView = renderCard(cascade);
+    await unknownView.findByText("Which way?");
+    expect(unknownView.queryByText("awaiting answer")).toBeNull();
+    expect(unknownView.queryByText("After a?")).toBeNull();
+    expect(unknownView.queryByText("After b?")).toBeNull();
   });
 });

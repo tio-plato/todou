@@ -8,7 +8,7 @@ import type {
   QuestionSettlement,
   QuestionsComponent,
 } from "@todou/shared";
-import { answerRecordOf } from "@todou/shared";
+import { answerRecordOf, shownQuestions } from "@todou/shared";
 import {
   CheckIcon,
   ChevronDownIcon,
@@ -44,6 +44,7 @@ import { holdRevealed, revealBlock, useOwnHold } from "@/lib/scroll-insets.ts";
 import { formatTimelineTime } from "@/lib/timeline-time.ts";
 import { useDirtySource } from "@/lib/unsaved-guard.ts";
 import { documentPip, useDocumentPip } from "@/lib/use-document-pip.ts";
+import { cn } from "@/lib/utils.ts";
 
 type Draft = { selected: Set<number>; other: string; declined: boolean };
 
@@ -57,12 +58,61 @@ const resolved = (d: Draft): boolean =>
   d.selected.size > 0 || d.other.trim() !== "" || d.declined;
 
 /**
+ * The questions the drafts ask. Every question keeps a draft, hidden
+ * or not, so a follow-up that comes back brings its picks and its Other
+ * text back with it; `shownQuestions` asks whether its question is asked,
+ * so a hidden question's leftover pick shows nothing.
+ */
+const askedByDrafts = (
+  drafts: Record<string, Draft>,
+  component: QuestionsComponent,
+): Question[] =>
+  shownQuestions(
+    component.questions,
+    new Map(
+      component.questions.map((q) => [
+        q.key,
+        [...(drafts[q.key] ?? emptyDraft()).selected],
+      ]),
+    ),
+  );
+
+/**
+ * What a settled card shows: the questions its answer asked, as whoever
+ * answered saw them — a branch not taken leaves no trace. A withdrawn card
+ * shows what was asked before any answer.
+ */
+const askedBySettlement = (
+  component: QuestionsComponent,
+  settlement: QuestionSettlement,
+): Question[] =>
+  shownQuestions(
+    component.questions,
+    new Map(
+      settlement.kind === "answered"
+        ? settlement.answer.answers.map((a) => [
+            a.key,
+            a.selected.map((s) => s.index),
+          ])
+        : [],
+    ),
+  );
+
+/** A follow-up sits one step in, behind a bar; a chain does not step further. */
+const followUpFrame = (question: Question): string =>
+  question.when === undefined ? "" : "ml-2 border-l-2 pl-3";
+
+/**
  * The submission's payload, assembled at the `mutate()` call rather than
  * by the mutation itself. `drafts` is component state and does not reset
  * when the card under it is swapped, while `component` is a prop that
  * does — read together at the wrong moment they pair the new card's keys
  * with empty answers, and a sealed target would deliver that to the old
  * card accurately.
+ *
+ * Only the questions the drafts ask are sent: a hidden follow-up's
+ * draft stays behind, since the server refuses an answer to a question the
+ * picks do not ask.
  *
  * `force` (T-517) sends each still-unresolved question as a decline — the
  * answer hiding the comment would give it. Only genuinely unanswered
@@ -76,7 +126,7 @@ const answersOf = (
   component: QuestionsComponent,
   force = false,
 ): QuestionAnswerInput[] =>
-  component.questions.map((q) => {
+  askedByDrafts(drafts, component).map((q) => {
     const d = drafts[q.key] ?? emptyDraft();
     if (force && !resolved(d)) {
       return { key: q.key, selected: [], declined: true };
@@ -219,7 +269,8 @@ export function QuestionsCard({
   );
 
   if (settlement) {
-    const hasDescriptions = component.questions.some((q) =>
+    const questions = askedBySettlement(component, settlement);
+    const hasDescriptions = questions.some((q) =>
       q.options.some((o) => o.description !== undefined),
     );
     return (
@@ -227,7 +278,7 @@ export function QuestionsCard({
         <SettledCard
           slug={slug}
           issueNumber={issueNumber}
-          component={component}
+          questions={questions}
           settlement={settlement}
           hasDescriptions={hasDescriptions}
         />
@@ -252,11 +303,13 @@ export function QuestionsCard({
   // Neutral: the verdict is not established. The answered card's grey frame
   // and its read-only rows say exactly that much and nothing more; the
   // footer slot — the one cell whose content the verdict decides — waits
-  // as a skeleton, or names the failure when /questions failed.
+  // as a skeleton, or names the failure when /questions failed. Only what is
+  // asked before any answer: the form and the answered card both start
+  // there, so no follow-up flashes up only to go again.
   return (
     <div ref={quotableRef} data-quote-questions="">
       <div className="mt-1 space-y-3 rounded-md border bg-muted/20 p-3">
-        {component.questions.map((q) => (
+        {shownQuestions(component.questions, new Map()).map((q) => (
           <AnsweredQuestion
             key={q.key}
             slug={slug}
@@ -289,13 +342,14 @@ export function QuestionsCard({
 function SettledCard({
   slug,
   issueNumber,
-  component,
+  questions,
   settlement,
   hasDescriptions,
 }: {
   slug: string;
   issueNumber: number;
-  component: QuestionsComponent;
+  /** The questions the settlement asked (`askedBySettlement`). */
+  questions: Question[];
   settlement: QuestionSettlement;
   hasDescriptions: boolean;
 }) {
@@ -303,7 +357,7 @@ function SettledCard({
   const answer = settlement.kind === "answered" ? settlement.answer : null;
   return (
     <div className="mt-1 space-y-3 rounded-md border bg-muted/20 p-3">
-      {component.questions.map((q) => (
+      {questions.map((q) => (
         <AnsweredQuestion
           key={q.key}
           slug={slug}
@@ -382,12 +436,11 @@ function AnswerForm({
   const [drafts, setDrafts] = useState<Record<string, Draft>>(() =>
     Object.fromEntries(component.questions.map((q) => [q.key, emptyDraft()])),
   );
-  // Options and "decline" are not text and have no editor of their own, so
-  // nothing else on this card would notice them going up in smoke. The Other
-  // box is a MarkdownEditor and registers itself.
-  useDirtySource(() =>
-    Object.values(drafts).some((d) => d.selected.size > 0 || d.declined),
-  );
+  // The one check for the whole form, Other text included: a follow-up
+  // hidden again unmounts its Other editor but leaves its text in `drafts`,
+  // and an editor remounted with that text would compare against it. The
+  // editors leave their own checks to this one (`ownerManagedDirty`).
+  useDirtySource(() => Object.values(drafts).some(resolved));
   const queryClient = useQueryClient();
   const target: Target = { slug, issueNumber, commentId };
   const submit = useMutation({
@@ -422,12 +475,13 @@ function AnswerForm({
       [key]: update(prev[key] ?? emptyDraft()),
     }));
 
-  const complete = component.questions.every((q) =>
-    resolved(drafts[q.key] ?? emptyDraft()),
-  );
+  // Gate, counts and the first open question all read the asked questions
+  // only: a hidden follow-up neither holds the form back nor gets declined.
+  const asked = askedByDrafts(drafts, component);
+  const complete = asked.every((q) => resolved(drafts[q.key] ?? emptyDraft()));
   const blocked = !complete || submit.isPending;
   const [forcing, setForcing] = useState(false);
-  const openCount = component.questions.filter(
+  const openCount = asked.filter(
     (q) => !resolved(drafts[q.key] ?? emptyDraft()),
   ).length;
 
@@ -447,9 +501,7 @@ function AnswerForm({
   // answered state.
   const pip = useDocumentPip();
   const firstOpen = () => {
-    const q = component.questions.find(
-      (x) => !resolved(drafts[x.key] ?? emptyDraft()),
-    );
+    const q = asked.find((x) => !resolved(drafts[x.key] ?? emptyDraft()));
     const row =
       q &&
       root.current?.querySelector<HTMLElement>(
@@ -497,7 +549,7 @@ function AnswerForm({
           </Button>
         )}
       </div>
-      {component.questions.map((q) => (
+      {asked.map((q) => (
         <QuestionForm
           key={q.key}
           slug={slug}
@@ -644,120 +696,125 @@ function QuestionForm({
   const OffIcon = question.multiple ? SquareIcon : CircleIcon;
   const refCompletion = useRefCompletion(slug);
 
+  // The frame wraps the fieldset rather than styling it: a fieldset's
+  // border starts at its legend's middle, not at the top of the question.
   return (
-    <fieldset className="space-y-1.5" data-question-key={question.key}>
-      <legend className="w-full space-y-1">
-        {question.header !== undefined && (
+    <div className={followUpFrame(question)}>
+      <fieldset className="space-y-1.5" data-question-key={question.key}>
+        <legend className="w-full space-y-1">
+          {question.header !== undefined && (
+            <InlineMarkdown
+              slug={slug}
+              issueNumber={issueNumber}
+              part={{ kind: "header", question: question.key }}
+              className="text-xs font-semibold text-muted-foreground uppercase"
+            >
+              {question.header}
+            </InlineMarkdown>
+          )}
           <InlineMarkdown
             slug={slug}
             issueNumber={issueNumber}
-            part={{ kind: "header", question: question.key }}
-            className="text-xs font-semibold text-muted-foreground uppercase"
+            part={{ kind: "prompt", question: question.key }}
           >
-            {question.header}
+            {question.question}
           </InlineMarkdown>
-        )}
-        <InlineMarkdown
-          slug={slug}
-          issueNumber={issueNumber}
-          part={{ kind: "prompt", question: question.key }}
-        >
-          {question.question}
-        </InlineMarkdown>
-      </legend>
-      <div className="space-y-1">
-        {question.options.map((option, index) => {
-          const active = draft.selected.has(index);
-          return (
-            <button
-              key={option.label}
-              type="button"
-              disabled={disabled}
-              onClick={(e) => {
-                if (selectingInside(e.currentTarget)) return;
-                toggleOption(index);
-              }}
-              aria-pressed={active}
-              className={`flex w-full items-start gap-2 rounded-md border px-2 py-1.5 text-left text-sm transition-colors select-text ${
-                active
-                  ? "border-primary bg-primary/10 enabled:hover:bg-primary/20"
-                  : "border-transparent enabled:hover:border-foreground/40 enabled:hover:bg-foreground/6"
-              }`}
-            >
-              <span className="mt-0.5 shrink-0 text-muted-foreground">
-                {active ? (
-                  <OnIcon className="size-4 text-primary" />
-                ) : (
-                  <OffIcon className="size-4" />
-                )}
-              </span>
-              <span className="min-w-0 flex-1 space-y-0.5">
-                <InlineMarkdown
-                  slug={slug}
-                  issueNumber={issueNumber}
-                  part={{
-                    kind: "label",
-                    question: question.key,
-                    option: index,
-                  }}
-                >
-                  {option.label}
-                </InlineMarkdown>
-                {option.description !== undefined && (
+        </legend>
+        <div className="space-y-1">
+          {question.options.map((option, index) => {
+            const active = draft.selected.has(index);
+            return (
+              <button
+                key={option.label}
+                type="button"
+                disabled={disabled}
+                onClick={(e) => {
+                  if (selectingInside(e.currentTarget)) return;
+                  toggleOption(index);
+                }}
+                aria-pressed={active}
+                className={`flex w-full items-start gap-2 rounded-md border px-2 py-1.5 text-left text-sm transition-colors select-text ${
+                  active
+                    ? "border-primary bg-primary/10 enabled:hover:bg-primary/20"
+                    : "border-transparent enabled:hover:border-foreground/40 enabled:hover:bg-foreground/6"
+                }`}
+              >
+                <span className="mt-0.5 shrink-0 text-muted-foreground">
+                  {active ? (
+                    <OnIcon className="size-4 text-primary" />
+                  ) : (
+                    <OffIcon className="size-4" />
+                  )}
+                </span>
+                <span className="min-w-0 flex-1 space-y-0.5">
                   <InlineMarkdown
                     slug={slug}
                     issueNumber={issueNumber}
                     part={{
-                      kind: "description",
+                      kind: "label",
                       question: question.key,
                       option: index,
                     }}
-                    className="text-xs text-muted-foreground"
                   >
-                    {option.description}
+                    {option.label}
                   </InlineMarkdown>
-                )}
-              </span>
-            </button>
-          );
-        })}
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={(e) => {
-            if (selectingInside(e.currentTarget)) return;
-            toggleDecline();
+                  {option.description !== undefined && (
+                    <InlineMarkdown
+                      slug={slug}
+                      issueNumber={issueNumber}
+                      part={{
+                        kind: "description",
+                        question: question.key,
+                        option: index,
+                      }}
+                      className="text-xs text-muted-foreground"
+                    >
+                      {option.description}
+                    </InlineMarkdown>
+                  )}
+                </span>
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={(e) => {
+              if (selectingInside(e.currentTarget)) return;
+              toggleDecline();
+            }}
+            aria-pressed={draft.declined}
+            className={`flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left text-sm transition-colors select-text ${
+              draft.declined
+                ? "border-destructive/60 bg-destructive/10 enabled:hover:bg-destructive/20"
+                : "border-transparent text-muted-foreground enabled:hover:border-foreground/40 enabled:hover:bg-foreground/6"
+            }`}
+          >
+            <CircleSlashIcon
+              className={`size-4 shrink-0 ${draft.declined ? "text-destructive" : ""}`}
+            />
+            Decline to answer
+          </button>
+        </div>
+        <MarkdownEditor
+          initialValue={draft.other}
+          readOnly={disabled}
+          ariaLabel="Other / additional thoughts"
+          onChange={(other) => {
+            onChange((d) => ({ ...d, other }));
           }}
-          aria-pressed={draft.declined}
-          className={`flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left text-sm transition-colors select-text ${
+          placeholder={
             draft.declined
-              ? "border-destructive/60 bg-destructive/10 enabled:hover:bg-destructive/20"
-              : "border-transparent text-muted-foreground enabled:hover:border-foreground/40 enabled:hover:bg-foreground/6"
-          }`}
-        >
-          <CircleSlashIcon
-            className={`size-4 shrink-0 ${draft.declined ? "text-destructive" : ""}`}
-          />
-          Decline to answer
-        </button>
-      </div>
-      <MarkdownEditor
-        initialValue={draft.other}
-        readOnly={disabled}
-        ariaLabel="Other / additional thoughts"
-        onChange={(other) => {
-          onChange((d) => ({ ...d, other }));
-        }}
-        placeholder={
-          draft.declined
-            ? "Why not? (optional, markdown)"
-            : "Other / additional thoughts… (optional, markdown; combines with selections)"
-        }
-        className="min-h-8"
-        extensions={refCompletion}
-        onSubmit={onSubmit}
-      />
-    </fieldset>
+              ? "Why not? (optional, markdown)"
+              : "Other / additional thoughts… (optional, markdown; combines with selections)"
+          }
+          className="min-h-8"
+          extensions={refCompletion}
+          onSubmit={onSubmit}
+          ownerManagedDirty
+        />
+      </fieldset>
+    </div>
   );
 }
 
@@ -784,7 +841,10 @@ function AnsweredQuestion({
 }) {
   const chosen = new Set(record?.selected.map((s) => s.index) ?? []);
   return (
-    <div className="space-y-1.5" data-question-key={question.key}>
+    <div
+      className={cn("space-y-1.5", followUpFrame(question))}
+      data-question-key={question.key}
+    >
       <div className="space-y-1">
         {question.header !== undefined && (
           <InlineMarkdown
