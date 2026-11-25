@@ -1,4 +1,6 @@
 import type { Label } from "@todou/shared";
+import { hexToOklch, toHex, toSrgb } from "@/lib/project-tint.ts";
+import { THEMES, type Theme, type ThemeDef } from "@/lib/theme.ts";
 
 // Canonicalization is the server's rule now (T-136) — re-exported rather
 // than reimplemented so the picker's preview cannot drift from what a
@@ -33,6 +35,25 @@ export const PRESET_COLORS = [
   "#8b5cf6",
   "#ec4899",
 ];
+
+/**
+ * The text colour of a tinted chip: the label's own hue and chroma, its
+ * OKLCH lightness moved to the side of the current theme's own
+ * `labelInkLimit`, with chroma given up where that lightness has no sRGB
+ * colour of the full chroma. A colour already on that side is used as it
+ * is, and one that is not `#rrggbb` too.
+ */
+export function labelInk(color: string, theme: Theme): string {
+  const lch = hexToOklch(color);
+  if (lch === null) return color;
+  const def: ThemeDef = THEMES.find((t) => t.value === theme) ?? THEMES[0];
+  const l =
+    def.kind === "light"
+      ? Math.min(lch.l, def.labelInkLimit)
+      : Math.max(lch.l, def.labelInkLimit);
+  if (l === lch.l) return color;
+  return toHex(toSrgb(l, lch.c, lch.h));
+}
 
 /**
  * Near-duplicate comparison key. Stripping *all* whitespace (not just
