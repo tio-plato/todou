@@ -1864,7 +1864,7 @@ describe("whole-line annotations wash every block they cover", () => {
   });
 });
 
-/** Line breaks from the start of `el`'s block to `node`, `offset`. */
+/** Line breaks from the start of `node`'s block to `node`, `offset`. */
 function breaksBefore(node: Node, offset: number): number {
   const near = node instanceof Element ? node : node.parentElement;
   const block = near?.closest("[data-loc]");
