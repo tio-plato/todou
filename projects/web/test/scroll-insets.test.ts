@@ -206,6 +206,35 @@ describe("useScrollInsets (T-299)", () => {
     expect(insets()).toEqual({ top: "48px", bottom: "0px" });
   });
 
+  it("keeps an overlay's inset while a link in it holds focus", () => {
+    stubHeights();
+    const view = render(createElement(Harness, { composer: "mounted" }));
+    // A clicked link keeps focus, and one that lands the page elsewhere from
+    // a bar dropped out of the padding brings its target up under the bar.
+    const bar = view.container.querySelector('[data-h="40"]');
+    if (bar === null) throw new Error("the harness has no top bar");
+    const link = document.createElement("a");
+    link.href = "#elsewhere";
+    link.textContent = "jump";
+    bar.append(link);
+    link.focus();
+    expect(document.activeElement).toBe(link);
+    expect(insets()).toEqual({ top: "48px", bottom: "93px" });
+  });
+
+  it("drops an overlay's inset while an editable region in it holds focus", () => {
+    stubHeights();
+    const view = render(createElement(Harness, { composer: "mounted" }));
+    // What the composer's editor actually is: CodeMirror's contenteditable,
+    // not a textarea.
+    const editor = document.createElement("div");
+    editor.contentEditable = "true";
+    view.getByLabelText("draft").after(editor);
+    editor.focus();
+    expect(document.activeElement).toBe(editor);
+    expect(insets()).toEqual({ top: "48px", bottom: "0px" });
+  });
+
   it("drops an overlay's inset while focus is inside it (T-519)", () => {
     stubHeights();
     const view = render(createElement(Harness, { composer: "mounted" }));
