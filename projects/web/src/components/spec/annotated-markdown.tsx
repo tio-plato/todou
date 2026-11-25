@@ -53,6 +53,7 @@ import {
   type CodeRowSource,
   codeBodyLines,
   codeRowSource,
+  fenceAt,
   oldCodeRowSource,
 } from "@/lib/code-rows.ts";
 import {
@@ -105,6 +106,7 @@ import {
   buildSegmentIndex,
   offsetAt,
   type SegmentIndex,
+  type SourceFence,
   type TextOrigin,
 } from "@/lib/spec-source-index.ts";
 import { SM_UP, useMediaQuery } from "@/lib/use-media-query.ts";
@@ -197,7 +199,10 @@ function oldRunOf(el: Element): OldRun {
  * marked whole, leaves without a key of its own: the first run of removed
  * text one of its `spans` covers, else the innermost block put back whole
  * on the first of its lines one reaches, else the first code row of the
- * baseline on its lines. Null when none of it was put back.
+ * baseline on its lines, else the first of the `edited` code blocks whose
+ * baseline lines it reaches, for a comparison that drew none of those rows:
+ * both versions of a diagram, or the old diagram beside the current source.
+ * Null when it reaches none of these.
  */
 function baselinePlace(
   annotation: DisplayedAnnotation,
@@ -206,6 +211,7 @@ function baselinePlace(
   runs: OldRun[],
   restored: Array<{ el: Element; start: number; end: number }>,
   rows: () => CodeRowSource[],
+  edited: Array<{ el: Element; start: number; end: number }>,
 ): Element | null {
   const run = runs.find(({ origin, length }) =>
     spans.some((span) => coverageOf(origin, length, span, baseline).length > 0),
@@ -227,8 +233,33 @@ function baselinePlace(
         row.line !== null &&
         row.line >= annotation.start &&
         row.line <= annotation.end,
-    )?.wrapper ?? null
+    )?.wrapper ??
+    edited.find((block) => rangesIntersect(block, annotation))?.el ??
+    null
   );
+}
+
+/**
+ * Each current code block that replaced one of the baseline, with the lines
+ * that one spans there, its fence markers included; `fences` is what
+ * `pairedFences` paired. Only code wrappers ask: a list item or a quote that
+ * a code block opens starts on the same line, and would take the block's
+ * notes away to a chip of its own.
+ */
+function editedFences(
+  blocks: Array<{ el: Element; start: number }>,
+  baseline: SegmentIndex,
+  fences: ReadonlyMap<number, SourceFence>,
+): Array<{ el: Element; start: number; end: number }> {
+  return blocks.flatMap(({ el, start }) => {
+    const old = el.hasAttribute(CODE_CONTENT_START_ATTR)
+      ? fences.get(start)
+      : undefined;
+    const fence = old === undefined ? null : fenceAt(baseline, old.line);
+    return fence === null
+      ? []
+      : [{ el, start: fence.line, end: fence.endLine }];
+  });
 }
 
 /** Where an annotation sits, as displayed on the version being viewed. */
@@ -691,6 +722,8 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     // sharing that block's chip, or on a restored block, a marker or a
     // removed table row, with a chip of its own. One with none of its text
     // put back hangs nowhere.
+    // A code block edited in place holds the notes on its baseline lines
+    // that none of its rows shows, as when it draws two diagrams.
     const holders = [...container.querySelectorAll<HTMLElement>(OLD_HOLDER)];
     const oldGrouped = new Map<number, DisplayedAnnotation[]>();
     if (baselineIndex !== null && baselineAnnotations.length > 0) {
@@ -709,6 +742,10 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         oldRows ??= baselineCodeRows(container);
         return oldRows;
       };
+      const edited =
+        fenceBaselines === undefined
+          ? []
+          : editedFences(blocks, baselineIndex, fenceBaselines);
       for (const annotation of baselineAnnotations) {
         const put = baselinePlace(
           annotation,
@@ -717,6 +754,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
           runs,
           restored,
           rows,
+          edited,
         );
         const holder = put?.closest(`[${SOURCE_LINE_ATTR}], ${OLD_HOLDER}`);
         if (holder == null) continue;
@@ -809,6 +847,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     baselineIndex,
     oldSpans,
     baselineCodeRows,
+    fenceBaselines,
     wide,
   ]);
 
