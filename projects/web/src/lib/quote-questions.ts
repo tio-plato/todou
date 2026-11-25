@@ -1,4 +1,8 @@
-import type { Question, QuestionAnswer } from "@todou/shared";
+import {
+  type Question,
+  type QuestionAnswer,
+  shownQuestions,
+} from "@todou/shared";
 import type { Nodes } from "mdast";
 import { parseMarkdown } from "./markdown-processor.ts";
 
@@ -12,6 +16,7 @@ import { parseMarkdown } from "./markdown-processor.ts";
 /** A comment as a whole quote reads it: its body, then its questions. */
 export type QuotedEntry = {
   body: string;
+  /** Every question of the comment's component, asked or not. */
   questions: readonly Question[] | null;
   answers: readonly QuestionAnswer[] | null;
 };
@@ -106,16 +111,20 @@ function joinBlocks(blocks: readonly string[]): string {
 }
 
 /**
- * The whole entry: its body, then every question with its options, their
+ * The whole entry: its body, then each question the answer asked (with no
+ * answer yet, each one asked before any pick) with its options, their
  * descriptions — shown or not on the card — and the answer where there is
  * one. An entry with no questions quotes its body as it is.
  */
 export function entryQuote(entry: QuotedEntry): string {
   if (entry.questions === null) return entry.body;
   const answers = entry.answers;
+  const picked = new Map(
+    (answers ?? []).map((a) => [a.key, a.selected.map((s) => s.index)]),
+  );
   return joinBlocks([
     entry.body.trimEnd(),
-    ...entry.questions.flatMap((q) =>
+    ...shownQuestions(entry.questions, picked).flatMap((q) =>
       questionBlocks({
         header: q.header ?? "",
         prompt: q.question.trim(),
