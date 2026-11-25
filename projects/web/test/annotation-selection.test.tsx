@@ -3102,6 +3102,26 @@ describe("anchoring a compared document", () => {
     return cut(before.split("\n"), anchor);
   }
 
+  it("takes a swapped picture's comparison whole for an end beside it", async () => {
+    const before = "See ![](https://img.example/a.png)\n\nnext\n";
+    const after = "See ![](https://img.example/b.png)\n\nnext\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      ".media-compare",
+    );
+    const see = textAt(container, "[data-loc]", "See");
+    const next = textAt(container, "[data-loc]", "next");
+    // A triple-click on the first paragraph ends at the start of the next,
+    // and the end moves back to the boundary after the comparison.
+    expect(anchor(ends(see.node, see.at, next.node.parentNode, 0))).toEqual({
+      lineStart: 1,
+      lineEnd: 1,
+      colStart: 1,
+      colEnd: 34,
+    });
+  });
+
   it("anchors a removed word to where it was in the baseline", async () => {
     const before = "Intro.\n\nThe quick brown fox jumps.\n";
     const after = "Intro.\n\nThe quick red fox jumps.\n";

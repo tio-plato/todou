@@ -390,6 +390,7 @@ export function ImageSwapCompare({
   after,
   labels: authored,
   className,
+  sourceSpan,
 }: {
   slug: string;
   issueNumber: number;
@@ -398,6 +399,8 @@ export function ImageSwapCompare({
   /** An author's own names for the sides (T-767), over the page's versions. */
   labels?: { before: string; after: string };
   className?: string;
+  /** The new image's source offsets (`SOURCE_SPAN_ATTR`), for the comparison to wear. */
+  sourceSpan?: string;
 }) {
   const pageLabels = useContext(CompareLabelsContext);
   const labels = authored ?? pageLabels;
@@ -476,6 +479,7 @@ export function ImageSwapCompare({
           </Button>
         }
         className={className}
+        sourceSpan={sourceSpan}
       />
       {viewer === null && (
         <AttachmentViewerDialog
