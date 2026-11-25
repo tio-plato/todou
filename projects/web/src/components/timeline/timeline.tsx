@@ -20,6 +20,7 @@ import {
   useTimelineHead,
   useTimelineTail,
 } from "@/api/timeline.ts";
+import { isPlainLeftClick } from "@/components/issue/attachment-list.tsx";
 import {
   LoadFailure,
   RefreshFailure,
@@ -333,6 +334,75 @@ export function Timeline({
       }),
     [router, scrollToBottom],
   );
+  // Back or Forward to an entry has the browser restore the scroll it was
+  // left at, by the entry's own `scrollRestoration` as it stands then: set
+  // once the card has mounted again, it comes too late. That scroll lands on
+  // a page still short of the units the first pass left unfilled, cut to the
+  // document's end, and the hold lets go of a landing moved off with no
+  // input, so the page stays wherever the fill leaves it. The card places
+  // itself, so the entry it leaves for another page is not restored. A
+  // comment link's push stays on the card, which does not mount again and
+  // leaves the page to the browser, so the entry it leaves is restored, and
+  // Back returns to where the link was pressed. Set from a blocker that
+  // never blocks: the history asks it before each push, while the entry
+  // being left is still the current one. A link the router does not take, a
+  // footnote's or a bare `#anchor`, the browser follows past the blocker: a
+  // plain click on one to another fragment of this page sets the entry from the
+  // document, after the page's own handlers and before the browser follows the
+  // link. A click the router took is left to the blocker, and one with a
+  // modifier opens another tab and moves nothing here; nor does a link to
+  // another query, which loads a new page. Without `enableBeforeUnload: false`
+  // the history takes it for a blocker that wants the browser to confirm every
+  // reload and closing of the tab once the page had a click or a key. A passive
+  // effect, as the list's restore sets the entry in one and hands its value
+  // back in the cleanup: when one commit swaps the two, every cleanup runs
+  // before any set-up, so the page arriving sets it last. On unmount the
+  // current entry is the next page's, which its push copied from the card's, so
+  // it gets the browser's default back rather than the value found on mount,
+  // which, the card having come back by Back, is its own.
+  useEffect(() => {
+    if (!("scrollRestoration" in window.history)) return;
+    window.history.scrollRestoration = "manual";
+    const unblock = router.history.block({
+      enableBeforeUnload: false,
+      blockerFn: ({ currentLocation, nextLocation, action }) => {
+        if (action === "PUSH")
+          window.history.scrollRestoration =
+            nextLocation.pathname === currentLocation.pathname
+              ? "auto"
+              : "manual";
+        return false;
+      },
+    });
+    const onClick = (event: MouseEvent) => {
+      if (
+        event.button !== 0 ||
+        event.defaultPrevented ||
+        !isPlainLeftClick(event)
+      )
+        return;
+      const link =
+        event.target instanceof Element
+          ? event.target.closest("a[href]")
+          : null;
+      if (
+        link instanceof HTMLAnchorElement &&
+        (link.target === "" || link.target === "_self") &&
+        !link.hasAttribute("download") &&
+        link.origin === window.location.origin &&
+        link.pathname === window.location.pathname &&
+        link.search === window.location.search &&
+        link.href.includes("#")
+      )
+        window.history.scrollRestoration = "auto";
+    };
+    document.addEventListener("click", onClick);
+    return () => {
+      document.removeEventListener("click", onClick);
+      unblock();
+      window.history.scrollRestoration = "auto";
+    };
+  }, [router]);
   const questionLanding = useQuestionLanding(slug, issueNumber);
   const timelineReady = tail.isSuccess && (!headEnabled || head.isSuccess);
 

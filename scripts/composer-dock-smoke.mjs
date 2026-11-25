@@ -2,12 +2,13 @@
 /**
  * Real-browser regression for the folded comment composer at the page end
  * (T-532, T-538), for opening a card on the comment box rather than on the
- * page end, the second time from the list too, with its timeline cached, for
- * the scroll-to-bottom button showing on a scroll down and only then, and for
- * the New messages pill staying above whatever floats at the bottom,
- * clickable, however tall the composer grows, and landing on the first comment
- * that arrived, and for following a new comment only from the end of the
- * conversation.
+ * page end, the second time from the list too, with its timeline cached, and
+ * coming back to it with the browser's Back once its placeholders have filled
+ * in, or from a footnote to where it was pressed, for the scroll-to-bottom
+ * button showing on a scroll down and only then, and for the New messages pill
+ * staying above whatever floats at the bottom, clickable, however tall the
+ * composer grows, and landing on the first comment that arrived, and for
+ * following a new comment only from the end of the conversation.
  * Usage: node scripts/composer-dock-smoke.mjs [--keep] [--help]
  * Requires the same installed dependencies, Node 24+, flock and CHROMIUM
  * (default /usr/bin/chromium) as the other browser smokes.
@@ -33,19 +34,21 @@ flip back and forth, must not break the bottom landing on open (T-527), and
 anchors must still land clear of the dock (T-519). Opening the card must put
 the comment box on the viewport's bottom edge, with the phone's sidebar below
 the viewport rather than the box a sidebar's height above it, and so must
-opening it from the list again, with its timeline already cached. On a second,
-long card the scroll-to-bottom button must stay hidden through the landing,
-scrolling up and an anchor jump, show centred above the floating layer on a
-scroll down, hide on a scroll up, land on the box when clicked, take no room
-in the column, drop its slide under reduced motion, and stay hidden in the
-sidebar of a short phone, where a comment arriving shows New messages
-pointing up at it instead. Arriving comments are posted by another account,
-since the reader's own never raise New messages. With the reader scrolled
-away and a comment arriving, the New messages pill must stay above the
-folded dock or Comment button, the opened box, a tall draft and a simulated
-keyboard, and take the click at its centre; with two arriving, it lands on
-the first of them, or on the comment box when they are too short to bring
-the first any higher.
+opening it from the list again, with its timeline already cached, and coming
+back to it with the browser's Back after its placeholders fill in. Back from
+a footnote must return to where it was pressed. On a second, long card the
+scroll-to-bottom button must stay hidden through the landing, scrolling up
+and an anchor jump, show centred above the floating layer on a scroll down,
+hide on a scroll up, land on the box when clicked, take no room in the
+column, drop its slide under reduced motion, and stay hidden in the sidebar
+of a short phone, where a comment arriving shows New messages pointing up at
+it instead. Arriving comments are posted by another account, since the
+reader's own never raise New messages. With the reader scrolled away and a
+comment arriving, the New messages pill must stay above the folded dock or
+Comment button, the opened box, a tall draft and a simulated keyboard, and
+take the click at its centre; with two arriving, it lands on the first of
+them, or on the comment box when they are too short to bring the first any
+higher.
 A comment arriving is followed only from the end of the conversation: a
 reader half a screen up, one the page grew away from with no scroll, one
 sending their own comment from up there, and one moved off the end with no
@@ -143,6 +146,33 @@ async function seed(stack) {
     );
     longIds.push((result.comment ?? result).id);
   }
+  // Its own card as well: a comment whose footnote lies far below its
+  // reference, for a link the browser follows without the router.
+  const notes = await call("POST", `/projects/${slug}/issues`, {
+    title: "Footnote",
+    body: "A card with a footnote.",
+  });
+  const notesIds = [];
+  for (let i = 1; i <= 12; i++) {
+    const body =
+      i === 6
+        ? [
+            "A claim that needs a note[^1].",
+            ...Array.from(
+              { length: 24 },
+              (_, k) =>
+                `Paragraph ${k + 1}. ${"Words to fill the comment out. ".repeat(6)}`,
+            ),
+            "[^1]: The note, far below the claim.",
+          ].join("\n\n")
+        : `Note ${i}\n\n${"A line long enough to wrap. ".repeat(6)}`;
+    const result = await call(
+      "POST",
+      `/projects/${slug}/issues/${notes.number}/comments`,
+      { body },
+    );
+    notesIds.push((result.comment ?? result).id);
+  }
   if (!cookie.includes("="))
     throw new Error("seed did not receive an auth cookie");
   return {
@@ -150,6 +180,10 @@ async function seed(stack) {
     listUrl: `${stack.webUrl}/projects/${slug}`,
     issueUrl: `${stack.webUrl}/projects/${slug}/issues/${issue.number}`,
     ids,
+    footnote: {
+      issueUrl: `${stack.webUrl}/projects/${slug}/issues/${notes.number}`,
+      ids: notesIds,
+    },
     long: {
       issueUrl: `${stack.webUrl}/projects/${slug}/issues/${long.number}`,
       ids: longIds,
@@ -545,9 +579,37 @@ async function anchorCase(context, fixture, index) {
 }
 
 /**
+ * Where the first link to `path` is, unless the page is `path` already: not
+ * the card's own links to itself while it is still leaving.
+ */
+function linkCentre(path) {
+  if (location.pathname === path) return null;
+  const link = [...document.querySelectorAll("a[href]")].find(
+    (a) => a.getAttribute("href") === path,
+  );
+  const r = link?.getBoundingClientRect();
+  return r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
+}
+
+/** Where to press the first link to `path`, once it shows and settles. */
+async function linkTo(page, path) {
+  const deadline = Date.now() + 30_000;
+  while (!(await evaluate(page, linkCentre, path))) {
+    if (Date.now() > deadline) throw new Error(`no link to ${path} showed`);
+    await sleep(200);
+  }
+  // The page settles before the link is where the press goes.
+  await sleep(800);
+  return evaluate(page, linkCentre, path);
+}
+
+/**
  * Opening the card lands on the end of the conversation, not of the document:
  * below it are the shell's footer and, on a phone, the sidebar, which a
  * landing at the document's end put between the box and the viewport's edge.
+ * So does coming back to it with the browser's Back, once the placeholders
+ * above have filled in: the browser restores the scroll it left at, which the
+ * page still short of its content cut to the document's end.
  */
 async function landingCases(context, fixture, dir) {
   const out = [];
@@ -565,6 +627,45 @@ async function landingCases(context, fixture, dir) {
           s.boxShown &&
           (!viewport.mobile || s.asideTop >= s.innerHeight),
         detail: s,
+      });
+      // Off to the list by the card's own link, then Back, with no input.
+      const io = input(page);
+      const list = new URL(fixture.listUrl).pathname;
+      const { x, y } = await linkTo(page, list);
+      if (viewport.mobile) await io.tap(x, y);
+      else await io.click(x, y);
+      let deadline = Date.now() + 30_000;
+      while (!(await evaluate(page, (p) => location.pathname === p, list))) {
+        if (Date.now() > deadline) throw new Error("never reached the list");
+        await sleep(200);
+      }
+      await sleep(1000);
+      await evaluate(page, () => history.back());
+      if (!(await landed(page, fixture)))
+        throw new Error("card never rendered its last comment");
+      deadline = Date.now() + 30_000;
+      while (
+        await evaluate(
+          page,
+          () => document.querySelector("[data-unfilled]") !== null,
+        )
+      ) {
+        if (Date.now() > deadline) throw new Error("card never filled in");
+        await sleep(100);
+      }
+      await sleep(1000);
+      const b = await evaluate(page, readState);
+      // The desktop box floats on the bottom edge anywhere on the page, so
+      // only its slot on screen says the page is at the conversation's end.
+      out.push({
+        name: `landing-${label}-back`,
+        ok:
+          boxAtBottom(b) &&
+          b.boxShown &&
+          (viewport.mobile
+            ? b.asideTop >= b.innerHeight
+            : b.slotTop <= b.innerHeight),
+        detail: b,
       });
     } finally {
       await page.close();
@@ -584,23 +685,7 @@ async function cachedLandingCase(context, fixture, dir) {
   const io = input(page);
   const href = new URL(fixture.issueUrl).pathname;
   const openFromList = async () => {
-    const deadline = Date.now() + 30_000;
-    const centre = (path) => {
-      // Not the card's own links to itself while it is still leaving.
-      if (location.pathname === path) return null;
-      const link = [...document.querySelectorAll("a[href]")].find(
-        (a) => a.getAttribute("href") === path,
-      );
-      const r = link?.getBoundingClientRect();
-      return r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
-    };
-    while (!(await evaluate(page, centre, href))) {
-      if (Date.now() > deadline) throw new Error("list never showed the card");
-      await sleep(200);
-    }
-    // The list settles before the row is where the tap goes.
-    await sleep(800);
-    const { x, y } = await evaluate(page, centre, href);
+    const { x, y } = await linkTo(page, href);
     await io.tap(x, y);
     if (!(await landed(page, fixture)))
       throw new Error("card never rendered its last comment");
@@ -621,6 +706,68 @@ async function cachedLandingCase(context, fixture, dir) {
       name: "landing-phone-cached",
       ok: boxAtBottom(s) && s.boxShown && s.asideTop >= s.innerHeight,
       detail: s,
+    };
+  } finally {
+    await page.close();
+  }
+}
+
+/**
+ * Back from a footnote returns to where the reader pressed it. The footnote's
+ * link is the browser's own, past the router, so the entry it leaves has to
+ * be restored all the same.
+ */
+async function footnoteCase(context, fixture) {
+  const notes = { ...fixture, ...fixture.footnote };
+  const page = await openCard(context, notes, DESKTOP);
+  try {
+    const io = input(page);
+    const deadline = Date.now() + 30_000;
+    while (
+      await evaluate(
+        page,
+        () => document.querySelector("[data-unfilled]") !== null,
+      )
+    ) {
+      if (Date.now() > deadline) throw new Error("card never filled in");
+      await sleep(100);
+    }
+    const reference = () => {
+      const r = document
+        .querySelector("a[data-footnote-ref]")
+        ?.getBoundingClientRect();
+      return r ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
+    };
+    const { height, width } = DESKTOP;
+    for (let i = 0; ; i++) {
+      const at = await evaluate(page, reference);
+      if (at === null) throw new Error("no footnote reference");
+      if (at.y > height * 0.3 && at.y < height * 0.7) break;
+      if (i === 60)
+        throw new Error("footnote reference never reached the middle");
+      await io.wheel(width / 2, height / 2, at.y < height * 0.3 ? -200 : 200);
+      await sleep(120);
+    }
+    await sleep(800);
+    const before = await evaluate(page, () => window.scrollY);
+    const at = await evaluate(page, reference);
+    await io.click(at.x, at.y);
+    await sleep(1500);
+    const read = () => ({ hash: location.hash, scrollY: window.scrollY });
+    const followed = await evaluate(page, read);
+    await io.wheel(width / 2, height / 2, 300);
+    await sleep(800);
+    await evaluate(page, () => history.back());
+    await sleep(3000);
+    const back = await evaluate(page, read);
+    return {
+      name: "footnote-desktop-back",
+      ok:
+        followed.hash !== "" &&
+        followed.scrollY > before + height / 2 &&
+        back.hash === "" &&
+        Math.abs(back.scrollY - before) <= 2,
+      detail: { before, followed, back },
     };
   } finally {
     await page.close();
@@ -1538,6 +1685,7 @@ async function main() {
         await page.close();
       }
       record("landing", await landingCases(context, fixture, stack.dir));
+      record("footnote", [await footnoteCase(context, fixture)]);
       const long = { ...fixture, ...fixture.long };
       const jumps = [];
       for (const [viewport, label] of [
