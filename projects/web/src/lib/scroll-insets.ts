@@ -615,7 +615,12 @@ function scrolled(place: ReadingPlace, by: number): ReadingPlace {
  * back. The column counts as well as the page: where the sidebar is the
  * taller column, the page does not grow with the list's.
  *
- * Put back toward the top it had when picked, every time, so
+ * Only what the content did is put back. Whatever scrolled the page since the
+ * owner last knew where it was is the reader's: a fling Firefox and iOS have
+ * applied before its scroll event, a caret CodeMirror revealed in an
+ * animation frame, find in page. So the browser's own scroll anchoring is off
+ * while a unit is kept, or its adjustments would be taken for the reader's
+ * and made twice. Put back toward the top it had when picked, every time, so
  * that a scroll step's rounding never adds up; and at once, while the reader
  * scrolls too, since what they read is what stays put, at the cost of a
  * fling or smooth scroll cut short. Gone, the first unit after it still on
@@ -645,14 +650,21 @@ export function useReadingList(
   const sync = useRef<() => void>(() => {});
 
   useLayoutEffect(() => {
+    const root = document.documentElement;
     let started = false;
     let place: ReadingPlace | null = null;
-    // Where the list's top was when this last knew, and whether the next
-    // scroll event may be the one its own put back made.
+    // Where the page and the list's top were when this last knew, and
+    // whether the next scroll event may be the one its own put back made.
+    let seenY = window.scrollY;
     let seenListTop = 0;
     let shifted = false;
     const keep = (next: ReadingPlace | null) => {
+      if (next === null && place !== null)
+        root.style.removeProperty("overflow-anchor");
+      else if (next !== null && place === null)
+        root.style.setProperty("overflow-anchor", "none");
       place = next;
+      seenY = window.scrollY;
       seenListTop = list.current === null ? 0 : listTop(list.current);
     };
     const repick = () => {
@@ -696,15 +708,19 @@ export function useReadingList(
       if (held !== null) return;
       const own = shifted && ownScroll(window.scrollY);
       shifted = false;
-      if (started && !own) repick();
+      if (own) seenY = window.scrollY;
+      else if (started) repick();
     };
     const putBack = () => {
       const el = list.current;
       if (held !== null || place === null || el === null) return;
       const { locate: find } = latest.current;
-      const kept = place.withList
-        ? scrolled(place, seenListTop - listTop(el))
-        : place;
+      const y = window.scrollY;
+      const kept = scrolled(
+        place,
+        place.withList ? seenListTop - listTop(el) : y - seenY,
+      );
+      seenY = y;
       place = kept;
       let unit = find(el, kept.key);
       let wanted = kept.top;
@@ -721,13 +737,12 @@ export function useReadingList(
       }
       const delta = unit.getBoundingClientRect().top - wanted;
       if (delta !== 0) {
-        const from = window.scrollY;
         window.scrollBy(0, delta);
-        const to = window.scrollY;
-        if (to !== from) {
-          placedAt = to;
+        seenY = window.scrollY;
+        if (seenY !== y) {
+          placedAt = seenY;
           shifted = true;
-          pageShifted(to - from);
+          pageShifted(seenY - y);
         }
       }
       // Its own scroll moved the list's top too, and is no move within it.
