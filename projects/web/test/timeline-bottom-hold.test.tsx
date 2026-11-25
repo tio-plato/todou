@@ -332,7 +332,29 @@ function countShown(view: ReturnType<typeof renderWithProviders>) {
   );
 }
 
+/**
+ * Frames only as the test advances them, from here on, with the clock a glide
+ * reads: the frame callbacks and the placements after them. Not before
+ * the card is open, since the waits for it run on real timers.
+ */
+function framesOnDemand() {
+  vi.useFakeTimers({
+    toFake: [
+      "requestAnimationFrame",
+      "cancelAnimationFrame",
+      "setTimeout",
+      "clearTimeout",
+      "performance",
+    ],
+  });
+  return (ms: number) =>
+    act(() => {
+      vi.advanceTimersByTime(ms);
+    });
+}
+
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   FakeResizeObserver.instances = [];
@@ -885,8 +907,32 @@ describe("landings on the end of the timeline (T-527)", () => {
     await waitFor(() => expect(page.view.queryByText("body 103")).toBeNull());
     // With nothing to count from, no number.
     expect(shownAs(page.view)).toBe("New messages");
+    const run = framesOnDemand();
     clickNewMessages(page.view);
+    run(1000);
     expect(page.bottoms()).toBe(2);
+  });
+
+  it("New messages glides to the first new item, and stops where it lands at once", async () => {
+    const page = await open();
+    await waitFor(() => expect(page.bottoms()).toBe(1));
+    page.readerAt(0);
+    await page.arrive(104);
+    // Three screens and more down the page.
+    placeAt((el) => el.id === "comment-104", { top: 3000, height: 100 });
+    const run = framesOnDemand();
+    const before = page.scrolls();
+    clickNewMessages(page.view);
+    expect(page.scrolls()).toBe(before);
+    expect(page.flashed().map((el) => el.id)).toEqual(["comment-104"]);
+    run(100);
+    const midway = page.scrolledTo() as number;
+    expect(midway).toBeGreaterThan(0);
+    expect(midway).toBeLessThan(3000 - usableViewport().top);
+    run(1000);
+    // Its top under the top overlays, as a landing at once puts it.
+    expect(page.scrolledTo()).toBe(3000 - usableViewport().top);
+    expect(page.bottoms()).toBe(1);
   });
 
   it("New messages, holding the first new item, announces what comes next", async () => {
@@ -1008,12 +1054,34 @@ describe("the scroll-to-bottom button", () => {
     page.reader(page.wheel(100), 100);
     expect(page.shown()).toBe(true);
     const button = page.view.getByRole("button", { name: "Scroll to bottom" });
+    const run = framesOnDemand();
     fireEvent.pointerDown(button);
     fireEvent.click(button);
+    run(1000);
     expect(page.bottoms()).toBe(2);
     resizePage();
     expect(page.bottoms()).toBe(3);
     expect(page.shown()).toBe(false);
+  });
+
+  it("glides to the end when clicked, frame by frame", async () => {
+    const page = await openAway();
+    page.reader(page.wheel(100), 100);
+    const button = page.view.getByRole("button", { name: "Scroll to bottom" });
+    const run = framesOnDemand();
+    const before = page.scrolls();
+    fireEvent.pointerDown(button);
+    fireEvent.click(button);
+    expect(page.scrolls()).toBe(before);
+    run(100);
+    const midway = page.scrolledTo() as number;
+    expect(page.scrolls()).toBeGreaterThan(before + 2);
+    expect(midway).toBeGreaterThan(2100);
+    expect(midway).toBeLessThan(HEIGHT - VIEWPORT);
+    expect(page.bottoms()).toBe(1);
+    run(1000);
+    expect(page.bottoms()).toBe(2);
+    expect(page.scrolledTo()).toBe(HEIGHT - VIEWPORT);
   });
 
   it("hides on a scroll up", async () => {
