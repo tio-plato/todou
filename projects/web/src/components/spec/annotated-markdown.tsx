@@ -740,11 +740,12 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     // first line shows on, where pierre has drawn one, or by the line of text
     // on the page its first character is drawn on; else by the block's top.
     // A patch fence's files scroll in a box of their own, and a chip there
-    // keeps beside that box: no higher than the block's top, and no lower
-    // than a chip's height above the box's foot, where a line below every
-    // row drawn hangs too. Each place is kept under its block's key, and a
-    // row's or a line's under that key and where in the source it starts,
-    // never where on the page, so that a layout moving it keeps its key.
+    // keeps beside that box: no higher than the block's top, and for a row
+    // reaching past the box's foot no lower than a chip's height above it,
+    // where a line below every row drawn hangs too. Each place is kept under
+    // its block's key, and a row's or a line's under that key and where in
+    // the source it starts, never where on the page, so that a layout moving
+    // it keeps its key.
     type Place = {
       key: string;
       /**
@@ -837,7 +838,8 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     };
     /**
      * The first row, in document order, that shows one of an annotation's
-     * `lines` in the code block `wrapper`, placed by `rows`.
+     * `lines` in the code block `wrapper`, placed by `rows`; in a patch fence
+     * too, whose chip `rowLine` keeps beside the box its rows scroll in.
      */
     const rowIn = (
       wrapper: HTMLElement,
