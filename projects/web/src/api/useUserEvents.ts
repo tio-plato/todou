@@ -306,7 +306,12 @@ function entityInvalidations(event: ChangeEvent, slug: string): Invalidation[] {
       // than a name of their own: `ChangeEntity` is a zod enum, so a new
       // value would make a page still open from before a deploy drop the
       // frame it cannot parse.
+      //
+      // The project itself too: a membership change can take it out of the
+      // reader's sight, which its read answering 404 is how an open page
+      // finds out, and it changes the `viewer_role` that read carries.
       return [
+        refetch(["project", slug]),
         refetch(["members", slug]),
         refetch(["access-denials", slug]),
         refetch(["projects"]),
