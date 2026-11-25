@@ -5,6 +5,7 @@ import {
   atConversationEnd,
   blockFor,
   GLIDE_END_EVENT,
+  glideToRevealed,
   glideToY,
   holdRevealed,
   isGliding,
@@ -1227,6 +1228,46 @@ describe("landing on the end of the conversation", () => {
       end.y = 4400;
       resizePage();
       expect(targets.at(-1)).toBe(4400 - VIEWPORT);
+    });
+
+    // WebKit on iOS stops `scrollIntoView` short near the page's end, 34 px
+    // short of where the counter takes the page to rest, as measured on an
+    // iPhone.
+    it.each([
+      ["after a glide", false],
+      ["at once for a reader who asked for less motion", true],
+    ])("ends a reveal %s where the counter takes it to rest", (_, reduce) => {
+      glide();
+      reducedMotion(reduce);
+      page({ y: 4000 });
+      const el = item(3000);
+      el.dataset.h = "80";
+      const rest = restingScrollY({ top: 3000, height: 80 }, usableViewport());
+      vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() =>
+        window.scrollTo(0, rest - 34),
+      );
+      glideToRevealed(el);
+      frames(40);
+      expect(window.scrollY).toBe(rest);
+    });
+
+    // Chromium, Firefox and WebKit on a desktop put the page where the
+    // counter takes it to rest, but for rounding.
+    it("leaves a glided reveal where scrollIntoView puts it within a pixel of the stop", () => {
+      glide();
+      const { targets, moveTo } = page({ y: 4000 });
+      const el = item(3000);
+      el.dataset.h = "80";
+      const rest = restingScrollY({ top: 3000, height: 80 }, usableViewport());
+      vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() =>
+        moveTo(rest - 0.5),
+      );
+      glideToRevealed(el);
+      frames(40);
+      const placed = [...targets];
+      resizePage();
+      expect(window.scrollY).toBe(rest - 0.5);
+      expect(targets).toEqual(placed);
     });
   });
 
