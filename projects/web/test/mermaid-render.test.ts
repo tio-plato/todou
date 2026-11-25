@@ -8,11 +8,20 @@ const seen = vi.hoisted(() => ({
   visibility: "",
   position: "",
   fail: false,
+  checkFails: false,
+  layout: undefined as object | undefined,
 }));
 vi.mock("mermaid", () => ({
   default: {
     initialize: () => {},
     parse: async () => true,
+    mermaidAPI: {
+      getDiagramFromText: async () => {
+        if (seen.checkFails) throw new Error("check failed");
+        const layout = seen.layout;
+        return { db: layout === undefined ? {} : { getData: () => layout } };
+      },
+    },
     render: async (id: string, _source: string, container?: Element) => {
       const scratch = document.createElement("div");
       scratch.id = `d${id}`;
@@ -42,6 +51,8 @@ const PALETTE: DiagramPalette = {
 beforeEach(() => {
   seen.container = undefined;
   seen.fail = false;
+  seen.checkFails = false;
+  seen.layout = undefined;
 });
 
 describe("renderDiagram scratch drawing (T-703)", () => {
@@ -66,5 +77,34 @@ describe("renderDiagram scratch drawing (T-703)", () => {
     expect(result).toEqual({ ok: false, error: "draw failed" });
     expect(seen.container?.isConnected).toBe(false);
     expect(document.querySelector('[id^="dmermaid-"]')).toBeNull();
+  });
+
+  it("reports a failing nesting check as the diagram's error", async () => {
+    seen.checkFails = true;
+    const result = await renderDiagram("flowchart LR\n  A", PALETTE, "serif");
+    expect(result).toEqual({ ok: false, error: "check failed" });
+    expect(document.body.childElementCount).toBe(0);
+  });
+});
+
+describe("renderDiagram nesting check", () => {
+  it("keeps a loop when a parentless node of the same id comes later", async () => {
+    // mermaid lists a class before the namespace it shares an id with only
+    // by chance; a table that also took the namespace's missing parent
+    // would lose the loop and leave the diagram to hang in layout.
+    seen.layout = {
+      nodes: [
+        { id: "A", parentId: "A" },
+        { id: "A", isGroup: true },
+      ],
+      edges: [{ start: "A", end: "B" }],
+    };
+    const result = await renderDiagram("classDiagram\n  A", PALETTE, "serif");
+    expect(result).toEqual({
+      ok: false,
+      error: "Nesting cycle: A inside A (A's block names A).",
+    });
+    expect(seen.container).toBeUndefined();
+    expect(document.body.childElementCount).toBe(0);
   });
 });
