@@ -701,4 +701,167 @@ describe.each(PLACEMENTS)("questions T-19 (%s placement)", (placement) => {
       await expectOpenQuestions(issue.number, 2);
     });
   });
+
+  describe("follow-up questions", () => {
+    const choice = { options: [{ label: "yes" }, { label: "no" }] };
+    // q2 follows q1 = a, q3 follows q1 = b.
+    const CASCADE = [
+      {
+        question: "Which way?",
+        options: [{ label: "a" }, { label: "b" }, { label: "c" }],
+      },
+      {
+        question: "After a?",
+        ...choice,
+        when: { key: "q1", selected: [0] },
+      },
+      {
+        question: "After b?",
+        ...choice,
+        when: { key: "q1", selected: [1] },
+      },
+    ];
+
+    it("rejects a follow-up that names no earlier question, strays from it or picks no option of it", async () => {
+      const issue = await createIssue();
+      const plain = (question: string) => ({ question, ...choice });
+      const cases: Array<{ questions: unknown; wants: string }> = [
+        {
+          questions: [
+            plain("one"),
+            { ...plain("two"), when: { key: "q3", selected: [0] } },
+            plain("three"),
+          ],
+          wants:
+            'question "q2": when.key "q3" names no earlier question of this comment',
+        },
+        {
+          questions: [
+            plain("one"),
+            plain("two"),
+            { ...plain("three"), when: { key: "q1", selected: [0] } },
+          ],
+          wants:
+            'question "q3": a follow-up of "q1" goes right after "q1" or its other follow-ups, not after "q2"',
+        },
+        {
+          questions: [
+            CASCADE[0],
+            { ...plain("two"), when: { key: "q1", selected: [4] } },
+          ],
+          wants:
+            'question "q2": when.selected index 4 is out of range for "q1" (0-2)',
+        },
+        {
+          questions: [
+            CASCADE[0],
+            { ...plain("two"), when: { key: "q1", selected: [] } },
+          ],
+          wants: "when.selected",
+        },
+      ];
+      for (const { questions, wants } of cases) {
+        const res = await ask(issue.number, questions);
+        expect(res.status, wants).toBe(422);
+        expect((await json(res)).error.message).toContain(wants);
+      }
+
+      // A chain and a sibling after it, each right after its own run.
+      const run = await ask(issue.number, [
+        CASCADE[0],
+        { ...plain("two"), when: { key: "q1", selected: [0] } },
+        { ...plain("three"), when: { key: "q2", selected: [1] } },
+        { ...plain("four"), when: { key: "q1", selected: [1, 2] } },
+        plain("five"),
+      ]);
+      expect(run.status).toBe(201);
+      expect(
+        (await json(run)).component.questions.map(
+          (q: Question) => q.when?.key ?? null,
+        ),
+      ).toEqual([null, "q1", "q2", "q1", null]);
+    });
+
+    it("counts only the questions asked before any answer", async () => {
+      const issue = await createIssue();
+      expect((await ask(issue.number, CASCADE)).status).toBe(201);
+      expect((await ask(issue.number)).status).toBe(201);
+      await expectOpenQuestions(issue.number, 1 + 2);
+    });
+
+    it("takes answers to exactly the questions they ask", async () => {
+      const issue = await createIssue();
+      const comment = await json(await ask(issue.number, CASCADE));
+      expect((await ask(issue.number)).status).toBe(201);
+
+      const missing = await answer(issue.number, comment.id, [
+        { key: "q1", selected: [0] },
+      ]);
+      expect(missing.status).toBe(422);
+      expect((await json(missing)).error.message).toContain(
+        "missing answers for: q2 —",
+      );
+
+      const stray = await answer(issue.number, comment.id, [
+        { key: "q1", selected: [0] },
+        { key: "q3", selected: [0] },
+      ]);
+      expect(stray.status).toBe(422);
+      expect((await json(stray)).error.message).toContain(
+        'question "q3" is not asked with these answers: it is asked only when q1 is 2) b',
+      );
+
+      const res = await answer(issue.number, comment.id, [
+        { key: "q2", selected: [1] },
+        { key: "q1", selected: [0] },
+      ]);
+      expect(res.status).toBe(201);
+      expect(
+        (await json(res)).payload.answers.map((a: { key: string }) => a.key),
+      ).toEqual(["q1", "q2"]);
+      // The other comment's two are still waiting.
+      await expectOpenQuestions(issue.number, 2);
+    });
+
+    it("gives back what it counted when withdrawn, deleted or hidden", async () => {
+      const issue = await createIssue();
+      const ids: number[] = [];
+      for (let i = 0; i < 3; i++) {
+        ids.push((await json(await ask(issue.number, CASCADE))).id);
+      }
+      expect((await ask(issue.number)).status).toBe(201);
+      await expectOpenQuestions(issue.number, 3 + 2);
+      const [withdrawn, deleted, hidden] = ids;
+
+      const withdraw = await t.app.request(
+        `/api/projects/${slug}/issues/${issue.number}/comments/${withdrawn}/questions/withdraw`,
+        { method: "POST", headers: headers(), body: "{}" },
+      );
+      expect(withdraw.status).toBe(200);
+      await expectOpenQuestions(issue.number, 2 + 2);
+
+      const del = await t.app.request(
+        `/api/projects/${slug}/issues/${issue.number}/comments/${deleted}`,
+        { method: "DELETE", headers: { cookie } },
+      );
+      expect(del.status).toBe(204);
+      await expectOpenQuestions(issue.number, 1 + 2);
+
+      const hide = await t.app.request(
+        `/api/projects/${slug}/issues/${issue.number}/comments/hide`,
+        {
+          method: "POST",
+          headers: headers(),
+          body: JSON.stringify({ hidden: true, comment_ids: [hidden] }),
+        },
+      );
+      expect(hide.status).toBe(200);
+      const status = await expectOpenQuestions(issue.number, 2);
+      expect(
+        status.items.find(
+          (item: { comment_id: number }) => item.comment_id === hidden,
+        ).answer.answers,
+      ).toEqual([{ key: "q1", selected: [], other: null, declined: true }]);
+    });
+  });
 });

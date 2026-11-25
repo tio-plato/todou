@@ -24,11 +24,24 @@ export const QuestionOption = z.strictObject({
 });
 export type QuestionOption = z.infer<typeof QuestionOption>;
 
+/** When a follow-up is asked: an earlier question picked any of these options. */
+export const QuestionCondition = z.strictObject({
+  key: QuestionKey,
+  /** 0-based option indexes of that question, as in an answer's `selected`. */
+  selected: z.array(z.number().int().nonnegative()).min(1).max(12),
+});
+export type QuestionCondition = z.infer<typeof QuestionCondition>;
+
 const questionShape = {
   header: z.string().min(1).max(200).optional(),
   /** Markdown. */
   question: z.string().min(1).max(8000),
   options: z.array(QuestionOption).min(2).max(12),
+  /**
+   * Absent: always asked. Present: a follow-up, asked only when the earlier
+   * question it names is asked and picked one of these options.
+   */
+  when: QuestionCondition.optional(),
 };
 
 /** Input form: key optional (the server fills q1…qN), multiple defaults. */
@@ -183,8 +196,9 @@ export type IssueQuestionsItem = z.infer<typeof IssueQuestionsItem>;
 export const IssueQuestions = z.object({
   items: z.array(IssueQuestionsItem),
   /**
-   * The question count of the items whose `answer` and `withdrawal` are both
-   * null — matches `issues.open_questions` (T-46).
+   * Over the items whose `answer` and `withdrawal` are both null, the
+   * questions each asks before any answer, follow-ups left out —
+   * matches `issues.open_questions` (T-46).
    */
   open: z.number().int().nonnegative(),
 });
