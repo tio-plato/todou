@@ -227,25 +227,35 @@ function firstDrawn(el: Element): DOMRect | null {
 }
 
 /**
- * The box a text block's first line is measured by: that of `opening`, its
- * first character, or of the first thing one of its columns draws, where
- * that is drawn higher. The first character need not be on the first line:
- * a comparison puts back before it what the source no longer holds, a
+ * How a text block's first line is measured. `top` is the box of `opening`,
+ * its first character, or of the first thing one of its columns draws,
+ * where that is drawn higher. The first character need not be on the first
+ * line: a comparison puts back before it what the source no longer holds, a
  * swapped picture's old half or removed words, which a narrow screen can
  * spread over a line or more; and a table row's cells are centred, so a
  * short first cell starts below a long one's first line. Each cell of a row
  * is a column, any other block one. Only higher: on the line they share,
  * the first character keeps its place, a hair above the old picture beside
  * it, and so does a comparison opening a block, which draws inside itself.
+ * `line` is the height of the shortest of those boxes, which half a line is
+ * half of: a picture is no line of words, and where a row's cell holds
+ * words beside a taller picture in another, half the picture would take
+ * the words' first lines for the row's first.
  */
-function firstLine(el: Element, opening: Range): DOMRect {
+function firstLine(
+  el: Element,
+  opening: Range,
+): { top: DOMRect; line: number } {
   let top = opening.getBoundingClientRect();
+  let line = top.height;
   const columns = el.tagName === "TR" ? [...el.children] : [el];
   for (const column of columns) {
     const box = firstDrawn(column);
-    if (box !== null && box.top < top.top) top = box;
+    if (box === null) continue;
+    if (box.top < top.top) top = box;
+    if (line === 0 || box.height < line) line = box.height;
   }
-  return top;
+  return { top, line };
 }
 
 /** One of pierre's rows, and where it sits in the source. */
@@ -856,12 +866,16 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
               line !== null && line >= lines.start && line <= lines.end,
           ) ?? null);
     // Each text block lined up once a layout, and only where asked, with
-    // the box `firstLine` measures its first line by, which its later lines
-    // are measured from. Null where it does not line up, or nothing has a
-    // box.
+    // what `firstLine` measures its first line by: the box its later lines
+    // are measured from, and the height half a line is half of. Null where
+    // it does not line up, or nothing has a box.
     const texts = new Map<
       Element,
-      { at: (source: number) => Range | null; first: DOMRect } | null
+      {
+        at: (source: number) => Range | null;
+        first: DOMRect;
+        line: number;
+      } | null
     >();
     /**
      * The line of the text block `block` that what `drawn` picks sits on, as
@@ -869,9 +883,10 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
      * `firstLine` measures the block's first line by, so that a chip keeps
      * from its line what the first line's keeps from it. Null on the first
      * line, which the block's own place stands for, and wherever nothing
-     * measures, a shut fold's hidden body included. Less than half a line,
-     * half that box, below it is still the first line: inline code, a
-     * fallback font or an atom's box start a few pixels off the text's.
+     * measures, a shut fold's hidden body included. Less than half a line
+     * below it, half the `line` `firstLine` gives, is still the first line:
+     * inline code, a fallback font or an atom's box start a few pixels off
+     * the text's.
      */
     const textLine = (
       block: { el: HTMLElement; start: number },
@@ -889,11 +904,11 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         const at = rangeAtSource(index, block.el);
         const start = index.lineStarts[block.start - 1];
         const opening = at === null || start === undefined ? null : at(start);
-        const first = opening === null ? null : firstLine(block.el, opening);
+        const measured = opening === null ? null : firstLine(block.el, opening);
         text =
-          at === null || first === null || first.height === 0
+          at === null || measured === null || measured.top.height === 0
             ? null
-            : { at, first };
+            : { at, first: measured.top, line: measured.line };
         texts.set(block.el, text);
       }
       const at = text === null ? null : drawn(text.at);
@@ -905,7 +920,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         return null;
       }
       const below = at.getBoundingClientRect().top - text.first.top;
-      return below < text.first.height / 2
+      return below < text.line / 2
         ? null
         : { key, top: chipTop(containerRect, block.el) + below };
     };
@@ -1133,13 +1148,13 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     }
     const lineOf = new Map<Place, number>();
     for (const [el, group] of byEl) {
-      // Half a line is half the box `firstLine` measures the block's first
-      // line by, as `textLine` takes it for the first line, but never more
-      // than half a chip: a picture on the block's first line is that box,
-      // and half of it would take lines one chip joins for one. None where
+      // Half a line is half the `line` `firstLine` gives, as `textLine`
+      // takes it for the first line, but never more than half a chip: a
+      // picture opening a block with nothing beside it is that line, and
+      // half of it would take lines one chip joins for one. None where
       // nothing lined the block up, so that only places at one height share
       // a line there.
-      const half = Math.min(texts.get(el)?.first.height ?? 0, tall) / 2;
+      const half = Math.min(texts.get(el)?.line ?? 0, tall) / 2;
       let line: number | undefined;
       for (const place of group.sort((a, b) => a.top - b.top)) {
         // From the line's top place, not the last one on it, so that places
