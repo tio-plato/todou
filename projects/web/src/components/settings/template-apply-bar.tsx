@@ -140,14 +140,22 @@ export function ApplyBar({
   }, [moved]);
   // The second press of a double-click on Apply lands where Apply was,
   // which "Delete and apply" may cover once the first press has asked. A
-  // press on it that comes less than a double-click after the last press
-  // on either button confirms nothing; it counts as a press itself, so a
-  // run of them confirms nothing until it pauses.
+  // press on it confirms nothing when it comes less than a double-click
+  // after the last press on either button, or when the browser counts it
+  // as a further click of one, as some do for a slower double-click set
+  // in the system; it counts as a press itself, so a run of them confirms
+  // nothing until it pauses.
   const lastPress = useRef(Number.NEGATIVE_INFINITY);
-  const hasty = ({ timeStamp }: { timeStamp: number }) => {
+  const hasty = ({
+    timeStamp,
+    detail,
+  }: {
+    timeStamp: number;
+    detail: number;
+  }) => {
     const gap = timeStamp - lastPress.current;
     lastPress.current = timeStamp;
-    return gap < DOUBLE_CLICK_MS;
+    return gap < DOUBLE_CLICK_MS || detail > 1;
   };
   const what = [
     statuses.length > 0 &&

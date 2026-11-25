@@ -841,6 +841,31 @@ describe("applying a template", () => {
     await waitFor(() => expect(server.applies()).toHaveLength(1));
   });
 
+  it("confirms nothing from a slow double-click the browser counts as one, and confirms the press after it", async () => {
+    const server = fakeServer();
+    renderPage();
+    await pickKanban();
+    fireEvent.click(
+      box("Delete label kind:docs — comes off 2 issues (1 in the trash)"),
+    );
+    // A double-click slower than 0.5 s that the browser still counts as
+    // one: its second press has detail 2.
+    fireEvent.click(applyButton(), { detail: 1 });
+    const confirm = screen.getByRole("button", {
+      name: "Delete and apply 7 changes",
+    });
+    await wait(600);
+    fireEvent.click(confirm, { detail: 2 });
+    await wait(20);
+    expect(server.applies()).toEqual([]);
+    expect(screen.getByText("This cannot be undone.")).toBeTruthy();
+
+    // A pause, then one press as a mouse sends it: it confirms.
+    await wait(600);
+    fireEvent.click(confirm, { detail: 1 });
+    await waitFor(() => expect(server.applies()).toHaveLength(1));
+  });
+
   it("withdraws the question when a preview read again changes it, and asks again with the new count", async () => {
     const plans = { ...PLANS };
     const server = fakeServer({ plans });
