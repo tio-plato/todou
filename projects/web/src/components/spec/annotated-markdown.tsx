@@ -218,6 +218,11 @@ function chipHeight(wide: boolean, rem: number): number {
  * can put two places a chip's height apart up to 0.012px nearer 65,536px
  * from the window's top. Chromium and WebKit lay out in 64ths of a pixel, so
  * it stays under one: two chips that overlap there by a 64th still join.
+ * They hand positions back as such floats too, which hold every 64th only
+ * within 262,144px of the window's top (in WebKit, of the page's): past it,
+ * two chips that only touch can measure a 64th or more nearer and join. A
+ * hair that wide would part chips that overlap by a 64th anywhere on the
+ * page.
  */
 const HAIR = 0.015;
 
