@@ -63,12 +63,19 @@ EOF
 [{"header": "`--since`", "question": "Should `--since` accept a **timestamp**?",
   "options": [{"label": "Cursor only (Recommended)", "description": "Matches `spec wait`; a timestamp can skip entries."},
               {"label": "Both", "description": "Easier to type by hand."}],
-  "multiple": false}]
+  "multiple": false},
+ {"header": "Format", "question": "Which timestamp format?",
+  "options": [{"label": "RFC 3339 (Recommended)", "description": "What `created_at` already uses."},
+              {"label": "Unix seconds"}],
+  "when": {"key": "q1", "selected": [1]}}]
 EOF2
 )
 ```
 
 - Each question carries your recommendation and why.
+- A follow-up (`when`) is asked only when an earlier question (`key`, auto-keys `q1`… count)
+  picks one of its `selected` options (0-based, as in `--answers`); it goes right after that
+  question or its other follow-ups. Answer only the follow-ups your answers ask.
 - `question wait <n> <id> --forever`; moot → `question withdraw <n> <id> --reason …`.
 
 ## Spec documents
