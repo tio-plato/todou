@@ -253,6 +253,46 @@ describe("question list", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("no unanswered questions");
   });
+
+  it("names the condition a follow-up is asked under", async () => {
+    const options = [{ label: "a" }, { label: "b" }, { label: "c" }];
+    const yesNo = [{ label: "yes" }, { label: "no" }];
+    const cascade = {
+      ...STORED_ITEM,
+      questions: [
+        { key: "q1", question: "Which?", multiple: false, options },
+        {
+          key: "q2",
+          header: "Naming",
+          question: "Called?",
+          multiple: false,
+          options: yesNo,
+          when: { key: "q1", selected: [2, 0] },
+        },
+        {
+          key: "q3",
+          question: "Moved?",
+          multiple: false,
+          options: yesNo,
+          when: { key: "q1", selected: [1] },
+        },
+      ],
+    };
+    const { fetchImpl } = fakeFetch([
+      ["GET", QUESTIONS_PATH, { items: [cascade], open: 1 }],
+    ]);
+    const result = await runCli(["question", "list", "19"], {
+      fetchImpl,
+      env: loggedInEnv("todou"),
+    });
+    expect(result.exitCode).toBe(0);
+    const lines = result.stdout.split("\n").map((line) => line.trim());
+    expect(lines).toContain("[q1] single-select");
+    expect(lines).toContain(
+      "[q2] Naming · single-select · when q1 is 1) a or 3) c",
+    );
+    expect(lines).toContain("[q3] single-select · when q1 is 2) b");
+  });
 });
 
 describe("question wait", () => {

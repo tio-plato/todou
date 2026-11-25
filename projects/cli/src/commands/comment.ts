@@ -67,10 +67,15 @@ export class CommentAddCommand extends ProjectCommand {
 
       \`--questions\` attaches a questions component (T-19): a JSON array of
       \`{question, options: [{label, description?}], multiple?, key?,
-      header?}\`, all text fields markdown. Validation is strict — unknown
-      fields fail with their path named. Readers answer on the issue page
-      (or \`todou question answer\`); block on the reply with
+      header?, when?}\`, all text fields markdown. Validation is strict —
+      unknown fields fail with their path named. Readers answer on the issue
+      page (or \`todou question answer\`); block on the reply with
       \`todou question wait <issue> <commentId>\`.
+
+      \`when: {key, selected}\` makes a follow-up: it is asked only
+      when the earlier question \`key\` (auto-keys \`q1\`… count) picks one
+      of the 0-based option indexes in \`selected\`. A follow-up goes right
+      after its question or that question's other follow-ups.
 
       At most one of \`--body-file\`/\`--questions\` may be \`-\` — stdin is a
       single stream; process substitution (\`<(…)\`) covers the pair.
