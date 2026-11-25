@@ -282,7 +282,7 @@ describe("changed diagrams in a compare view (T-724)", () => {
       within(old).getByText("Parse error on line 2: Expecting 'SQE', got 'PS'"),
     ).toBeTruthy();
     expect(within(old).getByTestId("code").textContent).toContain("旧");
-    expect(selectable(within(old).getByTestId("code"))).toBe(false);
+    expect(selectable(within(old).getByTestId("code"))).toBe(true);
     expect(
       container.querySelector('[data-side="after"] .mermaid-compare-diagram'),
     ).not.toBeNull();

@@ -33,6 +33,22 @@ vi.mock("@pierre/diffs/react", () => ({
   MultiFileDiff: () => null,
 }));
 
+// mermaid cannot lay anything out under happy-dom, so the renderer answers
+// by source, and draws a diagram for any source it was not given.
+const diagrams = vi.hoisted(
+  () => new Map<string, import("../src/lib/mermaid.ts").DiagramResult>(),
+);
+vi.mock("../src/lib/mermaid.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/mermaid.ts")>()),
+  renderDiagram: async (source: string) =>
+    diagrams.get(source) ?? {
+      ok: true,
+      svg: '<svg viewBox="0 0 10 10"></svg>',
+      width: 10,
+      height: 10,
+    },
+}));
+
 /** A stand-in for the browser's `Highlight`: the ranges it was built from. */
 class FakeHighlight {
   ranges: Range[];
@@ -69,6 +85,7 @@ afterEach(() => {
   // Unmounted first, while the API is still there to take the ranges back.
   cleanup();
   vi.unstubAllGlobals();
+  diagrams.clear();
 });
 
 const ITEM: SpecCommentItem = {
@@ -1030,5 +1047,116 @@ describe("the highlight registry", () => {
     } finally {
       clearCodeHighlights(owner);
     }
+  });
+});
+
+/** A mermaid fence on lines 3–7, its two edges on lines 5 and 6. */
+const diagram = (five: string, six: string) =>
+  `Intro.\n\n\`\`\`mermaid\nflowchart LR\n${five}\n${six}\n\`\`\`\n`;
+const FIVE = "  Start[Start here] --> Middle[Middle step]";
+const SIX = "  Middle --> End[End]";
+
+describe("a compared diagram one version of which does not parse", () => {
+  /** Set the body of the fence `diagram(five, six)` not to parse. */
+  const fails = (five: string, six: string) => {
+    diagrams.set(`flowchart LR\n${five}\n${six}`, {
+      ok: false,
+      error: "Parse error on line 3",
+    });
+  };
+
+  /** The source a side that did not parse shows, drawn as pierre would. */
+  async function drawSide(
+    container: Element,
+    side: "before" | "after",
+    rows: string[],
+  ): Promise<ShadowRoot> {
+    const pre = await waitFor(() => {
+      const el = container.querySelector(`[data-side="${side}"] pre`);
+      if (el?.parentElement == null) throw new Error("no source drawn");
+      return el.parentElement;
+    });
+    // happy-dom garbles a bare `-->` in markup, so `>` is escaped.
+    return drawRows(
+      pre,
+      rows
+        .map(
+          (text, i) =>
+            `<div data-line="${i + 1}"><span>${text.replaceAll(">", "&gt;")}</span></div>`,
+        )
+        .join(""),
+    );
+  }
+
+  it("paints a failed baseline's source with the baseline's notes, not the shown version's", async () => {
+    const registry = stubHighlights();
+    const broken = "  Middle --> End[End";
+    fails(FIVE, broken);
+    // v2's line 5, columns 3–19, is "Start[Start here]", which v1's second
+    // row also reads; v1's line 6, columns 14–20, is "End[End".
+    const { view, wrappers } = await renderDocument(
+      diagram(FIVE, SIX),
+      [onLine("comment", 5, 3, 19)],
+      {
+        baselineBody: diagram(FIVE, broken),
+        baselineAnnotations: [onLine("comment", 6, 14, 20)],
+      },
+    );
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    await drawSide(view.container, "before", ["flowchart LR", FIVE, broken]);
+    expect(texts(registry, "spec-comment")).toEqual(["End[End"]);
+    expect(wrapper.classList.contains("spec-code-painted")).toBe(false);
+    // happy-dom's ResizeObserver never fires; a resize lays the chips out.
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
+    const counts = [...view.container.querySelectorAll("button")].flatMap(
+      (button) => {
+        const count = /^(\d+) comment/.exec(
+          button.getAttribute("aria-label") ?? "",
+        )?.[1];
+        return count === undefined ? [] : [Number(count)];
+      },
+    );
+    expect(counts.reduce((sum, n) => sum + n, 0)).toBe(2);
+  });
+
+  it("keeps the shown version's whole-line notes off a failed baseline's rows", async () => {
+    stubHighlights();
+    // Line 5 reads otherwise in v1, which does not parse.
+    const differs = "  Start[Start there] --> Middle[Middle step";
+    fails(differs, SIX);
+    const { view, wrappers } = await renderDocument(
+      diagram(FIVE, SIX),
+      [wholeLines("comment", 5, 5)],
+      { baselineBody: diagram(differs, SIX), baselineAnnotations: [] },
+    );
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    const shadow = await drawSide(view.container, "before", [
+      "flowchart LR",
+      differs,
+      SIX,
+    ]);
+    expect(lineMarks(shadow)).toEqual([null, null, null]);
+    expect(wrapper.classList.contains("spec-code-painted")).toBe(false);
+  });
+
+  it("keeps placing a failed shown version's source on its own lines", async () => {
+    const registry = stubHighlights();
+    const broken = "  Start[Start here] --> Middle[Middle step";
+    fails(broken, SIX);
+    // v2's line 5, columns 3–19, is "Start[Start here]".
+    const { view, wrappers } = await renderDocument(
+      diagram(broken, SIX),
+      [onLine("comment", 5, 3, 19)],
+      { baselineBody: diagram(FIVE, SIX), baselineAnnotations: [] },
+    );
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    await drawSide(view.container, "after", ["flowchart LR", broken, SIX]);
+    expect(texts(registry, "spec-comment")).toEqual(["Start[Start here]"]);
+    expect(wrapper.classList.contains("spec-code-painted")).toBe(true);
   });
 });

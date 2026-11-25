@@ -7,7 +7,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import type { IssueListItem, ReferenceConfig } from "@todou/shared";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   attachmentsQuery,
   attachmentTextQuery,
@@ -51,6 +51,22 @@ vi.mock("@pierre/diffs/react", () => ({
     </pre>
   ),
   MultiFileDiff: () => null,
+}));
+
+// mermaid cannot lay anything out under happy-dom, so the renderer answers
+// by source, and draws a diagram for any source it was not given.
+const diagrams = vi.hoisted(
+  () => new Map<string, import("../src/lib/mermaid.ts").DiagramResult>(),
+);
+vi.mock("../src/lib/mermaid.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/mermaid.ts")>()),
+  renderDiagram: async (source: string) =>
+    diagrams.get(source) ?? {
+      ok: true,
+      svg: '<svg viewBox="0 0 10 10"></svg>',
+      width: 10,
+      height: 10,
+    },
 }));
 
 /** Render, select `pick`'s range, and return the floating comment button. */
@@ -3362,6 +3378,41 @@ describe("anchoring a compared document", () => {
     const selected = anchor(ends(row?.firstChild, 6, row?.firstChild, 11));
     expect(selected).toMatchObject({ lineStart: 7, lineEnd: 7 });
     expect(quoted(before, selected)).toBe("b = 2");
+  });
+
+  it("anchors a row of a failed baseline diagram to the baseline's line", async () => {
+    // A mermaid fence on lines 3–7; the baseline's line 6 does not parse, so
+    // the comparison shows the baseline's source.
+    const diagram = (five: string, six: string) =>
+      `Intro.\n\n\`\`\`mermaid\nflowchart LR\n${five}\n${six}\n\`\`\`\n`;
+    const five = "  Start[Start here] --> Middle[Middle step]";
+    const broken = "  Middle --> End[End";
+    diagrams.set(`flowchart LR\n${five}\n${broken}`, {
+      ok: false,
+      error: "Parse error on line 3",
+    });
+    onTestFinished(() => {
+      diagrams.clear();
+    });
+    const before = diagram(five, broken);
+    const after = diagram(five, "  Middle --> End[End]");
+    const { container, anchor } = await compared(
+      before,
+      after,
+      '[data-side="before"] pre',
+    );
+    // happy-dom garbles a bare `-->` in markup, so `>` is escaped.
+    const shadow = drawRows(
+      container.querySelector('[data-side="before"] pre')?.parentElement ??
+        null,
+      `<div data-line="1">flowchart LR</div>
+       <div data-line="2">  Start[Start here] --&gt; Middle[Middle step]</div>
+       <div data-line="3">  Middle --&gt; End[End</div>`,
+    );
+    const row = shadow.querySelector("[data-line='3']");
+    const selected = anchor(ends(row?.firstChild, 13, row?.firstChild, 20));
+    expect(selected).toMatchObject({ lineStart: 6, lineEnd: 6 });
+    expect(quoted(before, selected)).toBe("End[End");
   });
 
   it("anchors a row of a restored code block to the baseline's line", async () => {
