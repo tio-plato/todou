@@ -141,6 +141,7 @@ import {
   shownLines,
 } from "@/lib/diff-shown-lines.ts";
 import {
+  glideToRevealed,
   holdRevealed,
   type RevealMode,
   restingScrollY,
@@ -956,10 +957,7 @@ function SpecViewBody({
     target: HTMLElement,
     mode: RevealMode = "auto",
     highlight = true,
-  ) => {
-    revealBlock(target, { mode, behavior: "smooth", flash: highlight });
-    keepHold(holdRevealed(target, document.body, mode, "smooth"));
-  };
+  ) => keepHold(glideToRevealed(target, { mode, flash: highlight }));
 
   /**
    * False when this file has no further change that way, which is what hands

@@ -87,7 +87,7 @@ import {
   rehypeSourceLines,
   SOURCE_LINE_ATTR,
 } from "@/lib/rehype-source-lines.ts";
-import { holdRevealed, revealBlock, useOwnHold } from "@/lib/scroll-insets.ts";
+import { glideToRevealed, useOwnHold } from "@/lib/scroll-insets.ts";
 import { anchorForSelection, OLD_CODE_BLOCK } from "@/lib/selection-anchor.ts";
 import type { SelectionEndpoints } from "@/lib/selection-endpoints.ts";
 import { buildBaselineTree } from "@/lib/spec-baseline-tree.ts";
@@ -1030,8 +1030,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         oldChipEls.current.get(blockKey) ??
         null;
       if (target === null) return;
-      revealBlock(target, { behavior: "smooth" });
-      keepHold(holdRevealed(target, document.body, "auto", "smooth"));
+      keepHold(glideToRevealed(target));
     },
     [keepHold],
   );
