@@ -820,6 +820,27 @@ describe("applying a template", () => {
     expect(screen.getByText("This cannot be undone.")).toBeTruthy();
   });
 
+  it("confirms a press made after a pause, though the bar drew again just before it", async () => {
+    const server = fakeServer();
+    renderPage();
+    await pickKanban();
+    fireEvent.click(
+      box("Delete label kind:docs — comes off 2 issues (1 in the trash)"),
+    );
+    fireEvent.click(applyButton());
+    const confirm = screen.getByRole("button", {
+      name: "Delete and apply 7 changes",
+    }) as HTMLButtonElement;
+    await wait(600);
+    // The preview is read again with the same counts: the question stays,
+    // drawn again as the read starts and ends.
+    fireEvent(window, new Event("visibilitychange"));
+    await waitFor(() => expect(server.previews()).toHaveLength(2));
+    await waitFor(() => expect(confirm.disabled).toBe(false));
+    fireEvent.click(confirm);
+    await waitFor(() => expect(server.applies()).toHaveLength(1));
+  });
+
   it("withdraws the question when a preview read again changes it, and asks again with the new count", async () => {
     const plans = { ...PLANS };
     const server = fakeServer({ plans });
