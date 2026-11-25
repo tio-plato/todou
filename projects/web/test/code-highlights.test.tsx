@@ -932,6 +932,10 @@ describe("chips on code rows", () => {
     if (wrapper === undefined) throw new Error("no fence");
     const box = await drawInBox(wrapper, patchRows());
     await waitFor(() => expect(chipsOf(view)).toEqual([["260px", 1]]));
+    // Flush with the box's foot at 296, the row is still in it.
+    scroll = 16;
+    await scrollIn(box);
+    expect(chipsOf(view)).toEqual([["276px", 1]]);
     scroll = -40;
     await scrollIn(box);
     expect(chipsOf(view)).toEqual([["220px", 1]]);
@@ -963,6 +967,41 @@ describe("chips on code rows", () => {
         ["274px", 1],
       ]),
     );
+  });
+
+  it("hangs a patch line below the drawn rows by the fold shut over it", async () => {
+    layOutRows(undefined, { box: PATCH_BOX });
+    // In the fold, line 16 is "+new words", after the drawn lines 8, 14
+    // and 15.
+    const body = `<details>\n<summary>More</summary>\n\n${PATCH_FENCE.slice("Intro.\n\n".length)}\n</details>\n`;
+    const { view, wrappers } = await renderDocument(body, [
+      wholeLines("comment", 16, 16),
+    ]);
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    await drawInBox(wrapper, patchRows(3));
+    await waitFor(() => expect(chipsOf(view)).toEqual([["274px", 1]]));
+    const fold = wrapper.closest("details");
+    if (fold === null) throw new Error("no fold");
+    // The reader shuts it: the box measures 0 in a browser, and the chip
+    // goes up to the fold, at 0 here.
+    act(() => {
+      fold.removeAttribute("open");
+      fold.dispatchEvent(new Event("toggle"));
+    });
+    expect(chipsOf(view)).toEqual([["0px", 1]]);
+  });
+
+  it("keeps a plain code block's chip by its row past the foot of a box in it", async () => {
+    layOutRows(undefined, { box: PATCH_BOX });
+    // Line 9 is the block's sixth row, at 300.
+    const { view, wrappers } = await renderDocument(SIX_FENCE, [
+      wholeLines("comment", 9, 9),
+    ]);
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    await drawInBox(wrapper, SIX_ROWS);
+    await waitFor(() => expect(chipsOf(view)).toEqual([["300px", 1]]));
   });
 
   it("keeps a baseline annotation's chip in the box of a restored patch fence", async () => {
