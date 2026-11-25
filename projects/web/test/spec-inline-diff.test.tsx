@@ -1923,6 +1923,37 @@ function placeLines(
   );
 }
 
+/**
+ * Lay a table row out with a picture 146px tall at 100 in one cell and
+ * words in the other, centred beside it: a line of words to each comma, the
+ * first at 119, the next 22px apart, 18px tall; the row at 98.
+ */
+function placeRowBesidePicture() {
+  vi.spyOn(Range.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: Range) {
+      const node = this.startContainer;
+      if (node.childNodes[this.startOffset] instanceof HTMLImageElement) {
+        return DOMRect.fromRect({ y: 100, width: 160, height: 146 });
+      }
+      const cell = (
+        node instanceof Element ? node : node.parentElement
+      )?.closest("td");
+      if (cell == null) return DOMRect.fromRect({ y: 0 });
+      const before = document.createRange();
+      before.setStart(cell, 0);
+      before.setEnd(node, this.startOffset);
+      const line = before.toString().split(",").length - 1;
+      return DOMRect.fromRect({ y: 119 + 22 * line, width: 8, height: 18 });
+    },
+  );
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: HTMLElement) {
+      if (this.hasAttribute("data-loc")) return DOMRect.fromRect({ y: 98 });
+      return DOMRect.fromRect({ y: 0 });
+    },
+  );
+}
+
 /** Each chip's top, top to bottom, once a frame has let them settle. */
 async function chipTops(container: HTMLElement) {
   await settleChips();
@@ -2174,6 +2205,48 @@ describe("chips on a block's later lines", () => {
     ]);
     // "tail" is on the row's third line, 44px below its first.
     expect(await chipTops(container)).toEqual(["98px", "142px"]);
+  });
+
+  it("hangs a row's lines by their words beside a taller picture after them", async () => {
+    placeRowBesidePicture();
+    const table = `| a | b |\n| --- | --- |\n| alpha one, charlie two, delta three | ![](${IMG_A}) |\n`;
+    const charlie = (table.split("\n")[2] ?? "").indexOf("charlie") + 1;
+    const { container } = await renderDiff(table, table, [
+      wholeLines("comment", 3, 3),
+      {
+        key: "c3",
+        kind: "comment",
+        item: comment(3, { line_start: 3, line_end: 3 }),
+        start: 3,
+        end: 3,
+        colStart: charlie,
+        colEnd: charlie + 6,
+      },
+    ]);
+    // "charlie" is on the words' second line, 41px below the picture's top,
+    // which the row's chip hangs 2px above.
+    expect(await chipTops(container)).toEqual(["98px", "139px"]);
+  });
+
+  it("hangs a row's lines by their words beside a taller picture before them", async () => {
+    placeRowBesidePicture();
+    const table = `| a | b |\n| --- | --- |\n| ![](${IMG_A}) | alpha one, charlie two, delta three |\n`;
+    const charlie = (table.split("\n")[2] ?? "").indexOf("charlie") + 1;
+    const { container } = await renderDiff(table, table, [
+      wholeLines("comment", 3, 3),
+      {
+        key: "c3",
+        kind: "comment",
+        item: comment(3, { line_start: 3, line_end: 3 }),
+        start: 3,
+        end: 3,
+        colStart: charlie,
+        colEnd: charlie + 6,
+      },
+    ]);
+    // The picture is the row's first character now; "charlie" is still on
+    // the words' second line.
+    expect(await chipTops(container)).toEqual(["98px", "139px"]);
   });
 
   it("hangs the chip of a line an image opens by that line", async () => {
