@@ -11,6 +11,7 @@ import {
   setCompareMode,
   useCompareMode,
 } from "@/lib/compare-mode.ts";
+import { SOURCE_SPAN_ATTR } from "@/lib/rehype-source-lines.ts";
 import { SEGMENT, SEGMENT_OFF, SEGMENT_ON } from "@/lib/segment-styles.ts";
 import { cn } from "@/lib/utils.ts";
 
@@ -62,6 +63,7 @@ export function MediaCompare({
   modes = ALL_MODES,
   onOpen,
   className,
+  sourceSpan,
 }: {
   before: CompareSide;
   after: CompareSide;
@@ -85,6 +87,11 @@ export function MediaCompare({
    */
   onOpen?: () => void;
   className?: string;
+  /**
+   * The source offsets (`SOURCE_SPAN_ATTR`) of the markdown the comparison
+   * stands for, so that a selection ending beside it takes that whole.
+   */
+  sourceSpan?: string;
 }) {
   const stored = useCompareMode();
   const overlayable =
@@ -110,6 +117,7 @@ export function MediaCompare({
         className,
       )}
       data-backdrop={backdrop}
+      {...{ [SOURCE_SPAN_ATTR]: sourceSpan }}
     >
       <FenceFrame
         text={text}

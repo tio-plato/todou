@@ -508,9 +508,11 @@ export const MarkdownViewWithPlugins = memo(function MarkdownViewWithPlugins({
             ): ReactNode => {
               // Every image carries its span, so that a selection ending
               // beside one takes it whole. A document card wears it on a
-              // wrapper, as a link does; a picture, and whatever stands in
-              // for a deleted one, on its own element, since a swapped pair
-              // has to stay two adjacent siblings (T-223).
+              // wrapper, as a link does; a picture, whatever stands in for a
+              // deleted one and a swapped picture's comparison on their own
+              // element: a swapped pair in a table cell has to stay two
+              // adjacent siblings (T-223), and a comparison its paragraph's
+              // one child.
               const [props, span] = withoutSpan(stamped);
               const sourceSpan = typeof span === "string" ? span : undefined;
               const swapSrc = (props as Record<string, unknown>)[SWAP_SRC_ATTR];
@@ -548,6 +550,7 @@ export const MarkdownViewWithPlugins = memo(function MarkdownViewWithPlugins({
                         : undefined
                     }
                     className={props.className}
+                    sourceSpan={sourceSpan}
                   />
                 );
               }
