@@ -212,7 +212,9 @@ let placedAt = 0;
 /**
  * Whether the scroll that left the page at `y` is the owner's own. Every
  * placement the owner makes is instant, a glide's too, which is placed one
- * frame at a time, so its event finds the page where it put it.
+ * frame at a time, so its event finds the page where it put it. Not always
+ * on iOS, where a glide's can find the page where it put it a frame or two
+ * before; only the hold knows those (see `EARLIER_PLACEMENTS`).
  */
 function ownScroll(y: number): boolean {
   return Math.abs(y - placedAt) <= 1;
@@ -237,6 +239,20 @@ const INPUTS = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
 
 /** How far short of a landing on the bottom still counts as at the end. */
 const END_SLACK = 40;
+
+/**
+ * How many of the places a hold put the page before the last one still count
+ * as its own when a `scroll` finds the page there. WebKit on iOS has the UI
+ * process report the page's position back, the one it has committed: with a
+ * glide placing every frame, the report can arrive once the next placement
+ * is made, and `scrollY` reads for a moment where the glide put the page a
+ * frame before (measured on a real iPhone); the read that stopped a glide
+ * went unrecorded, and may have been two behind. Three leaves room for that,
+ * for a frame more, and for the extra placement a frame of the page growing
+ * mid-glide makes. Few, and near the stop once the glide is over, so that a
+ * page moved with no input lands on one only by chance.
+ */
+const EARLIER_PLACEMENTS = 3;
 
 /**
  * Fired on `window` once a glide has ended, arrived or stopped where it got
@@ -329,14 +345,15 @@ export function endHeldAt(): number | null {
  * the top at a tap on the status bar, or find in page scrolling to a match,
  * sends none of those inputs, and the next image or new item would put the
  * reader back at the end. Off means all of: away from where it last put the
- * page, more than `END_SLACK` from where it would put it now, and further
- * than the page has grown since, or the other way. A page that grows before
- * the hold has put it back can still deliver the `scroll` of the last
- * placement, the target moved and nobody having moved the page. Scroll
- * anchoring moves the page by what grew above what is on screen, which is
- * never more than all that grew, and usually moves the target with it; a
- * target above what grew stays behind, to be put back once the hold hears of
- * the growth.
+ * page and from the few places it put it before that, which WebKit on iOS can
+ * report late (see `EARLIER_PLACEMENTS`), more than `END_SLACK` from where it
+ * would put it now, and further than the page has grown since, or the other
+ * way. A page that grows before the hold has put it back can still deliver the
+ * `scroll` of the last placement, the target moved and nobody having moved the
+ * page. Scroll anchoring moves the page by what grew above what is on screen,
+ * which is never more than all that grew, and usually moves the target with
+ * it; a target above what grew stays behind, to be put back once the hold
+ * hears of the growth.
  *
  * With `target`, the page is also kept from getting shorter than the bottom
  * of the screen where the hold last put it, by a `min-height` on `<html>`,
@@ -363,18 +380,18 @@ export function endHeldAt(): number | null {
  * Given `glide`, where the landing's stop is now (null once its target is
  * gone), the hold first glides the page there from where it stands, in place
  * of the landing's own first placement: one placement a frame, each the
- * owner's own as any other, so nothing that tells its scrolls from others
- * changes. Each is made once the frame is drawn, not in the frame's callback:
- * placed there, iOS draws the sticky header a frame late now and then, the
- * page showing through where it stands. The glide eases out over a time set
- * by its distance, the stop measured again at every placement: what grows
- * above the stop carries the whole path along with it, and the glide arrives
- * on the stop where it is by then. Its progress is time, not frames, so a
- * busy main thread costs frames and never time; one late past its end goes
- * straight to the stop. The page growing meanwhile is put back on the path,
- * not the stop. The time up, the landing places the page itself, where it
- * would have landed at once, and holds it there as ever. However the hold
- * ends, the glide stops where it has got to.
+ * owner's own as any other, and so is iOS's late report of one, known by the
+ * places the hold put the page before its last. Each is made once the frame is
+ * drawn, not in the frame's callback: placed there, iOS draws the sticky
+ * header a frame late now and then, the page showing through where it stands.
+ * The glide eases out over a time set by its distance, the stop measured again
+ * at every placement: what grows above the stop carries the whole path along
+ * with it, and the glide arrives on the stop where it is by then. Its progress
+ * is time, not frames, so a busy main thread costs frames and never time; one
+ * late past its end goes straight to the stop. The page growing meanwhile is
+ * put back on the path, not the stop. The time up, the landing places the page
+ * itself, where it would have landed at once, and holds it there as ever.
+ * However the hold ends, the glide stops where it has got to.
  */
 function hold(
   container: Element,
@@ -431,10 +448,14 @@ function hold(
       if (!gliding) window.dispatchEvent(new Event(GLIDE_END_EVENT));
     });
   };
+  // Where the page was put before `placedAt`, newest first, still its own
+  // in a scroll that reports them late; see `EARLIER_PLACEMENTS`.
+  let earlier: number[] = [];
   // Where the page was put, which its scroll and the growth after it are
   // read against.
   const placed = () => {
     if (held?.release !== release) return;
+    earlier = [placedAt, ...earlier].slice(0, EARLIER_PLACEMENTS);
     placedAt = window.scrollY;
     floor();
     held.placedHeight = document.documentElement.scrollHeight;
@@ -514,6 +535,7 @@ function hold(
         const grown = document.documentElement.scrollHeight - held.placedHeight;
         if (
           !ownScroll(y) &&
+          earlier.every((at) => Math.abs(y - at) > 1) &&
           Math.abs(y - target()) > END_SLACK &&
           (moved < Math.min(0, grown) - 1 || moved > Math.max(0, grown) + 1)
         )
@@ -567,6 +589,12 @@ export function holdRevealed(
  * the glide begins, and hold it there as `holdRevealed` does; see `hold`. A
  * target passed as a function is found anew for every frame of the glide as
  * well. Where it does not glide, it is revealed at once.
+ *
+ * Where `revealBlock` leaves the page more than a pixel off the stop the
+ * glide aims at, `restingScrollY` within the page, every placing goes on to
+ * that stop: near the page's end WebKit on iOS stops `scrollIntoView` short
+ * of it, and the page would jump back from where the glide arrived, the
+ * counter of ↑↓, which reads `restingScrollY` too, a step behind.
  */
 export function glideToRevealed(
   target: HTMLElement | (() => HTMLElement | null),
@@ -583,12 +611,20 @@ export function glideToRevealed(
     const now = find();
     return now === null ? null : onPage(startTarget(now, mode));
   };
+  const reveal = revealing(find, mode);
+  const place = (release: () => void) => {
+    reveal(release);
+    const y = stop();
+    if (y !== null && Math.abs(y - window.scrollY) > 1)
+      window.scrollTo(window.scrollX, y);
+  };
   if (!glides(true, stop)) {
-    revealBlock(el, { mode, flash: highlight });
-    return hold(document.body, revealing(find, mode));
+    if (highlight) flash(el);
+    place(() => {});
+    return hold(document.body, place);
   }
   if (highlight) flash(el);
-  return hold(document.body, revealing(find, mode), false, undefined, stop);
+  return hold(document.body, place, false, undefined, stop);
 }
 
 /** A target as `holdRevealed` takes it, as the function that finds it. */
