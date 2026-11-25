@@ -100,7 +100,15 @@ export function MediaCompare({
 
   return (
     <div
-      className={cn("media-compare select-none", className)}
+      // The pictures are there to be dragged, not selected. A replacement in
+      // their place is text, and stays selectable like any other code: WebKit
+      // paints `::highlight()` only on selectable text (WebKit bug 278455), so
+      // under `select-none` the comment marks on a source diff would not show.
+      className={cn(
+        "media-compare",
+        replacement === undefined && "select-none",
+        className,
+      )}
       data-backdrop={backdrop}
     >
       <FenceFrame

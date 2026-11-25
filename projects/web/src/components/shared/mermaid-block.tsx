@@ -33,6 +33,7 @@ import {
   renderDiagram,
 } from "@/lib/mermaid.ts";
 import { colourChanges } from "@/lib/mermaid-change.ts";
+import { cn } from "@/lib/utils.ts";
 
 // The palette is baked into the SVG at render time, so a theme switch has to
 // re-render. `data-theme` on <html> is the resolved theme — the preference
@@ -276,6 +277,7 @@ export function MermaidCompare({
     result: DiagramResult | null,
     source: string,
     svg: string | undefined,
+    isNew: boolean,
   ): CompareSide =>
     result?.ok === true
       ? {
@@ -296,7 +298,12 @@ export function MermaidCompare({
           size: null,
           failed: true,
           content: (
-            <div className="grid gap-1.5 p-3">
+            // The stage around it is not selectable (see MediaCompare), but a
+            // side that did not draw is text, not a picture. Only the new
+            // version's side is made selectable again: the page places every
+            // line of the block on the new version, so a selection in the old
+            // source would anchor to the wrong line.
+            <div className={cn("grid gap-1.5 p-3", isNew && "select-text")}>
               <p
                 className="truncate text-destructive text-xs"
                 title={result?.ok === false ? result.error : undefined}
@@ -311,8 +318,8 @@ export function MermaidCompare({
   return (
     <div ref={probe}>
       <MediaCompare
-        before={side(labels.before, old, before, marked?.before)}
-        after={side(labels.after, next, after, marked?.after)}
+        before={side(labels.before, old, before, marked?.before, false)}
+        after={side(labels.after, next, after, marked?.after, true)}
         modes={["2up"]}
         onOpen={pair === null ? undefined : open}
         align="center"
