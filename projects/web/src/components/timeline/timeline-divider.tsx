@@ -16,12 +16,16 @@ import { Separator } from "@/components/ui/separator";
  *
  * With nothing hidden it falls back to the plain separator — no leftover
  * decoration on a card that never used the feature.
+ *
+ * Either way it opens the timeline: marked as the list's lead, it is where
+ * the reader's place measures the list from (`listTop`), so its shrinking as
+ * the last hidden comment is revealed moves nothing the reader pressed.
  */
 export function TimelineDivider() {
   const { hiddenCount, revealAll } = useRevealedRuns();
-  if (hiddenCount === 0) return <Separator />;
+  if (hiddenCount === 0) return <Separator data-list-lead="" />;
   return (
-    <TimelineRule data-testid="timeline-divider">
+    <TimelineRule data-testid="timeline-divider" data-list-lead="">
       <span>
         timeline · {hiddenCount} hidden comment{hiddenCount === 1 ? "" : "s"}
       </span>

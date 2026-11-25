@@ -38,6 +38,10 @@ import {
   type RenderUnit,
 } from "@/components/timeline/group-events.ts";
 import { HiddenBlock } from "@/components/timeline/hidden-block.tsx";
+import {
+  locateUnit,
+  pickReadingUnit,
+} from "@/components/timeline/reading-unit.ts";
 import { useRevealedRuns } from "@/components/timeline/revealed-runs.tsx";
 import { SpecVersionCard } from "@/components/timeline/spec-version-card.tsx";
 import {
@@ -46,7 +50,6 @@ import {
 } from "@/components/timeline/tail-slide-anchor.tsx";
 import { TimelineSettlementsProvider } from "@/components/timeline/timeline-answers.tsx";
 import { useBelowViewport } from "@/components/timeline/use-below-viewport.ts";
-import { useKeepReading } from "@/components/timeline/use-keep-reading.ts";
 import { useQuestionLanding } from "@/components/timeline/use-question-landing.ts";
 import { useReaderScroll } from "@/components/timeline/use-reader-scroll.ts";
 import { useTimelineAnchor } from "@/components/timeline/use-timeline-anchor.ts";
@@ -62,6 +65,7 @@ import {
   startTarget,
   usableViewport,
   useOwnHold,
+  useReadingList,
 } from "@/lib/scroll-insets.ts";
 import {
   commentAnchor,
@@ -497,7 +501,6 @@ export function Timeline({
     }, 0);
     return () => clearTimeout(id);
   }, [fillIndex]);
-  useKeepReading(listRef, fillIndex > 0);
   const finishQuestionLanding = (error?: "unavailable" | "stalled") => {
     // revealBlock has already moved the viewport. Do not wait for a native
     // scroll event before restoring the ordinary follow-bottom policy.
@@ -619,6 +622,22 @@ export function Timeline({
     prevAboveCount.current = above.length;
     lastScrollHeight.current = doc.scrollHeight;
   });
+
+  // What the reader is reading stays where it is as the page changes around
+  // it. Ahead of the effects below that measure where things are, so that
+  // they read the page put back.
+  // The seam only where there is a head side above it, its skeletons
+  // standing in for it while it loads.
+  const hasHead = unitsAbove.length > 0 || (headEnabled && head.isPending);
+  const seam =
+    !hasHead || unitsBelow[0] === undefined
+      ? undefined
+      : unitKey(unitsBelow[0]);
+  useReadingList(
+    listRef,
+    (el, at) => pickReadingUnit(el, seam, at),
+    locateUnit,
+  );
 
   // New items at the END while the reader is at the end → keep following.
   // Keyed off identity, not the count: expanding the fold also grows the
