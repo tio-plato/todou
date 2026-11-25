@@ -382,6 +382,35 @@ describe("the surfaces a form loses along with its text", () => {
     await waitFor(() => expect(hasUnsavedWork()).toBe(true));
   });
 
+  it("counts Other text left in a follow-up that is hidden again", async () => {
+    // The editors need the router context the shared shim provides, and the
+    // form must outlive the mount's refetch of its seeded answer state.
+    const client = testQueryClient();
+    client.setQueryDefaults(["questions"], {
+      staleTime: Number.POSITIVE_INFINITY,
+    });
+    client.setQueryData(["questions", "p", 19], { items: [], open: 1 });
+    const view = renderWithProviders(
+      <QuestionsCard
+        slug="p"
+        issueNumber={19}
+        commentId={42}
+        component={followUpComponent}
+      />,
+      client,
+    );
+    await screen.findByText("awaiting answer");
+    fireEvent.click(optionButton("Way a"));
+    await screen.findByText("After a?");
+    cmSetValue(view.container, "a thought on a", 1);
+
+    // Unpicking hides the follow-up, editor and all, and q1 holds nothing.
+    fireEvent.click(optionButton("Way a"));
+    await waitFor(() => expect(screen.queryByText("After a?")).toBeNull());
+
+    expect(hasUnsavedWork()).toBe(true);
+  });
+
   it("counts a staged attachment that was never uploaded", async () => {
     // The editor's own dirty source is off, so only the staged file counts.
     const mounted = mountStaging({ ownerManagedDirty: true });
@@ -533,6 +562,25 @@ const questionComponent: QuestionsComponent = {
       question: "Where does the payload live?",
       multiple: false,
       options: [{ label: "New entity" }, { label: "Inline" }],
+    },
+  ],
+};
+
+const followUpComponent: QuestionsComponent = {
+  type: "questions",
+  questions: [
+    {
+      key: "q1",
+      question: "Which way?",
+      multiple: false,
+      options: [{ label: "Way a" }, { label: "Way b" }],
+    },
+    {
+      key: "q2",
+      question: "After a?",
+      multiple: false,
+      options: [{ label: "Yes after a" }, { label: "No after a" }],
+      when: { key: "q1", selected: [0] },
     },
   ],
 };
