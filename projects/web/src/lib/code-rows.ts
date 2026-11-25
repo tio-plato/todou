@@ -64,7 +64,7 @@ type Fence = SourceFence & { lines: number; endLine: number };
 const FENCES = new WeakMap<SegmentIndex, Map<number, Fence>>();
 
 /** The code block that opens on source line `line`. */
-function fenceAt(index: SegmentIndex, line: number): Fence | null {
+export function fenceAt(index: SegmentIndex, line: number): Fence | null {
   let byLine = FENCES.get(index);
   if (byLine === undefined) {
     byLine = new Map();
