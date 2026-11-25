@@ -354,10 +354,13 @@ export class QuestionAnswerCommand extends ProjectCommand {
   static usage = Command.Usage({
     description: "Answer a question comment (all questions at once, final)",
     details: `
-      Every question of the comment is answered in one atomic submission
+      Every question the comment asks is answered in one atomic submission
       and answers cannot be changed afterwards. \`--answers\` takes a JSON
       array of \`{key, selected, other, declined}\` (selected = 0-based
-      option indexes). For a single-question comment the flags are enough:
+      option indexes). A follow-up (listed with \`when …\`) is answered only
+      when the answers given ask it, and left out otherwise; answering one
+      they do not ask is refused. For a single-question comment the flags
+      are enough:
       \`--select\` takes an option label or 1-based position and repeats
       for multi-select; \`--decline\` refuses to answer (mutually exclusive
       with \`--select\`); \`--other\` adds free text to either.
