@@ -1,5 +1,11 @@
 import type { Label } from "@todou/shared";
-import { hexToOklch, toHex, toSrgb } from "@/lib/project-tint.ts";
+import {
+  hexToOklch,
+  parseHex,
+  relativeLuminance,
+  toHex,
+  toSrgb,
+} from "@/lib/project-tint.ts";
 import { THEMES, type Theme, type ThemeDef } from "@/lib/theme.ts";
 
 // Canonicalization is the server's rule now (T-136) — re-exported rather
@@ -53,6 +59,30 @@ export function labelInk(color: string, theme: Theme): string {
       : Math.max(lch.l, def.labelInkLimit);
   if (l === lch.l) return color;
   return toHex(toSrgb(l, lch.c, lch.h));
+}
+
+/*
+ * A solid chip writes in white on a fill darker than this relative
+ * luminance, in black otherwise. For a given fill APCA rates one of black
+ * and white higher the lighter the fill and the other lower, so taking the
+ * one it reads better is a single luminance boundary. Found outside the
+ * repository with apca-w3 0.1.9: across every third value of each channel,
+ * 0.36 disagrees with APCA on 0.39% of colours, all of them fills where
+ * black and white read within Lc 1.4 of each other, and agrees on every
+ * preset. Only the boundary is kept here, not APCA's code.
+ */
+const SOLID_WHITE_TEXT_BELOW = 0.36;
+
+/**
+ * The text colour of a solid chip: white or black, the same in every theme.
+ * A colour that is not `#rrggbb` is returned as it is.
+ */
+export function solidLabelText(color: string): string {
+  const rgb = parseHex(color);
+  if (rgb === null) return color;
+  return relativeLuminance(rgb) < SOLID_WHITE_TEXT_BELOW
+    ? "#ffffff"
+    : "#000000";
 }
 
 /**
