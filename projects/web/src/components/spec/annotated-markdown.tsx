@@ -198,6 +198,73 @@ function shutAway(node: Node): boolean {
   return fold != null && el?.closest("summary")?.parentElement !== fold;
 }
 
+/**
+ * The box of the first character or picture `el` draws: the first, in
+ * document order, whose box has any height, with whatever a comparison put
+ * back of its baseline and without the annotation UI. Null where it draws
+ * neither. Shadow roots stay shut: a document card opening a block is the
+ * block's first character, which is measured by itself.
+ */
+function firstDrawn(el: Element): DOMRect | null {
+  const walk = document.createTreeWalker(
+    el,
+    NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
+    {
+      acceptNode: (node) =>
+        node instanceof Element && node.matches("[data-annotation-ui]")
+          ? NodeFilter.FILTER_REJECT
+          : NodeFilter.FILTER_ACCEPT,
+    },
+  );
+  const range = document.createRange();
+  for (let node = walk.nextNode(); node !== null; node = walk.nextNode()) {
+    if (node instanceof Element) {
+      if (node.tagName !== "IMG") continue;
+      range.selectNode(node);
+    } else {
+      const at = node.nodeValue?.search(/\S/) ?? -1;
+      if (at < 0) continue;
+      range.setStart(node, at);
+      range.setEnd(node, at + 1);
+    }
+    const box = range.getBoundingClientRect();
+    if (box.height > 0) return box;
+  }
+  return null;
+}
+
+/**
+ * How a text block's first line is measured. `top` is the box of `opening`,
+ * its first character, or of the first thing one of its columns draws,
+ * where that is drawn higher. The first character need not be on the first
+ * line: a comparison puts back before it what the source no longer holds, a
+ * swapped picture's old half or removed words, which a narrow screen can
+ * spread over a line or more; and a table row's cells are centred, so a
+ * short first cell starts below a long one's first line. Each cell of a row
+ * is a column, any other block one. Only higher: on the line they share,
+ * the first character keeps its place, a hair above the old picture beside
+ * it, and so does a comparison opening a block, which draws inside itself.
+ * `line` is the height of the shortest of those boxes, which half a line is
+ * half of: a picture is no line of words, and where a row's cell holds
+ * words beside a taller picture in another, half the picture would take
+ * the words' first lines for the row's first.
+ */
+function firstLine(
+  el: Element,
+  opening: Range,
+): { top: DOMRect; line: number } {
+  let top = opening.getBoundingClientRect();
+  let line = top.height;
+  const columns = el.tagName === "TR" ? [...el.children] : [el];
+  for (const column of columns) {
+    const box = firstDrawn(column);
+    if (box === null) continue;
+    if (box.top < top.top) top = box;
+    if (line === 0 || box.height < line) line = box.height;
+  }
+  return { top, line };
+}
+
 /** One of pierre's rows, and where it sits in the source. */
 type PlacedRow = { row: HTMLElement; source: CodeRowSource };
 
@@ -872,21 +939,27 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
               line !== null && line >= lines.start && line <= lines.end,
           ) ?? null);
     // Each text block lined up once a layout, and only where asked, with
-    // the box of its first character, which its later lines are measured
-    // from. Null where it does not line up, or nothing has a box.
+    // what `firstLine` measures its first line by: the box its later lines
+    // are measured from, and the height half a line is half of. Null where
+    // it does not line up, or nothing has a box.
     const texts = new Map<
       Element,
-      { at: (source: number) => Range | null; first: DOMRect } | null
+      {
+        at: (source: number) => Range | null;
+        first: DOMRect;
+        line: number;
+      } | null
     >();
     /**
      * The line of the text block `block` that what `drawn` picks sits on, as
-     * a place: as far below the block's top as it is below the block's first
-     * character, so that a chip keeps from its line what the first line's
-     * keeps from it. Null on the first line, which the block's own place
-     * stands for, and wherever nothing measures, a shut fold's hidden body
-     * included. Less than half a line below the first character is still the
-     * first line: inline code, a fallback font or an atom's box start a few
-     * pixels off the text's.
+     * a place: as far below the block's top as it is below the box
+     * `firstLine` measures the block's first line by, so that a chip keeps
+     * from its line what the first line's keeps from it. Null on the first
+     * line, which the block's own place stands for, and wherever nothing
+     * measures, a shut fold's hidden body included. Less than half a line
+     * below it, half the `line` `firstLine` gives, is still the first line:
+     * inline code, a fallback font or an atom's box start a few pixels off
+     * the text's.
      */
     const textLine = (
       block: { el: HTMLElement; start: number },
@@ -903,14 +976,12 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       if (text === undefined) {
         const at = rangeAtSource(index, block.el);
         const start = index.lineStarts[block.start - 1];
-        const first =
-          at === null || start === undefined
-            ? null
-            : (at(start)?.getBoundingClientRect() ?? null);
+        const opening = at === null || start === undefined ? null : at(start);
+        const measured = opening === null ? null : firstLine(block.el, opening);
         text =
-          at === null || first === null || first.height === 0
+          at === null || measured === null || measured.top.height === 0
             ? null
-            : { at, first };
+            : { at, first: measured.top, line: measured.line };
         texts.set(block.el, text);
       }
       const at = text === null ? null : drawn(text.at);
@@ -922,7 +993,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         return null;
       }
       const below = at.getBoundingClientRect().top - text.first.top;
-      return below < text.first.height / 2
+      return below < text.line / 2
         ? null
         : { key, top: chipTop(containerRect, block.el) + below };
     };
@@ -1162,12 +1233,13 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     }
     const lineOf = new Map<Place, number>();
     for (const [el, group] of byEl) {
-      // Half a line is half the block's first character, as `textLine`
+      // Half a line is half the `line` `firstLine` gives, as `textLine`
       // takes it for the first line, but never more than half a chip: a
-      // picture opening the block is its first character, and half of it
-      // would take lines one chip joins for one. None where nothing lined
-      // the block up, so that only places at one height share a line there.
-      const half = Math.min(texts.get(el)?.first.height ?? 0, tall) / 2;
+      // picture opening a block with nothing beside it is that line, and
+      // half of it would take lines one chip joins for one. None where
+      // nothing lined the block up, so that only places at one height share
+      // a line there.
+      const half = Math.min(texts.get(el)?.line ?? 0, tall) / 2;
       let line: number | undefined;
       for (const place of group.sort((a, b) => a.top - b.top)) {
         // From the line's top place, not the last one on it, so that places

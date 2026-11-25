@@ -1864,6 +1864,17 @@ describe("whole-line annotations wash every block they cover", () => {
   });
 });
 
+/** Line breaks from the start of `node`'s block to `node`, `offset`. */
+function breaksBefore(node: Node, offset: number): number {
+  const near = node instanceof Element ? node : node.parentElement;
+  const block = near?.closest("[data-loc]");
+  if (block == null) return 0;
+  const before = document.createRange();
+  before.setStart(block, 0);
+  before.setEnd(node, offset);
+  return before.toString().split("\n").length - 1;
+}
+
 /**
  * Lay a document out one source line to a line of text on the page, as far
  * as chips care: a character `k` line breaks into its block sits at
@@ -1881,16 +1892,6 @@ function placeLines(
 ) {
   const lineTop = (k: number) =>
     100 + 22 * k + (k > 0 ? Math.max(0, picture - 22) : 0);
-  /** Line breaks from the start of `el`'s block to `node`, `offset`. */
-  const breaksBefore = (node: Node, offset: number) => {
-    const near = node instanceof Element ? node : node.parentElement;
-    const block = near?.closest("[data-loc]");
-    if (block == null) return 0;
-    const before = document.createRange();
-    before.setStart(block, 0);
-    before.setEnd(node, offset);
-    return before.toString().split("\n").length - 1;
-  };
   vi.spyOn(Range.prototype, "getBoundingClientRect").mockImplementation(
     function (this: Range) {
       const picked = this.startContainer.childNodes[this.startOffset];
@@ -1917,6 +1918,37 @@ function placeLines(
       if (this.hasAttribute("data-loc")) {
         return DOMRect.fromRect({ y: blockTop(this), height: 120 });
       }
+      return DOMRect.fromRect({ y: 0 });
+    },
+  );
+}
+
+/**
+ * Lay a table row out with a picture 146px tall at 100 in one cell and
+ * words in the other, centred beside it: a line of words to each comma, the
+ * first at 119, the next 22px apart, 18px tall; the row at 98.
+ */
+function placeRowBesidePicture() {
+  vi.spyOn(Range.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: Range) {
+      const node = this.startContainer;
+      if (node.childNodes[this.startOffset] instanceof HTMLImageElement) {
+        return DOMRect.fromRect({ y: 100, width: 160, height: 146 });
+      }
+      const cell = (
+        node instanceof Element ? node : node.parentElement
+      )?.closest("td");
+      if (cell == null) return DOMRect.fromRect({ y: 0 });
+      const before = document.createRange();
+      before.setStart(cell, 0);
+      before.setEnd(node, this.startOffset);
+      const line = before.toString().split(",").length - 1;
+      return DOMRect.fromRect({ y: 119 + 22 * line, width: 8, height: 18 });
+    },
+  );
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: HTMLElement) {
+      if (this.hasAttribute("data-loc")) return DOMRect.fromRect({ y: 98 });
       return DOMRect.fromRect({ y: 0 });
     },
   );
@@ -2036,6 +2068,185 @@ describe("chips on a block's later lines", () => {
       [onBaseline("comment", before, 4, "doomed")],
     );
     expect(await chipTops(container)).toEqual(["120px"]);
+  });
+
+  it("measures a cell's later lines from the old picture put back above the new one", async () => {
+    // A phone stacks a cell's swapped pictures: the old one, put back, on
+    // the row's first line, the new one under it, the words under that. The
+    // `<del>` holding the old one starts 4px above it, at its padding.
+    const box = (el: Element | null) =>
+      el?.matches(".spec-img-del")
+        ? DOMRect.fromRect({ y: 96, width: 168, height: 128 })
+        : el?.closest(".spec-img-del") != null
+          ? DOMRect.fromRect({ y: 100, width: 160, height: 120 })
+          : el instanceof HTMLImageElement
+            ? DOMRect.fromRect({ y: 228, width: 160, height: 120 })
+            : null;
+    vi.spyOn(Range.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: Range) {
+        const picked = this.startContainer.childNodes[this.startOffset];
+        return (
+          box(picked instanceof Element ? picked : null) ??
+          DOMRect.fromRect({ y: 356, width: 8, height: 18 })
+        );
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (this.hasAttribute("data-loc")) return DOMRect.fromRect({ y: 98 });
+        return box(this) ?? DOMRect.fromRect({ y: 0 });
+      },
+    );
+    const row = (url: string) =>
+      `| pic | b |\n| --- | --- |\n| ![](${url}) cell words | x |\n`;
+    const after = row(IMG_B);
+    const words = (after.split("\n")[2] ?? "").indexOf("words") + 1;
+    const { container } = await renderDiff(row(IMG_A), after, [
+      wholeLines("comment", 3, 3),
+      {
+        key: "c3",
+        kind: "comment",
+        item: comment(3, { line_start: 3, line_end: 3 }),
+        start: 3,
+        end: 3,
+        colStart: words,
+        colEnd: words + 4,
+      },
+    ]);
+    expect(container.querySelector("td del.spec-img-del")).not.toBeNull();
+    // The row's chip hangs 2px above the old picture, and the words' 2px
+    // above them.
+    expect(await chipTops(container)).toEqual(["98px", "354px"]);
+  });
+
+  it("measures a paragraph's later lines from removed words opening it", async () => {
+    // On a phone the removed words fill the paragraph's first two lines,
+    // and the kept text starts on its third; lines are 22px apart.
+    vi.spyOn(Range.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: Range) {
+        const node = this.startContainer;
+        const near = node instanceof Element ? node : node.parentElement;
+        const y =
+          near?.closest(".spec-del") != null
+            ? 100
+            : 144 + 22 * breaksBefore(node, this.startOffset);
+        return DOMRect.fromRect({ y, width: 8, height: 18 });
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (this.hasAttribute("data-loc")) return DOMRect.fromRect({ y: 98 });
+        return DOMRect.fromRect({ y: 0 });
+      },
+    );
+    const before =
+      "Intro.\n\nAn opening sentence the new version drops, long enough to wrap. The kept line,\nits last line.\n";
+    const after = "Intro.\n\nThe kept line,\nits last line.\n";
+    const { container } = await renderDiff(before, after, [
+      {
+        key: "c4",
+        kind: "comment",
+        item: comment(4, { line_start: 4, line_end: 4 }),
+        start: 4,
+        end: 4,
+        colStart: 1,
+        colEnd: 3,
+      },
+    ]);
+    expect(container.querySelector("p del.spec-del")).not.toBeNull();
+    // "its" is on the paragraph's fourth line, 66px below its first.
+    expect(await chipTops(container)).toEqual(["164px"]);
+  });
+
+  it("measures a row's later lines from the cell whose first line is highest", async () => {
+    // Cells are centred top to bottom: on a phone the long second cell runs
+    // over three lines from the row's first, and the short first cell sits
+    // on its second, 22px lower.
+    vi.spyOn(Range.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: Range) {
+        const node = this.startContainer;
+        const cell = (
+          node instanceof Element ? node : node.parentElement
+        )?.closest("td");
+        if (cell == null) return DOMRect.fromRect({ y: 0 });
+        // The second cell breaks its lines before "tail".
+        const before = document.createRange();
+        before.setStart(cell, 0);
+        before.setEnd(node, this.startOffset);
+        const y =
+          cell.previousElementSibling === null
+            ? 122
+            : before.toString().includes(" the ")
+              ? 144
+              : 100;
+        return DOMRect.fromRect({ y, width: 8, height: 18 });
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (this.hasAttribute("data-loc")) return DOMRect.fromRect({ y: 98 });
+        return DOMRect.fromRect({ y: 0 });
+      },
+    );
+    const table =
+      "| a | b |\n| --- | --- |\n| short | a long cell whose words run on to the tail word |\n";
+    const tail = (table.split("\n")[2] ?? "").indexOf("tail") + 1;
+    const { container } = await renderDiff(table, table, [
+      wholeLines("comment", 3, 3),
+      {
+        key: "c3",
+        kind: "comment",
+        item: comment(3, { line_start: 3, line_end: 3 }),
+        start: 3,
+        end: 3,
+        colStart: tail,
+        colEnd: tail + 3,
+      },
+    ]);
+    // "tail" is on the row's third line, 44px below its first.
+    expect(await chipTops(container)).toEqual(["98px", "142px"]);
+  });
+
+  it("hangs a row's lines by their words beside a taller picture after them", async () => {
+    placeRowBesidePicture();
+    const table = `| a | b |\n| --- | --- |\n| alpha one, charlie two, delta three | ![](${IMG_A}) |\n`;
+    const charlie = (table.split("\n")[2] ?? "").indexOf("charlie") + 1;
+    const { container } = await renderDiff(table, table, [
+      wholeLines("comment", 3, 3),
+      {
+        key: "c3",
+        kind: "comment",
+        item: comment(3, { line_start: 3, line_end: 3 }),
+        start: 3,
+        end: 3,
+        colStart: charlie,
+        colEnd: charlie + 6,
+      },
+    ]);
+    // "charlie" is on the words' second line, 41px below the picture's top,
+    // which the row's chip hangs 2px above.
+    expect(await chipTops(container)).toEqual(["98px", "139px"]);
+  });
+
+  it("hangs a row's lines by their words beside a taller picture before them", async () => {
+    placeRowBesidePicture();
+    const table = `| a | b |\n| --- | --- |\n| ![](${IMG_A}) | alpha one, charlie two, delta three |\n`;
+    const charlie = (table.split("\n")[2] ?? "").indexOf("charlie") + 1;
+    const { container } = await renderDiff(table, table, [
+      wholeLines("comment", 3, 3),
+      {
+        key: "c3",
+        kind: "comment",
+        item: comment(3, { line_start: 3, line_end: 3 }),
+        start: 3,
+        end: 3,
+        colStart: charlie,
+        colEnd: charlie + 6,
+      },
+    ]);
+    // The picture is the row's first character now; "charlie" is still on
+    // the words' second line.
+    expect(await chipTops(container)).toEqual(["98px", "139px"]);
   });
 
   it("hangs the chip of a line an image opens by that line", async () => {
