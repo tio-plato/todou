@@ -491,9 +491,18 @@ const SIX_ROWS = [1, 2, 3, 4, 5, 6]
  * root's rows rather than by `data-line`, which a deleted row and the row
  * replacing it share; a code block's wrapper 8px above its first row, and
  * everything else, the container included, at 0. `shift` moves the rows
- * and the wrappers down, as content arriving above them would.
+ * and the wrappers down, as content arriving above them would. `box` is
+ * where an element that scrolls on its own (`overflow-y: auto`) sits, as a
+ * patch's files do, and `scrolled` moves the rows alone down, as scrolling
+ * such a box would.
  */
-function layOutRows(shift: () => number = () => 0) {
+function layOutRows(
+  shift: () => number = () => 0,
+  {
+    box,
+    scrolled = () => 0,
+  }: { box?: { top: number; bottom: number }; scrolled?: () => number } = {},
+) {
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
     function (this: HTMLElement) {
       let top = 0;
@@ -501,10 +510,13 @@ function layOutRows(shift: () => number = () => 0) {
         const root = this.getRootNode() as ParentNode;
         top =
           shift() +
+          scrolled() +
           200 +
           20 * [...root.querySelectorAll("[data-line]")].indexOf(this);
       } else if (this.matches(".markdown-fence")) {
         top = shift() + 192;
+      } else if (box !== undefined && this.style.overflowY === "auto") {
+        return new DOMRect(0, shift() + box.top, 600, box.bottom - box.top);
       }
       return new DOMRect(0, top, 600, 20);
     },
@@ -598,6 +610,63 @@ function chipsOf(view: Pick<RenderResult, "queryAllByRole">) {
       chip.style.top,
       Number.parseInt(chip.getAttribute("aria-label") ?? "", 10),
     ]);
+}
+
+/**
+ * A patch fence: its message's one line is source line 7, the hunk header
+ * line 12, and its file's rows lines 13–16.
+ */
+const PATCH_FENCE = `Intro.\n\n${[
+  "```patch",
+  "From 1234567890abcdef1234567890abcdef12345678 Mon Sep 17 00:00:00 2001",
+  "Subject: [PATCH] change a file",
+  "",
+  "Explain the change.",
+  "---",
+  "diff --git a/a.txt b/a.txt",
+  "--- a/a.txt",
+  "+++ b/a.txt",
+  "@@ -1,3 +1,3 @@",
+  " keep",
+  "-old words",
+  "+new words",
+  " tail",
+  "```",
+].join("\n")}\n`;
+
+/**
+ * The first `drawn` of `PATCH_FENCE`'s rows as pierre draws them, the
+ * message's and then the file's: lines 7, 13, 14, 15 and 16.
+ */
+function patchRows(drawn = 5): string {
+  const file = [
+    `<div data-line="1" data-line-type="context"><span>keep</span></div>`,
+    `<div data-line="2" data-line-type="change-deletion"><span>old words</span></div>`,
+    `<div data-line="2" data-line-type="change-addition"><span>new words</span></div>`,
+    `<div data-line="3" data-line-type="context"><span>tail</span></div>`,
+  ].slice(0, drawn - 1);
+  return `<pre data-file=""><div data-line="1"><span>Explain the change.</span></div></pre>
+    <pre data-diff="">${file.join("")}</pre>`;
+}
+
+/** Where a patch's box of files sits: 4px below its wrapper's top. */
+const PATCH_BOX = { top: 196, bottom: 296 };
+
+/** Draw `rows` in a box of their own in `wrapper`, as a patch's files are. */
+async function drawInBox(wrapper: Element, rows: string): Promise<Element> {
+  const box = document.createElement("div");
+  box.style.overflowY = "auto";
+  wrapper.append(box);
+  await drawRows(box, rows);
+  return box;
+}
+
+/** Scroll `box`, and let the layout that schedules run. */
+async function scrollIn(box: Element): Promise<void> {
+  await act(async () => {
+    fireEvent.scroll(box);
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+  });
 }
 
 describe("chips on code rows", () => {
@@ -944,6 +1013,82 @@ describe("chips on code rows", () => {
     expect(fold.hasAttribute("open")).toBe(true);
     expect(reveals).toEqual([shadow.querySelector("[data-line='2']")]);
     await closePopover(popover);
+  });
+
+  it("hangs a patch fence's chips by their rows, on columns and whole lines", async () => {
+    layOutRows(undefined, { box: PATCH_BOX });
+    // Line 7 is the message's row; columns 2–4 of line 15 the "new" of
+    // "+new words", the file's third row.
+    const { view, wrappers } = await renderDocument(PATCH_FENCE, [
+      wholeLines("comment", 7, 7),
+      onLine("comment", 15, 2, 4),
+    ]);
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    await drawInBox(wrapper, patchRows());
+    await waitFor(() =>
+      expect(chipsOf(view)).toEqual([
+        ["200px", 1],
+        ["260px", 1],
+      ]),
+    );
+  });
+
+  it("moves a patch row's chip with its box, between the block's top and the box's foot", async () => {
+    let scroll = 0;
+    layOutRows(undefined, { box: PATCH_BOX, scrolled: () => scroll });
+    const { view, wrappers } = await renderDocument(PATCH_FENCE, [
+      wholeLines("comment", 15, 15),
+    ]);
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    const box = await drawInBox(wrapper, patchRows());
+    await waitFor(() => expect(chipsOf(view)).toEqual([["260px", 1]]));
+    scroll = -40;
+    await scrollIn(box);
+    expect(chipsOf(view)).toEqual([["220px", 1]]);
+    // Scrolled out above the block's top, the chip stays there, where it
+    // hangs once pierre drops the row.
+    scroll = -100;
+    await scrollIn(box);
+    expect(chipsOf(view)).toEqual([["192px", 1]]);
+    // Past the box's foot at 296, a chip's height above it.
+    scroll = 40;
+    await scrollIn(box);
+    expect(chipsOf(view)).toEqual([["274px", 1]]);
+  });
+
+  it("hangs a patch line pierre has not drawn at its box's foot only when every drawn row comes before it", async () => {
+    layOutRows(undefined, { box: PATCH_BOX });
+    // Lines 7, 13 and 14 are drawn. Line 15 comes after them all; line 12,
+    // the hunk header no row shows, between two of them.
+    const { view, wrappers } = await renderDocument(PATCH_FENCE, [
+      wholeLines("comment", 15, 15),
+      wholeLines("comment", 12, 12),
+    ]);
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    await drawInBox(wrapper, patchRows(3));
+    await waitFor(() =>
+      expect(chipsOf(view)).toEqual([
+        ["192px", 1],
+        ["274px", 1],
+      ]),
+    );
+  });
+
+  it("keeps a baseline annotation's chip in the box of a restored patch fence", async () => {
+    // v1's line 15 is "+new words", drawn at 300: past the box's foot.
+    layOutRows(undefined, { box: PATCH_BOX, scrolled: () => 40 });
+    const { view, wrappers } = await renderDocument("Intro.\n\nOutro.\n", [], {
+      baselineBody: `${PATCH_FENCE}\nOutro.\n`,
+      baselineAnnotations: [wholeLines("comment", 15, 15)],
+      wrappers: "[data-old-loc].markdown-fence",
+    });
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    await drawInBox(wrapper, patchRows());
+    await waitFor(() => expect(chipsOf(view)).toEqual([["274px", 1]]));
   });
 });
 
