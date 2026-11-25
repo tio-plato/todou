@@ -1174,6 +1174,40 @@ describe("the reader's place", () => {
     expect(measure).not.toHaveBeenCalled();
   });
 
+  it("keeps the reader's own scroll its event has yet to report", () => {
+    const { page, readerAt, topOf, remove } = mount();
+    readerAt(450);
+    // Applied before its scroll event, as Firefox and iOS apply a fling, or
+    // CodeMirror revealing a caret in an animation frame.
+    page.y += 50;
+    page.above += 300;
+    resizePage();
+    expect(topOf("e")).toBe(-100);
+    // The same through a commit, with the list itself changing.
+    page.y += 30;
+    remove("a");
+    expect(topOf("e")).toBe(-130);
+  });
+
+  it("turns the browser's anchoring off while it keeps a unit, and back on", () => {
+    const { readerAt, view } = mount();
+    const anchoring = () =>
+      document.documentElement.style.getPropertyValue("overflow-anchor");
+    expect(anchoring()).toBe("");
+    readerAt(450);
+    expect(anchoring()).toBe("none");
+    // Past every unit: nothing to keep.
+    readerAt(5000);
+    expect(anchoring()).toBe("");
+    // A landing holds the page and keeps no unit of the reader's meanwhile.
+    readerAt(450);
+    releases.push(landAtBottom());
+    expect(anchoring()).toBe("");
+    readerAt(450);
+    view.unmount();
+    expect(anchoring()).toBe("");
+  });
+
   it("puts back when only the column holding the list resizes", () => {
     const { page, readerAt, topOf, column } = mount();
     readerAt(450);
