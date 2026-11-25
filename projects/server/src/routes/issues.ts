@@ -369,8 +369,10 @@ const issueQuestionsRoute = createRoute({
     "`todou question list/wait` and the web answer cards",
   description:
     "Each item carries `answer` or `withdrawal`, at most one of them; both " +
-    "null means the questions still wait for an answer, and only those " +
-    "count towards `open`.",
+    "null means the questions still wait for an answer. `open` sums, over " +
+    "those items, the questions each asks before any answer: follow-ups " +
+    "(`when`) never count, since the submission whose picks ask them " +
+    "answers them too.",
   request: { params: issueParams },
   responses: {
     200: { description: "Status", ...jsonBody(IssueQuestions) },
@@ -382,7 +384,7 @@ const submitAnswersRoute = createRoute({
   method: "post",
   path: "/{slug}/issues/{number}/comments/{commentId}/answers",
   summary:
-    `Answer every question of a comment atomically ${roleTag("question.answer")}; ` +
+    `Answer every question a comment asks, atomically ${roleTag("question.answer")}; ` +
     "one answer per comment, ever — answers cannot be edited",
   request: { params: commentParams, body: jsonBody(AnswersSubmitInput) },
   responses: {
@@ -440,7 +442,8 @@ const hideCommentsRoute = createRoute({
     "count.\n\n" +
     "**Hiding settles what it buries** (T-307), in this call's own " +
     "transaction and whoever wrote the comment: a hidden comment carrying " +
-    "unanswered questions has every one of them declined, and a hidden " +
+    "unanswered questions has every question it asks before an answer " +
+    "declined (its follow-ups are then never asked), and a hidden " +
     'unresolved spec annotation is resolved with `via: "hide"` on the ' +
     "`spec_comments_resolved` event. Both are timeline entries and both " +
     "move the card's counters, so a hide that settles something is neither " +

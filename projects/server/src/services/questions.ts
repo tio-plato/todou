@@ -14,9 +14,11 @@ import type {
 } from "@todou/shared";
 import {
   can,
+  describeCondition,
   minRoleOf,
   QuestionAnsweredPayload,
   QuestionWithdrawnPayload,
+  shownQuestions,
 } from "@todou/shared";
 import { and, asc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
@@ -46,6 +48,14 @@ import { getUserRefs } from "./users.ts";
  * positional key colliding with an explicit one is rejected rather than
  * renamed, because answers reference keys and silent renames would misdirect
  * them.
+ *
+ * A follow-up's `when` is checked once every key is known: it names an
+ * earlier question, and the follow-up sits in that question's run — right
+ * after it or its other follow-ups — so array order is the order the page
+ * shows, and an indented follow-up never sits under a question it does not
+ * follow. The run is tracked as a chain of ancestors: an unconditional
+ * question starts a new one, a follow-up pops back to its question and goes
+ * on top.
  */
 export function canonicalizeComponent(
   input: CommentComponentInput,
@@ -71,20 +81,61 @@ export function canonicalizeComponent(
     }
     return { ...q, key };
   });
+  const chain: typeof questions = [];
+  questions.forEach((q, i) => {
+    const when = q.when;
+    if (when === undefined) {
+      chain.splice(0, chain.length, q);
+      return;
+    }
+    const parent = questions.slice(0, i).find((p) => p.key === when.key);
+    if (parent === undefined) {
+      throw new ValidationFailedError(
+        `question "${q.key}": when.key "${when.key}" names no earlier question of this comment`,
+      );
+    }
+    while (chain.length > 0 && chain.at(-1) !== parent) chain.pop();
+    if (chain.length === 0) {
+      throw new ValidationFailedError(
+        `question "${q.key}": a follow-up of "${parent.key}" goes right after "${parent.key}" or its other follow-ups, not after "${questions[i - 1]?.key}"`,
+      );
+    }
+    for (const index of when.selected) {
+      if (index >= parent.options.length) {
+        throw new ValidationFailedError(
+          `question "${q.key}": when.selected index ${index} is out of range for "${parent.key}" (0-${parent.options.length - 1})`,
+        );
+      }
+    }
+    chain.push(q);
+  });
   return { type: "questions", questions };
 }
 
-/** How many questions a component carries (0 for non-question components). */
-export function questionCount(
+/**
+ * What an unsettled comment counts towards `open_questions`: the questions it
+ * asks before any answer, which is all of them unless some are
+ * follow-ups; 0 for non-question components. Asking adds it, and answering,
+ * withdrawing, deleting and hiding take back this same number, never the
+ * length of an answer that reached follow-ups.
+ */
+export function openQuestionCount(
   component: CommentComponent | null | undefined,
 ): number {
-  return component?.type === "questions" ? component.questions.length : 0;
+  return component?.type === "questions"
+    ? shownQuestions(component.questions, new Map()).length
+    : 0;
 }
 
 /**
  * Validate one atomic submission against the component and stamp label
  * snapshots. Errors name the question key — these travel to CLI users
  * verbatim.
+ *
+ * The submission answers exactly the questions its own picks ask. An
+ * answer to a question they do not ask is reported before a missing one:
+ * whoever answered the wrong follow-up has usually skipped the right one,
+ * and the stray answer is the mistake to name.
  */
 function toAnswerRecords(
   component: QuestionsComponent,
@@ -136,16 +187,27 @@ function toAnswerRecords(
     });
     records.set(a.key, { key: a.key, selected, other, declined: a.declined });
   }
-  const missing = component.questions
-    .map((q) => q.key)
-    .filter((key) => !records.has(key));
+  const picked = new Map(
+    [...records].map(([key, r]) => [key, r.selected.map((s) => s.index)]),
+  );
+  const shown = shownQuestions(component.questions, picked);
+  const asked = new Set(shown.map((q) => q.key));
+  for (const q of component.questions) {
+    if (q.when === undefined || !records.has(q.key) || asked.has(q.key)) {
+      continue;
+    }
+    throw new ValidationFailedError(
+      `question "${q.key}" is not asked with these answers: it is asked only when ${describeCondition(component.questions, q.when)}`,
+    );
+  }
+  const missing = shown.map((q) => q.key).filter((key) => !records.has(key));
   if (missing.length > 0) {
     throw new ValidationFailedError(
       `missing answers for: ${missing.join(", ")} — all questions of a comment are answered together`,
     );
   }
   // Stored in component order regardless of submission order.
-  return component.questions.map((q) => {
+  return shown.map((q) => {
     const record = records.get(q.key);
     if (!record) throw new Error("record missing after completeness check");
     return record;
@@ -297,7 +359,7 @@ export async function submitAnswers(
     await tx
       .update(issues)
       .set({
-        openQuestions: sql`greatest(${issues.openQuestions} - ${answers.length}, 0)`,
+        openQuestions: sql`greatest(${issues.openQuestions} - ${openQuestionCount(component)}, 0)`,
         updatedAt: new Date(),
       })
       .where(eq(issues.id, issue.id));
@@ -365,7 +427,7 @@ export async function withdrawQuestions(
     .where(and(eq(comments.id, commentId), eq(comments.issueId, issue.id)));
   const comment = commentRows[0];
   if (!comment) throw new NotFoundError("comment not found");
-  const asked = questionCount(comment.component);
+  const asked = openQuestionCount(comment.component);
   if (asked === 0) {
     throw new ValidationFailedError(
       `comment ${commentId} carries no questions`,
@@ -512,7 +574,7 @@ export async function listIssueQuestions(
         withdrawal = { ...settled, reason: settlement.payload.reason };
       }
     } else {
-      open += comment.component.questions.length;
+      open += openQuestionCount(comment.component);
     }
     items.push({
       comment_id: comment.id,
