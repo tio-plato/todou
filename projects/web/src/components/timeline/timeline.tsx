@@ -191,6 +191,10 @@ export function Timeline({
     seen: ReadonlySet<string>;
   } | null>(null);
   const didInitialScroll = useRef(false);
+  // Whether the card has landed once: on its end as it opened, or on what
+  // its address or a question badge named. Arriving on the card lands at
+  // once; a jump on the card after that glides.
+  const landed = useRef(false);
 
   const { above, below } = mergeFolded(
     headEnabled ? (head.data?.pages ?? []) : [],
@@ -494,8 +498,9 @@ export function Timeline({
     return () => clearTimeout(id);
   }, [fillIndex]);
   const finishQuestionLanding = (error?: "unavailable" | "stalled") => {
-    // revealBlock has already moved the viewport. Do not wait for a native
-    // scroll event before restoring the ordinary follow-bottom policy.
+    // A landing at once has already moved the viewport. Do not wait for a
+    // native scroll event before restoring the ordinary follow-bottom policy;
+    // one that glides is read again, here too, once it ends.
     atEndRef.current = whereReaderIs();
     questionLanding.finish(error);
   };
@@ -551,6 +556,7 @@ export function Timeline({
         },
     // The address may still name the comment the last landing chose.
     questionLanding.intent,
+    landed,
   );
 
   useEffect(() => {
@@ -560,7 +566,8 @@ export function Timeline({
       !tail.isFetching &&
       !head.isFetching
     ) {
-      scrollToBottom();
+      scrollToBottom(landed.current);
+      landed.current = true;
       didInitialScroll.current = true;
       setLastSeen(null);
       finishQuestionLanding();
@@ -580,6 +587,7 @@ export function Timeline({
         !questionLanding.intent
       ) {
         scrollToBottom();
+        landed.current = true;
         landAfterArrival.current = router.state.status === "pending";
       }
     }
