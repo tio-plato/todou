@@ -35,6 +35,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { questionsQuery } from "../src/api/questions.ts";
 import { UnsavedChangesGuard } from "../src/components/shared/unsaved-guard.tsx";
 import { QUESTION_LANDING_ROUTE_ID } from "../src/components/timeline/use-question-landing.ts";
+import { selectNextQuestionLanding } from "../src/lib/question-landing.ts";
 import { registerDirtySource } from "../src/lib/unsaved-guard.ts";
 import { IssueDetailPage } from "../src/pages/issue-detail.tsx";
 import { IssueRouteError } from "../src/pages/issue-route-error.tsx";
@@ -1771,5 +1772,490 @@ describe("question landing through the real issue route", () => {
     expect(view.router.state.location.hash).toBe("comment-20");
     expect(scroll.reveals("comment-10")).toBe(0);
     expect(scroll.bottoms()).toBe(0);
+  });
+});
+
+describe("the card's own question badge", () => {
+  /** Two questions in one comment, so a count of comments would read 2. */
+  function twoQuestions(id: number): IssueQuestionsItem {
+    const item = question(id);
+    return {
+      ...item,
+      questions: [
+        ...item.questions,
+        {
+          key: "q2",
+          multiple: false,
+          question: `Follow-up ${id}?`,
+          options: [{ label: "Yes" }, { label: "No" }],
+        },
+      ],
+    };
+  }
+
+  const openCard = () =>
+    card([twoQuestions(10), answered(question(12), 13), question(14)]);
+
+  const label = (model: Card) =>
+    `${model.questions.open} unanswered question(s)`;
+
+  const inTitle = (view: View, model: Card) =>
+    within(view.getByTestId("issue-title-block")).queryByRole("link", {
+      name: label(model),
+    });
+
+  // The mirror is `aria-hidden`: the heading's badge is the one assistive
+  // tech reaches.
+  const inMirror = (view: View, model: Card) =>
+    within(view.getByTestId("floating-title-bar")).queryByRole("link", {
+      name: label(model),
+      hidden: true,
+    });
+
+  async function click(link: HTMLElement | null) {
+    expect(link).not.toBeNull();
+    await act(async () => {
+      fireEvent.click(link as HTMLElement);
+    });
+  }
+
+  /** Every address the router hands the browser from here on. */
+  function writes(view: View) {
+    const seen: Array<{ type: string; href: string }> = [];
+    disposers.push(
+      view.router.history.subscribe(
+        ({
+          action,
+          location,
+        }: {
+          action: { type: string };
+          location: { href: string };
+        }) => {
+          if (action.type === "PUSH" || action.type === "REPLACE")
+            seen.push({ type: action.type, href: location.href });
+        },
+      ),
+    );
+    return seen;
+  }
+
+  /** The browser's history keeps a row for every address a page writes. */
+  const asksInTheAddress = (seen: Array<{ href: string }>) =>
+    seen.filter(({ href }) => href.includes(ENTRY));
+
+  it("counts open questions, not comments, in the heading and its mirror", async () => {
+    const model = openCard();
+    expect(model.questions.open).toBe(3);
+    serve({ "p/7": model });
+    scrolling();
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText("Decision 14?");
+
+    expect(
+      view.getAllByRole("link", { name: label(model), hidden: true }),
+    ).toHaveLength(2);
+    expect(inTitle(view, model)?.getAttribute("href")).toMatch(
+      /#unanswered-questions$/,
+    );
+    expect(inMirror(view, model)?.getAttribute("href")).toMatch(
+      /#unanswered-questions$/,
+    );
+  });
+
+  it("is not worn once every question is answered", async () => {
+    const model = card([answered(question(10), 11)]);
+    serve({ "p/7": model });
+    scrolling();
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText("Decision 10?");
+
+    expect(
+      view.queryAllByRole("link", {
+        name: /unanswered question/,
+        hidden: true,
+      }),
+    ).toHaveLength(0);
+  });
+
+  it("is not worn in the trash, where no answer can be given", async () => {
+    const model = openCard();
+    model.issueReply = () =>
+      json({
+        ...issue(7, model),
+        deleted_at: timestamp(200),
+        deleted_by: user,
+      } satisfies Issue);
+    serve({ "p/7": model });
+    scrolling();
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText(/In the trash/);
+    await view.findByText("Decision 14?");
+
+    expect(
+      view.queryAllByRole("link", {
+        name: /unanswered question/,
+        hidden: true,
+      }),
+    ).toHaveLength(0);
+  });
+
+  it("steps through the open questions writing only the comments it lands on", async () => {
+    const model = openCard();
+    serve({ "p/7": model });
+    const scroll = scrolling();
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText("Decision 14?");
+    const entries = view.router.history.length;
+    const seen = writes(view);
+
+    // A press may write the address it starts from and the comment it lands
+    // on, and nothing in between.
+    async function press(id: number, count = 1) {
+      const from = view.router.state.location.href;
+      const start = seen.length;
+      await click(inTitle(view, model));
+      await landed(view, scroll, id, count);
+      expect(
+        seen
+          .slice(start)
+          .map(({ href }) => href)
+          .filter(
+            (href) =>
+              href !== from && href !== `/projects/p/issues/7#comment-${id}`,
+          ),
+      ).toEqual([]);
+    }
+
+    await press(10);
+    await waitFor(() =>
+      expect(inTitle(view, model)?.getAttribute("href")).toMatch(
+        /#unanswered-questions-after-10$/,
+      ),
+    );
+    await press(14);
+    // Twice in all: not again on the way from it to 14.
+    await press(10, 2);
+    expect(scroll.reveals("comment-12")).toBe(0);
+    expect(scroll.reveals("comment-14")).toBe(1);
+    expect(seen.filter(({ type }) => type === "PUSH")).toEqual([]);
+    expect(view.router.history.length).toBe(entries);
+  });
+
+  it("keeps the rest of the entry's state", async () => {
+    const model = openCard();
+    serve({ "p/7": model });
+    const scroll = scrolling();
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText("Decision 14?");
+    // The card's way back (T-407) rides in the same entry.
+    const back = {
+      origin: {
+        v: 1,
+        userId: user.id,
+        snapshotId: "s1",
+        target: { kind: "list", slug: "p", search: { q: "guard" } },
+        pages: [{ lane: "flat", extraPages: 2 }],
+        scroll: [{ region: "window", x: 0, y: 900, candidates: [] }],
+      },
+    };
+    await act(async () => {
+      view.router.history.replace(view.router.state.location.href, {
+        todouReturn: back,
+      });
+    });
+
+    await click(inTitle(view, model));
+    await landed(view, scroll, 10);
+    await click(inTitle(view, model));
+    await landed(view, scroll, 14);
+    expect(view.router.state.location.state).toHaveProperty(
+      "todouReturn",
+      back,
+    );
+  });
+
+  it("leaves a modified click to the browser", async () => {
+    const model = openCard();
+    serve({ "p/7": model });
+    scrolling();
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText("Decision 14?");
+    const before = view.router.state.location.href;
+    const seen = writes(view);
+
+    for (const modified of [
+      { ctrlKey: true },
+      { metaKey: true },
+      { shiftKey: true },
+      { altKey: true },
+    ]) {
+      let unhandled = false;
+      await act(async () => {
+        unhandled = fireEvent.click(
+          inTitle(view, model) as HTMLElement,
+          modified,
+        );
+      });
+      expect(unhandled, JSON.stringify(modified)).toBe(true);
+    }
+    expect(seen).toEqual([]);
+    // The router's, not `window.location`, which happy-dom's own anchor moves.
+    expect(view.router.state.location.href).toBe(before);
+  });
+
+  it("retries a failed read from the same start without an entry address", async () => {
+    const model = openCard();
+    const server = serve({ "p/7": model });
+    const scroll = scrolling();
+    const view = renderAt("/projects/p/issues/7#comment-12");
+    await landed(view, scroll, 12);
+    const seen = writes(view);
+    model.questionReply = () => failure("questions unavailable");
+
+    await click(inTitle(view, model));
+    await view.findByText(LOCATE_FAILURE);
+    const reads = server.questions().length;
+    model.questionReply = undefined;
+    fireEvent.click(retryFor(view, LOCATE_FAILURE));
+
+    await landed(view, scroll, 14);
+    expect(server.questions()).toHaveLength(reads + 1);
+    expect(asksInTheAddress(seen)).toEqual([]);
+  });
+
+  it("retries a press whose question is gone without an entry address", async () => {
+    // 16 is open after the missing 14, so a Retry going on from the address
+    // would land there rather than on the earliest.
+    const items = [
+      question(10),
+      answered(question(12), 13),
+      question(14),
+      question(16),
+    ];
+    const model = recoveryCard(items);
+    model.items = model.items.filter(
+      (item) => item.type !== "comment" || item.id !== 14,
+    );
+    serve({ "p/7": model });
+    const scroll = scrolling();
+    const view = renderAt("/projects/p/issues/7#comment-12");
+    await landed(view, scroll, 12);
+    const back = { origin: { target: { kind: "list", slug: "p" } } };
+    await act(async () => {
+      view.router.history.replace(view.router.state.location.href, {
+        todouReturn: back,
+      });
+    });
+
+    await click(inTitle(view, model));
+    await view.findByText(UNAVAILABLE, {}, { timeout: 3_000 });
+    const seen = writes(view);
+    fireEvent.click(retryFor(view, UNAVAILABLE));
+
+    // From the earliest again, as before.
+    await landed(view, scroll, 10);
+    expect(scroll.reveals("comment-16")).toBe(0);
+    // The Retry asks without an address of its own: the missing comment's
+    // stays until the landing writes the one it found.
+    expect(
+      seen
+        .map(({ href }) => href)
+        .filter(
+          (href) =>
+            href !== "/projects/p/issues/7#comment-14" &&
+            href !== "/projects/p/issues/7#comment-10",
+        ),
+    ).toEqual([]);
+    expect(seen.filter(({ type }) => type === "PUSH")).toEqual([]);
+    expect(view.router.state.location.state).toHaveProperty(
+      "todouReturn",
+      back,
+    );
+  });
+
+  it("in the title mirror lands without the mirror's scroll to the top", async () => {
+    const model = openCard();
+    serve({ "p/7": model });
+    const scroll = scrolling();
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText("Decision 14?");
+    // Arriving at an address without a hash scrolls to the top on its own.
+    const before = scroll.events.length;
+
+    await click(inMirror(view, model));
+    await landed(view, scroll, 10);
+    expect(scroll.events.slice(before)).not.toContain("scroll:0");
+  });
+
+  it("moves past a chosen but unsent answer without asking, and keeps it", async () => {
+    const model = openCard();
+    serve({ "p/7": model });
+    const scroll = scrolling();
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText("Decision 14?");
+
+    await click(inTitle(view, model));
+    await landed(view, scroll, 10);
+    const row = view.container.querySelector("#comment-10");
+    const first = within(row as HTMLElement);
+    fireEvent.click(first.getByRole("button", { name: "Proceed" }));
+    expect(
+      first
+        .getByRole("button", { name: "Proceed" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+
+    await click(inTitle(view, model));
+    await landed(view, scroll, 14);
+    expect(
+      view.queryByRole("dialog", { name: "Leave with unsaved changes?" }),
+    ).toBeNull();
+    // The same row, not a remount that happens to be unanswered as well.
+    expect(view.container.querySelector("#comment-10")).toBe(row);
+    expect(
+      first
+        .getByRole("button", { name: "Proceed" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+  });
+
+  it("keeps the start while a landing is still reading, so a second press does not lose it", async () => {
+    const model = openCard();
+    const pending = deferred<Response>();
+    model.questionReply = () => pending.promise;
+    const server = serve({ "p/7": model });
+    const scroll = scrolling();
+    const view = renderAt("/projects/p/issues/7#unanswered-questions-after-10");
+    await waitFor(() => expect(server.questions()).toHaveLength(1));
+    await view.findByText("Decision 14?");
+
+    expect(inTitle(view, model)?.getAttribute("href")).toMatch(
+      /#unanswered-questions-after-10$/,
+    );
+    await release(pending, json(model.questions));
+    await landed(view, scroll, 14);
+  });
+
+  it("keeps a Retry's start when pressed while it reads", async () => {
+    const items = [
+      question(10),
+      answered(question(12), 13),
+      question(14),
+      question(16),
+    ];
+    const model = recoveryCard(items);
+    model.items = model.items.filter(
+      (item) => item.type !== "comment" || item.id !== 14,
+    );
+    serve({ "p/7": model });
+    const scroll = scrolling();
+    const view = renderAt("/projects/p/issues/7#comment-12");
+    await landed(view, scroll, 12);
+
+    await click(inTitle(view, model));
+    await view.findByText(UNAVAILABLE, {}, { timeout: 3_000 });
+    const pending = deferred<Response>();
+    model.questionReply = () => pending.promise;
+    fireEvent.click(retryFor(view, UNAVAILABLE));
+    // The address still names 14; the request being read starts earliest.
+    const seen = writes(view);
+    await click(inTitle(view, model));
+    expect(seen).toEqual([]);
+    await release(pending, json(model.questions));
+
+    await landed(view, scroll, 10);
+    expect(scroll.reveals("comment-16")).toBe(0);
+  });
+
+  it("rereads a failed read when pressed again, as its Retry does", async () => {
+    const model = openCard();
+    const server = serve({ "p/7": model });
+    const scroll = scrolling();
+    const view = renderAt("/projects/p/issues/7#comment-12");
+    await landed(view, scroll, 12);
+    const entries = view.router.history.length;
+    const seen = writes(view);
+    model.questionReply = () => failure("questions unavailable");
+
+    await click(inTitle(view, model));
+    await view.findByText(LOCATE_FAILURE);
+    const reads = server.questions().length;
+    const failed = seen.length;
+    const pending = deferred<Response>();
+    model.questionReply = () => pending.promise;
+
+    await click(inTitle(view, model));
+    await waitFor(() => expect(server.questions()).toHaveLength(reads + 1));
+    // The read under way already answers a press made while it lasts.
+    await click(inTitle(view, model));
+    expect(server.questions()).toHaveLength(reads + 1);
+    expect(view.queryByText(LOCATE_FAILURE)).not.toBeNull();
+    expect((retryFor(view, LOCATE_FAILURE) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    await release(pending, json(model.questions));
+
+    await landed(view, scroll, 14);
+    expect(server.questions()).toHaveLength(reads + 1);
+    expect(asksInTheAddress(seen)).toEqual([]);
+    // Past the failure, nothing but the comment it lands on.
+    expect(
+      seen
+        .slice(failed)
+        .map(({ href }) => href)
+        .filter((href) => href !== "/projects/p/issues/7#comment-14"),
+    ).toEqual([]);
+    expect(seen.filter(({ type }) => type === "PUSH")).toEqual([]);
+    expect(view.router.history.length).toBe(entries);
+  });
+
+  it("rereads a failed entry from elsewhere when pressed, writing only the comment it lands on", async () => {
+    const model = openCard();
+    model.questionReply = () => failure("questions unavailable");
+    const server = serve({ "p/7": model });
+    const scroll = scrolling();
+    const view = renderAt(`/projects/p/issues/7#${ENTRY}-after-10`);
+    await view.findByText(LOCATE_FAILURE);
+    await view.findByText("Decision 14?");
+    const seen = writes(view);
+    const reads = server.questions().length;
+    model.questionReply = undefined;
+
+    await click(inTitle(view, model));
+    await landed(view, scroll, 14);
+    expect(server.questions()).toHaveLength(reads + 1);
+    expect(
+      seen
+        .map(({ href }) => href)
+        .filter((href) => href !== "/projects/p/issues/7#comment-14"),
+    ).toEqual([]);
+    expect(seen.filter(({ type }) => type === "PUSH")).toEqual([]);
+  });
+
+  it("starts from the earliest when the address names a comment that asks nothing", () => {
+    const open = questions([
+      question(10),
+      answered(question(12), 13),
+      question(14),
+    ]);
+    expect(selectNextQuestionLanding(open, 11)).toBe(10);
+  });
+
+  it("stays on the comment it starts from once nothing is open", () => {
+    const settled = questions([
+      answered(question(10), 11),
+      answered(question(12), 13),
+      answered(question(14), 15),
+    ]);
+    expect(selectNextQuestionLanding(settled, 12)).toBe(12);
+  });
+
+  it("comes back round to the only open question", () => {
+    const one = questions([
+      answered(question(10), 11),
+      question(12),
+      answered(question(14), 15),
+    ]);
+    expect(selectNextQuestionLanding(one, 12)).toBe(12);
   });
 });

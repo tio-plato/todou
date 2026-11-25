@@ -46,7 +46,6 @@ import { useQuestionLanding } from "@/components/timeline/use-question-landing.t
 import { useTimelineAnchor } from "@/components/timeline/use-timeline-anchor.ts";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { isQuestionLandingHash } from "@/lib/question-landing.ts";
 import {
   isHoldingTarget,
   landAtBottom,
@@ -220,7 +219,7 @@ export function Timeline({
   const unitKeys = [...unitsAbove, ...unitsBelow].map(unitKey);
   const landsElsewhere =
     parseTimelineAnchor(anchorHash ?? "") !== null ||
-    isQuestionLandingHash(anchorHash ?? "") ||
+    questionLanding.intent ||
     questionLanding.ownsScroll;
   const [fillFrom, setFillFrom] = useState<string | null | undefined>(
     undefined,
@@ -352,6 +351,8 @@ export function Timeline({
           onUnavailable: () => finishQuestionLanding("unavailable"),
           onStalled: () => finishQuestionLanding("stalled"),
         },
+    // The address may still name the comment the last landing chose.
+    questionLanding.intent,
   );
 
   useEffect(() => {
@@ -378,7 +379,7 @@ export function Timeline({
       if (
         !anchorActive &&
         !questionLanding.ownsScroll &&
-        !isQuestionLandingHash(anchorHash ?? "")
+        !questionLanding.intent
       )
         scrollToBottom();
     }
@@ -386,7 +387,7 @@ export function Timeline({
     renderedCount,
     scrollToBottom,
     anchorActive,
-    anchorHash,
+    questionLanding.intent,
     questionLanding.ownsScroll,
   ]);
 
