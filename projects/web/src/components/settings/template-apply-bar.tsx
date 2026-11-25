@@ -93,6 +93,9 @@ export function PreparingPlan() {
 
 type LabelLoss = Extract<ChangeRow, { type: "label_delete" }>;
 
+/** Presses closer together than this are taken for one double-click. */
+const DOUBLE_CLICK_MS = 500;
+
 /**
  * Held to the bottom of the window: Apply, and what it deletes. Before
  * deleting labels that cards carry it asks again, saying which come off
@@ -135,6 +138,17 @@ export function ApplyBar({
       applyButton.current?.focus();
     }
   }, [moved]);
+  // The second press of a double-click on Apply lands where Apply was,
+  // which "Delete and apply" may cover once the first press has asked. A
+  // press on it that comes less than a double-click after the last press
+  // on either button confirms nothing; it counts as a press itself, so a
+  // run of them confirms nothing until it pauses.
+  const lastPress = useRef(Number.NEGATIVE_INFINITY);
+  const hasty = ({ timeStamp }: { timeStamp: number }) => {
+    const gap = timeStamp - lastPress.current;
+    lastPress.current = timeStamp;
+    return gap < DOUBLE_CLICK_MS;
+  };
   const what = [
     statuses.length > 0 &&
       `${statuses.length} ${statuses.length === 1 ? "status" : "statuses"}`,
@@ -163,7 +177,9 @@ export function ApplyBar({
             <Button
               variant="destructive"
               disabled={disabled}
-              onClick={onConfirm}
+              onClick={(event) => {
+                if (!hasty(event)) onConfirm();
+              }}
             >
               Delete and apply {plural(count, "change")}
             </Button>
@@ -183,7 +199,10 @@ export function ApplyBar({
           <Button
             ref={applyButton}
             disabled={disabled || count === 0}
-            onClick={onApply}
+            onClick={(event) => {
+              hasty(event);
+              onApply();
+            }}
             aria-describedby={moved ? note : undefined}
           >
             {count === 0 ? "Apply" : `Apply ${plural(count, "change")}`}
