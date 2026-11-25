@@ -33,7 +33,7 @@ import {
   renderDiagram,
 } from "@/lib/mermaid.ts";
 import { colourChanges } from "@/lib/mermaid-change.ts";
-import { cn } from "@/lib/utils.ts";
+import { OLD_FENCE_ATTR } from "@/lib/rehype-source-lines.ts";
 
 // The palette is baked into the SVG at render time, so a theme switch has to
 // re-render. `data-theme` on <html> is the resolved theme — the preference
@@ -299,11 +299,13 @@ export function MermaidCompare({
           failed: true,
           content: (
             // The stage around it is not selectable (see MediaCompare), but a
-            // side that did not draw is text, not a picture. Only the new
-            // version's side is made selectable again: the page places every
-            // line of the block on the new version, so a selection in the old
-            // source would anchor to the wrong line.
-            <div className={cn("grid gap-1.5 p-3", isNew && "select-text")}>
+            // side that did not draw is text, not a picture. The old
+            // version's source wears OLD_FENCE_ATTR, so that its rows are
+            // placed in the baseline and a selection there anchors to it.
+            <div
+              className="grid gap-1.5 p-3 select-text"
+              {...(isNew ? {} : { [OLD_FENCE_ATTR]: "" })}
+            >
               <p
                 className="truncate text-destructive text-xs"
                 title={result?.ok === false ? result.error : undefined}
