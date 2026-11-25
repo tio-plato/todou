@@ -589,6 +589,12 @@ export function holdRevealed(
  * the glide begins, and hold it there as `holdRevealed` does; see `hold`. A
  * target passed as a function is found anew for every frame of the glide as
  * well. Where it does not glide, it is revealed at once.
+ *
+ * Where `revealBlock` leaves the page more than a pixel off the stop the
+ * glide aims at, `restingScrollY` within the page, every placing goes on to
+ * that stop: near the page's end WebKit on iOS stops `scrollIntoView` short
+ * of it, and the page would jump back from where the glide arrived, the
+ * counter of ↑↓, which reads `restingScrollY` too, a step behind.
  */
 export function glideToRevealed(
   target: HTMLElement | (() => HTMLElement | null),
@@ -605,12 +611,20 @@ export function glideToRevealed(
     const now = find();
     return now === null ? null : onPage(startTarget(now, mode));
   };
+  const reveal = revealing(find, mode);
+  const place = (release: () => void) => {
+    reveal(release);
+    const y = stop();
+    if (y !== null && Math.abs(y - window.scrollY) > 1)
+      window.scrollTo(window.scrollX, y);
+  };
   if (!glides(true, stop)) {
-    revealBlock(el, { mode, flash: highlight });
-    return hold(document.body, revealing(find, mode));
+    if (highlight) flash(el);
+    place(() => {});
+    return hold(document.body, place);
   }
   if (highlight) flash(el);
-  return hold(document.body, revealing(find, mode), false, undefined, stop);
+  return hold(document.body, place, false, undefined, stop);
 }
 
 /** A target as `holdRevealed` takes it, as the function that finds it. */
