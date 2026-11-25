@@ -201,6 +201,23 @@ diffs-container > [slot^="annotation-"] {
     font-family: var(--font-sans);
 }
 
+/* While a finger's selection has an end in this file's code rows
+   (lib/touch-selection-mark.ts sets the attribute), its notes let the
+   selection handle through. iOS keeps a dragged end in the tree of the end
+   that stays put (WebKit bug 187556), and a note is light DOM: hit there, the
+   end was thrown to the end of the file. `pointer-events` leaves pierre's own
+   annotation row, in the shadow root, under the finger; the wrapper hidden
+   (its note shown again) makes the position lookup skip the note and land on
+   the edge of the row beside it. The wrapper draws nothing of its own, so
+   hiding it changes nothing on screen. */
+diffs-container[data-touch-selection] > [slot^="annotation-"] {
+    pointer-events: none;
+    visibility: hidden;
+}
+diffs-container[data-touch-selection] > [slot^="annotation-"] > * {
+    visibility: visible;
+}
+
 /* ---- Named themes (T-36): picotera ports translated into our token set by
    a fixed mapping (surface→background/card, ink→foreground, accent→primary
    and ring, accent-faint/ink→accent pair, err→destructive, line→border).
