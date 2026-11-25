@@ -148,7 +148,8 @@ type Chip = {
    * the chip one of its annotations was in the layout before, else one made
    * from the place it hangs at: its block's key (`start-end`, or `old-i` for
    * a block put back of the baseline), followed for a row of code by `:L` or
-   * `:old-L` and the source line the row shows, for a line of text by `:@`
+   * `:old-L` and the source line the row shows, for the foot of a patch
+   * fence's box by `:below` or `:old-below`, for a line of text by `:@`
    * and the source offset its first character is drawn from, and for a run
    * of removed text by `:old@` and where the run starts in the baseline;
    * with a `+` for each chip already going on under that key.
@@ -210,6 +211,24 @@ function shadowRows(wrapper: Element): HTMLElement[] {
  */
 function chipHeight(wide: boolean, rem: number): number {
   return wide ? 1.25 * rem + 2 : 1.5 * rem;
+}
+
+/**
+ * The box `row` scrolls in within the code block `wrapper`: the nearest
+ * element between them that scrolls on its own, as a patch's files do in
+ * pierre's view, else the wrapper, as in the raw view, which does not.
+ */
+function scrollBox(wrapper: Element, row: Element): Element {
+  const root = row.getRootNode();
+  for (
+    let el: Element | null = root instanceof ShadowRoot ? root.host : row;
+    el !== null && el !== wrapper;
+    el = el.parentElement
+  ) {
+    const { overflowY } = getComputedStyle(el);
+    if (overflowY === "auto" || overflowY === "scroll") return el;
+  }
+  return wrapper;
 }
 
 /** Runs of removed text, which say where in the baseline they start. */
@@ -720,9 +739,12 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     // Inside its block, a chip hangs by the row of code the annotation's
     // first line shows on, where pierre has drawn one, or by the line of text
     // on the page its first character is drawn on; else by the block's top.
-    // Each place is kept under its block's key, and a row's or a line's
-    // under that key and where in the source it starts, never where on the
-    // page, so that a layout moving it keeps its key.
+    // A patch fence's files scroll in a box of their own, and a chip there
+    // keeps beside that box: no higher than the block's top, and no lower
+    // than a chip's height above the box's foot, where a line below every
+    // row drawn hangs too. Each place is kept under its block's key, and a
+    // row's or a line's under that key and where in the source it starts,
+    // never where on the page, so that a layout moving it keeps its key.
     type Place = {
       key: string;
       /**
@@ -768,36 +790,93 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       }
       jumps.set(annotation.key, { block: block.el, row });
     };
+    // A chip is drawn in rem, which the root element's font size sets, not
+    // this text's; the reader may have set it to other than 16px.
+    const tall = chipHeight(
+      wide,
+      Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
+    );
+    // The foot of each patch fence's box, found once a layout, and only
+    // where asked.
+    const feet = new Map<Element, number>();
+    const footOf = (wrapper: HTMLElement, row: HTMLElement) => {
+      let foot = feet.get(wrapper);
+      if (foot === undefined) {
+        foot =
+          scrollBox(wrapper, row).getBoundingClientRect().bottom -
+          containerRect.top;
+        feet.set(wrapper, foot);
+      }
+      return foot;
+    };
     /**
      * A row of code as a place, keyed `prefix` and its source line; none
      * under a shut fold, where every row measures 0 and the chip follows the
-     * fold up to its header, as its block's would.
+     * fold up to its header, as its block's would. In a patch fence a row
+     * reaching past its box's foot hangs no lower than a chip's height above
+     * that foot, and one scrolled out above hangs no higher than the block's
+     * top: where the chip stays once pierre drops the row, by `belowRows` or
+     * by the block.
      */
     const rowLine = (
       prefix: string,
       wrapper: HTMLElement,
       { row, source }: PlacedRow,
-    ): Line | null =>
-      visibleAnchor(wrapper) !== wrapper
-        ? null
-        : { key: `${prefix}${source.line}`, top: chipTop(containerRect, row) };
+    ): Line | null => {
+      if (visibleAnchor(wrapper) !== wrapper) return null;
+      const rect = row.getBoundingClientRect();
+      let top = rect.top - containerRect.top;
+      if (wrapper.hasAttribute(FENCE_PATCH_ATTR)) {
+        const foot = footOf(wrapper, row);
+        if (rect.bottom - containerRect.top > foot) {
+          top = Math.min(top, foot - tall);
+        }
+        top = Math.max(top, chipTop(containerRect, wrapper));
+      }
+      return { key: `${prefix}${source.line}`, top };
+    };
     /**
      * The first row, in document order, that shows one of an annotation's
-     * `lines` in the code block `wrapper`, placed by `rows`. None in a patch
-     * fence, whose files scroll in a box of their own that no layout hears
-     * of.
+     * `lines` in the code block `wrapper`, placed by `rows`.
      */
     const rowIn = (
       wrapper: HTMLElement,
       rows: () => PlacedRow[],
       lines: LineRange,
     ): PlacedRow | null =>
-      !wrapper.matches(CODE_WRAPPERS) || wrapper.hasAttribute(FENCE_PATCH_ATTR)
+      !wrapper.matches(CODE_WRAPPERS)
         ? null
         : (rows().find(
             ({ source: { line } }) =>
               line !== null && line >= lines.start && line <= lines.end,
           ) ?? null);
+    /**
+     * The foot of the patch fence `wrapper`'s box as a place, keyed `key`,
+     * for an annotation starting on line `start` that no row shows, when
+     * every row pierre has drawn there, placed by `rows`, comes before it:
+     * the box has not scrolled down to it yet. None where it has drawn no
+     * row, or one after it: a line scrolled out above, or one no row shows
+     * between two that are, hangs by the block.
+     */
+    const belowRows = (
+      key: string,
+      wrapper: HTMLElement,
+      rows: () => PlacedRow[],
+      start: number,
+    ): Line | null => {
+      if (
+        !wrapper.hasAttribute(FENCE_PATCH_ATTR) ||
+        visibleAnchor(wrapper) !== wrapper
+      ) {
+        return null;
+      }
+      const drawn = rows().filter(({ source }) => source.line !== null);
+      const [first] = drawn;
+      return first === undefined ||
+        drawn.some(({ source: { line } }) => line !== null && line >= start)
+        ? null
+        : { key, top: footOf(wrapper, first.row) - tall };
+    };
     // Each text block lined up once a layout, and only where asked, with
     // the box of its first character, which its later lines are measured
     // from. Null where it does not line up, or nothing has a box.
@@ -887,7 +966,8 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       const block = blocks[at];
       if (block === undefined) continue;
       const key = `${block.start}-${block.end}`;
-      const row = rowIn(block.el, rowsOf(block.el), annotation);
+      const rows = rowsOf(block.el);
+      const row = rowIn(block.el, rows, annotation);
       // Its first character; for whole lines, the first line's start, unless
       // that is the block's own first line or above it.
       const from =
@@ -901,9 +981,10 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         { key, el: block.el, old: false },
         row !== null
           ? rowLine(`${key}:L`, block.el, row)
-          : from === null
-            ? null
-            : textLine(block, `${key}:@${from}`, (on) => on(from)),
+          : (belowRows(`${key}:below`, block.el, rows, annotation.start) ??
+              (from === null
+                ? null
+                : textLine(block, `${key}:@${from}`, (on) => on(from)))),
         row?.row ?? null,
       );
     }
@@ -951,14 +1032,10 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
             : `${current.start}-${current.end}`;
         // Its rows of a code block are the baseline's, which only the wrapper
         // they were drawn in tells apart from another block's.
-        const row =
-          put instanceof HTMLElement
-            ? rowIn(
-                put,
-                () => rows().filter(({ source }) => source.wrapper === put),
-                annotation,
-              )
-            : null;
+        const code = put instanceof HTMLElement ? put : null;
+        const drawn = () =>
+          rows().filter(({ source }) => source.wrapper === put);
+        const row = code === null ? null : rowIn(code, drawn, annotation);
         // A run of removed text in a current block is measured where it is
         // drawn; in a block put back whole it would take the baseline's
         // source to line its text up, and it hangs by that block's top.
@@ -973,9 +1050,17 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
           { key, el: holder, old: current === undefined },
           row !== null
             ? rowLine(`${key}:old-L`, holder, row)
-            : current === undefined || run === null
-              ? null
-              : textLine(current, `${key}:old@${run}`, () => put),
+            : ((code === null
+                ? null
+                : belowRows(
+                    `${key}:old-below`,
+                    code,
+                    drawn,
+                    annotation.start,
+                  )) ??
+                (current === undefined || run === null
+                  ? null
+                  : textLine(current, `${key}:old@${run}`, () => put))),
           row?.row ?? null,
         );
       }
@@ -1014,12 +1099,6 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       const group = place.old ? place.block : "";
       byBlock.set(group, [...(byBlock.get(group) ?? []), place]);
     }
-    // A chip is drawn in rem, which the root element's font size sets, not
-    // this text's; the reader may have set it to other than 16px.
-    const tall = chipHeight(
-      wide,
-      Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
-    );
     const next: Chip[] = [];
     const oldChips: Chip[] = [];
     for (const group of byBlock.values()) {
@@ -1341,10 +1420,11 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     // So does whatever changes the document's height with no resize: a
     // mermaid diagram taking its source's place, pierre drawing a block, an
     // image or a font arriving; and pierre drawing its rows again, which
-    // need not change any height, while chips hang by those rows. Folded
-    // into one layout per frame. The wash a layout toggles changes the
-    // height once more, or has pierre draw again, and the next layout
-    // toggles nothing, so it settles there.
+    // need not change any height, while chips hang by those rows; and a
+    // patch's files scrolling in their own box, which moves the rows chips
+    // hang by there and nothing else. Folded into one layout per frame. The
+    // wash a layout toggles changes the height once more, or has pierre draw
+    // again, and the next layout toggles nothing, so it settles there.
     const container = containerRef.current;
     let frame: number | null = null;
     const schedule = () => {
@@ -1359,10 +1439,26 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       observer.observe(container);
     }
     container?.addEventListener(CODE_RENDERED_EVENT, schedule);
+    // `scroll` does not bubble, so the capture phase hears it; and only a
+    // patch's, as a table or a block of code scrolling sideways moves no
+    // chip.
+    const scrolled = (event: Event) => {
+      if (
+        event.target instanceof Element &&
+        event.target.closest(`[${FENCE_PATCH_ATTR}]`) !== null
+      ) {
+        schedule();
+      }
+    };
+    container?.addEventListener("scroll", scrolled, {
+      capture: true,
+      passive: true,
+    });
     return () => {
       window.removeEventListener("resize", layout);
       observer?.disconnect();
       container?.removeEventListener(CODE_RENDERED_EVENT, schedule);
+      container?.removeEventListener("scroll", scrolled, { capture: true });
       if (frame !== null) cancelAnimationFrame(frame);
     };
   }, [layout]);
