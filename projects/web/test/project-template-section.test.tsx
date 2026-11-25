@@ -809,9 +809,10 @@ describe("applying a template", () => {
       name: "Delete and apply 7 changes",
     });
     fireEvent.click(confirm, { detail: 2 });
-    // Two more, each 0.3 s after the last: the third 0.6 s after Apply.
-    for (let i = 0; i < 2; i++) {
-      await wait(300);
+    // Four more presses on it, each 0.15 s after the last: the last comes
+    // 0.6 s after Apply.
+    for (let i = 0; i < 4; i++) {
+      await wait(150);
       fireEvent.click(confirm);
     }
     await wait(20);
