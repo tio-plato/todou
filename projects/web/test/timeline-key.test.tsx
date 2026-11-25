@@ -450,12 +450,16 @@ describe("the issue page's timeline, keyed by card", () => {
     const offResolved = view.router.subscribe("onResolved", () => {
       offResolved();
       linked = scrollTo.mock.calls.length;
-      // As the app's comment links navigate.
+      // A comment link, past the history's blockers: only a navigation that
+      // skips them can take the arrival over. One that waits for them, the
+      // unsaved-changes guard's and the card's own, pushes once the arrival
+      // has rendered.
       void view.router.navigate({
         to: "/projects/$slug/issues/$number",
         params: { slug: "p", number: "8" },
         hash: "comment-3",
         hashScrollIntoView: false,
+        ignoreBlocker: true,
       });
     });
     const offRendered = view.router.subscribe("onRendered", () => {
