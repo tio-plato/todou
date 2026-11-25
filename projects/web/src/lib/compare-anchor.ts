@@ -72,9 +72,10 @@ function* around(node: Node): Generator<Element> {
 
 /**
  * The removed content an end sits in, at its outermost: what the comparison
- * put back of the baseline (`DELETED_CONTENT`), or a deletion row of a code
- * block edited in place, which pierre draws among the block's current rows.
- * Null for an end in the version shown, or outside the container.
+ * put back of the baseline (`DELETED_CONTENT`), a deletion row of a code
+ * block edited in place, which pierre draws among the block's current rows,
+ * or a row of the source an edited diagram shows for a baseline that does
+ * not parse. Null for an end in the version shown, or outside the container.
  */
 function deletedAround(
   container: Element,
@@ -99,7 +100,10 @@ function deletedAround(
  * rest of the selection lies on: a start to just after it, an end to just
  * before it. A deletion row lives in pierre's shadow root among the rows of
  * the version shown, and the end moves onto the nearest of those on that
- * side, or out past the block when there is none.
+ * side, or out past the block when there is none. A baseline diagram's
+ * source shares its shadow root with no row of the version shown: the end
+ * moves onto a row next to it or out past the block, and either names the
+ * whole block.
  */
 function outOf(deleted: Element, side: "before" | "after"): Point {
   const root = deleted.getRootNode();
