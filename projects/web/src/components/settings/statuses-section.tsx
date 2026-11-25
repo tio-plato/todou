@@ -684,7 +684,7 @@ function StatusRow({
             {...listeners}
             aria-label={`Move ${status.name}`}
             disabled={dragDisabled}
-            className="flex h-10 w-9 shrink-0 cursor-grab touch-none items-center justify-center rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-default disabled:opacity-40 sm:h-8 sm:w-7"
+            className="flex h-10 w-9 shrink-0 cursor-grab touch-none items-center justify-center rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-3 focus-visible:-outline-offset-3 focus-visible:outline-ring/50 disabled:cursor-default disabled:opacity-40 sm:h-8 sm:w-7"
           >
             <GripVerticalIcon className="size-4" />
           </button>
@@ -694,9 +694,11 @@ function StatusRow({
             type="button"
             aria-expanded={isOpen}
             aria-label={`edit status ${status.name}`}
+            // The list clips its rows, so the ring is drawn inside the
+            // button; `-mx-1 px-1` gives it room without moving the content.
             className={cn(
               bodyClass,
-              "cursor-pointer rounded-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
+              "-mx-1 cursor-pointer rounded-sm px-1 focus-visible:outline-3 focus-visible:-outline-offset-3 focus-visible:outline-ring/50",
             )}
             onClick={onToggle}
           >
