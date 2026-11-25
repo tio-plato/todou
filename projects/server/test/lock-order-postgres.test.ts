@@ -167,6 +167,25 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       )
     ).rows.map((row) => Number(row.id));
 
+  /** A project's statuses, in id order. */
+  const statusIds = async (projectId: number) =>
+    (
+      await observer.query<{ id: string }>(
+        "SELECT id FROM statuses WHERE project_id = $1 ORDER BY id",
+        [projectId],
+      )
+    ).rows.map((row) => Number(row.id));
+
+  /** A project's default statuses. */
+  const defaultsOf = async (projectId: number) =>
+    (
+      await observer.query<{ id: string }>(
+        `SELECT id FROM statuses WHERE project_id = $1 AND is_default
+         ORDER BY id`,
+        [projectId],
+      )
+    ).rows.map((row) => Number(row.id));
+
   const uploadDraft = async (slug: string, card: { number: number }) => {
     const form = new FormData();
     form.set("file", new File(["draft"], "draft.txt"));
@@ -234,6 +253,140 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       expect(history.rows.map((r) => r.slug)).toEqual(
         expect.arrayContaining(renames),
       );
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled(pending);
+    }
+  });
+
+  it("two reorders of one project's statuses queue instead of deadlocking", async () => {
+    const p = await project();
+    const ids = await statusIds(p.id);
+    const [s0, s1, s2] = ids;
+    if (s0 === undefined || s1 === undefined || s2 === undefined) {
+      throw new Error("no statuses");
+    }
+    const wanted = [s1, s0, ...ids.slice(2)];
+    // The statuses start at positions 0, 1, 2… in id order, so s2's position
+    // is already its index in the request.
+    const seeded = await observer.query<{ position: number }>(
+      "SELECT position FROM statuses WHERE project_id = $1 ORDER BY id",
+      [p.id],
+    );
+    expect(seeded.rows.map((row) => row.position)).toEqual(
+      ids.map((_, index) => index),
+    );
+
+    // The holder is another reorder, which locks project_meta before it
+    // reads or writes any status. It also moves s2 to the top. The request
+    // keeps s2 at the index it had before, so one that read the positions
+    // before its lock would write nothing to s2 and leave it on top.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        `SELECT project_id FROM project_meta WHERE project_id = $1
+         FOR NO KEY UPDATE`,
+        [p.id],
+      );
+      await holder.query("UPDATE statuses SET position = 1 WHERE id = $1", [
+        s0,
+      ]);
+      pending = send("PUT", `/projects/${p.slug}/statuses/order`, {
+        ids: wanted,
+      });
+      await waitForLockWaiters(1);
+      await holder.query("UPDATE statuses SET position = 2 WHERE id = $1", [
+        s1,
+      ]);
+      await holder.query("UPDATE statuses SET position = 0 WHERE id = $1", [
+        s2,
+      ]);
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(200);
+      const listed = await send("GET", `/projects/${p.slug}/statuses`);
+      expect(
+        ((await json(listed)) as Array<{ id: number }>).map((s) => s.id),
+      ).toEqual(wanted);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("making a status the default queues behind a reorder instead of deadlocking", async () => {
+    const p = await project();
+    const ids = await statusIds(p.id);
+    const [, s1, s2] = ids;
+    if (s1 === undefined || s2 === undefined) throw new Error("no statuses");
+    // The new default has a higher id than the old one, so taking the two by
+    // id would take the old one first too.
+    expect(await defaultsOf(p.id)).toEqual([s1]);
+
+    // The holder is a reorder, which locks project_meta before any status.
+    await holder.query("BEGIN");
+    let pending: Promise<Response> | undefined;
+    try {
+      await holder.query(
+        `SELECT project_id FROM project_meta WHERE project_id = $1
+         FOR NO KEY UPDATE`,
+        [p.id],
+      );
+      await holder.query("UPDATE statuses SET position = 1 WHERE id = $1", [
+        s2,
+      ]);
+      pending = send("PATCH", `/projects/${p.slug}/statuses/${s2}`, {
+        is_default: true,
+      });
+      await waitForLockWaiters(1);
+      await holder.query("UPDATE statuses SET position = 2 WHERE id = $1", [
+        s1,
+      ]);
+      await holder.query("COMMIT");
+      expect((await pending).status).toBe(200);
+      expect(await defaultsOf(p.id)).toEqual([s2]);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([pending]);
+    }
+  });
+
+  it("two statuses made the default at once queue and leave one default", async () => {
+    const p = await project();
+    const ids = await statusIds(p.id);
+    const [, s1, s2, s3] = ids;
+    if (s1 === undefined || s2 === undefined || s3 === undefined) {
+      throw new Error("no statuses");
+    }
+    expect(await defaultsOf(p.id)).toEqual([s1]);
+
+    // The holder is an edit of the old default alone, which locks nothing
+    // first. Were the two new defaults not to queue on project_meta, both
+    // demotions would wait for it, and the second would miss the default
+    // the first sets.
+    await holder.query("BEGIN");
+    const pending: Array<Promise<Response>> = [];
+    try {
+      await holder.query("UPDATE statuses SET color = $1 WHERE id = $2", [
+        "#123456",
+        s1,
+      ]);
+      pending.push(
+        send("PATCH", `/projects/${p.slug}/statuses/${s3}`, {
+          is_default: true,
+        }),
+      );
+      await waitForLockWaiters(1);
+      pending.push(
+        send("PATCH", `/projects/${p.slug}/statuses/${s2}`, {
+          is_default: true,
+        }),
+      );
+      await waitForLockWaiters(2);
+      await holder.query("COMMIT");
+      const responses = await Promise.all(pending);
+      expect(responses.map((r) => r.status)).toEqual([200, 200]);
+      expect(await defaultsOf(p.id)).toEqual([s2]);
     } finally {
       await holder.query("ROLLBACK");
       await Promise.allSettled(pending);
