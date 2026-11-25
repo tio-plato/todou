@@ -3715,6 +3715,10 @@ describe("baseline annotations on deleted text", () => {
   it.each([
     ["measured even", 123],
     ["measured a hair nearer the lower, as Firefox may", 122.99998],
+    [
+      "measured 0.039px nearer the lower, as Firefox did 131,072px down",
+      122.961,
+    ],
   ])(
     "joins a restored block's chip to the upper of two chips as near (%s)",
     async (_, lower) => {

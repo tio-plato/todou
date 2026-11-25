@@ -1058,10 +1058,12 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       // would draw its chip over them: it joins the nearest instead, and of
       // two as near the upper one.
       const off = (other: Chip) => Math.abs(other.top - chip.top);
-      // Firefox can measure a block halfway between two chips a hair nearer
-      // one of them: less than a thousandth of a pixel apart is as near.
+      // Firefox can measure a block halfway between two chips nearer one of
+      // them, the more the further down the page: up to 0.04px just past
+      // 131,072px from the window's top. No reader can tell a chip 0.05px
+      // nearer, so distances less than that apart are as near.
       const nearer = (a: Chip, b: Chip) =>
-        Math.abs(off(a) - off(b)) < 0.001 ? a.top - b.top : off(a) - off(b);
+        Math.abs(off(a) - off(b)) < 0.05 ? a.top - b.top : off(a) - off(b);
       const near = next.filter((other) => overlaps(off(other))).sort(nearer)[0];
       if (near !== undefined) {
         near.items = [...near.items, ...chip.items];
