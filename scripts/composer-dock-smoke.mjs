@@ -919,6 +919,23 @@ function readJump() {
   };
 }
 
+/**
+ * Wait for the page to stop moving. Scroll to bottom and New messages glide to
+ * where they land over up to 0.45 s, a placement every frame, so what a press
+ * landed on is read once six frames in a row have left `scrollY` where it was.
+ */
+function stopped(page) {
+  return evaluate(page, async () => {
+    let last = null;
+    let same = 0;
+    for (let frames = 0; frames < 600 && same < 6; frames += 1) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      same = window.scrollY === last ? same + 1 : 0;
+      last = window.scrollY;
+    }
+  });
+}
+
 /** One step of the reader's own scrolling: a wheel notch, or a short swipe. */
 function nudge(io, viewport, direction) {
   const x = viewport.width / 2;
@@ -1021,6 +1038,7 @@ async function jumpCases(context, card, viewport, label, dir) {
     if (viewport.mobile) await io.tap(x, y);
     else await io.click(x, y);
     await sleep(400);
+    await stopped(page);
     const clicked = await read();
     check(
       "click",
@@ -1119,6 +1137,7 @@ async function shortCases(context, card) {
 
     await io.tap(down.centre ?? 0, ((down.top ?? 0) + (down.bottom ?? 0)) / 2);
     await sleep(400);
+    await stopped(page);
     const clicked = await read();
     check(
       "click",
@@ -1164,6 +1183,7 @@ async function shortCases(context, card) {
       ((above.top ?? 0) + (above.bottom ?? 0)) / 2,
     );
     await sleep(600);
+    await stopped(page);
     const back = await evaluate(
       page,
       (comment) => ({
@@ -1255,6 +1275,7 @@ async function firstNewCase(context, fixture, viewport, label, size) {
     if (viewport.mobile) await io.tap(at.centre, y);
     else await io.click(at.centre, y);
     await sleep(600);
+    await stopped(page);
     const landed = await evaluate(
       page,
       (ids) => {
