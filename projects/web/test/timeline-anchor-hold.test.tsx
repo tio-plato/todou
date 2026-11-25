@@ -106,7 +106,9 @@ async function land() {
     { initialEntry: "/#comment-102" },
   );
   await waitFor(() => expect(reveals.length).toBe(1));
-  const page = FakeResizeObserver.instances.find((o) =>
+  // The hold's, the newest: the timeline's reading list watches the page as
+  // well, from the moment it mounts.
+  const page = FakeResizeObserver.instances.findLast((o) =>
     o.observed.includes(document.body),
   );
   return { view, reveals, page };
