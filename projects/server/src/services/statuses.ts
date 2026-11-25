@@ -89,6 +89,13 @@ export async function reorderStatuses(
   const db = await ctx.router.forProject(routeInfoOf(project));
 
   const result = await db.transaction(async (tx) => {
+    // project_meta first, before any status is read or written: every
+    // transaction writing several statuses queues there (see lockIssueRows).
+    const meta = await tx
+      .select({ lineId: projectMeta.blockClearStatusId })
+      .from(projectMeta)
+      .where(eq(projectMeta.projectId, project.id))
+      .for("no key update");
     const rows = await tx
       .select()
       .from(statuses)
@@ -123,10 +130,6 @@ export async function reorderStatuses(
       ordered.push({ ...row, position: index });
     }
 
-    const meta = await tx
-      .select({ lineId: projectMeta.blockClearStatusId })
-      .from(projectMeta)
-      .where(eq(projectMeta.projectId, project.id));
     const before = meta[0]?.lineId ?? null;
     const after = line === undefined ? before : line;
     if (after !== before) {
@@ -227,6 +230,14 @@ export async function updateStatus(
   }
   const row = await db.transaction(async (tx) => {
     if (input.is_default === true) {
+      // Demoting one status and promoting another writes two, so
+      // project_meta first, as every such transaction does (see
+      // lockIssueRows).
+      await tx
+        .select({ projectId: projectMeta.projectId })
+        .from(projectMeta)
+        .where(eq(projectMeta.projectId, project.id))
+        .for("no key update");
       // Only one default per project: becoming it demotes the previous one.
       await tx
         .update(statuses)
