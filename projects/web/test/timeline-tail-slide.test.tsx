@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { RevealedRunsProvider } from "../src/components/timeline/revealed-runs.tsx";
 import { Timeline } from "../src/components/timeline/timeline.tsx";
 import { TimelineDivider } from "../src/components/timeline/timeline-divider.tsx";
-import { useScrollInsets } from "../src/lib/scroll-insets.ts";
+import { endHeldAt, useScrollInsets } from "../src/lib/scroll-insets.ts";
 import { FakeResizeObserver } from "./fake-resize-observer.ts";
 import { renderWithProviders, testQueryClient } from "./render.tsx";
 
@@ -400,6 +400,8 @@ async function open({
       state.grown.set(key, (state.grown.get(key) ?? 0) + by);
       await settle();
     },
+    /** The reader's wheel, its scroll not yet applied. */
+    wheel: () => fireEvent.wheel(window),
     /** The reader's own scroll, gesture first, as a browser delivers it. */
     readerAt: (y: number) => {
       fireEvent.wheel(window);
@@ -902,5 +904,32 @@ describe("a card whose list starts on screen, read at its end", () => {
     await page.fillAll();
     expect(page.unit("comment-1")?.hasAttribute("data-unfilled")).toBe(false);
     expect(edit.getBoundingClientRect().top).toBe(before);
+  });
+});
+
+describe("the head arriving under a landing on the end", () => {
+  it("leaves the end held when the page grew above it in between", async () => {
+    const page = await open({ holdHead: true, end: true, above: 1000 });
+    expect(page.at()).toBe(page.endTarget());
+    // An image above loads first, and the hold puts the page back.
+    await page.growAbove(500);
+    expect(page.at()).toBe(page.endTarget());
+    await page.releaseHead();
+    await page.view.findByText("body 10");
+    await page.settle();
+    expect(endHeldAt()).not.toBeNull();
+    await page.growAbove(300);
+    expect(page.at()).toBe(page.endTarget());
+  });
+
+  it("keeps the end through the reader's first scroll in the frame the head arrives", async () => {
+    const page = await open({ holdHead: true, end: true, above: 1000 });
+    expect(page.at()).toBe(page.endTarget());
+    // The head commits, and the reader's wheel comes before the next frame.
+    await page.releaseHead();
+    await page.view.findByTestId("fold-block");
+    page.wheel();
+    await page.settle();
+    expect(page.at()).toBe(page.endTarget());
   });
 });

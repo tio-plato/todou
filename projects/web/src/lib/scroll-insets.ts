@@ -281,10 +281,10 @@ export function endHeldAt(): number | null {
  * than the page has grown since, or the other way. A page that grows before
  * the hold has put it back can still deliver the `scroll` of the last
  * placement, the target moved and nobody having moved the page. Scroll
- * anchoring, and the timeline keeping its place as its head mounts above,
- * move the page by what grew above what is on screen, which is never more
- * than all that grew, and usually move the target with it; a target above
- * what grew stays behind, to be put back once the hold hears of the growth.
+ * anchoring moves the page by what grew above what is on screen, which is
+ * never more than all that grew, and usually moves the target with it; a
+ * target above what grew stays behind, to be put back once the hold hears of
+ * the growth.
  *
  * However it lets go, but for a newer landing taking over, the page passes to
  * the reader's place (`useReadingList`), picked where the page is then: the
@@ -328,9 +328,21 @@ function hold(
     if (handOver && heir !== null && readingList === heir) heir.handOver();
   };
   const release = () => end(true);
+  // The reader takes over the page as they last saw it: what grew since the
+  // last frame, before the observer could put the page back, is put back
+  // first, or their place would be picked off a page never drawn. The head
+  // arriving and the reader's first scroll can fall in one frame.
+  const takeOver = () => {
+    if (
+      held?.release === release &&
+      document.documentElement.scrollHeight !== held.placedHeight
+    )
+      place(release);
+    release();
+  };
   observer.observe(container);
   for (const type of INPUTS) {
-    window.addEventListener(type, release, {
+    window.addEventListener(type, takeOver, {
       capture: true,
       passive: true,
       signal: controller.signal,

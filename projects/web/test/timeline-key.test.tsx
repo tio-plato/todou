@@ -31,7 +31,7 @@ import { testQueryClient } from "./render.tsx";
  * variables, so nothing below relies on this key to reach the right card. What
  * the key still owns is the state only a remount resets: an open row editor,
  * the "new messages" pill's refs, the initial scroll-to-bottom flag, and the
- * prepend compensation's two refs. None of those travel in mutation
+ * reader's place kept on the card they left. None of those travel in mutation
  * variables, so a reused row would carry the previous card's reading state
  * onto the next one.
  *
@@ -82,16 +82,6 @@ const cardItems = (card: number) =>
     comment(i + 1, `card ${card} comment ${i + 1}`),
   );
 
-/**
- * A folded card: the tail holds the newest comments and reports a `prev_cursor`,
- * so `Timeline` fetches a head the tail does not already cover. That leaves
- * `above` non-empty with a `remaining` gap — the shape the prepend
- * compensation at `timeline.tsx:139` exists for.
- */
-const headItems = (card: number) => [comment(101, `card ${card} head comment`)];
-const tailItems = (card: number) =>
-  [2, 3].map((id) => comment(id, `card ${card} comment ${id}`));
-
 const issue = (number: number) => ({
   id: number,
   number,
@@ -129,7 +119,7 @@ const json = (body: unknown) =>
   });
 
 /** Every reply the page and its column ask for on their way to rendering. */
-function stubPage({ folded = false }: { folded?: boolean } = {}): void {
+function stubPage(): void {
   vi.stubGlobal("fetch", (async (input: unknown) => {
     const url = String(input);
     if (url.endsWith("/api/me")) return json(user);
@@ -149,18 +139,7 @@ function stubPage({ folded = false }: { folded?: boolean } = {}): void {
     }
     if (url.includes("/timeline")) {
       const card = Number(/issues\/(\d+)\/timeline/.exec(url)?.[1]);
-      if (!folded) return json(page(cardItems(card)));
-      // The head request carries no `last` and no cursor; the tail asks for
-      // the newest page. A total above what either side holds is what leaves
-      // the gap the fold block stands for.
-      const isHead = !url.includes("last=1") && !/before=|after=/.test(url);
-      const items = isHead ? headItems(card) : tailItems(card);
-      return json({
-        items,
-        prev_cursor: isHead ? null : "p1",
-        next_cursor: "c1",
-        total_count: 40,
-      } satisfies TimelinePage);
+      return json(page(cardItems(card)));
     }
     if (/\/issues\/\d+$/.test(url)) {
       return json(issue(Number(/issues\/(\d+)$/.exec(url)?.[1])));
@@ -492,58 +471,5 @@ describe("the issue page's timeline, keyed by card", () => {
       0,
       DOC_HEIGHT - 800,
     ]);
-  });
-});
-
-/**
- * The one cost of the key that is a behaviour change rather than a repair, and
- * the reason the key needed its own verification.
- *
- * `prevAboveCount` and `lastScrollHeight` are refs, so a remount is the only
- * thing that zeroes them. A fresh instance whose head is already cached commits
- * with items above the seam against a `lastScrollHeight` of 0, and the prepend
- * compensation at `timeline.tsx:139` then asks for a scroll equal to the whole
- * document. On the usual arrival the preceding scroll-to-bottom hides it and
- * the browser clamps the overshoot; when a `#comment-<id>` anchor owns the
- * viewport, `revealBlock` runs later in a passive effect and settles the
- * position — measured in a browser, a permalink into a folded card lands on its
- * target and holds there, so the overshoot is not observable at the end state.
- *
- * Pinned rather than asserted-away: these are the numbers the key produces
- * today, so a change to them is noticed here rather than rediscovered in a
- * browser.
- */
-describe("the key's own cost on a folded card", () => {
-  it("asks for a full-document scroll once the remount has zeroed its refs", async () => {
-    stubPage({ folded: true });
-    const view = renderAt("/projects/p/issues/7");
-    await waitFor(() =>
-      expect(
-        within(view.container).getByText("card 7 head comment"),
-      ).toBeTruthy(),
-    );
-    const scrollBy = vi.spyOn(window, "scrollBy").mockImplementation(() => {});
-    vi.spyOn(window, "scrollTo").mockImplementation(() => {});
-    // happy-dom has no layout, so `scrollHeight` is 0 and the compensation
-    // would never run at all — the geometry has to be supplied. A folded card is
-    // a document far taller than the viewport.
-    const DOC_HEIGHT = 5_000;
-    vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(
-      DOC_HEIGHT,
-    );
-    vi.spyOn(window, "innerHeight", "get").mockReturnValue(800);
-    vi.spyOn(window, "scrollY", "get").mockReturnValue(0);
-
-    // Visit card 8 first so both its sides are cached: remounting onto a card
-    // that still has to fetch renders the skeleton and never reaches the
-    // compensation, which is what keeps this from firing on every cold arrival.
-    await goToCard(view, 8, "card 8 head comment");
-    await goToCard(view, 7, "card 7 head comment");
-    scrollBy.mockClear();
-
-    await goToCard(view, 8, "card 8 head comment");
-
-    const amounts = scrollBy.mock.calls.map((call) => call[1] as number);
-    expect(amounts).toContain(DOC_HEIGHT);
   });
 });
