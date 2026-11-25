@@ -1,9 +1,11 @@
 import { cleanup, render } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { usableViewport, useScrollInsets } from "../src/lib/scroll-insets.ts";
 import {
   useAutoHideHeader,
   useVisualViewportInsets,
+  VIEWPORT_CHROME_EVENT,
   visualViewportInsets,
 } from "../src/lib/viewport-chrome.ts";
 import { stubVisualViewport } from "./visual-viewport.ts";
@@ -214,6 +216,79 @@ describe("auto-hiding header (T-585)", () => {
     expect(hidden()).not.toBe("");
     on.unmount();
     expect(hidden()).toBe("");
+  });
+
+  it("tells the page each time it moves, and only then", () => {
+    mount();
+    const heard = vi.fn();
+    window.addEventListener(VIEWPORT_CHROME_EVENT, heard);
+    touch("touchstart");
+    scrollTo(2060);
+    scrollTo(2200);
+    expect(heard).toHaveBeenCalledTimes(2);
+    // All the way out: scrolling on moves nothing.
+    scrollTo(2300);
+    scrollTo(2400);
+    expect(heard).toHaveBeenCalledTimes(2);
+    window.removeEventListener(VIEWPORT_CHROME_EVENT, heard);
+  });
+
+  describe("and the scroll insets", () => {
+    function WithInsets() {
+      useAutoHideHeader(true);
+      useScrollInsets({});
+      return null;
+    }
+    beforeEach(() => {
+      // A sticky header slides by `--header-hide`: at once under a finger,
+      // over the 150ms transition in styles.css while it settles.
+      let from = 0;
+      let to = 0;
+      let since = 0;
+      const slid = () =>
+        from + (to - from) * Math.min(1, (Date.now() - since) / 150);
+      const setProperty = root.style.setProperty.bind(root.style);
+      vi.spyOn(root.style, "setProperty").mockImplementation(
+        (name, value, priority) => {
+          if (name === "--header-hide") {
+            const next = Number.parseFloat(value ?? "0");
+            from = root.hasAttribute("data-header-settling") ? slid() : next;
+            to = next;
+            since = Date.now();
+          }
+          setProperty(name, value, priority);
+        },
+      );
+      const header = document.querySelector("header") as HTMLElement;
+      vi.spyOn(header, "getBoundingClientRect").mockImplementation(
+        () =>
+          ({
+            top: -slid(),
+            bottom: HEADER - slid(),
+            height: HEADER,
+          }) as DOMRect,
+      );
+      render(createElement(WithInsets));
+      expect(root.style.scrollPaddingTop).toBe(`${8 + HEADER}px`);
+    });
+
+    it("follow the header once it has settled", () => {
+      touch("touchstart");
+      scrollTo(2060);
+      touch("touchend");
+      vi.advanceTimersByTime(120 + 170);
+      expect(root.style.scrollPaddingTop).toBe("8px");
+    });
+
+    it("follow the header while the reader drags it", () => {
+      touch("touchstart");
+      scrollTo(2060);
+      // One frame on, long before it would settle: a caret revealed now
+      // has to clear the header where it stands.
+      vi.advanceTimersByTime(16);
+      expect(root.style.scrollPaddingTop).toBe(`${8 + HEADER - 60}px`);
+      expect(usableViewport().top).toBe(8 + HEADER - 60);
+    });
   });
 
   it("comes back in view on the next page (T-594)", () => {
