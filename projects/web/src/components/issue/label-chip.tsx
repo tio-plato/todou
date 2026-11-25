@@ -1,7 +1,12 @@
 import type { Label } from "@todou/shared";
 import { XIcon } from "lucide-react";
 import { Fragment } from "react";
-import { groupLabelsByPrefix, labelInk, splitLabelName } from "@/lib/labels.ts";
+import {
+  groupLabelsByPrefix,
+  labelInk,
+  solidLabelText,
+  splitLabelName,
+} from "@/lib/labels.ts";
 import { useResolvedTheme } from "@/lib/theme.ts";
 
 /**
@@ -105,6 +110,12 @@ function LabelGroup({
  * is unreadable in a light theme when it is light, and in a dark one when it
  * is dark.
  *
+ * A label whose style is `solid` fills the chip and its border with the
+ * colour itself and writes in white or black (`solidLabelText`). Any other
+ * style, a missing one included, is tinted: a label from an older server or
+ * a timeline snapshot has none, and a newer server may send a style this
+ * build does not know.
+ *
  * Vertical metrics (text-xs, py-0.5, border) must equal StatusPill's: the two
  * share the list's meta line and the board card, and any difference shows up
  * as misaligned boxes and baselines (T-98).
@@ -117,11 +128,19 @@ function Chip({ label, text }: { label: Label; text: string }) {
   return (
     <span
       className="inline-flex min-w-0 items-center rounded-full border px-2 py-0.5 text-xs font-medium whitespace-nowrap"
-      style={{
-        backgroundColor: `${label.color}22`,
-        color: labelInk(label.color, theme),
-        borderColor: `${label.color}55`,
-      }}
+      style={
+        label.style === "solid"
+          ? {
+              backgroundColor: label.color,
+              color: solidLabelText(label.color),
+              borderColor: label.color,
+            }
+          : {
+              backgroundColor: `${label.color}22`,
+              color: labelInk(label.color, theme),
+              borderColor: `${label.color}55`,
+            }
+      }
       title={label.name}
     >
       {/* `text-overflow` has no effect on the inline-flex box itself, hence the
