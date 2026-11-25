@@ -2,8 +2,10 @@ import { isApplePlatform } from "@/lib/platform.ts";
 
 /**
  * Set on a pierre host (`diffs-container`) while a selection made with a
- * finger has an end in its shadow root; styles.css then lets that file's
- * line notes pass the selection handle through.
+ * finger has an end in its shadow root; the
+ * `diffs-container[data-touch-selection] > [slot^="annotation-"]` rules in
+ * styles.css then let that file's line notes pass the selection handle
+ * through.
  */
 export const TOUCH_SELECTION_ATTR = "data-touch-selection";
 
