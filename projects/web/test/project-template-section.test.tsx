@@ -463,6 +463,10 @@ const rowOf = (name: string) =>
 const applyButton = () =>
   screen.getByRole("button", { name: /Apply/ }) as HTMLButtonElement;
 
+/** Waits `ms` of real time, as a reader does between presses. */
+const wait = (ms: number) =>
+  act(() => new Promise((resolve) => setTimeout(resolve, ms)));
+
 /** How a component draws `ui`, rendered apart from the page. */
 const drawn = (ui: ReactElement) =>
   render(ui, { container: document.createElement("div") }).container.innerHTML;
@@ -786,6 +790,7 @@ describe("applying a template", () => {
     expect(server.applies()).toEqual([]);
 
     fireEvent.click(applyButton());
+    await wait(600);
     fireEvent.click(
       await screen.findByRole("button", { name: "Delete and apply 7 changes" }),
     );
@@ -794,6 +799,78 @@ describe("applying a template", () => {
       selected: [...DEFAULT_SELECTED, "label.delete:42"],
       label_issues: { "label.delete:42": 2 },
     });
+  });
+
+  it("confirms nothing from a double-click on Apply, or presses that keep coming quickly after it", async () => {
+    const server = fakeServer();
+    renderPage();
+    await pickKanban();
+    fireEvent.click(
+      box("Delete label kind:docs — comes off 2 issues (1 in the trash)"),
+    );
+    // A double-click on Apply: its second press lands on the button that
+    // took Apply's place. The mouse moved a few pixels between them, so
+    // the browser counts that press as a single click.
+    fireEvent.click(applyButton(), { detail: 1 });
+    const confirm = screen.getByRole("button", {
+      name: "Delete and apply 7 changes",
+    });
+    fireEvent.click(confirm, { detail: 1 });
+    // Four more presses on it, each 0.15 s after the last: the last comes
+    // 0.6 s after Apply.
+    for (let i = 0; i < 4; i++) {
+      await wait(150);
+      fireEvent.click(confirm);
+    }
+    await wait(20);
+    expect(server.applies()).toEqual([]);
+    expect(screen.getByText("This cannot be undone.")).toBeTruthy();
+  });
+
+  it("confirms a press made after a pause, though the bar drew again just before it", async () => {
+    const server = fakeServer();
+    renderPage();
+    await pickKanban();
+    fireEvent.click(
+      box("Delete label kind:docs — comes off 2 issues (1 in the trash)"),
+    );
+    fireEvent.click(applyButton());
+    const confirm = screen.getByRole("button", {
+      name: "Delete and apply 7 changes",
+    }) as HTMLButtonElement;
+    await wait(600);
+    // The preview is read again with the same counts: the question stays,
+    // drawn again as the read starts and ends.
+    fireEvent(window, new Event("visibilitychange"));
+    await waitFor(() => expect(server.previews()).toHaveLength(2));
+    await waitFor(() => expect(confirm.disabled).toBe(false));
+    fireEvent.click(confirm);
+    await waitFor(() => expect(server.applies()).toHaveLength(1));
+  });
+
+  it("confirms nothing from a slow double-click the browser counts as one, and confirms the press after it", async () => {
+    const server = fakeServer();
+    renderPage();
+    await pickKanban();
+    fireEvent.click(
+      box("Delete label kind:docs — comes off 2 issues (1 in the trash)"),
+    );
+    // A double-click slower than 0.5 s that the browser still counts as
+    // one: its second press has detail 2.
+    fireEvent.click(applyButton(), { detail: 1 });
+    const confirm = screen.getByRole("button", {
+      name: "Delete and apply 7 changes",
+    });
+    await wait(600);
+    fireEvent.click(confirm, { detail: 2 });
+    await wait(20);
+    expect(server.applies()).toEqual([]);
+    expect(screen.getByText("This cannot be undone.")).toBeTruthy();
+
+    // A pause, then one press as a mouse sends it: it confirms.
+    await wait(600);
+    fireEvent.click(confirm, { detail: 1 });
+    await waitFor(() => expect(server.applies()).toHaveLength(1));
   });
 
   it("withdraws the question when a preview read again changes it, and asks again with the new count", async () => {
@@ -847,6 +924,7 @@ describe("applying a template", () => {
     expect(
       await screen.findByText("comes off 4 issues (1 in the trash)."),
     ).toBeTruthy();
+    await wait(600);
     fireEvent.click(
       screen.getByRole("button", { name: "Delete and apply 7 changes" }),
     );

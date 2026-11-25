@@ -93,6 +93,9 @@ export function PreparingPlan() {
 
 type LabelLoss = Extract<ChangeRow, { type: "label_delete" }>;
 
+/** Presses closer together than this are taken for one double-click. */
+const DOUBLE_CLICK_MS = 500;
+
 /**
  * Held to the bottom of the window: Apply, and what it deletes. Before
  * deleting labels that cards carry it asks again, saying which come off
@@ -138,6 +141,25 @@ export function ApplyBar({
       applyButton.current?.focus();
     }
   }, [moved]);
+  // The second press of a double-click on Apply lands where Apply was,
+  // which "Delete and apply" may cover once the first press has asked. A
+  // press on it confirms nothing when it comes less than a double-click
+  // after the last press on either button, or when the browser counts it
+  // as a further click of one, as some do for a slower double-click set
+  // in the system; it counts as a press itself, so a run of them confirms
+  // nothing until it pauses.
+  const lastPress = useRef(Number.NEGATIVE_INFINITY);
+  const hasty = ({
+    timeStamp,
+    detail,
+  }: {
+    timeStamp: number;
+    detail: number;
+  }) => {
+    const gap = timeStamp - lastPress.current;
+    lastPress.current = timeStamp;
+    return gap < DOUBLE_CLICK_MS || detail > 1;
+  };
   const what = [
     statuses.length > 0 &&
       `${statuses.length} ${statuses.length === 1 ? "status" : "statuses"}`,
@@ -166,7 +188,9 @@ export function ApplyBar({
             <Button
               variant="destructive"
               disabled={disabled}
-              onClick={onConfirm}
+              onClick={(event) => {
+                if (!hasty(event)) onConfirm();
+              }}
             >
               Delete and apply {plural(count, "change")}
             </Button>
@@ -186,7 +210,10 @@ export function ApplyBar({
           <Button
             ref={applyButton}
             disabled={disabled || count === 0}
-            onClick={onApply}
+            onClick={(event) => {
+              hasty(event);
+              onApply();
+            }}
             aria-describedby={moved ? note : undefined}
           >
             {count === 0 ? "Apply" : `Apply ${plural(count, "change")}`}
