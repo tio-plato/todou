@@ -817,6 +817,25 @@ describe("landing on the end of the conversation", () => {
     expect(targets).toEqual([500 - usableViewport().top]);
   });
 
+  it("lets go of a landing moved with no input to where the landing before it put the page", () => {
+    const { targets, moveTo } = page({ y: 2000 });
+    landAtBottom();
+    resizePage();
+    // The reader takes over, and New messages lands from where they are.
+    fireEvent.wheel(window);
+    moveTo(700);
+    revealAboveEnd(item(500));
+    // Find in page goes to a match where the first landing held the page.
+    moveTo(2000 - VIEWPORT);
+    fireEvent.scroll(window);
+    resizePage();
+    expect(targets).toEqual([
+      2000 - VIEWPORT,
+      2000 - VIEWPORT,
+      500 - usableViewport().top,
+    ]);
+  });
+
   it("keeps holding through the scroll its own placement made", () => {
     const { targets } = page({ y: 2000 });
     landAtBottom();
@@ -1158,6 +1177,56 @@ describe("landing on the end of the conversation", () => {
       expect(isGliding()).toBe(false);
       frames(10);
       expect(targets).toHaveLength(3);
+    });
+
+    // WebKit on iOS reports a placement back late, once the next ones are
+    // made: `scrollY` reads for a moment where the glide put the page a
+    // frame or two before.
+    it("glides on through a late report of where it put the page, and still lets go of a move nobody made", () => {
+      glide();
+      const { targets, moveTo } = page({ y: 4000 });
+      moveTo(500);
+      const reportLate = (y: number) => {
+        const last = targets.at(-1) ?? 0;
+        moveTo(y);
+        fireEvent.scroll(window);
+        moveTo(last);
+      };
+      landAtBottom({ glide: true });
+      frames(2);
+      // Two placements behind: where the page stood as the glide began, then
+      // where a frame of the glide put it.
+      reportLate(500);
+      frames(2);
+      reportLate(targets.at(-3) ?? 0);
+      const last = targets.at(-1) ?? 0;
+      frames(1);
+      expect(isGliding()).toBe(true);
+      expect(targets.at(-1)).toBeGreaterThan(last);
+      // iOS scrolling to the top at a tap on the status bar.
+      moveTo(0);
+      fireEvent.scroll(window);
+      const placed = [...targets];
+      frames(40);
+      expect(targets).toEqual(placed);
+      expect(isGliding()).toBe(false);
+    });
+
+    it("keeps holding through a late report of the glide's last frame once it has gone straight to the stop", () => {
+      glide();
+      const end = { y: 4000 };
+      const { targets, moveTo } = page(end);
+      landAtBottom({ glide: true });
+      frames(2);
+      const last = targets.at(-1) ?? 0;
+      // A long task holds the next frame back past the glide's end.
+      frames(1, 1000);
+      moveTo(last);
+      fireEvent.scroll(window);
+      moveTo(4000 - VIEWPORT);
+      end.y = 4400;
+      resizePage();
+      expect(targets.at(-1)).toBe(4400 - VIEWPORT);
     });
   });
 
