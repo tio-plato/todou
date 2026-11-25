@@ -1008,6 +1008,35 @@ const ops: Record<string, [number, Op]> = {
       return request(u, "DELETE", `/projects/${s}/labels/${label}`);
     },
   ],
+  // Two reorders of one project's statuses and a new default, at once; one
+  // reorder also sets the block clear line.
+  statusOrder: [
+    1,
+    async (u) => {
+      const s = slugOf();
+      const ids = live.statuses.get(s) ?? [];
+      if (ids.length < 2) return null;
+      const shuffled = () =>
+        ids
+          .map((id) => [Math.random(), id] as const)
+          .sort(([a], [b]) => a - b)
+          .map(([, id]) => id);
+      return worstOf(
+        await Promise.all([
+          request(u, "PUT", `/projects/${s}/statuses/order`, {
+            ids: shuffled(),
+            block_clear_status_id: pick(ids),
+          }),
+          request(u, "PUT", `/projects/${s}/statuses/order`, {
+            ids: shuffled(),
+          }),
+          request(u, "PATCH", `/projects/${s}/statuses/${pick(ids)}`, {
+            is_default: true,
+          }),
+        ]),
+      );
+    },
+  ],
   // Two renames of one project at once.
   rename: [
     1,
