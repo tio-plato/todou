@@ -76,6 +76,13 @@ async function seedFixture(serverPort) {
     display_name: "Ring Agent",
   });
   await call("PUT", `${project}/members/${agent.id}`, { role: "writer" });
+  // An agent page whose name truncates at every width, outside the project so
+  // no other row's page changes.
+  const longAgent = await call("POST", "/agents", {
+    login: `ring-long-${randomUUID().slice(0, 6)}`,
+    display_name:
+      "Ring Agent whose display name is long enough to truncate on every width",
+  });
 
   // Every sidebar section is filled, but the twenty spec files live on their
   // own card: the sidebar lists the latest spec's files and would outgrow a
@@ -167,6 +174,7 @@ async function seedFixture(serverPort) {
     slug,
     cookie,
     login: viewer.login,
+    agent: longAgent.login,
     sidebar: sidebar.number,
     spec: specCard.number,
   };
@@ -379,6 +387,35 @@ function rowsFor(fixture) {
           pick: "last",
         },
       ],
+    },
+    {
+      id: "15",
+      path: `${project}/settings/statuses`,
+      width: 390,
+      height: 900,
+      must: [
+        {
+          label: "first edit status",
+          selector: 'button[aria-label^="edit status "]',
+        },
+        { label: "first move handle", selector: 'button[aria-label^="Move "]' },
+      ],
+    },
+    {
+      id: "16",
+      path: `${project}/settings/labels`,
+      width: 1280,
+      height: 900,
+      must: [
+        { label: "edit label", selector: 'button[aria-label^="edit label "]' },
+      ],
+    },
+    {
+      id: "17",
+      path: `/settings/agents/${fixture.agent}`,
+      width: 1280,
+      height: 900,
+      must: [{ label: "agent name", selector: "h1 a" }],
     },
   ];
 }

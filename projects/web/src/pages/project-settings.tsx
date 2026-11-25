@@ -1353,7 +1353,10 @@ export function LabelsSection({ slug }: { slug: string }) {
                     type="button"
                     aria-expanded={isOpen}
                     aria-label={`edit label ${label.name}`}
-                    className="flex min-w-0 flex-1 cursor-pointer items-center self-stretch rounded-sm text-left outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                    // The list clips its rows, so the ring is drawn inside
+                    // the button; `-mx-1 px-1` gives it room without moving
+                    // the chip.
+                    className="-mx-1 flex min-w-0 flex-1 cursor-pointer items-center self-stretch rounded-sm px-1 text-left focus-visible:outline-3 focus-visible:-outline-offset-3 focus-visible:outline-ring/50"
                     onClick={() => toggle(label)}
                   >
                     <LabelChip

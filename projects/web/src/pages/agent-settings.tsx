@@ -77,11 +77,15 @@ export function AgentSettings({ login }: { login: string }) {
         <div className="flex min-w-0 items-center gap-3.5">
           <UserAvatar user={agent} badge className="size-10 shrink-0" />
           <div className="min-w-0 flex-1">
-            <h1 className="truncate text-xl font-semibold">
+            {/* `truncate` clips: `p-1` gives the name link's focus outline
+                4px to draw in, and `-m-1` takes it back out of the layout.
+                A long name is truncated by the link itself, so its box stops
+                at the content edge instead of running past the clip. */}
+            <h1 className="-m-1 truncate p-1 text-xl font-semibold">
               <Link
                 to="/users/$ref"
                 params={{ ref: agent.login }}
-                className="hover:underline"
+                className="inline-block max-w-full truncate align-top hover:underline"
               >
                 {agent.display_name}
               </Link>
