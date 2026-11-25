@@ -8,7 +8,15 @@ import {
   waitFor,
 } from "@testing-library/react";
 import type { SpecReviewSubmitInput } from "@todou/shared";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import { MarkdownView } from "../src/components/shared/markdown-view.tsx";
 import {
   blockForLine,
@@ -796,6 +804,33 @@ describe("ReviewSubmitDialog: responsive controls (T-443)", () => {
       expect(client.getQueryState(["me"])?.status).toBe("success");
     });
   }
+
+  it.each([390, 1280])(
+    "at %ipx opens with focus on the summary",
+    async (width) => {
+      reviewViewport(width);
+      stubFetch();
+      const { client } = mount();
+      await settled(client);
+      expect(document.activeElement).toBe(
+        screen.getByLabelText("Review summary"),
+      );
+    },
+  );
+
+  it("pulls focus back to the summary when the page behind takes it after opening", async () => {
+    reviewViewport(1280);
+    stubFetch();
+    const outside = document.createElement("button");
+    document.body.append(outside);
+    onTestFinished(() => outside.remove());
+    const { client } = mount();
+    await settled(client);
+    act(() => outside.focus());
+    expect(document.activeElement).toBe(
+      screen.getByLabelText("Review summary"),
+    );
+  });
 
   it.each([640, 1280])(
     "at %ipx exposes the verdict buttons and Cancel closes without posting",
