@@ -4,7 +4,7 @@ import {
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query";
-import { useParams } from "@tanstack/react-router";
+import { useParams, useRouter, useRouterState } from "@tanstack/react-router";
 import {
   can,
   formatRef,
@@ -13,7 +13,7 @@ import {
   type Status,
 } from "@todou/shared";
 import { CheckIcon, PencilIcon, Trash2Icon, XIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   issueQuery,
@@ -37,6 +37,7 @@ import {
   AttachmentList,
   AttachmentSidebarSection,
 } from "@/components/issue/attachment-list.tsx";
+import { QuestionBadge } from "@/components/issue/attention-badge.tsx";
 import { BlocksSection } from "@/components/issue/blocks-section.tsx";
 import {
   EntryActionsMenu,
@@ -94,12 +95,20 @@ import { RevealedRunsProvider } from "@/components/timeline/revealed-runs.tsx";
 import { SelectionQuote } from "@/components/timeline/selection-quote.tsx";
 import { Timeline } from "@/components/timeline/timeline.tsx";
 import { TimelineDivider } from "@/components/timeline/timeline-divider.tsx";
+import { pressQuestionLanding } from "@/components/timeline/use-question-landing.ts";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDockCover } from "@/lib/dock-cover.ts";
 import { useRefCompletion } from "@/lib/editor/ref-completion.ts";
+import {
+  isQuestionLandingHash,
+  questionLandingHash,
+  readQuestionStep,
+  withQuestionStep,
+} from "@/lib/question-landing.ts";
 import { useScrollInsets } from "@/lib/scroll-insets.ts";
+import { parseTimelineAnchor } from "@/lib/timeline-anchors.ts";
 import { useDirtySource } from "@/lib/unsaved-guard.ts";
 import { SM_UP, useMediaQuery, XL_UP } from "@/lib/use-media-query.ts";
 import { cn } from "@/lib/utils";
@@ -161,6 +170,14 @@ export function IssueDetailPage() {
   // permalink changes the location, and opening the run it names is exactly
   // what the reveal state is for (T-327).
   const cardKey = `${slug}/${issueNumber}`;
+  // One element for the heading and its mirror alike.
+  const questionBadge = !trashed && issue.data.open_questions > 0 && (
+    <CardQuestionBadge
+      slug={slug}
+      issueNumber={issueNumber}
+      count={issue.data.open_questions}
+    />
+  );
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_240px]">
@@ -182,7 +199,12 @@ export function IssueDetailPage() {
               issue={issue.data}
               watchTarget={titleRef}
               rowRef={rowRef}
-              mirror={<RevealAllEye />}
+              mirror={
+                <span className="flex items-center gap-2">
+                  {questionBadge}
+                  <RevealAllEye />
+                </span>
+              }
             />
             <div ref={contentRef} className="space-y-4">
               {trashed && <TrashBanner slug={slug} issue={issue.data} />}
@@ -209,6 +231,7 @@ export function IssueDetailPage() {
                     slug={slug}
                     issue={issue.data}
                     readOnly={trashed}
+                    badge={questionBadge}
                   />
                 </div>
               </div>
@@ -311,6 +334,86 @@ export function IssueDetailPage() {
   );
 }
 
+/**
+ * The question badge on the card's own page. A press goes on from the comment
+ * the address names, else from the earliest; an entry still being read keeps
+ * its own start, so a second press before it lands does not lose it. It reads
+ * the address itself, so a landing re-renders the badge and not the card.
+ *
+ * A press asks in the entry's state and leaves the address as it is until the
+ * landing writes the comment it found: every address a page writes is a row in
+ * the browser's history, and the request is only a step on the way.
+ * While the entry still holds a request, being read or after a failed read,
+ * a press writes nothing and goes to the landing instead.
+ * The link itself still names the request, for a new tab and a copied link.
+ */
+function CardQuestionBadge({
+  slug,
+  issueNumber,
+  count,
+}: {
+  slug: string;
+  issueNumber: number;
+  count: number;
+}) {
+  const router = useRouter();
+  const hash = useRouterState({ select: (s) => s.location.hash });
+  // A request the entry still holds, being read or after a failed read: a
+  // Retry asks from the earliest while the address still names the comment
+  // that went missing.
+  const pending = useRouterState({
+    select: (s) => readQuestionStep(s.location.state)?.after,
+  });
+  const anchor = parseTimelineAnchor(hash);
+  const entered = isQuestionLandingHash(hash);
+  const after =
+    pending !== undefined
+      ? pending
+      : anchor?.kind === "comment"
+        ? anchor.id
+        : null;
+  return (
+    <QuestionBadge
+      slug={slug}
+      issueNumber={issueNumber}
+      count={count}
+      hash={entered ? hash : questionLandingHash(after)}
+      // Its target is this page: matched without the hash, it would always
+      // be marked as the current one.
+      activeOptions={{ includeHash: true }}
+      onClick={(event) => {
+        // The title mirror reads a click on itself as "back to the top".
+        event.stopPropagation();
+        // A modified click opens a new tab.
+        if (
+          event.button !== 0 ||
+          event.ctrlKey ||
+          event.metaKey ||
+          event.shiftKey ||
+          event.altKey
+        )
+          return;
+        event.preventDefault();
+        // Asking again for the request the entry holds would write the same
+        // address and state, which the router takes for no move at all.
+        if (entered || pending !== undefined) {
+          pressQuestionLanding(slug, issueNumber);
+          return;
+        }
+        void router.navigate({
+          hash: true,
+          search: true,
+          replace: true,
+          resetScroll: false,
+          hashScrollIntoView: false,
+          ignoreBlocker: true,
+          state: withQuestionStep(after),
+        });
+      }}
+    />
+  );
+}
+
 /** Whether any of `el` is on screen. Engines without the observer say no. */
 function useInView(el: Element | null): boolean {
   const [inView, setInView] = useState(false);
@@ -369,10 +472,13 @@ export function TitleBlock({
   slug,
   issue,
   readOnly = false,
+  badge,
 }: {
   slug: string;
   issue: Issue;
   readOnly?: boolean;
+  /** Follows the heading, outside it, so it adds nothing to its name. */
+  badge?: ReactNode;
 }) {
   const refPrefix = useRefPrefix(slug);
   const refLeads = useRefPlacement("detail") === "before";
@@ -463,7 +569,7 @@ export function TitleBlock({
           unbroken token stretches the box past the viewport and the whole page
           scrolls sideways. `anywhere` is the variant that also folds the
           soft-wrap opportunities into the min-content width. */}
-      <h1 className="text-2xl font-semibold wrap-anywhere">
+      <h1 className="min-w-0 text-2xl font-semibold wrap-anywhere">
         {refLeads ? (
           <>
             <span className="font-normal text-muted-foreground">
@@ -480,6 +586,11 @@ export function TitleBlock({
           </>
         )}
       </h1>
+      {/* As tall as the heading's first line, so the pill centres on it, and
+          taking the free space, so it follows the title rather than the edge. */}
+      {badge && (
+        <span className="mr-auto flex h-8 shrink-0 items-center">{badge}</span>
+      )}
       {!readOnly && (
         <Button
           size="icon-sm"
