@@ -9,6 +9,7 @@ import {
   landAtBottom,
   restingScrollY,
   revealAboveEnd,
+  revealBlock,
   usableViewport,
   useScrollInsets,
 } from "../src/lib/scroll-insets.ts";
@@ -179,11 +180,23 @@ function Harness({ composer }: { composer: "mounted" | "absent" }) {
   return createElement(
     "div",
     null,
-    createElement("div", { ref: bar, "data-h": "40" }),
+    createElement(
+      "div",
+      { ref: bar, "data-h": "40", "data-top": "56" },
+      createElement(
+        "a",
+        { href: "#", "data-h": "24", "data-top": "64" },
+        "back",
+      ),
+    ),
     composer === "mounted"
       ? createElement(
           "div",
-          { ref: composerRef, "data-h": "93" },
+          {
+            ref: composerRef,
+            "data-h": "93",
+            "data-top": String(window.innerHeight - 93),
+          },
           createElement("textarea", { "aria-label": "draft" }),
           createElement("div", null, "quoted line"),
         )
@@ -259,11 +272,11 @@ describe("useScrollInsets (T-299)", () => {
     expect(insets()).toEqual({ top: "48px", bottom: "0px" });
   });
 
-  it("keeps an overlay's inset while a link in it holds focus", () => {
+  it("lands clear of an overlay while a link in it holds focus", () => {
     stubHeights();
     const view = render(createElement(Harness, { composer: "mounted" }));
     // A clicked link keeps focus, and one that lands the page elsewhere from
-    // a bar dropped out of the padding brings its target up under the bar.
+    // a bar dropped out of the landing brings its target up under the bar.
     const bar = view.container.querySelector('[data-h="40"]');
     if (bar === null) throw new Error("the harness has no top bar");
     const link = document.createElement("a");
@@ -272,7 +285,10 @@ describe("useScrollInsets (T-299)", () => {
     bar.append(link);
     link.focus();
     expect(document.activeElement).toBe(link);
-    expect(insets()).toEqual({ top: "48px", bottom: "93px" });
+    expect(usableViewport()).toEqual({
+      top: 48,
+      height: window.innerHeight - 48 - 93,
+    });
   });
 
   it("drops an overlay's inset while an editable region in it holds focus", () => {
@@ -349,6 +365,186 @@ describe("useScrollInsets (T-299)", () => {
   });
 });
 
+/** The shell header at `top`, holding one button 16px below its top edge. */
+function shellHeader(top = 0): HTMLButtonElement {
+  const header = document.createElement("header");
+  header.dataset.h = "57";
+  header.dataset.top = String(top);
+  const button = document.createElement("button");
+  button.type = "button";
+  button.dataset.h = "24";
+  button.dataset.top = String(top + 16);
+  header.append(button);
+  document.body.append(header);
+  return button;
+}
+
+/** `window.scrollY`, moved only by the test and by `window.scrollTo`. */
+function pagePosition(y: number): { y: number } {
+  const page = { y };
+  vi.spyOn(window, "scrollY", "get").mockImplementation(() => page.y);
+  vi.spyOn(window, "scrollTo").mockImplementation((...args: unknown[]) => {
+    const [first, second] = args;
+    page.y =
+      typeof first === "object" && first !== null
+        ? ((first as ScrollToOptions).top ?? page.y)
+        : Number(second);
+  });
+  return page;
+}
+
+describe("focus inside an overlay", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    for (const header of document.querySelectorAll("header")) header.remove();
+  });
+
+  it("leaves the control holding focus uncovered by the inset", () => {
+    const button = shellHeader();
+    stubHeights();
+    const view = render(createElement(Harness, { composer: "mounted" }));
+    const top = () => Number.parseFloat(insets().top);
+
+    // WebKit reveals a newly focused control against the inset after
+    // focusin, and both engines reveal the caret against it while typing: an
+    // inset reaching over the control scrolls the page, and the sticky
+    // overlay rides along, so nothing is ever revealed.
+    button.focus();
+    expect(top()).toBeLessThanOrEqual(16);
+    view.getByText("back").focus();
+    expect(top()).toBeLessThanOrEqual(64);
+  });
+
+  it("keeps the composer holding focus uncovered once scrolling pins it", () => {
+    stubHeights();
+    const view = render(createElement(Harness, { composer: "mounted" }));
+    const draft = view.getByLabelText("draft");
+    const composer = draft.parentElement as HTMLElement;
+
+    // Focused where it sits in the page at its end, short of the bottom edge;
+    // then the reader scrolls up and it pins there. Nothing re-measures on
+    // scroll, and a caret behind the inset scrolls the page on every key.
+    composer.dataset.top = String(window.innerHeight - 400);
+    draft.focus();
+    composer.dataset.top = String(window.innerHeight - 93);
+    fireEvent.scroll(window);
+    expect(Number.parseFloat(insets().bottom)).toBeLessThanOrEqual(0);
+  });
+
+  it("puts the page back when Tab's reveal moved it under a pinned control", () => {
+    shellHeader();
+    stubHeights();
+    const view = render(createElement(Harness, { composer: "mounted" }));
+    const page = pagePosition(1000);
+
+    // Chromium reveals the new focus before its focus event, against the
+    // inset of the moment the old one lost it, with every overlay counted.
+    fireEvent.keyDown(window, { key: "Tab" });
+    page.y = 554;
+    view.getByText("back").focus();
+    expect(page.y).toBe(1000);
+  });
+
+  it("keeps a reveal of a control outside every overlay", () => {
+    shellHeader();
+    stubHeights();
+    const view = render(createElement(Harness, { composer: "mounted" }));
+    const page = pagePosition(1000);
+
+    // A comment link hidden behind the title bar is what the inset is for.
+    fireEvent.keyDown(window, { key: "Tab" });
+    page.y = 554;
+    view.getByText("elsewhere").focus();
+    expect(page.y).toBe(554);
+  });
+
+  it("forgets where a keystroke found the page once its task is over", async () => {
+    shellHeader();
+    stubHeights();
+    const view = render(createElement(Harness, { composer: "mounted" }));
+    const page = pagePosition(1000);
+
+    // The reader scrolls away and clicks into an overlay much later: the old
+    // position is no longer theirs to be put back to.
+    fireEvent.keyDown(window, { key: "Tab" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    page.y = 554;
+    view.getByText("back").focus();
+    expect(page.y).toBe(554);
+  });
+
+  it("keeps a reveal that brought an overlay's control on screen", () => {
+    // Slid away above the viewport, as the header does on a narrow screen
+    // while the reader scrolls down: putting the page back would leave the
+    // focused control out of sight.
+    const button = shellHeader(-57);
+    stubHeights();
+    render(createElement(Harness, { composer: "mounted" }));
+    const page = pagePosition(1000);
+
+    fireEvent.keyDown(window, { key: "Tab" });
+    page.y = 554;
+    button.focus();
+    expect(page.y).toBe(554);
+  });
+
+  it("keeps a reveal that brought a control below the screen into sight", () => {
+    stubHeights();
+    const view = render(createElement(Harness, { composer: "mounted" }));
+    const draft = view.getByLabelText("draft");
+    const page = pagePosition(1000);
+
+    // A composer sitting in the page further down, not pinned to the bottom:
+    // put back, the page would leave its control below the screen.
+    draft.dataset.top = String(window.innerHeight + 220);
+    draft.dataset.h = "40";
+    fireEvent.keyDown(window, { key: "Tab" });
+    page.y = 1400;
+    draft.focus();
+    expect(page.y).toBe(1400);
+  });
+
+  it("lands targets clear of every overlay whatever holds focus", () => {
+    shellHeader();
+    stubHeights();
+    const view = render(createElement(Harness, { composer: "mounted" }));
+    view.getByText("back").focus();
+
+    // A link or button in the title bar keeps focus while the landing it
+    // asked for runs; the counter beside ↑↓ measures against the same strip.
+    expect(usableViewport()).toEqual({
+      top: 105,
+      height: window.innerHeight - 105 - 93,
+    });
+  });
+
+  it("reveals clear of every overlay and hands the inset back after", () => {
+    shellHeader();
+    stubHeights();
+    const view = render(createElement(Harness, { composer: "mounted" }));
+    const during: { top: string; bottom: string }[] = [];
+    vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {
+      during.push(insets());
+    });
+    const target = document.createElement("div");
+    document.body.append(target);
+
+    // Focus in the title bar, then in the composer: each lets go of its own
+    // edge, and the landing still clears both.
+    for (const holder of [
+      view.getByText("back"),
+      view.getByLabelText("draft"),
+    ]) {
+      holder.focus();
+      const before = insets();
+      revealBlock(target, { flash: false });
+      expect(during.pop()).toEqual({ top: "105px", bottom: "93px" });
+      expect(insets()).toEqual(before);
+    }
+    target.remove();
+  });
+});
+
 describe("one hold per page (T-527)", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -405,8 +601,16 @@ describe("one hold per page (T-527)", () => {
 
 function EndHarness() {
   const end = useRef<HTMLDivElement>(null);
-  useScrollInsets({ end });
-  return createElement("div", { ref: end, "data-end": "" });
+  // The overlays pinned to the top, with the breathing gap 100px, a round
+  // number for the landings below.
+  const bar = useRef<HTMLDivElement>(null);
+  useScrollInsets({ top: [bar], end });
+  return createElement(
+    "div",
+    null,
+    createElement("div", { ref: bar, "data-h": "92" }),
+    createElement("div", { ref: end, "data-end": "" }),
+  );
 }
 
 /**
@@ -455,7 +659,8 @@ describe("landing on the end of the conversation", () => {
         const bottom = dataset?.end === "" ? end.y - scroll.y : 0;
         const top =
           dataset?.top === undefined ? 0 : Number(dataset.top) - scroll.y;
-        return { top, bottom, height: 0, width: 0, left: 0 } as DOMRect;
+        const height = Number(dataset?.h ?? 0);
+        return { top, bottom, height, width: 0, left: 0 } as DOMRect;
       },
     );
     render(createElement(EndHarness));
@@ -554,8 +759,6 @@ describe("landing on the end of the conversation", () => {
   // New messages' landing on the first new item.
   it("puts an item under the top overlays when enough of the page follows it", () => {
     const { targets } = page({ y: 2000 });
-    // What the page's own overlays left there, set aside for a round number.
-    document.documentElement.style.scrollPaddingTop = "100px";
     const el = item(500);
     revealAboveEnd(el);
     expect(targets).toEqual([500 - 100]);
@@ -733,7 +936,6 @@ describe("landing on the end of the conversation", () => {
       [false, "past it, the end under the top overlays", 1950],
     ])("answers %s for a reader %s", (expected, _, y) => {
       const { moveTo } = page({ y: 2000 });
-      document.documentElement.style.scrollPaddingTop = "100px";
       moveTo(y);
       expect(atConversationEnd()).toBe(expected);
     });
