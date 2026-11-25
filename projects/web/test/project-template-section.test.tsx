@@ -803,12 +803,13 @@ describe("applying a template", () => {
       box("Delete label kind:docs — comes off 2 issues (1 in the trash)"),
     );
     // A double-click on Apply: its second press lands on the button that
-    // took Apply's place.
+    // took Apply's place. The mouse moved a few pixels between them, so
+    // the browser counts that press as a single click.
     fireEvent.click(applyButton(), { detail: 1 });
     const confirm = screen.getByRole("button", {
       name: "Delete and apply 7 changes",
     });
-    fireEvent.click(confirm, { detail: 2 });
+    fireEvent.click(confirm, { detail: 1 });
     // Four more presses on it, each 0.15 s after the last: the last comes
     // 0.6 s after Apply.
     for (let i = 0; i < 4; i++) {
