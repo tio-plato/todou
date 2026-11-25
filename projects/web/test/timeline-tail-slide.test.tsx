@@ -8,6 +8,7 @@ import { type ReactNode, useRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RevealedRunsProvider } from "../src/components/timeline/revealed-runs.tsx";
 import { Timeline } from "../src/components/timeline/timeline.tsx";
+import { TimelineDivider } from "../src/components/timeline/timeline-divider.tsx";
 import { useScrollInsets } from "../src/lib/scroll-insets.ts";
 import { FakeResizeObserver } from "./fake-resize-observer.ts";
 import { renderWithProviders, testQueryClient } from "./render.tsx";
@@ -26,8 +27,12 @@ import { renderWithProviders, testQueryClient } from "./render.tsx";
  * the fold block and the head's loading skeletons a unit's height. What
  * follows the list runs on far past the screen, unless the page declares
  * where its conversation ends, which is then the comment box's bottom with a
- * footer below it. A frame delivers what a browser's next frame would: the
- * scroll event of whatever moved the page, then the resizes.
+ * footer below it, the body's Edit button in the 40px right above the list,
+ * and a shell header over the screen's top where the case asks for one. The
+ * timeline's divider line, where the case asks for it, stands right before
+ * the list: 16px while it carries the hidden count, 1px as a plain rule.
+ * A frame delivers what a browser's next frame would: the scroll event of
+ * whatever moved the page, then the resizes.
  */
 
 const alice = {
@@ -71,19 +76,33 @@ type Options = {
   hidden?: number[];
   /** Heights past a unit's own, by unit key. */
   grown?: Record<string, number>;
-  /** How far down the page the list starts. */
+  /** How far down the page the list starts, its divider line first. */
   above?: number;
   /** Whether the page declares where its conversation ends. */
   end?: boolean;
   /** Whether the head's pages wait for the test to let them through. */
   holdHead?: boolean;
+  /** How tall a shell header over the screen's top is, if there is one. */
+  header?: number;
+  /** Whether the timeline's divider line stands right before the list. */
+  divider?: boolean;
 };
 
-/** A page that declares its column as where its conversation ends. */
+/**
+ * A page that declares its column as where its conversation ends, the card's
+ * body, down to its Edit button, right above the list, and the comment box
+ * right below it.
+ */
 function Column({ children }: { children: ReactNode }) {
   const column = useRef<HTMLDivElement>(null);
   useScrollInsets({ end: column });
-  return <div ref={column}>{children}</div>;
+  return (
+    <div ref={column}>
+      <button type="button">Edit</button>
+      {children}
+      <textarea aria-label="Write a comment" />
+    </div>
+  );
 }
 
 async function open({
@@ -95,6 +114,8 @@ async function open({
   above = 0,
   end = false,
   holdHead = false,
+  header,
+  divider = false,
 }: Options = {}) {
   const items: TimelineItem[] = Array.from({ length: total }, (_, i) =>
     comment(i + 1, hidden.includes(i + 1)),
@@ -170,8 +191,16 @@ async function open({
   };
   const listHeight = () =>
     [...(listOf()?.children ?? [])].reduce((sum, c) => sum + heightOf(c), 0);
+  /** The divider line's height: the hidden count's row, or a rule. */
+  const leadHeight = () => {
+    if (!divider) return 0;
+    const lead = listOf()?.previousElementSibling;
+    return lead?.getAttribute("data-testid") === "timeline-divider" ? 16 : 1;
+  };
+  /** Where the list itself starts on the page, below its divider line. */
+  const listAt = () => state.above + leadHeight();
   const docHeight = () =>
-    state.above + listHeight() + (end ? COMPOSER + FOOTER : BELOW);
+    listAt() + listHeight() + (end ? COMPOSER + FOOTER : BELOW);
   const max = () => Math.max(0, docHeight() - VIEWPORT);
   const clamp = (y: number) => Math.min(max(), Math.max(0, y));
 
@@ -218,14 +247,25 @@ async function open({
     function (this: Element) {
       const list = listOf();
       if (list === null) return unplaced.call(this);
-      if (this === list) return box(state.above - state.y, listHeight());
+      if (this === list) return box(listAt() - state.y, listHeight());
       if (end && this === list.parentElement)
-        return box(state.above - state.y, listHeight() + COMPOSER);
+        return box(
+          state.above - state.y,
+          leadHeight() + listHeight() + COMPOSER,
+        );
+      if (end && this === list.parentElement?.firstElementChild)
+        return box(state.above - 40 - state.y, 40);
+      if (divider && this === list.previousElementSibling)
+        return box(state.above - state.y, leadHeight());
+      if (end && this.matches('[aria-label="Write a comment"]'))
+        return box(listAt() + listHeight() - state.y, COMPOSER);
+      if (header !== undefined && this.closest("header") !== null)
+        return box(0, header);
       let child: Element | null = this;
       while (child !== null && child.parentElement !== list)
         child = child.parentElement;
       if (child === null) return unplaced.call(this);
-      let top = state.above;
+      let top = listAt();
       for (const before of list.children) {
         if (before === child) break;
         top += heightOf(before);
@@ -266,15 +306,32 @@ async function open({
   const client = testQueryClient();
   const timeline = (
     <RevealedRunsProvider card="p/7">
+      {divider && <TimelineDivider />}
       <Timeline slug="p" issueNumber={7} pendingComments={[]} />
     </RevealedRunsProvider>
   );
+  const content = end ? <Column>{timeline}</Column> : timeline;
   const view = renderWithProviders(
-    end ? <Column>{timeline}</Column> : timeline,
+    header === undefined ? (
+      content
+    ) : (
+      <>
+        <header>
+          <button type="button">Menu</button>
+        </header>
+        {content}
+      </>
+    ),
     client,
   );
   await view.findByText(`body ${total}`);
-  if (total > tail && !holdHead) await view.findByText(`body ${head}`);
+  // The head in: the fold block where a gap is left, else its last comment
+  // that shows (it may still be a placeholder where the fold block is).
+  let lastShown = head;
+  while (hidden.includes(lastShown)) lastShown -= 1;
+  if (total > head + tail && !holdHead) await view.findByTestId("fold-block");
+  else if (total > tail && !holdHead)
+    await view.findByText(`body ${lastShown}`);
   await settle();
 
   const unit = (key: string | number) =>
@@ -292,16 +349,19 @@ async function open({
     settle,
     at: () => state.y,
     max,
+    /** Where a landing on the end puts the page, with an end declared. */
+    endTarget: () => clamp(listAt() + listHeight() + COMPOSER - VIEWPORT),
     scrollTo,
     scrollBy,
     /** The page as tall as all it holds, the way the browser reports it. */
     docHeight,
-    arrive: async (id: number) => {
-      items.push(comment(id));
+    /** Comments arriving, all of them in one refetch of the newest page. */
+    arrive: async (...ids: number[]) => {
+      for (const id of ids) items.push(comment(id));
       await act(() =>
         client.refetchQueries({ queryKey: ["timeline", "p", 7, "tail"] }),
       );
-      await view.findByText(`body ${id}`);
+      for (const id of ids) await view.findByText(`body ${id}`);
       await settle();
     },
     /** Let the oldest head page still held back through. */
@@ -478,5 +538,369 @@ describe("a hidden run revealed (T-281)", () => {
     expect(page.at()).toBe(2 * ROW);
     expect(page.topOf(3)).toBe(0);
     expect(page.topOf(6)).toBe(3 * ROW);
+  });
+});
+
+describe("the reader's place, kept by one owner", () => {
+  it("leaves a reader who can see what precedes the list to the browser", async () => {
+    // The list's top 300px down the screen, the body above it in view.
+    const page = await open({ total: 5, tail: 50, above: 2000 });
+    page.readerAt(1700);
+    page.scrollBy.mockClear();
+    await page.growAbove(300);
+    expect(page.scrollBy).not.toHaveBeenCalled();
+    expect(page.at()).toBe(1700);
+  });
+
+  it("keeps the tail still through two arrivals with no scroll between", async () => {
+    const page = await open();
+    // The seam, 26, on top of the screen: the unit the reader reads.
+    page.readerAt(11 * ROW);
+    const before = page.topOf(28);
+    await page.arrive(31);
+    await page.arrive(32);
+    expect(page.unit(27)).toBeNull();
+    expect(page.topOf(28)).toBe(before);
+  });
+
+  it("keeps the tail still when one refetch slides two items out", async () => {
+    const page = await open();
+    page.readerAt(11 * ROW);
+    const before = page.topOf(28);
+    await page.arrive(31, 32);
+    expect(page.unit(26)).toBeNull();
+    expect(page.unit(27)).toBeNull();
+    expect(page.topOf(28)).toBe(before);
+  });
+
+  it("keeps the tail with the seam in the upper half even with the body in view", async () => {
+    // A head side of one row: the list's top, and the body above it, still
+    // on screen, the seam above the middle.
+    const page = await open({ head: 1, above: 300 });
+    page.readerAt(250);
+    expect(page.topOf(26)).toBe(2 * ROW + 300 - 250);
+    const before = page.topOf(27);
+    await page.arrive(31);
+    expect(page.unit(26)).toBeNull();
+    expect(page.topOf(27)).toBe(before);
+    page.press(page.view.getByRole("button", { name: "Load more" }));
+    await page.view.findByText("body 2");
+    await page.settle();
+    expect(page.topOf(27)).toBe(before);
+  });
+
+  it("keeps the tail when the reader presses the body above the list", async () => {
+    // The body's Edit button on screen, the seam in the upper half.
+    const page = await open({ head: 1, above: 300, end: true });
+    page.readerAt(250);
+    page.press(page.view.getByRole("button", { name: "Edit" }));
+    const before = page.topOf(27);
+    await page.arrive(31);
+    expect(page.unit(26)).toBeNull();
+    expect(page.topOf(27)).toBe(before);
+  });
+
+  it("keeps the tail when the reader clicks into it with the body in view", async () => {
+    const page = await open({ head: 1, above: 300 });
+    page.readerAt(250);
+    page.press(page.unit(27) as HTMLElement);
+    const before = page.topOf(27);
+    await page.arrive(31);
+    expect(page.unit(26)).toBeNull();
+    expect(page.topOf(27)).toBe(before);
+  });
+
+  it("keeps the tail as the head arrives with the body still in view", async () => {
+    // The head's skeletons, then 26 two rows down: the body above the list.
+    const page = await open({ holdHead: true, above: 300 });
+    page.readerAt(200);
+    expect(page.topOf(26)).toBe(2 * ROW);
+    const before = page.topOf(27);
+    await page.releaseHead();
+    await page.view.findByTestId("fold-block");
+    await page.settle();
+    expect(page.topOf(27)).toBe(before);
+  });
+
+  it("judges Load more by the seam, not by a row clicked before it", async () => {
+    const page = await open();
+    // 9 and 10 on top, the fold, the seam three rows down.
+    page.readerAt(8 * ROW);
+    page.press(page.unit(10) as HTMLElement);
+    const tail = page.topOf(26);
+    page.press(page.view.getByRole("button", { name: "Load more" }));
+    await page.view.findByText("body 20");
+    await page.settle();
+    expect(page.topOf(26)).toBe(tail);
+  });
+
+  it("keeps a reader at the end there when skeletons fill the screen above", async () => {
+    // The last six rows half height: skeletons show above them at the end.
+    const short = Object.fromEntries(
+      [7, 8, 9, 10, 11, 12].map((id) => [`comment-${id}`, -ROW / 2]),
+    );
+    const page = await open({ total: 12, tail: 50, end: true, grown: short });
+    expect(page.at()).toBe(page.endTarget());
+    expect(page.topOf("comment-3")).toBeGreaterThanOrEqual(0);
+    page.press(page.view.container);
+    await page.fillAll();
+    expect(page.unit("comment-1")?.hasAttribute("data-unfilled")).toBe(false);
+    expect(page.at()).toBe(page.endTarget());
+  });
+
+  it("keeps a reader at the end of a card with a head side there too", async () => {
+    // The seam far above the screen, the tail's last six rows half height,
+    // skeletons above them at the end.
+    const short = Object.fromEntries(
+      [25, 26, 27, 28, 29, 30].map((id) => [`comment-${id}`, -ROW / 2]),
+    );
+    const page = await open({ tail: 12, end: true, grown: short });
+    expect(page.at()).toBe(page.endTarget());
+    expect(page.unit("comment-20")?.hasAttribute("data-unfilled")).toBe(true);
+    expect(page.topOf("comment-20")).toBeGreaterThanOrEqual(0);
+    page.press(page.view.container);
+    await page.fillAll();
+    expect(page.unit("comment-20")?.hasAttribute("data-unfilled")).toBe(false);
+    expect(page.at()).toBe(page.endTarget());
+  });
+
+  it("opens a run revealed above the seam downward from where it was", async () => {
+    // 1–7, the run of 8–10, the fold, then the tail from 26.
+    const page = await open({ hidden: [8, 9, 10] });
+    // The run on top of the screen, the seam two rows down.
+    page.readerAt(7 * ROW);
+    expect(page.topOf("hidden-8")).toBe(0);
+    expect(page.topOf(26)).toBe(2 * ROW);
+    page.press(page.view.getByRole("button", { name: "Reveal" }));
+    await page.view.findByText("body 8");
+    await page.settle();
+    expect(page.topOf(8)).toBe(0);
+  });
+
+  it("leaves a reader on what precedes the list alone as it grows above the list", async () => {
+    const page = await open({ total: 5, tail: 50, above: 2000 });
+    page.readerAt(0);
+    page.scrollBy.mockClear();
+    await page.growAbove(300);
+    expect(page.scrollBy).not.toHaveBeenCalled();
+    expect(page.at()).toBe(0);
+  });
+
+  it("keeps the unit on screen where it was once the fill is revealed after a press", async () => {
+    // Landed on the end: 7 on top of the screen, the skeletons of 1–6 above.
+    const page = await open({ total: 12, tail: 50, end: true });
+    expect(page.topOf(7)).toBe(0);
+    page.press(page.view.container);
+    await page.fillAll();
+    expect(page.unit("comment-1")?.hasAttribute("data-unfilled")).toBe(false);
+    expect(page.topOf(7)).toBe(0);
+  });
+
+  it("brings the unit a skeleton stood for in where the skeleton was", async () => {
+    const page = await open({ total: 12, tail: 50, end: true });
+    // 6 filled, still behind its placeholder, which carries its key.
+    await page.fillOne();
+    const placeholder = page.unit("comment-6");
+    expect(placeholder?.hasAttribute("data-unfilled")).toBe(true);
+    expect(placeholder?.nextElementSibling?.classList.contains("h-0")).toBe(
+      true,
+    );
+    // Five skeletons above, then 6's on top of the screen.
+    page.readerAt(5 * SKELETON);
+    const skeleton = page.topOf("comment-6");
+    expect(skeleton).toBe(0);
+    // A fill that moves nothing leaves it where it is.
+    await page.fillOne();
+    expect(page.unit("comment-6")).toBe(placeholder);
+    expect(page.topOf("comment-6")).toBe(skeleton);
+    await page.fillAll();
+    expect(page.topOf(6)).toBe(skeleton);
+  });
+
+  it("keeps a reader where find in page moved them off the landing", async () => {
+    const page = await open({ total: 12, tail: 50, end: true });
+    // Landed on the end, 7 on top; moved down a row with no input.
+    await page.movedTo(page.at() + ROW);
+    expect(page.topOf(8)).toBe(0);
+    await page.fillAll();
+    expect(page.topOf(8)).toBe(0);
+  });
+});
+
+describe("a card whose list starts on screen, read at its end", () => {
+  // A short card: the body above the list in view at the end, the first two
+  // comments long, the last six half a row.
+  const SHORT = {
+    "comment-1": 3000,
+    "comment-2": 3000,
+    ...Object.fromEntries(
+      [3, 4, 5, 6, 7, 8].map((id) => [`comment-${id}`, -ROW / 2]),
+    ),
+  };
+  const shortCard = (more: Options = {}) =>
+    open({ total: 8, tail: 50, end: true, above: 300, grown: SHORT, ...more });
+  /** The column the list stands in: blank space in it, say. */
+  const column = (page: Awaited<ReturnType<typeof open>>) =>
+    page.view.getByTestId("timeline-scroll").parentElement as HTMLElement;
+
+  it("keeps a reader at the end as the long comments reveal after a press", async () => {
+    // Landed on the end, the list's top 180px down the screen, the long
+    // comments still skeletons.
+    const page = await shortCard();
+    expect(page.at()).toBe(120);
+    expect(page.unit("comment-1")?.hasAttribute("data-unfilled")).toBe(true);
+    page.press(column(page));
+    await page.fillAll();
+    expect(page.unit("comment-1")?.hasAttribute("data-unfilled")).toBe(false);
+    expect(page.at()).toBe(page.endTarget());
+  });
+
+  it("opens a run revealed at its end downward, and keeps it there as the long comments reveal", async () => {
+    const page = await shortCard({
+      hidden: [7],
+      grown: { ...SHORT, "hidden-7": -ROW / 2, "comment-7": 200 },
+    });
+    const before = page.topOf("hidden-7");
+    page.press(page.view.getByRole("button", { name: "Reveal" }));
+    await page.view.findByText("body 7");
+    await page.settle();
+    await page.fillAll();
+    expect(page.topOf(7)).toBe(before);
+  });
+
+  it("opens the card's last hidden comment where its run was as the divider shrinks", async () => {
+    const page = await shortCard({
+      divider: true,
+      hidden: [7],
+      grown: { ...SHORT, "hidden-7": -ROW / 2, "comment-7": 200 },
+    });
+    expect(page.view.queryByTestId("timeline-divider")).not.toBeNull();
+    const before = page.topOf("hidden-7");
+    page.press(page.view.getByRole("button", { name: "Reveal" }));
+    await page.view.findByText("body 7");
+    await page.settle();
+    expect(page.view.queryByTestId("timeline-divider")).toBeNull();
+    await page.fillAll();
+    expect(page.topOf(7)).toBe(before);
+  });
+
+  it("measures the end from the screen once the divider is under the top overlays", async () => {
+    // The divider, as tall as the hidden count makes it, under the top
+    // overlays: the body out of view, though the list's own top shows.
+    const page = await shortCard({
+      divider: true,
+      hidden: [7],
+      grown: { ...SHORT, "hidden-7": -ROW / 2 },
+    });
+    page.readerAt(300);
+    expect(
+      page.view.getByTestId("timeline-divider").getBoundingClientRect().top,
+    ).toBe(0);
+    expect(
+      page.view.getByTestId("timeline-scroll").getBoundingClientRect().top,
+    ).toBe(16);
+    await page.growAbove(40);
+    expect(page.at()).toBe(340);
+  });
+
+  it("puts back what grows in the list, and leaves what grows above it, at the end", async () => {
+    const page = await shortCard();
+    page.press(column(page));
+    await page.growUnit("comment-4", 100);
+    expect(page.at()).toBe(page.endTarget());
+    const y = page.at();
+    page.scrollBy.mockClear();
+    await page.growAbove(40);
+    expect(page.scrollBy).not.toHaveBeenCalled();
+    expect(page.at()).toBe(y);
+    await page.growUnit("comment-5", 100);
+    expect(page.at()).toBe(y + 100);
+  });
+
+  it("keeps the end against what grows above once the reveal took the body out of view", async () => {
+    const page = await shortCard();
+    page.press(column(page));
+    await page.fillAll();
+    expect(page.at()).toBe(page.endTarget());
+    await page.growAbove(500);
+    expect(page.at()).toBe(page.endTarget());
+  });
+
+  it("keeps the reader's own scroll its event has yet to report", async () => {
+    const page = await shortCard();
+    page.press(column(page));
+    // Applied with no scroll event yet: a fling, a caret revealed.
+    window.scrollTo(0, page.at() + 30);
+    await page.fillAll();
+    expect(page.at()).toBe(page.endTarget() + 30);
+  });
+
+  it("keeps a reader at the end who pressed the comment box below the list", async () => {
+    const page = await shortCard();
+    page.press(page.view.getByRole("textbox", { name: "Write a comment" }));
+    await page.fillAll();
+    expect(page.unit("comment-1")?.hasAttribute("data-unfilled")).toBe(false);
+    expect(page.at()).toBe(page.endTarget());
+  });
+
+  it("keeps a reader at the end who pressed the header over the screen's top", async () => {
+    // The header precedes the list, its bottom the top overlays' edge.
+    const page = await shortCard({ header: 60 });
+    expect(page.at()).toBe(120);
+    page.press(page.view.getByRole("button", { name: "Menu" }));
+    await page.fillAll();
+    expect(page.unit("comment-1")?.hasAttribute("data-unfilled")).toBe(false);
+    expect(page.at()).toBe(page.endTarget());
+  });
+
+  it("leaves a reader at the end who pressed the body above the list to the browser", async () => {
+    const page = await shortCard();
+    const edit = page.view.getByRole("button", { name: "Edit" });
+    const before = edit.getBoundingClientRect().top;
+    page.press(edit);
+    await page.fillAll();
+    expect(page.unit("comment-1")?.hasAttribute("data-unfilled")).toBe(false);
+    expect(edit.getBoundingClientRect().top).toBe(before);
+  });
+
+  it("keeps the body's editor put when the reader types after pressing it", async () => {
+    const page = await shortCard();
+    const edit = page.view.getByRole("button", { name: "Edit" });
+    const before = edit.getBoundingClientRect().top;
+    page.press(edit);
+    fireEvent.keyDown(edit, { key: "a" });
+    await page.fillAll();
+    expect(page.unit("comment-1")?.hasAttribute("data-unfilled")).toBe(false);
+    expect(edit.getBoundingClientRect().top).toBe(before);
+  });
+
+  // None followed by a click or by a scroll of the page: a swipe across a
+  // code block, a sideways wheel.
+  it.each([
+    ["press", fireEvent.pointerDown],
+    ["wheel", fireEvent.wheel],
+    ["touch", fireEvent.touchStart],
+  ] as const)(
+    "keeps the end through a %s on the body that scrolls nothing",
+    async (_, input) => {
+      const page = await shortCard();
+      page.press(column(page));
+      input(page.view.getByRole("button", { name: "Edit" }));
+      await page.fillAll();
+      expect(page.unit("comment-1")?.hasAttribute("data-unfilled")).toBe(false);
+      expect(page.at()).toBe(page.endTarget());
+    },
+  );
+
+  it("lets go of the end when a key lands on the body", async () => {
+    const page = await shortCard();
+    const edit = page.view.getByRole("button", { name: "Edit" });
+    const before = edit.getBoundingClientRect().top;
+    page.press(column(page));
+    // Typed in the body, the focus moved there by the keyboard.
+    fireEvent.keyDown(edit, { key: "a" });
+    await page.fillAll();
+    expect(page.unit("comment-1")?.hasAttribute("data-unfilled")).toBe(false);
+    expect(edit.getBoundingClientRect().top).toBe(before);
   });
 });
