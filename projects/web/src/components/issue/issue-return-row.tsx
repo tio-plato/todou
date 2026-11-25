@@ -11,6 +11,7 @@ import {
   CompactIssueIdentity,
   IssueReturnLink,
 } from "@/components/shared/return-link.tsx";
+import { glideToY, useOwnHold } from "@/lib/scroll-insets.ts";
 import { useHeaderHeight } from "@/lib/use-header-height.ts";
 import { SM_UP, useMediaQuery, XL_UP } from "@/lib/use-media-query.ts";
 import { cn } from "@/lib/utils";
@@ -54,6 +55,7 @@ export function IssueReturnRow({
   // the arrow jump sideways at the moment the two swapped over.
   const backFloats = useMediaQuery(XL_UP);
   const [shown, setShown] = useState(false);
+  const keepHold = useOwnHold();
 
   useEffect(() => {
     const target = watchTarget.current;
@@ -113,7 +115,8 @@ export function IssueReturnRow({
           // offers in place of the heading it replaced. The two controls it
           // carries go somewhere else entirely and stop the click here
           // themselves, which is the arrangement the reveal eye already used.
-          onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+          // Glided and held there like any other jump on the card.
+          onClick={() => keepHold(glideToY(() => 0))}
         >
           {carriesBack && (
             <IssueReturnLink
