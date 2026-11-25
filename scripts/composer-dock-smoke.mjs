@@ -4,7 +4,8 @@
  * (T-532, T-538), for opening a card on the comment box rather than on the
  * page end, the second time from the list too, with its timeline cached, and
  * coming back to it with the browser's Back once its placeholders have filled
- * in, or from a footnote to where it was pressed, for the scroll-to-bottom
+ * in, or from a footnote to where it was pressed, for the box staying put
+ * while the page shrinks and grows again above it, for the scroll-to-bottom
  * button showing on a scroll down and only then, and for the New messages pill
  * staying above whatever floats at the bottom, clickable, however tall the
  * composer grows, and landing on the first comment that arrived, and for
@@ -35,8 +36,10 @@ anchors must still land clear of the dock (T-519). Opening the card must put
 the comment box on the viewport's bottom edge, with the phone's sidebar below
 the viewport rather than the box a sidebar's height above it, and so must
 opening it from the list again, with its timeline already cached, and coming
-back to it with the browser's Back after its placeholders fill in. Back from
-a footnote must return to where it was pressed. On a second, long card the
+back to it with the browser's Back after its placeholders fill in. On a
+desktop, the timeline shrinking and growing again above the box, while that
+landing is held, must leave the box where it is. Back from a footnote must
+return to where it was pressed. On a second, long card the
 scroll-to-bottom button must stay hidden through the landing, scrolling up
 and an anchor jump, show centred above the floating layer on a scroll down,
 hide on a scroll up, land on the box when clicked, take no room in the
@@ -604,12 +607,50 @@ async function linkTo(page, path) {
 }
 
 /**
+ * The timeline above the comment box shrinking by more than lies below the
+ * end of the conversation, then growing again, in one task, as a card's code
+ * blocks and placeholders can when WebKit fills it in. The browser cuts the
+ * scroll to the shorter page at the layout in between, so its `scroll`
+ * arrives with the page grown and the reader moved up. Chromium's scroll
+ * anchoring puts the cut back once the page has grown again before the next
+ * frame, where WebKit's leaves it, so anchoring is off here.
+ */
+function shrinkThenGrow() {
+  document.documentElement.style.setProperty("overflow-anchor", "none");
+  const list = document.querySelector("[data-unit]").parentElement;
+  const units = [...list.children].filter((c) => c.hasAttribute("data-unit"));
+  const heights = units.map((unit) => unit.getBoundingClientRect().height);
+  const listHeight = list.getBoundingClientRect().height;
+  const landedAt = window.scrollY;
+  // What lies below the screen, of the content rather than of a page the
+  // landing may be holding up: a shrink no deeper than that cuts nothing.
+  const below =
+    document.getElementById("root").getBoundingClientRect().bottom -
+    window.innerHeight;
+  let sum = 0;
+  for (let i = units.length - 1; i > 0 && sum < Math.max(400, below + 1); i--) {
+    units[i].style.height = "0";
+    units[i].style.padding = "0";
+    units[i].style.overflow = "hidden";
+    sum += heights[i];
+  }
+  // The layout in between, where the browser cuts the scroll.
+  const height = document.documentElement.scrollHeight;
+  const afterLayout = window.scrollY;
+  const shrunk = listHeight - list.getBoundingClientRect().height;
+  units[0].style.paddingTop = "3000px";
+  return { landedAt, afterLayout, below, shrunk, height };
+}
+
+/**
  * Opening the card lands on the end of the conversation, not of the document:
  * below it are the shell's footer and, on a phone, the sidebar, which a
  * landing at the document's end put between the box and the viewport's edge.
  * So does coming back to it with the browser's Back, once the placeholders
  * above have filled in: the browser restores the scroll it left at, which the
- * page still short of its content cut to the document's end.
+ * page still short of its content cut to the document's end. On a desktop,
+ * that landing then stays on the box through the page shrinking and growing
+ * again above it.
  */
 async function landingCases(context, fixture, dir) {
   const out = [];
@@ -666,6 +707,21 @@ async function landingCases(context, fixture, dir) {
             ? b.asideTop >= b.innerHeight
             : b.slotTop <= b.innerHeight),
         detail: b,
+      });
+      if (viewport.mobile) continue;
+      // Still held, with no input since the landing.
+      const cut = await evaluate(page, shrinkThenGrow);
+      await sleep(1000);
+      const g = await evaluate(page, readState);
+      out.push({
+        name: `landing-${label}-shrunk-then-grown`,
+        // One that cut nothing would pass whether or not the landing holds.
+        ok:
+          cut.shrunk > cut.below &&
+          boxAtBottom(g) &&
+          g.boxShown &&
+          g.slotTop <= g.innerHeight,
+        detail: { ...cut, state: g },
       });
     } finally {
       await page.close();

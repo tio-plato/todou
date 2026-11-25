@@ -286,6 +286,21 @@ export function endHeldAt(): number | null {
  * target above what grew stays behind, to be put back once the hold hears of
  * the growth.
  *
+ * With `target`, the page is also kept from getting shorter than the bottom
+ * of the screen where the hold last put it, by a `min-height` on `<html>`,
+ * which moves nothing: the shell fills the viewport by its own `min-h-dvh`.
+ * A page shrinking under the offset it is at has the browser cut the offset
+ * to the new largest one at the next layout, a move nobody made that the rule
+ * above cannot tell from one: WebKit can grow the page again in the same
+ * task, and the cut's `scroll` then finds the page grown and moved up. Only
+ * what shrinks by more than lies below the target reaches the floor, and the
+ * next placement lowers it with the page, measured from the end the page
+ * declared; a page that declared none, its target the largest offset, would
+ * stay on its floor until the hold ends. A card's first landing comes before
+ * its page declares the end, so the floor does not wait for one. However the
+ * hold ends, the floor goes first, so that the reader's place is picked on
+ * the page as its content stands.
+ *
  * However it lets go, but for a newer landing taking over, the page passes to
  * the reader's place (`useReadingList`), picked where the page is then: the
  * reading list there when the landing began, or declared in the same commit,
@@ -314,10 +329,20 @@ function hold(
     });
   }
   const controller = new AbortController();
+  // Raised before the page's height is taken, which then has the same floor
+  // under it as every height compared with it later.
+  const floor = () => {
+    if (target === undefined) return;
+    document.documentElement.style.setProperty(
+      "min-height",
+      `${placedAt + window.innerHeight}px`,
+    );
+  };
   const observer = new ResizeObserver(() => {
     place(release);
     if (held?.release !== release) return;
     placedAt = window.scrollY;
+    floor();
     held.placedHeight = document.documentElement.scrollHeight;
   });
   const end = (handOver: boolean) => {
@@ -325,6 +350,8 @@ function hold(
     observer.disconnect();
     controller.abort();
     if (held?.release === release) held = null;
+    if (target !== undefined)
+      document.documentElement.style.removeProperty("min-height");
     if (handOver && heir !== null && readingList === heir) heir.handOver();
   };
   const release = () => end(true);
@@ -366,13 +393,14 @@ function hold(
       { passive: true, signal: controller.signal },
     );
   }
+  placedAt = window.scrollY;
+  floor();
   held = {
     release,
     retire: () => end(false),
     onEnd,
     placedHeight: document.documentElement.scrollHeight,
   };
-  placedAt = window.scrollY;
   return release;
 }
 
