@@ -228,6 +228,18 @@ export const agentsQuery = queryOptions({
   queryFn: () => api.listAgents(),
 });
 
+/**
+ * The built-in templates first, then the account's own by name, each whole:
+ * a template's page reads it out of this list, there being no read of one.
+ * No feed event reaches it; a tab editing a stale copy finds out from the
+ * 409 its next write gets, which refetches.
+ */
+export const projectTemplatesQuery = queryOptions({
+  queryKey: ["project-templates"],
+  queryFn: () => api.listProjectTemplates(),
+  staleTime: METADATA_STALE_MS,
+});
+
 // Always `all`: the User / Agents / All segments each show a count, so the
 // page needs every row whichever segment is open, and filters locally.
 export const myTokensQuery = queryOptions({

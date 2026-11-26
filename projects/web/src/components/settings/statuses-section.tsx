@@ -30,6 +30,7 @@ import {
   isRole,
   plural,
   StatusSetList,
+  withChartRoles,
 } from "@/components/settings/status-set-list.tsx";
 
 /**
@@ -49,13 +50,7 @@ export function StatusesSection({ slug }: { slug: string }) {
   const queryClient = useQueryClient();
 
   const lineStatusId = project.data.block_clear_status_id ?? null;
-  const roleById = new Map(
-    settings.data.roles.map((entry) => [entry.status_id, entry.role]),
-  );
-  const entries = statuses.data.map((status) => ({
-    ...status,
-    role: roleById.get(status.id) ?? defaultInsightsRole(status),
-  }));
+  const entries = withChartRoles(statuses.data, settings.data);
   const byId = new Map(entries.map((s) => [s.id, s]));
   const usageById = new Map(usage.data?.map((u) => [u.id, u]));
 
@@ -266,7 +261,7 @@ export function StatusesSection({ slug }: { slug: string }) {
 }
 
 /** A write's outcome for the list: its errors are already toasted. */
-const succeeded = (write: Promise<unknown>) =>
+export const succeeded = (write: Promise<unknown>) =>
   write.then(
     () => true,
     () => false,

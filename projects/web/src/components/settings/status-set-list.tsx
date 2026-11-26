@@ -21,6 +21,7 @@ import {
   enumValue,
   lineAfterDeleting,
   Role,
+  type Settings,
   type Status,
   type StatusOrderInput,
   type StatusUsage,
@@ -71,6 +72,23 @@ export type StatusSetEntry = Pick<
   "id" | "name" | "category" | "color" | "is_default"
 > & { role: string };
 
+/**
+ * A project's statuses with their chart roles: the one its insights settings
+ * store for a status, or else the one its name and category give it.
+ */
+export function withChartRoles(
+  statuses: readonly Status[],
+  settings: Pick<Settings, "roles">,
+): Array<Status & { role: Role }> {
+  const roleById = new Map(
+    settings.roles.map((entry) => [entry.status_id, entry.role]),
+  );
+  return statuses.map((status) => ({
+    ...status,
+    role: roleById.get(status.id) ?? defaultInsightsRole(status),
+  }));
+}
+
 const ROLE_LABELS: Record<Role, string> = {
   remaining: "Remaining",
   completed: "Completed",
@@ -106,6 +124,7 @@ export function StatusSetList({
   onCreate,
   onDelete,
   pending,
+  template = false,
 }: {
   /** In board order. */
   statuses: readonly StatusSetEntry[];
@@ -127,6 +146,11 @@ export function StatusSetList({
   onCreate: (draft: Draft) => Promise<boolean>;
   onDelete: (id: number) => Promise<boolean>;
   pending: { save: boolean; create: boolean; delete: boolean };
+  /**
+   * The set is a template's, which no issue sits in and no chart counts:
+   * what a change would do to those goes unsaid.
+   */
+  template?: boolean;
 }) {
   const [open, setOpen] = useState<number | "new" | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -300,6 +324,7 @@ export function StatusSetList({
                       draft={draft}
                       saved={saved}
                       firstStatus={firstStatus}
+                      template={template}
                       onDraft={setDraft}
                       submitLabel="Save"
                       canSubmit={draft.name.trim() !== "" && dirty}
@@ -337,6 +362,7 @@ export function StatusSetList({
                   draft={draft}
                   saved={null}
                   firstStatus={firstStatus}
+                  template={template}
                   onDraft={(next, picked) => {
                     if (picked === "role") setRolePicked(true);
                     if (picked === "color") setColorPicked(true);
@@ -382,8 +408,9 @@ export function StatusSetList({
         description={
           deleting && (
             <>
-              <StatusPill status={deleting} /> Burn charts will count time spent
-              in it as unknown.
+              <StatusPill status={deleting} />
+              {!template &&
+                " Burn charts will count time spent in it as unknown."}
               {lineAfterDelete && (
                 <>
                   {" "}
@@ -678,6 +705,7 @@ function StatusEditor({
   draft,
   saved,
   firstStatus,
+  template,
   onDraft,
   submitLabel,
   canSubmit,
@@ -690,6 +718,7 @@ function StatusEditor({
   draft: Draft;
   saved: Draft | null;
   firstStatus: StatusSetEntry | undefined;
+  template: boolean;
   /** `picked` names the field the user chose outright, not by typing. */
   onDraft: (draft: Draft, picked?: "role" | "color") => void;
   submitLabel: string;
@@ -756,9 +785,11 @@ function StatusEditor({
               </span>
             )}
           </div>
-          <p className="text-sm text-muted-foreground">
-            Charts recount their whole history with it, not only from today.
-          </p>
+          {!template && (
+            <p className="text-sm text-muted-foreground">
+              Charts recount their whole history with it, not only from today.
+            </p>
+          )}
         </div>
         {saved !== null && (
           <div className="space-y-1.5">

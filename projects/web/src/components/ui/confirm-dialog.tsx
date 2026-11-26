@@ -33,6 +33,7 @@ export function ConfirmDialog({
   pending = false,
   onConfirm,
   container,
+  onCloseAutoFocus,
   children,
 }: {
   open: boolean;
@@ -46,12 +47,17 @@ export function ConfirmDialog({
   onConfirm: () => void;
   /** Mount point other than this page's body — a floating window's (T-530). */
   container?: HTMLElement;
+  /**
+   * As it closes. With no trigger to hand focus back to, it leaves focus on
+   * the page's body unless this prevents that and moves it.
+   */
+  onCloseAutoFocus?: (event: Event) => void;
   /** Block content below the description, which is a paragraph. */
   children?: ReactNode;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent container={container}>
+      <DialogContent container={container} onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {description && <DialogDescription>{description}</DialogDescription>}
