@@ -45,6 +45,29 @@ describe("agents (machine users)", () => {
     expect(agent.disabled_at).toBeNull();
   });
 
+  it("sets and clears the role an agent joins its owner's new projects with", async () => {
+    const agent = await createAgent("joining-bot");
+    expect(agent.new_project_role).toBeNull();
+    const patch = (role: string | null) =>
+      t.app.request(`/api/agents/${agent.id}`, {
+        method: "PATCH",
+        headers: headers(),
+        body: JSON.stringify({ new_project_role: role }),
+      });
+    const listed = async () =>
+      (
+        await json(await t.app.request("/api/agents", { headers: headers() }))
+      ).find((a: { id: number }) => a.id === agent.id).new_project_role;
+
+    const set = await patch("writer");
+    expect(set.status).toBe(200);
+    expect((await json(set)).new_project_role).toBe("writer");
+    expect(await listed()).toBe("writer");
+
+    expect((await patch(null)).status).toBe(200);
+    expect(await listed()).toBeNull();
+  });
+
   it("409s on login conflicts", async () => {
     await createAgent("dup-bot");
     const res = await t.app.request("/api/agents", {

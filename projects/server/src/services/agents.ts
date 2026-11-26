@@ -36,6 +36,7 @@ async function toAgent(ctx: AppContext, row: UserRow): Promise<Agent> {
   return {
     ...toMe(row, await ownerRefOf(ctx.router.system(), row)),
     disabled_at: row.disabledAt?.toISOString() ?? null,
+    new_project_role: row.newProjectRole,
   };
 }
 
@@ -114,7 +115,19 @@ export async function updateAgent(
   input: AgentUpdateInput,
 ): Promise<Agent> {
   const agent = await loadManagedAgent(ctx, actor, agentId);
-  const row = await updateProfile(ctx, agent, input);
+  let row = await updateProfile(ctx, agent, input);
+  // Not part of the profile: nothing else shows it, so no watcher hears it.
+  if (input.new_project_role !== undefined) {
+    const updated = await ctx.router
+      .system()
+      .update(users)
+      .set({ newProjectRole: input.new_project_role })
+      .where(eq(users.id, agent.id))
+      .returning();
+    const updatedRow = updated[0];
+    if (!updatedRow) throw new Error("agent update returned no row");
+    row = updatedRow;
+  }
   return toAgent(ctx, row);
 }
 
