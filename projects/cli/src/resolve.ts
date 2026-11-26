@@ -8,7 +8,12 @@ import type {
   TodouClient,
   VersionInfo,
 } from "@todou/shared";
-import { canonicalizeLabelName, minRoleOf, TodouError } from "@todou/shared";
+import {
+  canonicalizeLabelName,
+  findByName,
+  minRoleOf,
+  TodouError,
+} from "@todou/shared";
 import { CliError } from "./errors.ts";
 
 /**
@@ -290,13 +295,6 @@ export async function fetchRefSpelling(
     slugOfProject: directory.slugOf,
     projectId: directory.idOf(project) ?? undefined,
   };
-}
-
-function findByName<T extends { name: string }>(
-  items: T[],
-  name: string,
-): T | undefined {
-  return items.find((item) => item.name.toLowerCase() === name.toLowerCase());
 }
 
 export function byName<T extends { name: string }>(

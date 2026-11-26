@@ -5,7 +5,7 @@ import type {
   StatusUpdateInput,
   TodouClient,
 } from "@todou/shared";
-import { CANONICAL_STATUSES, TodouError } from "@todou/shared";
+import { CANONICAL_STATUSES, findByName, TodouError } from "@todou/shared";
 import { Command, Option } from "clipanion";
 import { ProjectCommand } from "../api-command.ts";
 import { CliError } from "../errors.ts";
@@ -267,9 +267,7 @@ export class StatusInitCommand extends ProjectCommand {
     const recolored: Status[] = [];
     let previous: Status | undefined;
     for (const canonical of CANONICAL_STATUSES) {
-      const existing = board.find(
-        (s) => s.name.toLowerCase() === canonical.name.toLowerCase(),
-      );
+      const existing = findByName(board, canonical.name);
       if (existing !== undefined) {
         if (existing.color.toLowerCase() !== canonical.color.toLowerCase()) {
           const updated = await client.updateStatus(project, existing.id, {
@@ -313,9 +311,7 @@ export class StatusInitCommand extends ProjectCommand {
     const defaultName = CANONICAL_STATUSES.find((s) => s.is_default)?.name;
     let defaulted: Status | undefined;
     if (defaultName !== undefined && !board.some((s) => s.is_default)) {
-      const todo = board.find(
-        (s) => s.name.toLowerCase() === defaultName.toLowerCase(),
-      );
+      const todo = findByName(board, defaultName);
       if (todo !== undefined) {
         defaulted = await client.updateStatus(project, todo.id, {
           is_default: true,
@@ -333,9 +329,7 @@ export class StatusInitCommand extends ProjectCommand {
       clearName !== undefined &&
       (await client.getProject(project)).block_clear_status_id == null
     ) {
-      const line = board.find(
-        (s) => s.name.toLowerCase() === clearName.toLowerCase(),
-      );
+      const line = findByName(board, clearName);
       if (line !== undefined) {
         await client.updateProject(project, { block_clear_status_id: line.id });
         clearLine = line;
