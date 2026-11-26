@@ -16,7 +16,9 @@ import {
   LabelUpdateInput,
   Login,
   MeUpdateInput,
+  nameKey,
   ProjectSlug,
+  StatusName,
   TimelineComment,
   TimelineEvent,
   TimelineItem,
@@ -324,6 +326,21 @@ describe("AgentContext on timeline items", () => {
   });
 });
 
+describe("nameKey", () => {
+  it("folds each letter the way the database's lower() can", () => {
+    // A capital dotted I lowercases to i with a combining dot in JavaScript,
+    // but to plain i in lower() under libc; ICU keeps the dot.
+    expect(nameKey("\u0130ptal")).toBe(nameKey("iptal"));
+    expect(nameKey("i\u0307ptal")).toBe(nameKey("iptal"));
+    // A word-final capital sigma lowercases to final ς in JavaScript but to
+    // σ in lower() under libc; ICU gives ς.
+    expect(nameKey("\u03a3\u0391\u03a3")).toBe(nameKey("\u03c3\u03b1\u03c3"));
+    expect(nameKey("\u03a4\u0395\u039b\u039f\u03a3")).toBe(
+      nameKey("\u03c4\u03b5\u03bb\u03bf\u03c2"),
+    );
+  });
+});
+
 describe("LabelName (T-136)", () => {
   it("canonicalizes whitespace", () => {
     expect(LabelName.parse("  area:   cli  ")).toBe("area: cli");
@@ -345,5 +362,11 @@ describe("LabelName (T-136)", () => {
     const stored = Label.parse({ id: 1, name: "a,b", color: "#3b82f6" });
     expect(stored.name).toBe("a,b");
     expect(LabelUpdateInput.parse({ name: "a b" }).name).toBe("a b");
+  });
+
+  it("stores status and label names composed (NFC)", () => {
+    // "e" plus a combining acute accent looks like the single "é".
+    expect(StatusName.parse("Cafe\u0301 noir")).toBe("Caf\u00e9 noir");
+    expect(LabelName.parse("Cafe\u0301 noir")).toBe("Caf\u00e9 noir");
   });
 });
