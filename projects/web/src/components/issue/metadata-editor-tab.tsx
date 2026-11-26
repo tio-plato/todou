@@ -56,6 +56,7 @@ export function MetadataEditorTab({
   snapshot,
   editorRef,
   gate,
+  writing,
   onDirty,
   onDiscard,
   onView,
@@ -82,9 +83,11 @@ export function MetadataEditorTab({
   editorRef: RefObject<CodeEditorHandle | null>;
   /** The tab-switch gate's rejection, rendered above the panel's own errors. */
   gate: { message: string; errors: ParseError[] } | null;
+  /** The shell's own write (the conflict retry) has not returned yet. */
+  writing: boolean;
   /** A keystroke landed; the shell clears a stale gate rejection. */
   onDirty: () => void;
-  /** Drop the draft and reopen the session from the server's current values. */
+  /** Drop the draft, close the session and return to Browse. */
   onDiscard: () => void;
   /** The mounted EditorView, once it exists; null after unmount. */
   onView?: (view: EditorView | null) => void;
@@ -192,7 +195,15 @@ export function MetadataEditorTab({
         <p className="text-xs text-muted-foreground">{helpText}</p>
         {canWrite && (
           <span className="flex gap-2">
-            <Button size="sm" variant="outline" onClick={onDiscard}>
+            {/* Grey while a write is out: Discard unmounts this panel and
+                resets the shell's write, so the write would land with no
+                receipt. */}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onDiscard}
+              disabled={write.isPending || writing}
+            >
               Discard
             </Button>
             <Button
