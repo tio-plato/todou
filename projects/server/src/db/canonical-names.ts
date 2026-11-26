@@ -9,7 +9,7 @@
  *
  * Whitespace is the set JavaScript's \s and trim() match, not PostgreSQL's
  * \s, which follows the database locale. Outside UTF8 only its ASCII part is
- * used: there an escape such as   matches a byte, and byte 0xA0 is part
+ * used: there an escape such as \u00a0 matches a byte, and byte 0xA0 is part
  * of a multi-byte character in SQL_ASCII (the "a" with a grave accent among
  * them) or another letter in an encoding such as KOI8-R, so the wider class
  * would garble the name. The class goes in as a bound parameter, so the
