@@ -9,7 +9,7 @@ import type {
   IssueListRow,
   TimelineComment,
 } from "@todou/shared";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import type { AppContext } from "../bootstrap.ts";
 import type { Db } from "../db/driver.ts";
@@ -630,8 +630,6 @@ export async function executeBulkCommands(
   );
   const userRefs = await getUserRefs(ctx.router.system(), [...userIds]);
 
-  // Ascending, so two bulk requests over overlapping cards take the row
-  // locks in one order and cannot deadlock each other on real postgres.
   const ordered = [...rows].sort((a, b) => a.number - b.number);
   const perCard: {
     id: number;
@@ -641,6 +639,31 @@ export async function executeBulkCommands(
   }[] = [];
   const moved: number[] = [];
   await db.transaction(async (tx) => {
+    // Every card first, in one statement, in ascending id, asking the write
+    // gate again under the lock, then the labels the commands name, and only
+    // then any row under a card (see lockIssueRows, rules 1, 2 and 7): two
+    // bulk requests over overlapping cards, or one and a single card's
+    // write, queue instead of deadlocking.
+    const locked = await tx
+      .select(gateColumns)
+      .from(issues)
+      .where(
+        inArray(
+          issues.id,
+          rows.map((row) => row.id),
+        ),
+      )
+      .orderBy(asc(issues.id))
+      .for("no key update");
+    const lockedById = new Map(locked.map((row) => [row.id, row]));
+    const vanished = ordered.filter((row) => !lockedById.has(row.id));
+    if (vanished.length > 0) {
+      throw new NotFoundError(
+        `issues not found: ${vanished.map((row) => row.number).join(", ")}`,
+      );
+    }
+    for (const row of locked) assertIssueWritable(row, actor, role);
+    await lockCommandLabels(tx, project.id, input.commands);
     const now = new Date();
     for (const row of ordered) {
       const state = await readFieldState(tx, row.id);
