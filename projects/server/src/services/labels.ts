@@ -1,8 +1,10 @@
-import type {
-  Label,
-  LabelCreateInput,
-  LabelUpdateInput,
-  LabelUsage,
+import {
+  canonicalizeLabelName,
+  type Label,
+  type LabelCreateInput,
+  type LabelUpdateInput,
+  type LabelUsage,
+  nameKey,
 } from "@todou/shared";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
@@ -77,11 +79,13 @@ export async function createLabel(
   const { project } = await requireCapability(ctx, actor, slug, "label.create");
   const db = await ctx.router.forProject(routeInfoOf(project));
 
-  const clash = await db
-    .select({ id: labels.id })
+  // One name whatever its case, compared in JS like a status name.
+  const key = nameKey(input.name);
+  const existing = await db
+    .select({ name: labels.name })
     .from(labels)
-    .where(and(eq(labels.projectId, project.id), eq(labels.name, input.name)));
-  if (clash.length > 0) {
+    .where(eq(labels.projectId, project.id));
+  if (existing.some((r) => nameKey(r.name) === key)) {
     throw labelNameTaken(input.name);
   }
   const inserted = await db
@@ -119,9 +123,34 @@ export async function updateLabel(
   const db = await ctx.router.forProject(routeInfoOf(project));
   const where = and(eq(labels.id, labelId), eq(labels.projectId, project.id));
 
+  let name = input.name;
+  if (name !== undefined) {
+    const wanted = name;
+    const key = nameKey(wanted);
+    const existing = await db
+      .select({ id: labels.id, name: labels.name })
+      .from(labels)
+      .where(eq(labels.projectId, project.id));
+    // A name the label already has, in a spelling that canonicalizes to it,
+    // is no rename: it is left as stored, so a twin an upgrade left beside
+    // the label (see the case_insensitive_names migration) cannot block its
+    // other edits.
+    if (
+      existing.some(
+        (r) => r.id === labelId && canonicalizeLabelName(r.name) === wanted,
+      )
+    ) {
+      name = undefined;
+    } else if (
+      existing.some((r) => r.id !== labelId && nameKey(r.name) === key)
+    ) {
+      throw labelNameTaken(wanted);
+    }
+  }
+
   // An UPDATE with no assignments is a driver error, not a no-op (T-730).
   if (
-    input.name === undefined &&
+    name === undefined &&
     input.color === undefined &&
     input.style === undefined
   ) {
@@ -131,21 +160,10 @@ export async function updateLabel(
     return toLabel(row);
   }
 
-  if (input.name !== undefined) {
-    const clash = await db
-      .select({ id: labels.id })
-      .from(labels)
-      .where(
-        and(eq(labels.projectId, project.id), eq(labels.name, input.name)),
-      );
-    if (clash.some((r) => r.id !== labelId)) {
-      throw labelNameTaken(input.name);
-    }
-  }
   const updated = await db
     .update(labels)
     .set({
-      ...(input.name === undefined ? {} : { name: input.name }),
+      ...(name === undefined ? {} : { name }),
       ...(input.color === undefined ? {} : { color: input.color }),
       ...(input.style === undefined ? {} : { style: input.style }),
     })

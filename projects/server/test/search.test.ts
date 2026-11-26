@@ -888,6 +888,17 @@ describe("search qualifiers", () => {
       });
     });
 
+    it("knows a status by any composition of its name", async () => {
+      const res = await t.app.request(`/api/projects/${QUAL}/statuses`, {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ name: "Caf\u00e9", category: "open" }),
+      });
+      expect(res.status).toBe(201);
+      const { diagnostics } = await search("status:cafe\u0301 限定符锚点");
+      expect(diagnostics).toEqual([]);
+    });
+
     it("notes an unfamiliar harness but still matches it literally", async () => {
       const { diagnostics } = await search("harness:claud 限定符锚点");
       expect(diagnostics).toEqual([
