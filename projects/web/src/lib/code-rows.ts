@@ -3,6 +3,7 @@ import {
   DELETION_LINE_TYPE,
   LINE_TYPE_ATTR,
   rowLineText,
+  trimLineEnd,
 } from "./pierre-rows.ts";
 import {
   CODE_CONTENT_START_ATTR,
@@ -251,7 +252,9 @@ function placeRow(
   if (line === null || index === null) return { line, textStart: null };
   const start = index.lineStarts[line - 1];
   if (start === undefined) return { line, textStart: null };
-  const sourceLine = lineTextOf(index.source, index.lineStarts, line);
+  const sourceLine = trimLineEnd(
+    lineTextOf(index.source, index.lineStarts, line),
+  );
   const text = rowLineText(row);
   return {
     line,

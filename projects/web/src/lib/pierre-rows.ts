@@ -31,13 +31,25 @@ export function rowText(row: Element): string {
 }
 
 /**
- * A row's text as the line it shows, to compare with a source line read by
- * `lineTextOf`: a CRLF file's line may reach pierre with its `\r`, and the
- * line it is compared with has none.
+ * A line's text without the `\r`s that end it: the one a CRLF line ending
+ * leaves, and the one a CRLF file's line keeps in a patch, where it ends
+ * `\r\r\n` in a CRLF body. Other trailing blanks are part of the line.
+ */
+export function trimLineEnd(text: string): string {
+  let end = text.length;
+  while (end > 0 && text[end - 1] === "\r") end--;
+  return text.slice(0, end);
+}
+
+/**
+ * A row's text as the line it shows, to compare with a source line put
+ * through `trimLineEnd`. pierre writes its rows as HTML, whose parser turns
+ * each `\r` into `\n`, so a row's `\n` is a `\r` of its line; and whether
+ * or not a line's `\r`s reach pierre, the ones that end it are left out on
+ * both sides.
  */
 export function rowLineText(row: Element): string {
-  const text = rowText(row);
-  return text.endsWith("\r") ? text.slice(0, -1) : text;
+  return trimLineEnd(rowText(row).replaceAll("\n", "\r"));
 }
 
 /**

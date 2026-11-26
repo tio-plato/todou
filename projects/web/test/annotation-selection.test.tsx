@@ -2608,6 +2608,49 @@ describe("column anchors inside a code block", () => {
     expect(cut(lines, anchor)).toBe("words");
   });
 
+  it("anchors a word to its columns in a CRLF file's patch in a CRLF body", () => {
+    // The hunk lines keep their file's `\r`, so each ends `\r\r\n`, and the
+    // row shows that `\r` as the `\n` the HTML parser turned it into.
+    const hunk = PATCH.map((line) =>
+      /^[ +-]/.test(line) && !/^(---|\+\+\+) /.test(line) ? `${line}\r` : line,
+    );
+    const source = `Some prose.\r\n\r\n\`\`\`patch\r\n${hunk.join("\r\n")}\r\n\`\`\`\r\n`;
+    const { container, shadow, index, lines } = fenceWithRows(
+      source,
+      `<pre data-diff=""><div data-line="2" data-line-type="change-deletion"><span>old words\n</span></div><div data-line="2" data-line-type="change-addition"><span>new words\n</span></div></pre>`,
+    );
+    const [old, added] = [...shadow.querySelectorAll("span")].map(
+      (span) => span.firstChild,
+    );
+    const word = anchorForSelection(container, index, ends(added, 4, added, 9));
+    if (word === null) throw new Error("no anchor");
+    expect(lines[word.lineStart - 1]).toBe("+new words\r\r");
+    expect(cut(lines, word)).toBe("words");
+    // Let go at the next row's start, as in an LF body: the end steps back
+    // off the line's `\r`s as it does off its `\n`.
+    const toNext = anchorForSelection(container, index, ends(old, 4, added, 0));
+    if (toNext === null) throw new Error("no anchor");
+    expect(lines[toNext.lineEnd - 1]).toBe("-old words\r\r");
+    expect(cut(lines, toNext)).toBe("words");
+  });
+
+  it("keeps a patch row's trailing blanks in its selection", () => {
+    // Only the `\r`s that end a line are no part of its text.
+    const source = `Some prose.\n\n\`\`\`patch\n${PATCH.join("\n").replace("+new words", "+new words \t")}\n\`\`\`\n`;
+    const { container, shadow, index, lines } = fenceWithRows(
+      source,
+      `<pre data-diff=""><div data-line="2" data-line-type="change-addition"><span>new words \t</span></div></pre>`,
+    );
+    const text = shadow.querySelector("span")?.firstChild;
+    const anchor = anchorForSelection(
+      container,
+      index,
+      ends(text, 4, text, 11),
+    );
+    if (anchor === null) throw new Error("no anchor");
+    expect(cut(lines, anchor)).toBe("words \t");
+  });
+
   it("keeps the whole fence for a patch row two files share", () => {
     const source = `Some prose.\n\n\`\`\`patch\n${PATCH.join("\n")}\n\`\`\`\n`;
     const { container, shadow, index, lines } = fenceWithRows(
