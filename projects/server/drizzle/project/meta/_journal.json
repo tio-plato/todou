@@ -204,6 +204,13 @@
       "when": 1795130565351,
       "tag": "0028_canonical_names",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1795186803007,
+      "tag": "0029_case_insensitive_names",
+      "breakpoints": true
     }
   ]
 }
