@@ -153,9 +153,11 @@ import {
 import type { SelectionEndpoints } from "@/lib/selection-endpoints.ts";
 import {
   acceptsShortcut,
+  CHANGED_SELECTOR,
   currentIndex,
   type Stops,
   stepIndex,
+  stopsIn,
 } from "@/lib/spec-change-nav.ts";
 import { changedLineRanges } from "@/lib/spec-changes.ts";
 import { type DraftPlacement, placeDraft } from "@/lib/spec-draft-placement.ts";
@@ -183,34 +185,11 @@ import { LG_UP, SM_UP, useMediaQuery, XL_UP } from "@/lib/use-media-query.ts";
 import { cn } from "@/lib/utils.ts";
 import { VIEWPORT_CHROME_EVENT } from "@/lib/viewport-chrome.ts";
 
-/** What ↑↓ stops on: both kinds of "changed since the baseline" mark (T-158). */
-const CHANGED_SELECTOR = ".spec-changed, .spec-ins-block";
-
 /** What ↑↓ stops on in source-diff mode: one per file pair (T-190). */
 const FILE_DIFF_SELECTOR = "[data-file-diff]";
 
 /** Where the reader stands among what ↑↓ steps over, 1-based (T-224). */
 type ChangePosition = { index: number; total: number };
-
-/**
- * The stops inside `root`, in document order and never one inside another.
- *
- * ↑↓ have always stepped over blocks — a paragraph with three edited words is
- * one stop, because the word-level marks are not in the selector. A swapped
- * image is the one mark that lands on an inline element, so the `<img>` and
- * the paragraph holding it both match (T-223); left in, one edit would stop
- * the reader twice a few pixels apart and count as two.
- */
-function stopsIn(root: HTMLElement, selector: string): HTMLElement[] {
-  const stops: HTMLElement[] = [];
-  for (const el of root.querySelectorAll<HTMLElement>(selector)) {
-    // An ancestor comes first in document order, so the stop kept last is the
-    // only one that can contain this element.
-    if (stops.at(-1)?.contains(el) === true) continue;
-    stops.push(el);
-  }
-  return stops;
-}
 
 /**
  * Where each stop comes to rest, in page coordinates, so the pivot is simply
