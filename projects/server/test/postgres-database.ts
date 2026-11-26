@@ -83,7 +83,7 @@ export async function untilWaiting(
   for (let tries = 0; !settled; tries++) {
     const { rows } = await watcher.query<{ waiting: number }>(
       "SELECT count(*)::int AS waiting FROM pg_stat_activity " +
-        `WHERE wait_event_type = 'Lock' AND ${where}`,
+        `WHERE wait_event_type = 'Lock' AND (${where})`,
       [param],
     );
     if (rows[0]?.waiting) return;
