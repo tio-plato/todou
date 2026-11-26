@@ -6,7 +6,7 @@ import type {
   ProjectCreateInput,
   ProjectUpdateInput,
 } from "@todou/shared";
-import { CANONICAL_STATUSES, parseRefLocator } from "@todou/shared";
+import { BUILTIN_TEMPLATES, parseRefLocator } from "@todou/shared";
 import { and, asc, count, desc, eq, inArray, like, ne, or } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import { uniqueViolation } from "../auth/provision.ts";
@@ -213,10 +213,11 @@ async function seedProject(
     slug: row.slug,
     effectiveFrom: row.createdAt,
   });
+  const seed = BUILTIN_TEMPLATES.basic.body.statuses;
   const seeded = await db
     .insert(statuses)
     .values(
-      CANONICAL_STATUSES.map((s, i) => ({
+      seed.map((s, i) => ({
         projectId: row.id,
         name: s.name,
         category: s.category,
@@ -226,7 +227,7 @@ async function seedProject(
       })),
     )
     .returning({ id: statuses.id, name: statuses.name });
-  const clearName = CANONICAL_STATUSES.find((s) => s.block_clear)?.name;
+  const clearName = seed.find((s) => s.block_clear)?.name;
   await db
     .insert(projectMeta)
     .values({
