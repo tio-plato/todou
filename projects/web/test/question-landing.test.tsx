@@ -599,6 +599,7 @@ type Scrolling = {
   bottoms: () => number;
   userAt: (y: number) => void;
   position: () => number;
+  jumpTo: (y: number) => void;
 };
 
 /** happy-dom cannot lay out the page. Observe production reveal/flash and
@@ -672,6 +673,12 @@ function scrolling({
       fireEvent.scroll(window);
     },
     position: () => state.y,
+    // The browser moving the page, neither the reader nor the page itself:
+    // the scroll it restores for an entry.
+    jumpTo: (y: number) => {
+      state.events.push(`jump:${y}`);
+      state.y = y;
+    },
   };
 }
 
@@ -2617,6 +2624,15 @@ describe("gliding on a card that has landed", () => {
     expect(taken).toBe(false);
     expect(seen).toEqual([]);
 
+    // Read as the entry is left: the card sets the one pushed after.
+    let leftAs: ScrollRestoration | null = null;
+    disposers.push(
+      view.router.history.subscribe(
+        ({ action }: { action: { type: string } }) => {
+          if (action.type === "PUSH") leftAs = window.history.scrollRestoration;
+        },
+      ),
+    );
     frameByFrame();
     expect(await press(link)).toBe(false);
     expect(seen).toEqual([
@@ -2624,7 +2640,7 @@ describe("gliding on a card that has landed", () => {
     ]);
     // The entry left behind is the browser's to restore: Back returns to
     // where the link was pressed.
-    expect(window.history.scrollRestoration).toBe("auto");
+    expect(leftAs).toBe("auto");
     // Not revealed on the way there: the glide sets out from where the
     // reader is.
     expect(scroll.reveals("comment-10")).toBe(0);
@@ -2651,5 +2667,242 @@ describe("gliding on a card that has landed", () => {
     );
     // The address already names it: no new entry for Back to step through.
     expect(seen).toEqual([]);
+  });
+
+  /**
+   * The browser's scroll restoration, which happy-dom leaves out: every entry
+   * keeps the mode the page last set while it was the browser's current one,
+   * and where the page was when it was left. The browser takes a push as the
+   * router's history hands it over, a microtask after announcing it or on
+   * `flush()`, the entry pushed copying the mode of the one it leaves. Back
+   * or Forward to one in "auto" puts the page back there once the router has
+   * rendered it, before the next frame. Returns the step through history.
+   */
+  function restoring(view: View, scroll: Scrolling) {
+    const modes = new Map<number, ScrollRestoration>();
+    const left = new Map<number, number>();
+    const index = () =>
+      (view.router.history.location.state as { __TSR_index: number })
+        .__TSR_index;
+    let current = index();
+    let pushed: number | null = null;
+    const take = () => {
+      if (pushed === null) return;
+      modes.set(pushed, modes.get(current) ?? "auto");
+      current = pushed;
+      pushed = null;
+    };
+    vi.spyOn(window.history, "scrollRestoration", "set").mockImplementation(
+      (mode: ScrollRestoration) => {
+        modes.set(current, mode);
+      },
+    );
+    const flush = view.router.history.flush;
+    vi.spyOn(view.router.history, "flush").mockImplementation(() => {
+      take();
+      flush();
+    });
+    // The first to hear of a push, as the browser's own taking of it is
+    // queued before the history announces it.
+    const hear = ({ action }: { action: { type: string } }) => {
+      take();
+      if (action.type === "PUSH") {
+        // Told before the page moves: where the link was pressed.
+        left.set(current, scroll.position());
+        pushed = index();
+        queueMicrotask(take);
+      } else current = index();
+    };
+    const { subscribers } = view.router.history;
+    const others = [...subscribers];
+    subscribers.clear();
+    for (const listener of [hear, ...others]) subscribers.add(listener);
+    disposers.push(() => subscribers.delete(hear));
+    return async (delta: -1 | 1) => {
+      take();
+      left.set(current, scroll.position());
+      // Read as the traversal starts: a mode set once it is under way comes
+      // too late (measured in Chromium and Firefox).
+      const restores = (modes.get(current + delta) ?? "auto") === "auto";
+      await act(async () => {
+        if (delta < 0) view.router.history.back();
+        else view.router.history.forward();
+      });
+      const y = left.get(current);
+      if (restores && y !== undefined) scroll.jumpTo(y);
+    };
+  }
+
+  /** Where the page is now and after each of `count` frames: what is drawn. */
+  async function path(
+    frame: ReturnType<typeof frameByFrame>,
+    scroll: Scrolling,
+    count = 30,
+  ) {
+    const seen = [scroll.position()];
+    for (let i = 0; i < count; i++) {
+      await frame();
+      seen.push(scroll.position());
+    }
+    return seen;
+  }
+
+  /** From `from` up to `to`, never back down on the way. */
+  function glidesUp(seen: number[], from: number, to: number) {
+    expect(seen[0]).toBe(from);
+    expect(seen.at(-1)).toBe(to);
+    for (let i = 1; i < seen.length; i++)
+      expect(seen[i]).toBeLessThanOrEqual(seen[i - 1] as number);
+  }
+
+  it("glides from where the page stands when Forward returns to a comment it glided to", async () => {
+    const model = card([question(10), question(14)]);
+    serve({ "p/7": model });
+    const scroll = scrolling({ below: BELOW, revealedAt: centred });
+    layOut(scroll);
+    const view = renderAt("/projects/p/issues/7");
+    const go = restoring(view, scroll);
+    await view.findByText("Decision 14?");
+    await waitFor(() => expect(scroll.bottoms()).toBe(1));
+    const end = scroll.position();
+    const frame = frameByFrame();
+    await navigate(view, "comment-10");
+    await frame(1_000);
+    await landed(view, scroll, 10);
+    const stop = scroll.position();
+
+    // Back to the entry the card opened at: where the link was pressed.
+    await go(-1);
+    await frame(1_000);
+    expect(scroll.position()).toBe(end);
+    await go(1);
+    glidesUp(await path(frame, scroll), end, stop);
+  });
+
+  it("glides from where the page stands when Back returns to the comment the card was opened at", async () => {
+    const model = card([question(10), question(14)]);
+    serve({ "p/7": model });
+    const scroll = scrolling({ below: BELOW, revealedAt: centred });
+    layOut(scroll);
+    // Its entry is not one the router pushed: nothing tells the router to
+    // leave the page alone when it renders it again.
+    const view = renderAt("/projects/p/issues/7#comment-10");
+    const go = restoring(view, scroll);
+    await view.findByText("Decision 14?");
+    await landed(view, scroll, 10);
+    const stop = scroll.position();
+    const frame = frameByFrame();
+    await navigate(view, "comment-14");
+    await frame(1_000);
+    await landed(view, scroll, 14);
+    const from = scroll.position();
+
+    await go(-1);
+    glidesUp(await path(frame, scroll), from, stop);
+  });
+
+  it("glides from where the page stands when Back returns from a footnote to a comment", async () => {
+    const items = [question(10), question(14)];
+    const model = card(
+      items,
+      ordered([
+        ...questionItems(items),
+        comment(12, "A claim that needs a note[^1].\n\n[^1]: The note."),
+      ]),
+    );
+    serve({ "p/7": model });
+    const tops = { ...TOPS, "user-content-fn-1": 3_000 };
+    const scroll = scrolling({
+      below: BELOW,
+      revealedAt: (el) => centred(el, tops),
+    });
+    layOut(scroll, tops);
+    const view = renderAt("/projects/p/issues/7");
+    const go = restoring(view, scroll);
+    await view.findByText("Decision 14?");
+    await waitFor(() => expect(scroll.bottoms()).toBe(1));
+    const frame = frameByFrame();
+    await navigate(view, "comment-10");
+    await frame(1_000);
+    await landed(view, scroll, 10);
+    const stop = scroll.position();
+
+    const ref = view.container.querySelector("a[data-footnote-ref]");
+    if (!(ref instanceof HTMLAnchorElement)) throw new Error("No footnote");
+    // The browser follows a footnote itself, past the router's blocker,
+    // and moves the page to it.
+    await act(async () => {
+      fireEvent.click(ref);
+      view.router.history.push(
+        `/projects/p/issues/7${ref.hash}`,
+        {},
+        { ignoreBlocker: true },
+      );
+    });
+    await frame(1_000);
+    const from = scroll.position();
+
+    await go(-1);
+    glidesUp(await path(frame, scroll), from, stop);
+  });
+
+  it("leaves an entry pushed without an anchor to the browser when it is pushed from one with an anchor", async () => {
+    const model = card([question(10), question(14)]);
+    serve({ "p/7": model });
+    const scroll = scrolling({ below: BELOW, revealedAt: centred });
+    layOut(scroll);
+    const view = renderAt("/projects/p/issues/7");
+    const go = restoring(view, scroll);
+    await view.findByText("Decision 14?");
+    await waitFor(() => expect(scroll.bottoms()).toBe(1));
+    const frame = frameByFrame();
+    await navigate(view, "comment-10");
+    await frame(1_000);
+    await landed(view, scroll, 10);
+    const stop = scroll.position();
+    // A link to the card itself, as a reference to it in its comments has.
+    await act(async () => {
+      await view.router.navigate({
+        to: "/projects/$slug/issues/$number",
+        params: { slug: "p", number: "7" },
+      });
+    });
+    scroll.userAt(5_000);
+
+    // Back to the comment: still the anchor's to glide to.
+    await go(-1);
+    glidesUp(await path(frame, scroll), 5_000, stop);
+    // Forward to the card: where the reader left it.
+    await go(1);
+    expect(view.router.state.location.hash).toBe("");
+    expect(scroll.position()).toBe(5_000);
+  });
+
+  // The card lands itself where it mounts again: a browser restoring its
+  // entry would put the page on one still filling in.
+  it("leaves the card's entry to the card when Forward returns to it from another page", async () => {
+    const model = card([question(10), question(14)]);
+    serve({ "p/7": model });
+    const scroll = scrolling({ below: BELOW, revealedAt: centred });
+    layOut(scroll);
+    const view = renderAt("/source");
+    const go = restoring(view, scroll);
+    await act(async () => {
+      await view.router.navigate({
+        to: "/projects/$slug/issues/$number",
+        params: { slug: "p", number: "7" },
+      });
+    });
+    await view.findByText("Decision 14?");
+    await waitFor(() => expect(scroll.bottoms()).toBe(1));
+
+    await go(-1);
+    await view.findByRole("main", { name: "Source list" });
+    const back = scroll.events.length;
+    await go(1);
+    await view.findByText("Decision 14?");
+    expect(
+      scroll.events.slice(back).filter((e) => e.startsWith("jump:")),
+    ).toEqual([]);
   });
 });
