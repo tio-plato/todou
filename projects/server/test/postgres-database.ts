@@ -57,3 +57,37 @@ export async function createTestDatabase(
     },
   };
 }
+
+/**
+ * Resolves once a session that `where` picks out of pg_stat_activity (with
+ * `$1` bound to `param`) waits on a lock, or once `done` has settled,
+ * whichever comes first; throws if neither happens within about five
+ * seconds. For a test that has to act only once the statement it started is
+ * stuck behind another session.
+ */
+export async function untilWaiting(
+  watcher: pg.Client,
+  where: string,
+  param: unknown,
+  done: Promise<unknown>,
+): Promise<void> {
+  let settled = false;
+  void done.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  for (let tries = 0; !settled; tries++) {
+    const { rows } = await watcher.query<{ waiting: number }>(
+      "SELECT count(*)::int AS waiting FROM pg_stat_activity " +
+        `WHERE wait_event_type = 'Lock' AND ${where}`,
+      [param],
+    );
+    if (rows[0]?.waiting) return;
+    if (tries > 200) throw new Error("the session never waited on a lock");
+    await delay(25);
+  }
+}

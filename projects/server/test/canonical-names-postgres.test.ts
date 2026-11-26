@@ -6,7 +6,7 @@ import { openDb } from "../src/db/driver.ts";
 import { checkCanonicalNames } from "./canonical-names-cases.ts";
 import { makeTestApp, type TestApp } from "./helpers.ts";
 import { createNameTables, TABLES } from "./name-migration.ts";
-import { createTestDatabase } from "./postgres-database.ts";
+import { createTestDatabase, untilWaiting } from "./postgres-database.ts";
 
 const json = (res: Response) => res.json() as Promise<{ id: number }>;
 
@@ -229,24 +229,11 @@ describe.skipIf(!PG_URL)("canonical names on postgres", () => {
         const { rows } = await migrator.query<{ pid: number }>(
           "SELECT pg_backend_pid() AS pid",
         );
-        let settled = false;
         const done = canonicalizeNames(drizzle(migrator)).then(
           () => null,
           (err: unknown) => err,
         );
-        void done.then(() => {
-          settled = true;
-        });
-        for (let tries = 0; !settled; tries++) {
-          const { rows: wait } = await watcher.query<{ type: string | null }>(
-            "SELECT wait_event_type AS type FROM pg_stat_activity " +
-              "WHERE pid = $1",
-            [rows[0]?.pid],
-          );
-          if (wait[0]?.type === "Lock") break;
-          if (tries > 200) throw new Error("the pass never waited");
-          await new Promise((resolve) => setTimeout(resolve, 25));
-        }
+        await untilWaiting(watcher, "pid = $1", rows[0]?.pid, done);
         return { done };
       },
       async end() {

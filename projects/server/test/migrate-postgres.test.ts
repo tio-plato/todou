@@ -2,7 +2,6 @@ import { type ChildProcessByStdio, spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
-import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { sql } from "drizzle-orm";
 import pg from "pg";
@@ -16,7 +15,7 @@ import {
 import type { DbRouter } from "../src/db/router.ts";
 import { rowsFrom } from "../src/services/calendar.ts";
 import { makeRouter } from "./helpers.ts";
-import { createTestDatabase } from "./postgres-database.ts";
+import { createTestDatabase, untilWaiting } from "./postgres-database.ts";
 import { testTmpDir } from "./setup.ts";
 
 /**
@@ -231,7 +230,6 @@ describe.skipIf(!PG_URL)("a migration beside a session still writing", () => {
        */
       async migrate(migrations: MigrationSet, statement: string) {
         pool = new pg.Pool({ connectionString: database.url });
-        let settled = false;
         const done = migrateNodePgQueued(
           pool,
           "test",
@@ -241,20 +239,12 @@ describe.skipIf(!PG_URL)("a migration beside a session still writing", () => {
           () => null,
           (err: unknown) => err,
         );
-        void done.then(() => {
-          settled = true;
-        });
-        for (let tries = 0; !settled; tries++) {
-          const { rows } = await watcher.query<{ waiting: number }>(
-            "SELECT count(*)::int AS waiting FROM pg_stat_activity " +
-              "WHERE datname = current_database() " +
-              "AND wait_event_type = 'Lock' AND position($1 in query) > 0",
-            [statement],
-          );
-          if (rows[0]?.waiting) break;
-          if (tries > 200) throw new Error("the migration never waited");
-          await delay(25);
-        }
+        await untilWaiting(
+          watcher,
+          "datname = current_database() AND position($1 in query) > 0",
+          statement,
+          done,
+        );
         return { done };
       },
     };
