@@ -904,6 +904,8 @@ export type WriteGate = { id: number; actor: UserRow; role: MemberRole };
  * 4. A row a transaction will update is locked in that update's mode before
  *    any statement of the transaction takes a weaker lock on it, such as the
  *    KEY SHARE a foreign-key check takes on the parent of a row it inserts.
+ * 5. Rows outside one card that a statement or a transaction locks several
+ *    of are locked first, `ORDER BY id FOR UPDATE`, and only then written.
  *
  * Two places keep another order, and neither can form a cycle. A single
  * autocommit statement that writes one row under a card without the card's
