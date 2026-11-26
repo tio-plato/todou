@@ -930,8 +930,8 @@ export type WriteGate = { id: number; actor: UserRow; role: MemberRole };
  *
  * Two places keep another order, and neither can form a cycle. A single
  * autocommit statement that writes one row under a card without the card's
- * lock (a read position, a mute, a block event, a cross-project reference,
- * a direct-upload request or its expiry) holds nothing to wait with. And a
+ * lock (a read position, a mute, a cross-project reference, a direct-upload
+ * request or its expiry) holds nothing to wait with. And a
  * move back into a tombstone updates the tombstone after the card it moves,
  * out of id order, and locks nothing else in the tombstone's project before
  * it: whatever else locks a tombstone is a write about to be refused by the
@@ -940,6 +940,8 @@ export type WriteGate = { id: number; actor: UserRow; role: MemberRole };
  * tombstones.
  * A write attaching a draft that was on the card before it moved locks the
  * tombstone as well, and waits only on rows of that project.
+ * A block event locks a tombstone too, and on it locks nothing else and ends
+ * at once.
  *
  * The one statement sorts the rows before it locks them: `ORDER BY` and the
  * locking clause belong to the same query, never a subquery. A card it
