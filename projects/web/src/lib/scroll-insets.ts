@@ -273,6 +273,16 @@ export function isGliding(): boolean {
   return gliding;
 }
 
+/**
+ * Put the page back where a glide under way last put it, before its first
+ * frame where it set out, once something else in the same task has moved it.
+ * With no glide under way, nothing.
+ */
+export function keepGlideOnPath(): void {
+  if (gliding && Math.abs(window.scrollY - placedAt) > 1)
+    window.scrollTo(window.scrollX, placedAt);
+}
+
 /** The longest a glide takes, however far it goes. */
 const GLIDE_MAX_MS = 450;
 
