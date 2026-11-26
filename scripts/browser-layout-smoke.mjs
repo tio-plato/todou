@@ -41,7 +41,8 @@ Cases:
                        stay off it and their popovers on screen; from 640px up
                        the 40px chip gutter and left-opening popovers stay.
   spec-chip-width      Below 640px a chip is a round 24px badge for 1 to 99
-                       notes.
+                       notes; from 640px up chips with as many digits are
+                       equally wide.
 
 Usage:
   node scripts/browser-layout-smoke.mjs
