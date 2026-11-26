@@ -1405,7 +1405,8 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       );
       // The baseline's own rows, which annotations on it paint the same way:
       // every row of a block put back whole, the deleted rows of an edited
-      // one. `oldCodeRowSource` places them in the baseline.
+      // one, the source of a baseline diagram that does not parse.
+      // `oldCodeRowSource` places them in the baseline.
       const old =
         baselineIndex === null || fenceBaselines === undefined
           ? null

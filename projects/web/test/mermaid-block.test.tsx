@@ -13,6 +13,7 @@ import { errorSummary, viewBoxSize } from "../src/lib/mermaid.ts";
 import { rehypeSourceLines } from "../src/lib/rehype-source-lines.ts";
 import type { SourceFence } from "../src/lib/spec-source-index.ts";
 import { renderWithProviders } from "./render.tsx";
+import { selectable } from "./user-select.ts";
 
 vi.mock("@pierre/diffs/react", () => ({
   CodeView: ({ items }: { items: Array<{ file: { contents: string } }> }) => (
@@ -281,9 +282,25 @@ describe("changed diagrams in a compare view (T-724)", () => {
       within(old).getByText("Parse error on line 2: Expecting 'SQE', got 'PS'"),
     ).toBeTruthy();
     expect(within(old).getByTestId("code").textContent).toContain("旧");
+    expect(selectable(within(old).getByTestId("code"))).toBe(true);
     expect(
       container.querySelector('[data-side="after"] .mermaid-compare-diagram'),
     ).not.toBeNull();
+  });
+
+  it("leaves the error and source of a new version that does not parse selectable", async () => {
+    render.next = { ok: false, error: PARSE_ERROR };
+    const container = await compare();
+    await waitFor(() => expect(drawn(container)).toHaveLength(1));
+    const after = container.querySelector('[data-side="after"]') as HTMLElement;
+    expect(
+      selectable(
+        within(after).getByText(
+          "Parse error on line 2: Expecting 'SQE', got 'PS'",
+        ),
+      ),
+    ).toBe(true);
+    expect(selectable(within(after).getByTestId("code"))).toBe(true);
   });
 
   it("is the source diff with the error under it when neither parses", async () => {

@@ -51,6 +51,15 @@ export const OLD_FLAT_ATTR = "data-old-at";
 export const OLD_SOURCE_ATTR = "data-old-src";
 
 /**
+ * Worn, with no value, by what a rendered comparison draws of the baseline's
+ * version of a block inside the current block's wrapper: today the source of
+ * a diagram the baseline fails to parse. Its rows are numbered by the
+ * baseline block `pairedFences` pairs with that wrapper's, and belong to no
+ * line of the version shown.
+ */
+export const OLD_FENCE_ATTR = "data-old-fence";
+
+/**
  * The absolute source offsets `start-end` (half-open) a link or an image
  * was rendered from. A chip shows a title where the source says `#12`, and a
  * document card shows a file the source names by address, so neither reads

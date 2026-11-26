@@ -9,6 +9,7 @@ import {
   CODE_CONTENT_START_ATTR,
   codeContentStart,
   FENCE_PATCH_ATTR,
+  OLD_FENCE_ATTR,
   OLD_LINE_ATTR,
   parseSourceLoc,
   SOURCE_LINE_ATTR,
@@ -193,9 +194,12 @@ export function codeRowSource(
   // A deletion row numbers itself on the old side, so the current source
   // has no line for it and the body line would name an unrelated one —
   // silently, and plausibly (T-343). The other three line types pierre emits,
-  // `context-expanded` included, all number the new side.
+  // `context-expanded` included, all number the new side. A row of the
+  // baseline's own version of the block numbers that version, likewise.
   const bodyLine =
-    !Number.isInteger(contentStart) || (!patch && isDeletion(row))
+    !Number.isInteger(contentStart) ||
+    (!patch && isDeletion(row)) ||
+    showsOldFence(row)
       ? null
       : bodyLineOf(
           index === null ? null : (fenceAt(index, loc.start)?.value ?? null),
@@ -211,6 +215,20 @@ export function codeRowSource(
 
 function isDeletion(row: Element): boolean {
   return row.getAttribute(LINE_TYPE_ATTR) === DELETION_LINE_TYPE;
+}
+
+/**
+ * Whether a row shows the compare baseline's version of its block rather
+ * than the block itself: the source of a diagram the baseline fails to
+ * parse, which a comparison draws inside the current block's wrapper.
+ */
+function showsOldFence(row: Element): boolean {
+  return (
+    stampedAbove(
+      row,
+      `[${OLD_FENCE_ATTR}], [${SOURCE_LINE_ATTR}]`,
+    )?.hasAttribute(OLD_FENCE_ATTR) === true
+  );
 }
 
 /**
@@ -266,11 +284,13 @@ function placeRow(
 
 /**
  * Where one of pierre's rows of removed code sits in the compare baseline,
- * or null when the row is not one. Two kinds of row are: every row of a code
- * block put back whole, whose wrapper carries its baseline lines
- * (`OLD_LINE_ATTR`), and a deletion row of a block edited in place, which
- * numbers itself on the old side of the diff. `fences` is `pairedFences`'
- * answer, which names the baseline block an edited one replaced.
+ * or null when the row is not one. Three kinds of row are: every row of a
+ * code block put back whole, whose wrapper carries its baseline lines
+ * (`OLD_LINE_ATTR`), a deletion row of a block edited in place, which
+ * numbers itself on the old side of the diff, and a row of the baseline's
+ * version an edited block shows whole (`OLD_FENCE_ATTR`). `fences` is
+ * `pairedFences`' answer, which names the baseline block an edited one
+ * replaced.
  *
  * The row is placed in the baseline the way `codeRowSource` places one in
  * the current source, with the baseline block's content start worked out
@@ -290,7 +310,10 @@ export function oldCodeRowSource(
   let line: number | null = null;
   if (wrapper.hasAttribute(OLD_LINE_ATTR)) {
     line = parseSourceLoc(wrapper.getAttribute(OLD_LINE_ATTR))?.start ?? null;
-  } else if (wrapper.hasAttribute(CODE_CONTENT_START_ATTR) && isDeletion(row)) {
+  } else if (
+    wrapper.hasAttribute(CODE_CONTENT_START_ATTR) &&
+    (isDeletion(row) || showsOldFence(row))
+  ) {
     const loc = parseSourceLoc(wrapper.getAttribute(SOURCE_LINE_ATTR));
     line = loc === null ? null : (fences.get(loc.start)?.line ?? null);
   }

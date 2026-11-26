@@ -5,6 +5,7 @@ import {
   MediaCompare,
 } from "../src/components/shared/media-compare.tsx";
 import { resetCompareMode, setCompareMode } from "../src/lib/compare-mode.ts";
+import { selectable } from "./user-select.ts";
 
 beforeEach(() => resetCompareMode());
 
@@ -191,6 +192,14 @@ describe("MediaCompare (T-722)", () => {
         '[aria-label="Comparison"] [aria-pressed="true"]',
       ),
     ).toHaveLength(0);
+  });
+
+  it("leaves a replacement selectable, unlike the pictures it stands in for", () => {
+    const { unmount } = renderCompare();
+    expect(selectable(screen.getByAltText("v2"))).toBe(false);
+    unmount();
+    renderCompare({ replacement: <pre data-testid="source">diff</pre> });
+    expect(selectable(screen.getByTestId("source"))).toBe(true);
   });
 
   it("has Copy only with text, and puts actions in the head", () => {

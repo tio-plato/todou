@@ -33,6 +33,7 @@ import {
   renderDiagram,
 } from "@/lib/mermaid.ts";
 import { colourChanges } from "@/lib/mermaid-change.ts";
+import { OLD_FENCE_ATTR } from "@/lib/rehype-source-lines.ts";
 
 // The palette is baked into the SVG at render time, so a theme switch has to
 // re-render. `data-theme` on <html> is the resolved theme — the preference
@@ -276,6 +277,7 @@ export function MermaidCompare({
     result: DiagramResult | null,
     source: string,
     svg: string | undefined,
+    isNew: boolean,
   ): CompareSide =>
     result?.ok === true
       ? {
@@ -296,7 +298,14 @@ export function MermaidCompare({
           size: null,
           failed: true,
           content: (
-            <div className="grid gap-1.5 p-3">
+            // The stage around it is not selectable (see MediaCompare), but a
+            // side that did not draw is text, not a picture. The old
+            // version's source wears OLD_FENCE_ATTR, so that its rows are
+            // placed in the baseline and a selection there anchors to it.
+            <div
+              className="grid gap-1.5 p-3 select-text"
+              {...(isNew ? {} : { [OLD_FENCE_ATTR]: "" })}
+            >
               <p
                 className="truncate text-destructive text-xs"
                 title={result?.ok === false ? result.error : undefined}
@@ -311,8 +320,8 @@ export function MermaidCompare({
   return (
     <div ref={probe}>
       <MediaCompare
-        before={side(labels.before, old, before, marked?.before)}
-        after={side(labels.after, next, after, marked?.after)}
+        before={side(labels.before, old, before, marked?.before, false)}
+        after={side(labels.after, next, after, marked?.after, true)}
         modes={["2up"]}
         onOpen={pair === null ? undefined : open}
         align="center"
