@@ -913,6 +913,10 @@ export type WriteGate = { id: number; actor: UserRow; role: MemberRole };
  *    last step). With one mode for every other write, no lock is ever
  *    upgraded.
  *    The cards whose drafts a write attaches are among the cards it touches.
+ *    A transaction that writes rows under several cards and none of the
+ *    cards (marking several cards read) locks the cards FOR KEY SHARE
+ *    instead: the lock those rows' foreign keys take anyway, so it waits
+ *    only for a transaction that deletes or moves the cards away.
  * 3. Cards before `project_meta`: creating a card locks the cards it
  *    touches, then takes a number; a same-database move locks its card, then
  *    the target's `project_meta`.
