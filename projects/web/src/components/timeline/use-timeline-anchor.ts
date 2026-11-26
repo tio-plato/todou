@@ -78,6 +78,10 @@ type AnchorRequest = {
  * card, is glided to; the first landing, arriving on the card, lands
  * at once, and sets it.
  *
+ * `pressed` counts presses of a link to the anchor the address already
+ * names, which move nothing in the router: a new count is a new target, and
+ * the anchor lands on it again.
+ *
  * Returns whether an anchor is being targeted, so the caller can skip its
  * default scroll-to-bottom.
  */
@@ -86,6 +90,7 @@ export function useTimelineAnchor(
   request?: AnchorRequest,
   paused = false,
   landed: { current: boolean } = { current: false },
+  pressed = 0,
 ): boolean {
   const hash = useRouterState({ select: (s) => s.location.hash });
   const target = paused ? null : parseTimelineAnchor(hash ?? "");
@@ -104,7 +109,7 @@ export function useTimelineAnchor(
       return;
     }
     const elementId = anchorElementId(target);
-    const key = `${elementId}:${request?.id ?? "direct"}`;
+    const key = `${elementId}:${request?.id ?? "direct"}:${pressed}`;
     if (doneFor.current === key) return;
     // A new target: the old one is no longer where the reader is headed.
     releaseHold.current();
