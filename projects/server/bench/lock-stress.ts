@@ -523,6 +523,36 @@ function someComments(slug: string, number: number, type?: string): number[] {
   return [...out];
 }
 
+/** The numbers of two or three of a project's cards, fewer if it has fewer. */
+function someCards(slug: string): number[] {
+  const left = [...(live.cards.get(slug) ?? [])];
+  const out: number[] = [];
+  const n = 2 + Math.floor(Math.random() * 2);
+  while (out.length < n && left.length > 0) {
+    const [card] = left.splice(Math.floor(Math.random() * left.length), 1);
+    out.push((card as Card).number);
+  }
+  return out;
+}
+
+/** One command on a card's fields, from what the project has. */
+function fieldCommand(slug: string) {
+  const label = pick(live.labels.get(slug) ?? []);
+  const status = pick(live.statuses.get(slug) ?? []);
+  const who = personOf();
+  return pick([
+    ...(label === undefined
+      ? []
+      : [
+          { type: "label_add", label_id: label },
+          { type: "label_remove", label_id: label },
+        ]),
+    { type: "assign", user_id: who.id },
+    { type: "unassign", user_id: who.id },
+    ...(status === undefined ? [] : [{ type: "status", status_id: status }]),
+  ]);
+}
+
 function uploadForm(number: number | null, draft: boolean): FormData {
   const form = new FormData();
   form.set(
@@ -651,25 +681,9 @@ const ops: Record<string, [number, Op]> = {
       const s = slugOf();
       const c = cardOf(s);
       if (!c) return null;
-      const label = pick(live.labels.get(s) ?? []);
-      const status = pick(live.statuses.get(s) ?? []);
-      const who = personOf();
-      const command = pick([
-        ...(label === undefined
-          ? []
-          : [
-              { type: "label_add", label_id: label },
-              { type: "label_remove", label_id: label },
-            ]),
-        { type: "assign", user_id: who.id },
-        { type: "unassign", user_id: who.id },
-        ...(status === undefined
-          ? []
-          : [{ type: "status", status_id: status }]),
-      ]);
       return request(u, "POST", on(s, c.number, "/commands"), {
         body: chance(0.5) ? "" : textFor(s, u),
-        commands: [command],
+        commands: [fieldCommand(s)],
       });
     },
   ],
@@ -703,6 +717,32 @@ const ops: Record<string, [number, Op]> = {
         name: `x${Math.floor(Math.random() * 1e9)}`,
       });
       return worstOf([...raced, made]);
+    },
+  ],
+  // Commands on two or three cards at once; one time in four, the pair
+  // relabel races against a label's deletion.
+  bulk: [
+    3,
+    async (u) => {
+      const s = slugOf();
+      const numbers = someCards(s);
+      if (numbers.length < 2) return null;
+      const label = pick(live.labels.get(s) ?? []);
+      const commands = chance(0.25)
+        ? label === undefined
+          ? []
+          : [
+              { type: "label_remove", label_id: label },
+              { type: "label_add", label_id: label },
+            ]
+        : Array.from({ length: 1 + Math.floor(Math.random() * 2) }, () =>
+            fieldCommand(s),
+          );
+      if (commands.length === 0) return null;
+      return request(u, "POST", `/projects/${s}/issues/bulk`, {
+        numbers,
+        commands,
+      });
     },
   ],
   editIssue: [
@@ -918,6 +958,16 @@ const ops: Record<string, [number, Op]> = {
       return request(u, "PUT", on(s, c.number, "/read"), {});
     },
   ],
+  // Two or three cards marked read at once.
+  selectionRead: [
+    2,
+    async (u) => {
+      const s = slugOf();
+      const numbers = someCards(s);
+      if (numbers.length === 0) return null;
+      return request(u, "PUT", `/projects/${s}/issues/read`, { numbers });
+    },
+  ],
   // Two of the same reader's "mark all read" at once.
   bulkRead: [
     1,
@@ -989,6 +1039,11 @@ const ops: Record<string, [number, Op]> = {
         );
         if (created.status === 201) cards.push(await json(created));
       }
+      const made = await request(owner, "POST", `/projects/${slug}/labels`, {
+        name: "x",
+      });
+      const label =
+        made.status === 201 ? ((await json(made)).id as number) : undefined;
       const asked: number[] = [];
       for (const card of cards) {
         const created = await request(
@@ -1013,8 +1068,24 @@ const ops: Record<string, [number, Op]> = {
         }),
         request(owner, "PUT", on(slug, card.number, "/read"), {}),
       ]);
+      const numbers = cards.map((card) => card.number);
+      const selection =
+        label === undefined || numbers.length === 0
+          ? []
+          : [
+              request(owner, "POST", `/projects/${slug}/issues/bulk`, {
+                numbers,
+                commands: [
+                  { type: "label_add", label_id: label },
+                  { type: "assign", user_id: owner.id },
+                ],
+              }),
+              request(owner, "PUT", `/projects/${slug}/issues/read`, {
+                numbers,
+              }),
+            ];
       const deleted = request(owner, "DELETE", `/projects/${slug}`);
-      return worstOf(await Promise.all([...writes, deleted]));
+      return worstOf(await Promise.all([...writes, ...selection, deleted]));
     },
   ],
   readTimeline: [
