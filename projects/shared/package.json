@@ -9,7 +9,8 @@
     ".": "./src/index.ts",
     "./config": "./src/config.ts",
     "./version": "./src/version.ts",
-    "./spec-remap": "./src/spec-remap.ts"
+    "./spec-remap": "./src/spec-remap.ts",
+    "./template-apply": "./src/template-apply.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

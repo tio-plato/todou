@@ -116,7 +116,8 @@ export const autolinks = pgTable(
 );
 
 /**
- * The unique indexes on a status's and a label's name, named once. They
+ * The unique indexes on a status's and a label's name, named once: applying
+ * a template tells a name clash from any other refused write by them. They
  * compare `lower(name)`, a backstop to the API's `nameKey`, which they match
  * only mostly (see the case_insensitive_names migration).
  */

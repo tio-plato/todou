@@ -10,7 +10,7 @@ import {
   type StatusUpdateInput,
   type StatusUsage,
 } from "@todou/shared";
-import { and, asc, count, eq, ne, sql } from "drizzle-orm";
+import { and, asc, count, eq, ne, or, sql } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import { uniqueViolation } from "../auth/provision.ts";
 import type { AppContext } from "../bootstrap.ts";
@@ -59,6 +59,14 @@ export async function listStatusUsage(
 ): Promise<StatusUsage[]> {
   const { project } = await requireCapability(ctx, actor, slug, "status.usage");
   const db = await ctx.router.forProject(routeInfoOf(project));
+  return statusUsageRows(db, project.id);
+}
+
+/**
+ * Issues per status, trashed ones apart: the counts the Statuses page shows
+ * and applying a template decides deletions by, read one way for both.
+ */
+export function statusUsageRows(db: Db, projectId: number) {
   return db
     .select({
       id: statuses.id,
@@ -67,7 +75,7 @@ export async function listStatusUsage(
     })
     .from(statuses)
     .leftJoin(issues, eq(issues.statusId, statuses.id))
-    .where(eq(statuses.projectId, project.id))
+    .where(eq(statuses.projectId, projectId))
     .groupBy(statuses.id)
     .orderBy(asc(statuses.id));
 }
@@ -243,6 +251,20 @@ export async function updateStatus(
 
   const row = await db.transaction(async (tx) => {
     if (input.is_default === true) {
+      // Both rows first, by id: applying a template locks every status in
+      // that order, and taking the two in another one could leave each
+      // transaction holding the row the other waits for.
+      await tx
+        .select({ id: statuses.id })
+        .from(statuses)
+        .where(
+          and(
+            eq(statuses.projectId, project.id),
+            or(eq(statuses.isDefault, true), eq(statuses.id, statusId)),
+          ),
+        )
+        .orderBy(asc(statuses.id))
+        .for("no key update");
       // Only one default per project: becoming it demotes the previous one.
       await tx
         .update(statuses)
