@@ -1857,7 +1857,8 @@ const AnnotationChip = memo(function AnnotationChip({
         data-annotation-ui=""
         className={cn(
           "absolute right-0 inline-flex cursor-pointer items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs shadow-sm",
-          "max-sm:right-[calc(var(--spec-card-inset,0px)*-1)] max-sm:h-6 max-sm:min-w-6 max-sm:translate-x-1/2 max-sm:justify-center max-sm:py-0",
+          // 2px a side below `sm` keeps 1 to 99 notes in the 1.5rem circle.
+          "max-sm:right-[calc(var(--spec-card-inset,0px)*-1)] max-sm:h-6 max-sm:min-w-6 max-sm:translate-x-1/2 max-sm:justify-center max-sm:px-0.5 max-sm:py-0",
           draftCount > 0
             ? "border-indigo-500/60 bg-indigo-500/10 text-indigo-700 max-sm:bg-[color-mix(in_srgb,var(--color-indigo-500)_10%,var(--background))] dark:text-indigo-400"
             : "border-amber-500/60 bg-amber-500/10 text-amber-700 max-sm:bg-[color-mix(in_srgb,var(--color-amber-500)_10%,var(--background))] dark:text-amber-400",

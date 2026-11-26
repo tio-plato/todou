@@ -28,6 +28,7 @@ import { runBadgeClip } from "./browser/badge-clip.mjs";
 import { runBoardScrollbars } from "./browser/board-scrollbars.mjs";
 import { runFocusRingClip } from "./browser/focus-ring-clip.mjs";
 import { runSpecChipGutter } from "./browser/spec-chip-gutter.mjs";
+import { runSpecChipWidth } from "./browser/spec-chip-width.mjs";
 import { runSpecComposerCover } from "./browser/spec-composer-cover.mjs";
 import { runSpecOutlineStrip } from "./browser/spec-outline-strip.mjs";
 import {
@@ -57,6 +58,8 @@ Cases:
                        covers an open comment popover; the outline opens a
                        folded heading it jumps to and marks the section past
                        the reading line.
+  spec-chip-width      Below 640px a chip is a round 24px badge for 1 to 99
+                       notes.
 
 Usage:
   node scripts/browser-layout-smoke.mjs
@@ -253,6 +256,7 @@ async function main() {
       ["spec-chip-gutter", runSpecChipGutter],
       ["focus-ring-clip", runFocusRingClip],
       ["spec-outline-strip", runSpecOutlineStrip],
+      ["spec-chip-width", runSpecChipWidth],
     ]) {
       const stage = Date.now();
       try {
