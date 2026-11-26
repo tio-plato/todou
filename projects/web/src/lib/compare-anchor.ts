@@ -7,6 +7,7 @@ import {
   rowAt,
 } from "./pierre-rows.ts";
 import {
+  CODE_CONTENT_START_ATTR,
   OLD_FLAT_ATTR,
   OLD_LINE_ATTR,
   OLD_SOURCE_ATTR,
@@ -17,6 +18,8 @@ import {
   beside,
   DELETED_CONTENT,
   endsOnContent,
+  hiddenInRows,
+  OLD_CODE_BLOCK,
   onContainerEdges,
   sourceOffsetInBlock,
 } from "./selection-anchor.ts";
@@ -209,6 +212,42 @@ function oldEnd(
 }
 
 /**
+ * `hiddenInRows` for the baseline, in the blocks a comparison draws rows of
+ * removed code in: each spans the baseline block its first such row names,
+ * so listing the blocks reads their rows. Of a block edited in place only
+ * the deletion rows are placed in the baseline, and the rest count as
+ * unplaced: a context row because it shows a baseline line too, an addition
+ * along with it. Such a block hides no line whole unless every row of it is
+ * a deletion.
+ */
+function hiddenInOldCode(
+  container: Element,
+  baseline: SegmentIndex,
+  fences: ReadonlyMap<number, SourceFence>,
+): (offset: number) => boolean {
+  const placed = (row: Element) => oldCodeRowSource(baseline, fences, row);
+  return hiddenInRows(
+    baseline,
+    () =>
+      [
+        ...container.querySelectorAll(
+          `${OLD_CODE_BLOCK}, [${CODE_CONTENT_START_ATTR}]`,
+        ),
+      ].flatMap((el) => {
+        for (const host of el.querySelectorAll("diffs-container")) {
+          for (const row of host.shadowRoot?.querySelectorAll("[data-line]") ??
+            []) {
+            const source = placed(row);
+            if (source !== null) return [{ el, loc: source.loc }];
+          }
+        }
+        return [];
+      }),
+    (row) => placed(row) ?? { line: null, textStart: null },
+  );
+}
+
+/**
  * A selection both of whose ends are in removed content, anchored to the
  * baseline: to the columns between the two ends, or to their lines where
  * either end has no offset or the columns name nothing. A backwards pair is
@@ -216,6 +255,7 @@ function oldEnd(
  * own edge, as `columnsOfEndpoints` does.
  */
 function baselineAnchor(
+  container: Element,
   baseline: SegmentIndex,
   fences: ReadonlyMap<number, SourceFence>,
   ends: SelectionEndpoints,
@@ -233,7 +273,12 @@ function baselineAnchor(
   const columns =
     start.offset === null || end.offset === null
       ? null
-      : columnsOfOffsets(baseline, start.offset, end.offset);
+      : columnsOfOffsets(
+          baseline,
+          start.offset,
+          end.offset,
+          hiddenInOldCode(container, baseline, fences),
+        );
   if (columns !== null) return { ...columns, baseline: true };
   if (start.lines === null || end.lines === null) return null;
   return {
@@ -292,7 +337,7 @@ function compareAnchorOf(
   const startIn = deletedAround(container, baseline, fences, ends.start);
   const endIn = deletedAround(container, baseline, fences, ends.end);
   if (startIn !== null && endIn !== null) {
-    return baselineAnchor(baseline, fences, ends);
+    return baselineAnchor(container, baseline, fences, ends);
   }
   return anchorForSelection(container, index, {
     start: startIn === null ? ends.start : outOf(startIn, "after"),
