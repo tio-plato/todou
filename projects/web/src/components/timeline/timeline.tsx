@@ -25,6 +25,7 @@ import {
   LoadFailure,
   RefreshFailure,
 } from "@/components/shared/load-failure.tsx";
+import { useReturnLinkState } from "@/components/shared/return-context.tsx";
 import {
   CommentItem,
   type Viewer,
@@ -346,11 +347,12 @@ export function Timeline({
   // Back returns to where the link was pressed. Set from a blocker that
   // never blocks: the history asks it before each push, while the entry
   // being left is still the current one. A link the router does not take, a
-  // footnote's or a bare `#anchor`, the browser follows past the blocker: a
-  // plain click on one to another fragment of this page sets the entry from the
-  // document, after the page's own handlers and before the browser follows the
-  // link. A click the router took is left to the blocker, and one with a
-  // modifier opens another tab and moves nothing here; nor does a link to
+  // footnote's or a bare `#anchor` to anything but a comment or an event
+  // (taken below), the browser follows past the blocker: a plain click on one
+  // to another fragment of this page sets the entry from the document, after
+  // the page's own handlers and before the browser follows the link. A click
+  // the router took is left to the blocker, and one with a modifier opens
+  // another tab and moves nothing here; nor does a link to
   // another query, which loads a new page. Without `enableBeforeUnload: false`
   // the history takes it for a blocker that wants the browser to confirm every
   // reload and closing of the tab once the page had a click or a key. A passive
@@ -360,6 +362,15 @@ export function Timeline({
   // current entry is the next page's, which its push copied from the card's, so
   // it gets the browser's default back rather than the value found on mount,
   // which, the card having come back by Back, is its own.
+  // A plain click on a link written in a body to one of the card's own
+  // comments or events, a bare `#comment-N`, is taken from the browser and
+  // pushed as the card's comment links are: followed by the browser, it
+  // jumps to the target first, and the anchor then glides to its landing
+  // from the jump rather than from where the reader pressed. One naming the
+  // anchor the address already holds moves nothing in the router; it counts
+  // a press instead, and the anchor lands on it again.
+  const returnState = useReturnLinkState();
+  const [pressed, setPressed] = useState(0);
   useEffect(() => {
     if (!("scrollRestoration" in window.history)) return;
     window.history.scrollRestoration = "manual";
@@ -393,8 +404,23 @@ export function Timeline({
         link.pathname === window.location.pathname &&
         link.search === window.location.search &&
         link.href.includes("#")
-      )
+      ) {
+        if (parseTimelineAnchor(link.hash) !== null) {
+          event.preventDefault();
+          const hash = link.hash.slice(1);
+          if (hash === router.state.location.hash) setPressed((n) => n + 1);
+          else
+            void router.navigate({
+              to: ".",
+              search: true,
+              hash,
+              hashScrollIntoView: false,
+              state: returnState,
+            });
+          return;
+        }
         window.history.scrollRestoration = "auto";
+      }
     };
     document.addEventListener("click", onClick);
     return () => {
@@ -402,7 +428,7 @@ export function Timeline({
       unblock();
       window.history.scrollRestoration = "auto";
     };
-  }, [router]);
+  }, [router, returnState]);
   const questionLanding = useQuestionLanding(slug, issueNumber);
   const timelineReady = tail.isSuccess && (!headEnabled || head.isSuccess);
 
@@ -557,6 +583,7 @@ export function Timeline({
     // The address may still name the comment the last landing chose.
     questionLanding.intent,
     landed,
+    pressed,
   );
 
   useEffect(() => {
