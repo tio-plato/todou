@@ -17,9 +17,9 @@ import { rolledBack, TABLES } from "./name-migration.ts";
 /**
  * The code points of the Basic Multilingual Plane past NUL, split by whether
  * JavaScript's `\s` (and so `trim()`) counts them as space. Left out of
- * `other` are those NFC may change wherever they stand, the combining marks
- * and the code points with a decomposition: a run of them would be reordered
- * or recomposed, which is M6's business.
+ * `other` are those NFC changes, the combining marks, which a run of them
+ * would reorder or compose with what precedes them, and the code points NFC
+ * replaces even on their own: composing is M6's business.
  */
 function codePoints(): { space: string[]; other: string[] } {
   const space: string[] = [];
@@ -28,7 +28,7 @@ function codePoints(): { space: string[]; other: string[] } {
     if (code >= 0xd800 && code <= 0xdfff) continue;
     const c = String.fromCharCode(code);
     if (/\s/.test(c)) space.push(c);
-    else if (!/\p{M}/u.test(c) && c.normalize("NFD") === c) other.push(c);
+    else if (!/\p{M}/u.test(c) && c.normalize("NFC") === c) other.push(c);
   }
   return { space, other };
 }
