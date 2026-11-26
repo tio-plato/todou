@@ -1,6 +1,10 @@
 import { useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
-import { holdRevealed, revealBlock } from "@/lib/scroll-insets.ts";
+import {
+  glideToRevealed,
+  holdRevealed,
+  revealBlock,
+} from "@/lib/scroll-insets.ts";
 import {
   anchorElementId,
   parseTimelineAnchor,
@@ -69,6 +73,15 @@ type AnchorRequest = {
  * address can keep the last comment it landed on meanwhile, and landing there
  * again on the way would flash it for nothing.
  *
+ * `landed` says whether the card has landed anywhere yet. A target found
+ * once it has, a question badge pressed or a comment link followed on the
+ * card, is glided to; the first landing, arriving on the card, lands
+ * at once, and sets it.
+ *
+ * `pressed` counts presses of a link to the anchor the address already
+ * names, which move nothing in the router: a new count is a new target, and
+ * the anchor lands on it again.
+ *
  * Returns whether an anchor is being targeted, so the caller can skip its
  * default scroll-to-bottom.
  */
@@ -76,6 +89,8 @@ export function useTimelineAnchor(
   gap: GapExpansion,
   request?: AnchorRequest,
   paused = false,
+  landed: { current: boolean } = { current: false },
+  pressed = 0,
 ): boolean {
   const hash = useRouterState({ select: (s) => s.location.hash });
   const target = paused ? null : parseTimelineAnchor(hash ?? "");
@@ -94,7 +109,7 @@ export function useTimelineAnchor(
       return;
     }
     const elementId = anchorElementId(target);
-    const key = `${elementId}:${request?.id ?? "direct"}`;
+    const key = `${elementId}:${request?.id ?? "direct"}:${pressed}`;
     if (doneFor.current === key) return;
     // A new target: the old one is no longer where the reader is headed.
     releaseHold.current();
@@ -102,11 +117,15 @@ export function useTimelineAnchor(
     const el = document.getElementById(elementId);
     if (el) {
       doneFor.current = key;
-      // Reveal uses the existing floating-bar/composer scroll insets.
-      revealBlock(el);
-      // The whole card, not the timeline: the issue body and the attachment
+      // Reveal uses the existing floating-bar/composer scroll insets. Held on
+      // the whole card, not the timeline: the issue body and the attachment
       // list above it load late too, and push the target down just as far.
-      releaseHold.current = holdRevealed(el, document.body);
+      if (landed.current) releaseHold.current = glideToRevealed(el);
+      else {
+        revealBlock(el);
+        releaseHold.current = holdRevealed(el, document.body);
+      }
+      landed.current = true;
       request?.onComplete();
       return;
     }

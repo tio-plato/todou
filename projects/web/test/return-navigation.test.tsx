@@ -101,6 +101,8 @@ type Row = {
   spec?: boolean;
   deleted?: boolean;
   blockedBy?: number;
+  /** The card's description, `About <title>.` unless given. */
+  body?: string;
 };
 
 const DIG: Row = {
@@ -111,6 +113,7 @@ const DIG: Row = {
   status: TODO,
   spec: true,
   blockedBy: 12,
+  body: "About Dig up the potatoes. See [the first comment](#comment-1).",
 };
 const WASH: Row = {
   id: 102,
@@ -398,7 +401,7 @@ function appFixture() {
       if (row === undefined) return NOT_FOUND(path);
       return {
         status: 200,
-        body: { ...listItem(row), body: `About ${row.title}.` },
+        body: { ...listItem(row), body: row.body ?? `About ${row.title}.` },
       };
     }
     if (path.endsWith("/timeline")) {
@@ -991,6 +994,33 @@ describe("a chain of cards", () => {
     const back = await backLinkOn(WASH.title);
     expect(back.getAttribute("aria-label")).toBe("Back to Issues");
     expect(back.getAttribute("href")).toBe("/projects/demo");
+  });
+});
+
+describe("a link written to one of the card's comments", () => {
+  /** The card takes it from the browser and pushes it itself. */
+  it("keeps the origin on the entry it pushes", async () => {
+    await startAt("/projects/demo?category=all&group=none");
+    mount();
+    openWithTheMouse(await screen.findByRole("link", { name: DIG.title }));
+    await backLinkOn(DIG.title);
+
+    openWithTheMouse(
+      await screen.findByRole("link", { name: "the first comment" }),
+    );
+    await waitFor(() => expect(router.state.location.hash).toBe("comment-1"));
+    expect(entryNow().origin?.target).toEqual({
+      kind: "list",
+      slug: "demo",
+      search: { category: "all", group: "none" },
+    });
+
+    fireEvent.click(await backLinkOn(DIG.title));
+    await landedOn("/projects/demo");
+    expect(router.state.location.search).toEqual({
+      category: "all",
+      group: "none",
+    });
   });
 });
 
