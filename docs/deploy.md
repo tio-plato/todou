@@ -76,7 +76,8 @@ dedicated placement, every project database, which todou also migrates when
 it creates a project. A migration runs at READ COMMITTED whatever isolation
 level the database or the role sets as default, and one that deadlocks with
 an older version still writing, as in a rolling deploy, rolls back whole and
-runs again a second later in the same process, up to five times.
+runs again a second later in the same process; the fifth deadlock in a row
+fails it.
 
 Two project migrations change existing data rather than only its shape, and
 so does a step that follows every migration of a project database. Migration
