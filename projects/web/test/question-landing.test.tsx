@@ -36,6 +36,7 @@ import { questionsQuery } from "../src/api/questions.ts";
 import { UnsavedChangesGuard } from "../src/components/shared/unsaved-guard.tsx";
 import { QUESTION_LANDING_ROUTE_ID } from "../src/components/timeline/use-question-landing.ts";
 import { selectNextQuestionLanding } from "../src/lib/question-landing.ts";
+import { isGliding, usableViewport } from "../src/lib/scroll-insets.ts";
 import { registerDirtySource } from "../src/lib/unsaved-guard.ts";
 import { IssueDetailPage } from "../src/pages/issue-detail.tsx";
 import { IssueRouteError } from "../src/pages/issue-route-error.tsx";
@@ -598,13 +599,21 @@ type Scrolling = {
   bottoms: () => number;
   userAt: (y: number) => void;
   position: () => number;
+  jumpTo: (y: number) => void;
 };
 
 /** happy-dom cannot lay out the page. Observe production reveal/flash and
  * scroll order, modelling the viewport change without firing a native scroll
  * event; releasing landing ownership must reconcile follow-bottom itself.
- * `below` is what follows the page's column: a phone's sidebar. */
-function scrolling({ below = 0 }: { below?: number } = {}): Scrolling {
+ * `below` is what follows the page's column: a phone's sidebar. `revealedAt`
+ * is where a reveal leaves the page. */
+function scrolling({
+  below = 0,
+  revealedAt = () => 1_500,
+}: {
+  below?: number;
+  revealedAt?: (el: Element) => number;
+} = {}): Scrolling {
   const state = { y: 0, height: 10_000, events: [] as string[] };
   const commits: Scrolling["commits"] = [];
   vi.spyOn(window, "innerHeight", "get").mockReturnValue(800);
@@ -648,7 +657,7 @@ function scrolling({ below = 0 }: { below?: number } = {}): Scrolling {
       current: document.getElementById(this.id),
       connected: this.isConnected,
     });
-    state.y = 1_500;
+    state.y = revealedAt(this);
   });
   return {
     events: state.events,
@@ -664,6 +673,12 @@ function scrolling({ below = 0 }: { below?: number } = {}): Scrolling {
       fireEvent.scroll(window);
     },
     position: () => state.y,
+    // The browser moving the page, neither the reader nor the page itself:
+    // the scroll it restores for an entry.
+    jumpTo: (y: number) => {
+      state.events.push(`jump:${y}`);
+      state.y = y;
+    },
   };
 }
 
@@ -703,6 +718,26 @@ async function landed(view: View, scroll: Scrolling, id: number, count = 1) {
   );
   expect(view.queryByText(LOCATE_FAILURE)).toBeNull();
   expect(view.queryByText(UNAVAILABLE)).toBeNull();
+}
+
+/** Every address the router hands the browser from here on. */
+function writes(view: View) {
+  const seen: Array<{ type: string; href: string }> = [];
+  disposers.push(
+    view.router.history.subscribe(
+      ({
+        action,
+        location,
+      }: {
+        action: { type: string };
+        location: { href: string };
+      }) => {
+        if (action.type === "PUSH" || action.type === "REPLACE")
+          seen.push({ type: action.type, href: location.href });
+      },
+    ),
+  );
+  return seen;
 }
 
 async function refetchTail(view: View, slug = "p", number = 7) {
@@ -1871,26 +1906,6 @@ describe("the card's own question badge", () => {
     });
   }
 
-  /** Every address the router hands the browser from here on. */
-  function writes(view: View) {
-    const seen: Array<{ type: string; href: string }> = [];
-    disposers.push(
-      view.router.history.subscribe(
-        ({
-          action,
-          location,
-        }: {
-          action: { type: string };
-          location: { href: string };
-        }) => {
-          if (action.type === "PUSH" || action.type === "REPLACE")
-            seen.push({ type: action.type, href: location.href });
-        },
-      ),
-    );
-    return seen;
-  }
-
   /** The browser's history keeps a row for every address a page writes. */
   const asksInTheAddress = (seen: Array<{ href: string }>) =>
     seen.filter(({ href }) => href.includes(ENTRY));
@@ -2309,5 +2324,585 @@ describe("the card's own question badge", () => {
       answered(question(14), 15),
     ]);
     expect(selectNextQuestionLanding(one, 12)).toBe(12);
+  });
+});
+
+/**
+ * A jump on a card that has already landed glides there, and what
+ * the glide carries the page past is not read: a phone's reader in the
+ * sidebar below the comment box, New messages pointing up at what arrived,
+ * presses the badge for a question above.
+ */
+describe("gliding on a card that has landed", () => {
+  // Page coordinates of a laid-out card: the conversation ends at 8600, a
+  // sidebar 1400 tall below it.
+  const TOPS: Record<string, number> = {
+    "comment-10": 1_000,
+    "comment-14": 7_000,
+    "comment-30": 7_300,
+    "comment-31": 8_400,
+  };
+  const BELOW = 1_400;
+  const ROW = 100;
+
+  /** Where a reveal centres `el` in what the overlays leave. */
+  const centred = (el: Element, tops = TOPS) => {
+    const usable = usableViewport();
+    return (tops[el.id] ?? 0) + ROW / 2 - (usable.top + usable.height / 2);
+  };
+
+  /**
+   * The rows in `tops` measured where the page is scrolled to, each `ROW`
+   * tall unless `heights` says otherwise.
+   */
+  function layOut(
+    scroll: Scrolling,
+    tops = TOPS,
+    heights: Record<string, number> = {},
+  ) {
+    const spy = vi.mocked(Element.prototype.getBoundingClientRect);
+    const rest = spy.getMockImplementation();
+    spy.mockImplementation(function (this: Element) {
+      const top = tops[this.id];
+      if (top === undefined) return rest?.call(this) ?? new DOMRect();
+      const y = top - scroll.position();
+      const height = heights[this.id] ?? ROW;
+      return { top: y, bottom: y + height, height } as DOMRect;
+    });
+  }
+
+  /**
+   * From here on, frames only as the test runs them, and the clock a glide
+   * reads: each frame's callback, the placement made once it is drawn, and
+   * the scroll that made, unless `quiet`. Not before the card is open, which
+   * runs on real timers.
+   */
+  function frameByFrame() {
+    let clock = performance.now();
+    vi.spyOn(performance, "now").mockImplementation(() => clock);
+    vi.useFakeTimers({
+      toFake: ["requestAnimationFrame", "cancelAnimationFrame"],
+    });
+    return async (ms = 16, { quiet = false } = {}) => {
+      clock += ms;
+      await act(async () => {
+        vi.advanceTimersByTime(16);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (!quiet) fireEvent.scroll(window);
+      });
+    };
+  }
+
+  const shownAs = (view: View) =>
+    newMessagesShown(view)
+      ? view
+          .getByRole("button", { name: /^(New messages|\d+ new messages?)$/ })
+          .getAttribute("aria-label")
+      : null;
+
+  const flashed = (view: View, id: number) =>
+    view.container
+      .querySelector(`#comment-${id}`)
+      ?.classList.contains("anchor-flash") === true;
+
+  async function pressBadge(view: View) {
+    const badge = within(view.getByTestId("issue-title-block")).getByRole(
+      "link",
+      { name: /unanswered question/ },
+    );
+    await act(async () => {
+      fireEvent.click(badge);
+    });
+  }
+
+  /** Two from someone else, below the reader's screen. */
+  async function arrive(view: View, model: Card) {
+    model.items.push(theirs(30), theirs(31));
+    await refetchTail(view);
+    await view.findByText("comment body 31");
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("lands on the comment a link names at once, then glides to the badge's next question, reading only where it stops", async () => {
+    const model = card([question(10), question(14)]);
+    serve({ "p/7": model });
+    const scroll = scrolling({ below: BELOW, revealedAt: centred });
+    layOut(scroll);
+    const view = renderAt("/projects/p/issues/7#comment-10");
+    await landed(view, scroll, 10);
+    // Arriving on the card: straight there, nothing on the way.
+    expect(scroll.events).toEqual(["reveal:comment-10"]);
+    scroll.userAt(10_000 - 800);
+    await arrive(view, model);
+    expect(shownAs(view)).toBe("2 new messages");
+
+    const frame = frameByFrame();
+    await pressBadge(view);
+    await waitFor(() => expect(flashed(view, 14)).toBe(true));
+    expect(scroll.reveals("comment-14")).toBe(0);
+    const glided: number[] = [];
+    for (let i = 0; i < 8; i++) {
+      await frame();
+      glided.push(scroll.position());
+    }
+    // The later arrival on screen on the way, and not read.
+    const { top, height } = usableViewport();
+    const onScreen = (y: number) =>
+      TOPS["comment-31"] - y >= top && TOPS["comment-31"] - y < top + height;
+    expect(glided.some(onScreen)).toBe(true);
+    expect(scroll.reveals("comment-14")).toBe(0);
+    expect(shownAs(view)).toBe("2 new messages");
+    // Late past its end: the last placement, and no scroll after it.
+    await frame(1_000, { quiet: true });
+    await landed(view, scroll, 14);
+    expect(scroll.position()).toBe(
+      centred(view.container.querySelector("#comment-14") as Element),
+    );
+    expect(isGliding()).toBe(false);
+    // Read where it stopped: the arrival just below the question.
+    expect(shownAs(view)).toBe("1 new message");
+  });
+
+  it("keeps New messages up through a glide that passes the end", async () => {
+    const model = card([question(10), question(14)]);
+    serve({ "p/7": model });
+    const scroll = scrolling({ below: BELOW, revealedAt: centred });
+    layOut(scroll);
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText("Decision 14?");
+    await waitFor(() => expect(scroll.bottoms()).toBe(1));
+    scroll.userAt(10_000 - 800);
+    await arrive(view, model);
+    expect(newMessagesShown(view)).toBe(true);
+
+    const frame = frameByFrame();
+    await pressBadge(view);
+    await waitFor(() => expect(flashed(view, 10)).toBe(true));
+    const glided: number[] = [];
+    for (let i = 0; i < 12; i++) {
+      await frame();
+      glided.push(scroll.position());
+    }
+    // Frames on the way, through the end and above it.
+    expect(scroll.reveals("comment-10")).toBe(0);
+    expect(new Set(glided).size).toBeGreaterThan(5);
+    expect(Math.min(...glided)).toBeLessThan(8_600 - 800 - 40);
+    expect(newMessagesShown(view)).toBe(true);
+    await frame(1_000, { quiet: true });
+    await landed(view, scroll, 10);
+    expect(newMessagesShown(view)).toBe(true);
+  });
+
+  // The end, where New messages goes, reached by a glide whose last steps
+  // move the page less than a pixel: no scroll comes after it.
+  it("lets New messages go once a glide stops at the end, with no scroll after it", async () => {
+    // The first arrival long, its start out of sight above the end.
+    const tops = { "comment-30": 6_800, "comment-31": 8_400 };
+    const model = card([question(10)]);
+    serve({ "p/7": model });
+    const scroll = scrolling({
+      below: BELOW,
+      revealedAt: (el) => centred(el, tops),
+    });
+    layOut(scroll, tops, { "comment-30": 1_500 });
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText("Decision 10?");
+    await waitFor(() => expect(scroll.bottoms()).toBe(1));
+    scroll.userAt(2_000);
+    await arrive(view, model);
+    expect(shownAs(view)).toBe("2 new messages");
+
+    const frame = frameByFrame();
+    await navigate(view, "comment-31");
+    await waitFor(() => expect(flashed(view, 31)).toBe(true));
+    for (let i = 0; i < 8; i++) await frame();
+    expect(newMessagesShown(view)).toBe(true);
+    await frame(1_000, { quiet: true });
+    await landed(view, scroll, 31);
+    expect(newMessagesShown(view)).toBe(false);
+  });
+
+  it("lands on the end at once when a question landing finds none on arriving, and glides there after", async () => {
+    const model = card([], [comment(1), comment(2)]);
+    serve({ "p/7": model });
+    const scroll = scrolling();
+    const view = renderAt();
+    await waitFor(() => expect(scroll.bottoms()).toBe(1));
+    await waitFor(() => expect(view.router.state.location.hash).toBe(""));
+    // Arriving: straight to the end, nothing on the way.
+    expect(scroll.events).toEqual(["bottom"]);
+    scroll.userAt(0);
+
+    const frame = frameByFrame();
+    await navigate(view, ENTRY);
+    await waitFor(() => expect(view.router.state.location.hash).toBe(""));
+    for (let i = 0; i < 4; i++) await frame();
+    expect(scroll.bottoms()).toBe(1);
+    expect(scroll.events.slice(1).some((e) => e.startsWith("scroll:"))).toBe(
+      true,
+    );
+    await frame(1_000);
+    expect(scroll.bottoms()).toBe(2);
+  });
+
+  it("glides to a comment a link on the card names", async () => {
+    const model = card([question(10), question(14)]);
+    serve({ "p/7": model });
+    const scroll = scrolling({ below: BELOW, revealedAt: centred });
+    layOut(scroll);
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText("Decision 14?");
+    await waitFor(() => expect(scroll.bottoms()).toBe(1));
+
+    const frame = frameByFrame();
+    await navigate(view, "comment-10");
+    await waitFor(() => expect(flashed(view, 10)).toBe(true));
+    expect(scroll.reveals("comment-10")).toBe(0);
+    await frame();
+    await frame();
+    expect(scroll.reveals("comment-10")).toBe(0);
+    await frame(1_000);
+    await landed(view, scroll, 10);
+    expect(scroll.position()).toBe(
+      centred(view.container.querySelector("#comment-10") as Element),
+    );
+  });
+
+  /**
+   * A card whose last comment holds a link written as `#comment-10`, and one
+   * to the same fragment of another page.
+   */
+  async function writtenLink() {
+    const model = card([question(10), question(14)]);
+    model.items.push(
+      comment(
+        31,
+        "see [comment 10](#comment-10), or [elsewhere](/elsewhere#comment-10)",
+      ),
+    );
+    serve({ "p/7": model });
+    const scroll = scrolling({ below: BELOW, revealedAt: centred });
+    layOut(scroll);
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText("Decision 14?");
+    await waitFor(() => expect(scroll.bottoms()).toBe(1));
+    const link = await view.findByRole("link", { name: "comment 10" });
+    return { view, scroll, link };
+  }
+
+  async function press(link: HTMLElement, init?: MouseEventInit) {
+    let unhandled = false;
+    await act(async () => {
+      unhandled = fireEvent.click(link, init);
+    });
+    return unhandled;
+  }
+
+  it("hands a link written in a comment to the card's own glide", async () => {
+    const { view, scroll, link } = await writtenLink();
+    const seen = writes(view);
+
+    // A modified click opens another tab, which is the browser's to do.
+    expect(await press(link, { ctrlKey: true })).toBe(true);
+    expect(seen).toEqual([]);
+    // So is a link to another page, fragment or not.
+    let taken: boolean | null = null;
+    const stopHere = (event: Event) => {
+      taken = event.defaultPrevented;
+      // happy-dom would load that page.
+      event.preventDefault();
+    };
+    window.addEventListener("click", stopHere);
+    try {
+      await press(view.getByRole("link", { name: "elsewhere" }));
+    } finally {
+      window.removeEventListener("click", stopHere);
+    }
+    expect(taken).toBe(false);
+    expect(seen).toEqual([]);
+
+    // Read as the entry is left: the card sets the one pushed after.
+    let leftAs: ScrollRestoration | null = null;
+    disposers.push(
+      view.router.history.subscribe(
+        ({ action }: { action: { type: string } }) => {
+          if (action.type === "PUSH") leftAs = window.history.scrollRestoration;
+        },
+      ),
+    );
+    frameByFrame();
+    expect(await press(link)).toBe(false);
+    expect(seen).toEqual([
+      { type: "PUSH", href: "/projects/p/issues/7#comment-10" },
+    ]);
+    // The entry left behind is the browser's to restore: Back returns to
+    // where the link was pressed.
+    expect(leftAs).toBe("auto");
+    // Not revealed on the way there: the glide sets out from where the
+    // reader is.
+    expect(scroll.reveals("comment-10")).toBe(0);
+  });
+
+  it("lands again on the comment the address names when its link is pressed again", async () => {
+    const { view, scroll, link } = await writtenLink();
+    const frame = frameByFrame();
+    await press(link);
+    await frame();
+    await frame(1_000);
+    await landed(view, scroll, 10);
+
+    scroll.userAt(5_000);
+    const seen = writes(view);
+    expect(await press(link)).toBe(false);
+    await frame();
+    await frame();
+    expect(scroll.reveals("comment-10")).toBe(1);
+    await frame(1_000);
+    await landed(view, scroll, 10, 2);
+    expect(scroll.position()).toBe(
+      centred(view.container.querySelector("#comment-10") as Element),
+    );
+    // The address already names it: no new entry for Back to step through.
+    expect(seen).toEqual([]);
+  });
+
+  /**
+   * The browser's scroll restoration, which happy-dom leaves out: every entry
+   * keeps the mode the page last set while it was the browser's current one,
+   * and where the page was when it was left. The browser takes a push as the
+   * router's history hands it over, a microtask after announcing it or on
+   * `flush()`, the entry pushed copying the mode of the one it leaves. Back
+   * or Forward to one in "auto" puts the page back there once the router has
+   * rendered it, before the next frame. Returns the step through history.
+   */
+  function restoring(view: View, scroll: Scrolling) {
+    const modes = new Map<number, ScrollRestoration>();
+    const left = new Map<number, number>();
+    const index = () =>
+      (view.router.history.location.state as { __TSR_index: number })
+        .__TSR_index;
+    let current = index();
+    let pushed: number | null = null;
+    const take = () => {
+      if (pushed === null) return;
+      modes.set(pushed, modes.get(current) ?? "auto");
+      current = pushed;
+      pushed = null;
+    };
+    vi.spyOn(window.history, "scrollRestoration", "set").mockImplementation(
+      (mode: ScrollRestoration) => {
+        modes.set(current, mode);
+      },
+    );
+    const flush = view.router.history.flush;
+    vi.spyOn(view.router.history, "flush").mockImplementation(() => {
+      take();
+      flush();
+    });
+    // The first to hear of a push, as the browser's own taking of it is
+    // queued before the history announces it.
+    const hear = ({ action }: { action: { type: string } }) => {
+      take();
+      if (action.type === "PUSH") {
+        // Told before the page moves: where the link was pressed.
+        left.set(current, scroll.position());
+        pushed = index();
+        queueMicrotask(take);
+      } else current = index();
+    };
+    const { subscribers } = view.router.history;
+    const others = [...subscribers];
+    subscribers.clear();
+    for (const listener of [hear, ...others]) subscribers.add(listener);
+    disposers.push(() => subscribers.delete(hear));
+    return async (delta: -1 | 1) => {
+      take();
+      left.set(current, scroll.position());
+      // Read as the traversal starts: a mode set once it is under way comes
+      // too late (measured in Chromium and Firefox).
+      const restores = (modes.get(current + delta) ?? "auto") === "auto";
+      await act(async () => {
+        if (delta < 0) view.router.history.back();
+        else view.router.history.forward();
+      });
+      const y = left.get(current);
+      if (restores && y !== undefined) scroll.jumpTo(y);
+    };
+  }
+
+  /** Where the page is now and after each of `count` frames: what is drawn. */
+  async function path(
+    frame: ReturnType<typeof frameByFrame>,
+    scroll: Scrolling,
+    count = 30,
+  ) {
+    const seen = [scroll.position()];
+    for (let i = 0; i < count; i++) {
+      await frame();
+      seen.push(scroll.position());
+    }
+    return seen;
+  }
+
+  /** From `from` up to `to`, never back down on the way. */
+  function glidesUp(seen: number[], from: number, to: number) {
+    expect(seen[0]).toBe(from);
+    expect(seen.at(-1)).toBe(to);
+    for (let i = 1; i < seen.length; i++)
+      expect(seen[i]).toBeLessThanOrEqual(seen[i - 1] as number);
+  }
+
+  it("glides from where the page stands when Forward returns to a comment it glided to", async () => {
+    const model = card([question(10), question(14)]);
+    serve({ "p/7": model });
+    const scroll = scrolling({ below: BELOW, revealedAt: centred });
+    layOut(scroll);
+    const view = renderAt("/projects/p/issues/7");
+    const go = restoring(view, scroll);
+    await view.findByText("Decision 14?");
+    await waitFor(() => expect(scroll.bottoms()).toBe(1));
+    const end = scroll.position();
+    const frame = frameByFrame();
+    await navigate(view, "comment-10");
+    await frame(1_000);
+    await landed(view, scroll, 10);
+    const stop = scroll.position();
+
+    // Back to the entry the card opened at: where the link was pressed.
+    await go(-1);
+    await frame(1_000);
+    expect(scroll.position()).toBe(end);
+    await go(1);
+    glidesUp(await path(frame, scroll), end, stop);
+  });
+
+  it("glides from where the page stands when Back returns to the comment the card was opened at", async () => {
+    const model = card([question(10), question(14)]);
+    serve({ "p/7": model });
+    const scroll = scrolling({ below: BELOW, revealedAt: centred });
+    layOut(scroll);
+    // Its entry is not one the router pushed: nothing tells the router to
+    // leave the page alone when it renders it again.
+    const view = renderAt("/projects/p/issues/7#comment-10");
+    const go = restoring(view, scroll);
+    await view.findByText("Decision 14?");
+    await landed(view, scroll, 10);
+    const stop = scroll.position();
+    const frame = frameByFrame();
+    await navigate(view, "comment-14");
+    await frame(1_000);
+    await landed(view, scroll, 14);
+    const from = scroll.position();
+
+    await go(-1);
+    glidesUp(await path(frame, scroll), from, stop);
+  });
+
+  it("glides from where the page stands when Back returns from a footnote to a comment", async () => {
+    const items = [question(10), question(14)];
+    const model = card(
+      items,
+      ordered([
+        ...questionItems(items),
+        comment(12, "A claim that needs a note[^1].\n\n[^1]: The note."),
+      ]),
+    );
+    serve({ "p/7": model });
+    const tops = { ...TOPS, "user-content-fn-1": 3_000 };
+    const scroll = scrolling({
+      below: BELOW,
+      revealedAt: (el) => centred(el, tops),
+    });
+    layOut(scroll, tops);
+    const view = renderAt("/projects/p/issues/7");
+    const go = restoring(view, scroll);
+    await view.findByText("Decision 14?");
+    await waitFor(() => expect(scroll.bottoms()).toBe(1));
+    const frame = frameByFrame();
+    await navigate(view, "comment-10");
+    await frame(1_000);
+    await landed(view, scroll, 10);
+    const stop = scroll.position();
+
+    const ref = view.container.querySelector("a[data-footnote-ref]");
+    if (!(ref instanceof HTMLAnchorElement)) throw new Error("No footnote");
+    // The browser follows a footnote itself, past the router's blocker,
+    // and moves the page to it.
+    await act(async () => {
+      fireEvent.click(ref);
+      view.router.history.push(
+        `/projects/p/issues/7${ref.hash}`,
+        {},
+        { ignoreBlocker: true },
+      );
+    });
+    await frame(1_000);
+    const from = scroll.position();
+
+    await go(-1);
+    glidesUp(await path(frame, scroll), from, stop);
+  });
+
+  it("leaves an entry pushed without an anchor to the browser when it is pushed from one with an anchor", async () => {
+    const model = card([question(10), question(14)]);
+    serve({ "p/7": model });
+    const scroll = scrolling({ below: BELOW, revealedAt: centred });
+    layOut(scroll);
+    const view = renderAt("/projects/p/issues/7");
+    const go = restoring(view, scroll);
+    await view.findByText("Decision 14?");
+    await waitFor(() => expect(scroll.bottoms()).toBe(1));
+    const frame = frameByFrame();
+    await navigate(view, "comment-10");
+    await frame(1_000);
+    await landed(view, scroll, 10);
+    const stop = scroll.position();
+    // A link to the card itself, as a reference to it in its comments has.
+    await act(async () => {
+      await view.router.navigate({
+        to: "/projects/$slug/issues/$number",
+        params: { slug: "p", number: "7" },
+      });
+    });
+    scroll.userAt(5_000);
+
+    // Back to the comment: still the anchor's to glide to.
+    await go(-1);
+    glidesUp(await path(frame, scroll), 5_000, stop);
+    // Forward to the card: where the reader left it.
+    await go(1);
+    expect(view.router.state.location.hash).toBe("");
+    expect(scroll.position()).toBe(5_000);
+  });
+
+  // The card lands itself where it mounts again: a browser restoring its
+  // entry would put the page on one still filling in.
+  it("leaves the card's entry to the card when Forward returns to it from another page", async () => {
+    const model = card([question(10), question(14)]);
+    serve({ "p/7": model });
+    const scroll = scrolling({ below: BELOW, revealedAt: centred });
+    layOut(scroll);
+    const view = renderAt("/source");
+    const go = restoring(view, scroll);
+    await act(async () => {
+      await view.router.navigate({
+        to: "/projects/$slug/issues/$number",
+        params: { slug: "p", number: "7" },
+      });
+    });
+    await view.findByText("Decision 14?");
+    await waitFor(() => expect(scroll.bottoms()).toBe(1));
+
+    await go(-1);
+    await view.findByRole("main", { name: "Source list" });
+    const back = scroll.events.length;
+    await go(1);
+    await view.findByText("Decision 14?");
+    expect(
+      scroll.events.slice(back).filter((e) => e.startsWith("jump:")),
+    ).toEqual([]);
   });
 });
