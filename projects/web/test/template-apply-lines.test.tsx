@@ -159,4 +159,45 @@ describe("MoveLines", () => {
     expect(Number(drawing(0)?.getAttribute("data-tip-x"))).toBe(473 - 101);
     expect(Number(drawing(0)?.getAttribute("data-end-y"))).toBe(219 - 201);
   });
+
+  it("starts a status's arrow past its first line, at the pill's middle, though the cell wraps", () => {
+    stubRects();
+    render(
+      <div style={{ position: "relative" }} data-at="100,200,600,300">
+        <div data-row="0">
+          {cell("before", "101,201,280,36")}
+          {cell(
+            "mid",
+            "381,201,80,36",
+            <span data-tick="status.move:5" data-at="430,209,20,20" />,
+          )}
+          {cell("after", "461,201,238,36", <span data-anchor="after" />)}
+        </div>
+        <div data-row="1">
+          {cell(
+            "before",
+            "101,237,280,80",
+            // The pill on the first line; what follows it wraps below.
+            <span data-anchor="before" data-at="113,245,200,66">
+              <span data-look data-at="113,245,60,22" />
+              <span data-at="113,271,200,40" />
+            </span>,
+          )}
+          {cell("mid", "381,237,80,80")}
+          {cell("after", "461,237,238,80")}
+        </div>
+        <MoveLines
+          arrows={[
+            arrow({
+              start: "status",
+              end: "status",
+              tick: "status.move:5",
+            }),
+          ]}
+          lanes={1}
+        />
+      </div>,
+    );
+    expect(startOf(0)).toEqual({ x: 173 + 8 - 101, y: 256 - 201 });
+  });
 });

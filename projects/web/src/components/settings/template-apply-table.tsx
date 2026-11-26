@@ -360,6 +360,17 @@ function LabelCell({ side }: { side: LabelSide }) {
 }
 
 const CELL = "relative flex min-w-0 items-center px-3 py-1.5";
+/*
+ * A status row's cells hold their content to its first line, so that its
+ * boxes, and an arrow drawn through one, stay beside the statuses when a
+ * cell wraps. The top padding puts a single line where centring it below
+ * the row's border in its min-h-11 would: a pill is 1.25rem and 2px of
+ * border tall, a box 1.25rem.
+ */
+const STATUS_CELL =
+  "relative flex min-w-0 items-start px-3 pt-[calc(0.75rem-1.5px)] pb-1.5";
+const STATUS_MID =
+  "relative flex items-start justify-end gap-1 pt-[calc(0.75rem-0.5px)] pb-1.5 pr-2";
 const HOT = "bg-accent";
 
 type SelectProps = {
@@ -661,7 +672,10 @@ function StatusRow({
         </>
       ) : (
         <>
-          <Cell data-cell="before" className={cn(CELL, hotBefore && HOT)}>
+          <Cell
+            data-cell="before"
+            className={cn(STATUS_CELL, hotBefore && HOT)}
+          >
             {row.before && (
               <StatusCell
                 face={row.before}
@@ -670,10 +684,7 @@ function StatusRow({
               />
             )}
           </Cell>
-          <Cell
-            data-cell="mid"
-            className="relative flex items-center justify-end gap-1 py-1.5 pr-2"
-          >
+          <Cell data-cell="mid" className={STATUS_MID}>
             <Boxes
               ticks={row.ticks}
               name={name}
@@ -681,7 +692,7 @@ function StatusRow({
               onSelect={onSelect}
             />
           </Cell>
-          <Cell data-cell="after" className={cn(CELL, hotAfter && HOT)}>
+          <Cell data-cell="after" className={cn(STATUS_CELL, hotAfter && HOT)}>
             {row.lineAbove && (
               <span
                 data-look="solid"

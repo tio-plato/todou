@@ -124,16 +124,29 @@ export function MoveLines({
               x: box(before)?.right,
               y: box(before.querySelector("[data-rule]"))?.mid,
             }
-          : (() => {
-              const anchor = box(
-                from.querySelector(
-                  arrow.start === "default"
-                    ? '[data-anchor="default"]'
-                    : '[data-anchor="before"]',
-                ),
-              );
-              return { x: anchor && anchor.right + START_GAP, y: anchor?.mid };
-            })();
+          : arrow.start === "default"
+            ? (() => {
+                const badge = box(
+                  from.querySelector('[data-anchor="default"]'),
+                );
+                return { x: badge && badge.right + START_GAP, y: badge?.mid };
+              })()
+            : (() => {
+                // Along the status's first line, past all it holds there: a
+                // wrapped cell's later lines sit below the arrow.
+                const anchor = from.querySelector('[data-anchor="before"]');
+                const pill = anchor?.querySelector("[data-look]");
+                if (!anchor || !pill) return { x: null, y: null };
+                const line = pill.getBoundingClientRect();
+                const ends = [...anchor.children]
+                  .map((el) => el.getBoundingClientRect())
+                  .filter((r) => r.top < line.bottom)
+                  .map((r) => r.right);
+                return {
+                  x: Math.max(line.right, ...ends) - origin.left + START_GAP,
+                  y: box(pill)?.mid,
+                };
+              })();
       const end =
         box(
           arrow.tick
