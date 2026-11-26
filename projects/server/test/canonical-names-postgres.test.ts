@@ -1,6 +1,6 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { canonicalizeNames } from "../src/db/canonical-names.ts";
 import { openDb } from "../src/db/driver.ts";
 import { checkCanonicalNames } from "./canonical-names-cases.ts";
@@ -196,6 +196,55 @@ describe.skipIf(!PG_URL)("canonical names on postgres", () => {
         await database.drop();
       }
     }
+  });
+
+  // A row whose rename fails every try is left for the next migration, and
+  // the pass goes on with the rows after it. Here a second unique index,
+  // which the pass does not know about, refuses the new name every time.
+  it("leaves a row it cannot rename and goes on", async ({
+    onTestFinished,
+  }) => {
+    const database = await createTestDatabase(
+      PG_URL as string,
+      "canonical_names",
+    );
+    const client = new pg.Client({ connectionString: database.url });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(async () => {
+      warn.mockRestore();
+      await client.end();
+      await database.drop();
+    });
+    await client.connect();
+    await createNameTables(client);
+    await client.query(
+      "CREATE UNIQUE INDEX statuses_length ON statuses (project_id, length(name))",
+    );
+    const { rows } = await client.query<{ id: number }>(
+      "INSERT INTO statuses (project_id, name) " +
+        "VALUES (1, 'Abc'), (1, 'Zed '), (1, ' Hello ') RETURNING id",
+    );
+    const [abc, zed, hello] = rows.map((row) => row.id) as [
+      number,
+      number,
+      number,
+    ];
+
+    expect(await canonicalizeNames(drizzle(client))).toBe(1);
+
+    const { rows: after } = await client.query<{ id: number; name: string }>(
+      "SELECT id, name FROM statuses ORDER BY id",
+    );
+    expect(after).toEqual([
+      { id: abc, name: "Abc" },
+      { id: zed, name: "Zed " },
+      { id: hello, name: "Hello" },
+    ]);
+    // The row is named by its table and id; the name stays out of the log.
+    expect(warn).toHaveBeenCalledTimes(1);
+    const line = String(warn.mock.calls[0]?.[0]);
+    expect(line).toContain(`statuses row ${zed} `);
+    expect(line).not.toContain("Zed");
   });
 
   /**
