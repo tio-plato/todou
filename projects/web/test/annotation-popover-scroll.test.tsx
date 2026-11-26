@@ -60,7 +60,7 @@ describe("annotation chip popover", () => {
         onResolve={() => {}}
       />,
     );
-    const chip = await view.findByLabelText(/comment\(s\) on this block/);
+    const chip = await view.findByLabelText(/^\d+ comments?$/);
     let chipTop = 100;
     chip.getBoundingClientRect = () => new DOMRect(700, chipTop, 30, 22);
     fireEvent.click(chip);
@@ -158,7 +158,7 @@ describe("annotation chip popover on a phone", () => {
         onResolve={() => {}}
       />,
     );
-    const chip = await view.findByLabelText(/comment\(s\) on this block/);
+    const chip = await view.findByLabelText(/^\d+ comments?$/);
     chip.getBoundingClientRect = () => new DOMRect(366, chipTop, CHIP, CHIP);
     fireEvent.click(chip);
     const wrapper = (await view.findByText("needs a caveat")).closest(

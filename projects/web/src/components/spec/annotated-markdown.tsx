@@ -558,6 +558,14 @@ export function chipTop(containerRect: { top: number }, el: Element): number {
   return el.getBoundingClientRect().top - containerRect.top;
 }
 
+/** Below 0 where `a` comes first in the document, an ancestor before what it holds. */
+function documentOrder(a: Node, b: Node): number {
+  if (a === b) return 0;
+  return a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING
+    ? -1
+    : 1;
+}
+
 /**
  * The outermost fold standing between `el` and the reader, or `el` itself.
  *
@@ -848,10 +856,16 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     // it keeps its key.
     type Place = {
       key: string;
-      /** The key of the block it is in, whose places join one another. */
+      /**
+       * The key of the block it is in. Places in a block put back of the
+       * baseline join one another only; the current version's places join
+       * across blocks.
+       */
       block: string;
       /** Whether that block is one put back of the baseline. */
       old: boolean;
+      /** That block's element, where the place sits in the document. */
+      el: HTMLElement;
       top: number;
       items: DisplayedAnnotation[];
     };
@@ -876,6 +890,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
           key,
           block: block.key,
           old: block.old,
+          el: block.el,
           // The key still names the block the annotation belongs to; only
           // what gets measured moves when the reader shuts a fold over it.
           top: line?.top ?? chipTop(containerRect, visibleAnchor(block.el)),
@@ -1187,13 +1202,16 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       el.classList.add(ANNOTATED_CLASS);
       if (!kinds.has("comment")) el.classList.add(ANNOTATED_DRAFT_CLASS);
     }
-    // A block's places top to bottom: one less than a chip's height below
-    // the last kept would draw over it, and joins it instead. The block's
-    // own top is above every row in it, so a row joins upwards, inside its
-    // block; blocks never join one another here.
+    // Places top to bottom: one less than a chip's height below the last
+    // kept would draw over it, and joins it instead. The current version's
+    // places go in one pass, whatever block they are in, so a place joins
+    // the chip of the block above it as readily as its own block's. A block
+    // put back of the baseline joins only its own places here; further down,
+    // `near` joins it to another chip it would draw over.
     const byBlock = new Map<string, Place[]>();
     for (const place of places.values()) {
-      byBlock.set(place.block, [...(byBlock.get(place.block) ?? []), place]);
+      const group = place.old ? place.block : "";
+      byBlock.set(group, [...(byBlock.get(group) ?? []), place]);
     }
     // Less than a chip's height apart, two chips overlap; a hair less is
     // Firefox measuring two that only touch.
@@ -1224,6 +1242,65 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         continue;
       }
       next.push(chip);
+    }
+    // A chip lists its notes in the order their places come on the page:
+    // top to bottom, and at one height, as under a shut fold, in the
+    // document's. So a chip lists what the chips it stands for would, one
+    // after another, whichever joined which. In a block, a place less than
+    // half a line below the top place of a line of text is on that line, at
+    // that place's height: inline code is drawn a few pixels below the text
+    // beside it, and in WebKit a removed word a hair below. On one line of
+    // one block the baseline's notes go first, as the text they are on is
+    // drawn before the text that replaced it, and as they were written
+    // first: a version takes no notes once a newer one is pushed. Then each
+    // version's go by the line of source they start on, and those starting
+    // on one go in the order they were written, drafts last, as the lists
+    // they came in hold them.
+    const onBaseline = new Set(baselineAnnotations);
+    const byEl = new Map<HTMLElement, Place[]>();
+    for (const place of places.values()) {
+      byEl.set(place.el, [...(byEl.get(place.el) ?? []), place]);
+    }
+    const lineOf = new Map<Place, number>();
+    for (const [el, group] of byEl) {
+      // Half a line is half the `line` `firstLine` gives, as `textLine`
+      // takes it for the first line, but never more than half a chip: a
+      // picture opening a block with nothing beside it is that line, and
+      // half of it would take lines one chip joins for one. None where
+      // nothing lined the block up, so that only places at one height share
+      // a line there.
+      const half = Math.min(texts.get(el)?.line ?? 0, tall) / 2;
+      let line: number | undefined;
+      for (const place of group.sort((a, b) => a.top - b.top)) {
+        // From the line's top place, not the last one on it, so that places
+        // in a row never string two lines into one.
+        if (line === undefined || place.top - line >= half) line = place.top;
+        lineOf.set(place, line);
+      }
+    }
+    const lineTop = (place: Place) => lineOf.get(place) ?? place.top;
+    const written = new Map(
+      [...annotations, ...baselineAnnotations].map(
+        (item, i) => [item, i] as const,
+      ),
+    );
+    const rank = new Map(
+      [...places.values()]
+        .flatMap((place) => place.items.map((item) => ({ place, item })))
+        .sort(
+          (a, b) =>
+            lineTop(a.place) - lineTop(b.place) ||
+            documentOrder(a.place.el, b.place.el) ||
+            Number(onBaseline.has(b.item)) - Number(onBaseline.has(a.item)) ||
+            a.item.start - b.item.start ||
+            (written.get(a.item) ?? 0) - (written.get(b.item) ?? 0),
+        )
+        .map(({ item }, i) => [item, i] as const),
+    );
+    for (const chip of next) {
+      chip.items = chip.items.toSorted(
+        (a, b) => (rank.get(a) ?? 0) - (rank.get(b) ?? 0),
+      );
     }
     placeOf.current = jumps;
     next.sort((a, b) => a.top - b.top);
@@ -1732,7 +1809,7 @@ const AnnotationChip = memo(function AnnotationChip({
             : "border-amber-500/60 bg-amber-500/10 text-amber-700 max-sm:bg-[color-mix(in_srgb,var(--color-amber-500)_10%,var(--background))] dark:text-amber-400",
         )}
         style={{ top: chip.top }}
-        aria-label={`${chip.items.length} comment(s) on this block`}
+        aria-label={`${chip.items.length} comment${chip.items.length === 1 ? "" : "s"}`}
       >
         <MessageSquareTextIcon className="size-3.5 max-sm:hidden" />
         {chip.items.length}
@@ -1741,7 +1818,7 @@ const AnnotationChip = memo(function AnnotationChip({
         ref={contentRef}
         side="left"
         // From `sm` up, the one layout that handles collisions (below): a
-        // thread belongs to its chip's block. The popover layer's "always"
+        // thread belongs beside its chip. The popover layer's "always"
         // keeps the surface on screen after the chip has scrolled away, which
         // pins it to the viewport edge over unrelated text; "partial" still
         // pushes it back while part of the chip shows, then lets it follow.

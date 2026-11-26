@@ -734,9 +734,7 @@ describe("baseline comments in the rendered comparison", () => {
         ].map((mark) => mark.textContent),
       ).toEqual(["brown"]),
     );
-    expect(
-      await view.findByRole("button", { name: "1 comment(s) on this block" }),
-    ).toBeTruthy();
+    expect(await view.findByRole("button", { name: "1 comment" })).toBeTruthy();
   });
 
   it("paints a renamed file's comment from under its old path", async () => {
@@ -759,6 +757,21 @@ describe("baseline comments in the rendered comparison", () => {
     // 1) and keeps line 3, where the server carries a comment on v1.
     const resolved = { by: AUTHOR, at: "2026-01-07T00:00:00Z" };
     const onBrown = onV1("words.md", 1, 11, 15);
+    // The two paragraphs a few lines apart, so that their chips stay apart.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        const text = this.textContent ?? "";
+        const y =
+          this.tagName !== "P"
+            ? 0
+            : text.startsWith("The quick")
+              ? 100
+              : text.startsWith("Kept line")
+                ? 160
+                : 0;
+        return DOMRect.fromRect({ y });
+      },
+    );
     mockSpec(
       [
         { ...onBrown, comment_id: 1, body: "still open" },
@@ -776,9 +789,9 @@ describe("baseline comments in the rendered comparison", () => {
     await waitFor(() =>
       expect(
         view
-          .queryAllByRole("button", { name: /comment\(s\) on this block/ })
+          .queryAllByRole("button", { name: /^\d+ comments?$/ })
           .map((chip) => chip.getAttribute("aria-label")),
-      ).toEqual(["1 comment(s) on this block", "1 comment(s) on this block"]),
+      ).toEqual(["1 comment", "1 comment"]),
     );
     expect(
       view.getByText(/Comments without a place in v2/).parentElement
@@ -802,9 +815,9 @@ describe("baseline comments in the rendered comparison", () => {
     await waitFor(() =>
       expect(
         view
-          .queryAllByRole("button", { name: /comment\(s\) on this block/ })
+          .queryAllByRole("button", { name: /^\d+ comments?$/ })
           .map((chip) => chip.getAttribute("aria-label")),
-      ).toEqual(["1 comment(s) on this block"]),
+      ).toEqual(["1 comment"]),
     );
     expect(view.queryByText("settled on delta")).toBeNull();
   });
@@ -848,7 +861,7 @@ describe("baseline notes on text kept as it was", () => {
     expect(classesOf(view, "Inserted line.")).not.toContain("spec-annotated");
     expect(
       await view.findAllByRole("button", {
-        name: "1 comment(s) on this block",
+        name: "1 comment",
       }),
     ).toHaveLength(1);
   });

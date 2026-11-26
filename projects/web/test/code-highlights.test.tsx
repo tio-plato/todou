@@ -509,7 +509,7 @@ function layOutRows(
 /** Whether each chip's popover is open, top to bottom. */
 function expanded(view: Pick<RenderResult, "getAllByRole">) {
   return view
-    .getAllByRole("button", { name: /comment\(s\) on this block/ })
+    .getAllByRole("button", { name: /^\d+ comments?$/ })
     .map((el) => el.getAttribute("aria-expanded"));
 }
 
@@ -588,7 +588,7 @@ function locateIn(popover: HTMLElement, label: string): HTMLElement {
 /** Each chip's top and how many annotations it holds, top to bottom. */
 function chipsOf(view: Pick<RenderResult, "queryAllByRole">) {
   return view
-    .queryAllByRole("button", { name: /comment\(s\) on this block/ })
+    .queryAllByRole("button", { name: /^\d+ comments?$/ })
     .map((chip) => [
       chip.style.top,
       Number.parseInt(chip.getAttribute("aria-label") ?? "", 10),
@@ -709,6 +709,33 @@ describe("chips on code rows", () => {
     await waitFor(() => expect(chipsOf(view)).toEqual([["220px", 1]]));
   });
 
+  it("lists a row's note before the deleted row's below it, in one chip", async () => {
+    layOutRows();
+    // Rows 20px apart share a chip; each is a line of its own, so the
+    // baseline's note on the deleted second row comes after the first's.
+    const { view, wrappers } = await renderDocument(
+      EDITED_AFTER,
+      [wholeLines("comment", 4, 4)],
+      {
+        baselineBody: EDITED_BEFORE,
+        baselineAnnotations: [wholeLines("comment", 7, 7)],
+      },
+    );
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    await drawRows(wrapper, EDITED_ROWS);
+    const chip = await view.findByRole("button", { name: /^2 comment/ });
+    const popover = await openPopover(chip);
+    expect(
+      [
+        ...popover.querySelectorAll(
+          "button[title='Scroll to what this points at']",
+        ),
+      ].map((button) => button.textContent),
+    ).toEqual(["L4", "L7"]);
+    await closePopover(popover);
+  });
+
   it("hangs a baseline annotation by its row of a restored block", async () => {
     layOutRows();
     // v1's line 5 is "more();", the second row of the block v2 removed.
@@ -738,7 +765,7 @@ describe("chips on code rows", () => {
     if (wrapper === undefined) throw new Error("no fence");
     const shadow = await drawRows(wrapper, SIX_ROWS);
     const [chip] = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     if (chip === undefined) throw new Error("no chip");
     const popover = await openPopover(chip);
@@ -757,7 +784,7 @@ describe("chips on code rows", () => {
     ]);
     // Rows 2 and 3 share the chip at row 2.
     const chip = await view.findByRole("button", {
-      name: "2 comment(s) on this block",
+      name: "2 comments",
     });
     const popover = await openPopover(chip);
     // Content arriving above moves the rows down.
@@ -779,7 +806,7 @@ describe("chips on code rows", () => {
     const drafts = [wholeLines("draft", 5, 5), wholeLines("draft", 6, 6)];
     const { view, annotate } = await renderLive(SIX_FENCE, drafts);
     const chip = await view.findByRole("button", {
-      name: "2 comment(s) on this block",
+      name: "2 comments",
     });
     const popover = await openPopover(chip);
     // A comment arrives on the opening fence, which no row shows: it hangs
@@ -809,7 +836,7 @@ describe("chips on code rows", () => {
       ]),
     );
     const [, rowChip] = view.getAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     if (rowChip === undefined) throw new Error("no chip");
     const popover = await openPopover(rowChip);
@@ -834,7 +861,7 @@ describe("chips on code rows", () => {
     if (wrapper === undefined) throw new Error("no fence");
     const shadow = await drawRows(wrapper, SIX_ROWS);
     const [chip] = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     if (chip === undefined) throw new Error("no chip");
     const popover = await openPopover(chip);
@@ -856,7 +883,7 @@ describe("chips on code rows", () => {
     if (wrapper === undefined) throw new Error("no fence");
     const shadow = await drawRows(wrapper, SIX_ROWS);
     const [chip] = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     if (chip === undefined) throw new Error("no chip");
     const popover = await openPopover(chip);
@@ -885,7 +912,7 @@ describe("chips on code rows", () => {
     if (wrapper === undefined) throw new Error("no fence");
     const shadow = await drawRows(wrapper, SIX_ROWS);
     const [chip] = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     if (chip === undefined) throw new Error("no chip");
     const popover = await openPopover(chip);
@@ -960,7 +987,7 @@ describe("chips on code rows", () => {
     });
     expect(chipsOf(view)).toEqual([["0px", 1]]);
     const [chip] = view.getAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     if (chip === undefined) throw new Error("no chip");
     const popover = await openPopover(chip);

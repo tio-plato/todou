@@ -1,4 +1,4 @@
-import { fireEvent, waitFor } from "@testing-library/react";
+import { act, fireEvent, waitFor } from "@testing-library/react";
 import type { SpecCommentItem } from "@todou/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -195,6 +195,44 @@ describe("a fold in the spec review view", () => {
   });
 });
 
+describe("chips of neighbouring blocks", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("joins every chip in a fold the reader shut into one by its summary", async () => {
+    // Only the fold has a place on the page; once shut, every block in it is
+    // measured where the fold is.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        return DOMRect.fromRect({ y: this.tagName === "DETAILS" ? 300 : 0 });
+      },
+    );
+    const { view, container } = await renderSpec({
+      body: doc("第一段。\n\n第二段。"),
+      annotations: [
+        annotation(FOLD_LINE + 1),
+        annotation(BODY_LINE),
+        annotation(BODY_LINE + 2),
+      ],
+    });
+    const fold = container.querySelector("details");
+    if (fold === null) throw new Error("no fold");
+    expect(fold.hasAttribute("open")).toBe(true);
+    act(() => {
+      fold.removeAttribute("open");
+      fold.dispatchEvent(new Event("toggle"));
+    });
+    await waitFor(() =>
+      expect(
+        view
+          .getAllByRole("button", { name: /^\d+ comments?$/ })
+          .map((chip) => [chip.style.top, chip.getAttribute("aria-label")]),
+      ).toEqual([["300px", "3 comments"]]),
+    );
+  });
+});
+
 /** A live DOM to walk, built the way the browser would hand one over. */
 function host(html: string): HTMLElement {
   const el = document.createElement("div");
@@ -294,7 +332,7 @@ describe("an annotation card names its author with a link (T-391)", () => {
       annotations: [annotation(1)],
     });
 
-    fireEvent.click(await view.findByLabelText("1 comment(s) on this block"));
+    fireEvent.click(await view.findByLabelText("1 comment"));
 
     // The popover holds the annotation cards and nothing else, and this
     // block carries exactly one annotation — so the author's chip is the

@@ -1797,7 +1797,7 @@ describe("whole-line annotations wash every block they cover", () => {
         wholeLines("comment", 2, 6),
       ]);
       const chip = await view.findByRole("button", {
-        name: /comment\(s\) on this block/,
+        name: /^\d+ comments?$/,
       });
       expect(chip.style.top).toBe("60px");
     } finally {
@@ -1822,7 +1822,7 @@ describe("whole-line annotations wash every block they cover", () => {
         },
       ]);
       const chip = await view.findByRole("button", {
-        name: /comment\(s\) on this block/,
+        name: /^\d+ comments?$/,
       });
       expect(chip.style.top).toBe("120px");
     } finally {
@@ -1848,18 +1848,30 @@ function breaksBefore(node: Node, offset: number): number {
  * 100 + 22k, 18px tall, and so does a run of removed text, but 3px lower in
  * inline code, as its smaller font and padding put it; a block sits at
  * `blockTop(block)`, 2px above its first line of text, unless told
- * otherwise; everything else, the container included, at 0.
+ * otherwise; everything else, the container included, at 0. A picture
+ * `picture` px tall, where given, is drawn at 100 as itself, and every
+ * block's first line is as much taller than 22px, as if a picture opened
+ * each, pushing the lines below it down.
  */
-function placeLines(blockTop: (el: HTMLElement) => number = () => 98) {
+function placeLines(
+  blockTop: (el: HTMLElement) => number = () => 98,
+  picture = 0,
+) {
+  const lineTop = (k: number) =>
+    100 + 22 * k + (k > 0 ? Math.max(0, picture - 22) : 0);
   vi.spyOn(Range.prototype, "getBoundingClientRect").mockImplementation(
     function (this: Range) {
+      const picked = this.startContainer.childNodes[this.startOffset];
+      if (picture > 0 && picked instanceof HTMLImageElement) {
+        return DOMRect.fromRect({ y: 100, width: picture, height: picture });
+      }
       const k = breaksBefore(this.startContainer, this.startOffset);
       const near =
         this.startContainer instanceof Element
           ? this.startContainer
           : this.startContainer.parentElement;
       const code = near?.closest("code") != null ? 3 : 0;
-      return DOMRect.fromRect({ y: 100 + 22 * k + code, width: 8, height: 18 });
+      return DOMRect.fromRect({ y: lineTop(k) + code, width: 8, height: 18 });
     },
   );
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
@@ -1868,7 +1880,7 @@ function placeLines(blockTop: (el: HTMLElement) => number = () => 98) {
         const parent = this.parentNode;
         const at = parent === null ? 0 : [...parent.childNodes].indexOf(this);
         const k = parent === null ? 0 : breaksBefore(parent, at);
-        return DOMRect.fromRect({ y: 100 + 22 * k, height: 18 });
+        return DOMRect.fromRect({ y: lineTop(k), height: 18 });
       }
       if (this.hasAttribute("data-loc")) {
         return DOMRect.fromRect({ y: blockTop(this), height: 120 });
@@ -1914,7 +1926,7 @@ async function chipTops(container: HTMLElement) {
   await settleChips();
   return [
     ...container.querySelectorAll<HTMLElement>(
-      "[aria-label$='comment(s) on this block']",
+      "[aria-label$=' comment'], [aria-label$=' comments']",
     ),
   ].map((chip) => chip.style.top);
 }
@@ -1998,10 +2010,10 @@ describe("chips on a block's later lines", () => {
     expect(
       [
         ...container.querySelectorAll(
-          "[aria-label$='comment(s) on this block']",
+          "[aria-label$=' comment'], [aria-label$=' comments']",
         ),
       ].map((chip) => chip.getAttribute("aria-label")),
-    ).toEqual(["2 comment(s) on this block"]);
+    ).toEqual(["2 comments"]);
   });
 
   it("hangs a baseline annotation by the line its removed word is put back on", async () => {
@@ -2254,6 +2266,132 @@ describe("chips on a block's later lines", () => {
     });
     expect(await chipTops(container)).toEqual(["98px"]);
   });
+
+  it("joins the chips of blocks closer than a chip drawn at that width, in one pass", async () => {
+    // The blocks one line of text apart, as an open fold's summary and the
+    // paragraph under it are: inside a 24px phone badge, just clear of a
+    // 22px desktop chip. The second block's second line is two lines below
+    // the first block, clear of it at either width.
+    placeLines((el) => {
+      const text = el.textContent ?? "";
+      return text.startsWith("First")
+        ? 76
+        : text.startsWith("Second")
+          ? 98
+          : 30;
+    });
+    // Mounted narrow and widened: happy-dom seeds a `change` listener as
+    // unmatched, so one registered while the query already matches never
+    // hears it stop matching.
+    setViewportWidth(390);
+    const body = [
+      "Intro.",
+      "",
+      "First block.",
+      "",
+      "Second block's first line,",
+      "its second line.",
+      "",
+    ].join("\n");
+    const { container } = await renderDiff(body, body, [
+      wholeLines("comment", 3, 3),
+      wholeLines("comment", 5, 5),
+      wholeLines("comment", 6, 6),
+    ]);
+    const chips = () =>
+      [
+        ...container.querySelectorAll<HTMLElement>(
+          "[aria-label$=' comment'], [aria-label$=' comments']",
+        ),
+      ].map((chip) => [chip.style.top, chip.getAttribute("aria-label")]);
+    await settleChips();
+    expect(chips()).toEqual([
+      ["76px", "2 comments"],
+      ["120px", "1 comment"],
+    ]);
+
+    act(() => setViewportWidth(1024));
+    await waitFor(() =>
+      expect(chips()).toEqual([
+        ["76px", "1 comment"],
+        ["98px", "1 comment"],
+        ["120px", "1 comment"],
+      ]),
+    );
+  });
+
+  it("keeps apart the chips of blocks that only touch, as Firefox measures them", async () => {
+    // 22px apart, a desktop chip's height, as Firefox measured two blocks
+    // 131,072px below the window's top: 1/128px short.
+    placeLines((el) =>
+      (el.textContent ?? "").startsWith("Second") ? 97.9921875 : 76,
+    );
+    const body = "First block.\n\nSecond block.\n";
+    const { container } = await renderDiff(body, body, [
+      wholeLines("comment", 1, 1),
+      wholeLines("comment", 3, 3),
+    ]);
+    await settleChips();
+    expect(
+      [
+        ...container.querySelectorAll(
+          "[aria-label$=' comment'], [aria-label$=' comments']",
+        ),
+      ].map((chip) => chip.getAttribute("aria-label")),
+    ).toEqual(["1 comment", "1 comment"]);
+  });
+  it.each([
+    [
+      "in other columns",
+      "its second line runs on here,",
+      [
+        ["comment", "line"],
+        ["comment", "its"],
+        ["comment", "lin"],
+      ],
+      ["L4:12–15", "L4:1–3", "L4:12–14"],
+    ],
+    [
+      "a draft after the comments",
+      "its second line runs on here,",
+      [
+        ["comment", "line"],
+        ["comment", "its"],
+        ["draft", "lin"],
+      ],
+      ["L4:12–15", "L4:1–3", "L4:12–14"],
+    ],
+    [
+      "one in inline code, drawn lower",
+      "then `inline code` on a second line,",
+      [
+        ["comment", "inline"],
+        ["comment", "then"],
+      ],
+      ["L4:7–12", "L4:1–4"],
+    ],
+  ] as const)(
+    "lists the notes on a later line in the order they were written (%s)",
+    async (_, line, notes, labels) => {
+      // Each note hangs by its first character; all are on the paragraph's
+      // second line, so one chip holds them.
+      placeLines();
+      const body = [
+        "Intro.",
+        "",
+        "The first line of a paragraph,",
+        line,
+        "its third line.",
+        "",
+      ].join("\n");
+      const { view } = await renderDiff(
+        body,
+        body,
+        notes.map(([kind, text]) => onBaseline(kind, body, 4, text)),
+      );
+      expect(await popoverLabels(view)).toEqual(labels);
+    },
+  );
 });
 
 /**
@@ -2305,7 +2443,7 @@ describe("chips follow the document's height", () => {
       wholeLines("comment", 1, 1),
     ]);
     const chip = await view.findByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chip.style.top).toBe("100px");
 
@@ -3451,6 +3589,38 @@ function onBaseline(
     : { ...at1, kind, draft: { id: key, anchor, quote: "", body: "note" } };
 }
 
+/**
+ * Opens the one chip on the page and reads its popover's notes, top to
+ * bottom, by where each points.
+ */
+async function popoverLabels(view: ReturnType<typeof render>) {
+  await settleChips();
+  const chips = view.getAllByRole("button", { name: /comment/ });
+  expect(chips).toHaveLength(1);
+  act(() => chips[0]?.click());
+  const popover = await waitFor(() => {
+    const el = document.querySelector("[data-slot='popover-content']");
+    if (el === null) throw new Error("no popover");
+    return el;
+  });
+  const labels = [
+    ...popover.querySelectorAll(
+      "button[title='Scroll to what this points at']",
+    ),
+  ].map((button) => button.textContent);
+  // Radix's portal and happy-dom disagree about who owns a detached
+  // content node, so an open popover throws out of `cleanup`.
+  act(() => {
+    popover.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+  });
+  await waitFor(() =>
+    expect(document.querySelector("[data-slot='popover-content']")).toBeNull(),
+  );
+  return labels;
+}
+
 /** Let a frame pass, so that a chip that would show has. */
 async function settleChips(): Promise<void> {
   await act(async () => {
@@ -3574,10 +3744,10 @@ describe("baseline annotations on deleted text", () => {
       [onBaseline("draft", WORD_BEFORE, 1, "brown")],
     );
     const chips = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
-      "2 comment(s) on this block",
+      "2 comments",
     ]);
   });
 
@@ -3598,7 +3768,7 @@ describe("baseline annotations on deleted text", () => {
       [onBaseline("comment", PARAGRAPH_BEFORE, 5, "with")],
     );
     const chips = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chips.map((chip) => chip.style.top)).toEqual(["100px", "300px"]);
     expect(chips.map((chip) => chip.textContent)).toEqual(["1", "1"]);
@@ -3610,10 +3780,10 @@ describe("baseline annotations on deleted text", () => {
       onBaseline("comment", WORD_BEFORE, 1, "brown"),
     ]);
     const chips = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
-      "2 comment(s) on this block",
+      "2 comments",
     ]);
   });
 
@@ -3628,9 +3798,7 @@ describe("baseline annotations on deleted text", () => {
       [onBaseline("comment", before, 3)],
     );
     expect(container.querySelector(".spec-del-structure img")).not.toBeNull();
-    expect(
-      await view.findByRole("button", { name: "1 comment(s) on this block" }),
-    ).toBeTruthy();
+    expect(await view.findByRole("button", { name: "1 comment" })).toBeTruthy();
   });
 
   it("shares one chip where a restored block starts a current one", async () => {
@@ -3656,10 +3824,10 @@ describe("baseline annotations on deleted text", () => {
       container.querySelector("li > .spec-del-structure:first-child"),
     ).not.toBeNull();
     const chips = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
-      "2 comment(s) on this block",
+      "2 comments",
     ]);
   });
 
@@ -3687,10 +3855,10 @@ describe("baseline annotations on deleted text", () => {
       ],
     );
     const chips = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
-      "2 comment(s) on this block",
+      "2 comments",
     ]);
   });
 
@@ -3724,19 +3892,19 @@ describe("baseline annotations on deleted text", () => {
       ],
     );
     const chips = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
-      "2 comment(s) on this block",
+      "2 comments",
     ]);
 
     act(() => setViewportWidth(1024));
     await waitFor(() =>
       expect(
         view
-          .getAllByRole("button", { name: /comment\(s\) on this block/ })
+          .getAllByRole("button", { name: /^\d+ comments?$/ })
           .map((chip) => chip.getAttribute("aria-label")),
-      ).toEqual(["1 comment(s) on this block", "1 comment(s) on this block"]),
+      ).toEqual(["1 comment", "1 comment"]),
     );
   });
 
@@ -3768,19 +3936,19 @@ describe("baseline annotations on deleted text", () => {
       ],
     );
     const chips = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
-      "2 comment(s) on this block",
+      "2 comments",
     ]);
 
     act(() => setViewportWidth(1024));
     await waitFor(() =>
       expect(
         view
-          .getAllByRole("button", { name: /comment\(s\) on this block/ })
+          .getAllByRole("button", { name: /^\d+ comments?$/ })
           .map((chip) => chip.getAttribute("aria-label")),
-      ).toEqual(["1 comment(s) on this block", "1 comment(s) on this block"]),
+      ).toEqual(["1 comment", "1 comment"]),
     );
   });
 
@@ -3809,11 +3977,11 @@ describe("baseline annotations on deleted text", () => {
       ],
     );
     const chips = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
-      "1 comment(s) on this block",
-      "1 comment(s) on this block",
+      "1 comment",
+      "1 comment",
     ]);
   });
 
@@ -3843,13 +4011,199 @@ describe("baseline annotations on deleted text", () => {
       ],
     );
     const chips = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
-      "1 comment(s) on this block",
-      "1 comment(s) on this block",
+      "1 comment",
+      "1 comment",
     ]);
   });
+
+  it("joins a restored block's chip to the current version's chip their places joined into, listing its note first", async () => {
+    // One line apart on a phone, inside a 24px badge: a restored block, then
+    // two current paragraphs. The paragraphs' chips join; the restored
+    // block's joins theirs, where it hangs, rather than the first paragraph
+    // joining the restored block and the second staying apart.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        const text = this.textContent ?? "";
+        const y = this.classList.contains("spec-del-structure")
+          ? 300
+          : this.tagName !== "P"
+            ? 0
+            : text.startsWith("Para one")
+              ? 322.4
+              : text.startsWith("Para two")
+                ? 344.8
+                : 0;
+        return DOMRect.fromRect({ y });
+      },
+    );
+    setViewportWidth(390);
+    const before = "Old A here.\n\nPara one.\n\nPara two.\n";
+    const { view, container } = await renderDiff(
+      before,
+      "Para one.\n\nPara two.\n",
+      [wholeLines("comment", 1, 1), wholeLines("comment", 3, 3)],
+      undefined,
+      [onBaseline("comment", before, 1, "A")],
+    );
+    // Its popover lists the notes as the blocks come down the page.
+    expect(await popoverLabels(view)).toEqual(["L1:5–5", "L1", "L3"]);
+    await settleChips();
+    expect(
+      [
+        ...container.querySelectorAll<HTMLElement>(
+          "[aria-label$=' comment'], [aria-label$=' comments']",
+        ),
+      ].map((chip) => [chip.style.top, chip.getAttribute("aria-label")]),
+    ).toEqual([["322.4px", "3 comments"]]);
+  });
+
+  it("lists a removed word's note before the current version's on its line", async () => {
+    const { view } = await renderDiff(
+      WORD_BEFORE,
+      WORD_AFTER,
+      [wholeLines("comment", 1, 1)],
+      undefined,
+      [onBaseline("comment", WORD_BEFORE, 1, "brown")],
+    );
+    expect(await popoverLabels(view)).toEqual(["L1:11–15", "L1"]);
+  });
+
+  it("lists a line's note before a removed word's on the line below", async () => {
+    // A phone's 24px chip joins lines 22px apart; the line above comes
+    // first, though the baseline's note would where both hang level.
+    setViewportWidth(390);
+    placeLines();
+    const before =
+      "Intro.\n\nThe first line of a paragraph,\nits second line holds a doomed word,\nits third line.\n";
+    const { view } = await renderDiff(
+      before,
+      before.replace("a doomed word", "a word"),
+      [wholeLines("comment", 3, 3)],
+      undefined,
+      [onBaseline("comment", before, 4, "doomed")],
+    );
+    expect(await popoverLabels(view)).toEqual(["L3", "L4:25–30"]);
+  });
+
+  it("lists the notes on a line's removed words in the order they were written", async () => {
+    // Both removed words are put back on the paragraph's second line, each
+    // run a place of its own.
+    placeLines();
+    const before =
+      "Intro.\n\nThe first line of a paragraph,\nits second line has an old word and a stale word here,\nits third line.\n";
+    const { view } = await renderDiff(
+      before,
+      before.replace("an old word and a stale word", "a word and a word"),
+      [],
+      undefined,
+      [
+        onBaseline("comment", before, 4, "stale"),
+        onBaseline("comment", before, 4, "old"),
+        onBaseline("comment", before, 4, "sta"),
+      ],
+    );
+    expect(await popoverLabels(view)).toEqual([
+      "L4:39–43",
+      "L4:24–26",
+      "L4:39–41",
+    ]);
+  });
+
+  it("lists a line's note before a removed word's below it, under a tall picture", async () => {
+    // The picture opening the paragraph is its first character, 120px tall:
+    // no measure of a line of text. Lines 22px apart share a phone's chip.
+    setViewportWidth(390);
+    placeLines(undefined, 120);
+    const before =
+      "Intro.\n\n![pic](pic.png) The first line of a paragraph,\nits second line,\nits third line holds a doomed word,\nits fourth line.\n";
+    const { view } = await renderDiff(
+      before,
+      before.replace("a doomed word", "a word"),
+      [wholeLines("comment", 4, 4)],
+      undefined,
+      [onBaseline("comment", before, 5, "doomed")],
+    );
+    expect(await popoverLabels(view)).toEqual(["L4", "L5:24–29"]);
+  });
+
+  it("lists a restored block's notes by the line they start on", async () => {
+    // Put back whole, a block hangs all its notes by its top; the note on
+    // its second line was written first.
+    const before = "Para one.\n\nOld A here,\nits second line.\n\nPara two.\n";
+    const { view } = await renderDiff(
+      before,
+      "Para one.\n\nPara two.\n",
+      [],
+      undefined,
+      [
+        onBaseline("comment", before, 4, "second"),
+        onBaseline("comment", before, 3, "A"),
+      ],
+    );
+    expect(await popoverLabels(view)).toEqual(["L3:5–5", "L4:5–10"]);
+  });
+
+  it.each([
+    [
+      "with a restored block",
+      "Para one.\n\nOld A here.\n\nPara two.\n\n",
+      "Para one.\n\nPara two.\n\n",
+      [8, 6],
+      ["L6", "L8:5–5", "L8"],
+    ],
+    [
+      "on the lines of one block",
+      "Para one.\nIts second line.\n\n",
+      "Para one.\nIts second line.\n\n",
+      [7, 6],
+      ["L6", "L7"],
+    ],
+  ])(
+    "lists a shut fold's notes in the document's order (%s)",
+    async (_, was, is, lines, labels) => {
+      // Open, each block hangs a chip of its own; shut, all of them hang by
+      // the fold. The notes on the current version come in bottom first.
+      vi.spyOn(
+        HTMLElement.prototype,
+        "getBoundingClientRect",
+      ).mockImplementation(function (this: HTMLElement) {
+        const text = this.textContent ?? "";
+        const y =
+          this.tagName === "DETAILS"
+            ? 300
+            : this.tagName !== "P"
+              ? 0
+              : text.startsWith("Para one")
+                ? 400
+                : text.startsWith("Old A")
+                  ? 500
+                  : text.startsWith("Para two")
+                    ? 600
+                    : 0;
+        return DOMRect.fromRect({ y });
+      });
+      const fold = (inside: string) =>
+        `Intro.\n\n<details>\n<summary>More</summary>\n\n${inside}</details>\n`;
+      const before = fold(was);
+      const { view, container } = await renderDiff(
+        before,
+        fold(is),
+        lines.map((line) => wholeLines("comment", line, line)),
+        undefined,
+        was === is ? [] : [onBaseline("comment", before, 8, "A")],
+      );
+      const details = container.querySelector("details");
+      if (details === null) throw new Error("no fold");
+      act(() => {
+        details.removeAttribute("open");
+        details.dispatchEvent(new Event("toggle"));
+      });
+      expect(await popoverLabels(view)).toEqual(labels);
+    },
+  );
 
   it("hangs a baseline comment on the innermost restored block it reaches", async () => {
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
@@ -3870,7 +4224,7 @@ describe("baseline annotations on deleted text", () => {
     );
     expect(container.querySelector("table.spec-del-structure")).not.toBeNull();
     const chips = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chips.map((chip) => chip.style.top)).toEqual(["340px"]);
   });
@@ -3893,7 +4247,7 @@ describe("baseline annotations on deleted text", () => {
     ]);
     expect(container.querySelector("tr.spec-del-row")).not.toBeNull();
     const chips = await view.findAllByRole("button", {
-      name: /comment\(s\) on this block/,
+      name: /^\d+ comments?$/,
     });
     expect(chips.map((chip) => chip.style.top)).toEqual(["380px"]);
   });
@@ -3907,8 +4261,8 @@ describe("baseline annotations on deleted text", () => {
       [onBaseline("comment", PARAGRAPH_BEFORE, 3, "First")],
     );
     await settleChips();
-    expect(
-      view.queryAllByRole("button", { name: /comment\(s\) on this block/ }),
-    ).toEqual([]);
+    expect(view.queryAllByRole("button", { name: /^\d+ comments?$/ })).toEqual(
+      [],
+    );
   });
 });
