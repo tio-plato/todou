@@ -5,6 +5,7 @@ import {
   lockWaiters,
   pidOf,
   uploadDraft,
+  waitForLockWaiters,
   withOptions,
 } from "./pg-lock-helpers.ts";
 import { createTestDatabase, type TestDatabase } from "./postgres-database.ts";
@@ -18,6 +19,103 @@ const PG_URL = process.env.TODOU_TEST_POSTGRES_URL;
 // first row, waits for the request to queue behind it, then takes a second.
 // What the holder plays is always a path the server takes once fixed, so
 // neither side may be aborted as a deadlock.
+describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
+  let database: TestDatabase | undefined;
+  let t: TestApp;
+  let holder: pg.Client;
+  let observer: pg.Client;
+  let holderPid: number;
+  let author: { headers: { authorization: string } };
+  const stamp = Date.now().toString(36);
+  let projects = 0;
+
+  const send = (
+    method: string,
+    path: string,
+    body?: unknown,
+    via: TestApp = t,
+  ) =>
+    Promise.resolve(
+      via.app.request(`/api${path}`, {
+        method,
+        headers: { ...author.headers, "content-type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      }),
+    );
+
+  beforeAll(async () => {
+    if (!PG_URL) return;
+    database = await createTestDatabase(PG_URL, "lock_order");
+    t = await makeTestApp("shared", { systemUrl: database.url });
+    holder = new pg.Client({ connectionString: database.url });
+    observer = new pg.Client({ connectionString: database.url });
+    await holder.connect();
+    await observer.connect();
+    holderPid = await pidOf(holder);
+    author = await addUserWithToken(t.ctx, `lockorder-${stamp}`);
+  });
+
+  afterAll(async () => {
+    // Every connection to the database closes before the drop, even when
+    // closing another one fails.
+    const closed = await Promise.allSettled([
+      holder?.end(),
+      observer?.end(),
+      t?.cleanup(),
+    ]);
+    await database?.drop();
+    for (const result of closed) {
+      if (result.status === "rejected") throw result.reason;
+    }
+  });
+
+  /** A fresh project for one test. */
+  const project = async () => {
+    projects += 1;
+    const slug = `lockorder-${stamp}-${projects}`;
+    const created = await send("POST", "/projects", { slug, name: slug });
+    expect(created.status).toBe(201);
+    return { slug, id: (await json(created)).id as number };
+  };
+
+  it("two renames of one project queue instead of deadlocking", async () => {
+    const p = await project();
+    const renames = [`${p.slug}-one`, `${p.slug}-two`];
+
+    // The holder is any transaction holding the project row in KEY SHARE,
+    // which is what inserting a row that references it takes.
+    await holder.query("BEGIN");
+    let pending: Array<Promise<Response>> = [];
+    try {
+      await holder.query(
+        "SELECT id FROM projects WHERE id = $1 FOR KEY SHARE",
+        [p.id],
+      );
+      pending = renames.map((slug) =>
+        send("PATCH", `/projects/${p.slug}`, { slug }),
+      );
+      await waitForLockWaiters(observer, holderPid, 2);
+      await holder.query("COMMIT");
+      const responses = await Promise.all(pending);
+      expect(responses.map((r) => r.status)).toEqual([200, 200]);
+      const now = await observer.query<{ slug: string }>(
+        "SELECT slug FROM projects WHERE id = $1",
+        [p.id],
+      );
+      expect(renames).toContain(now.rows[0]?.slug);
+      const history = await observer.query<{ slug: string }>(
+        "SELECT slug FROM slug_history WHERE project_id = $1",
+        [p.id],
+      );
+      expect(history.rows.map((r) => r.slug)).toEqual(
+        expect.arrayContaining(renames),
+      );
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled(pending);
+    }
+  });
+});
 
 // The same holder, against the steps of a move to another database: the
 // move is paused between two steps, the holder takes its first row, and the
