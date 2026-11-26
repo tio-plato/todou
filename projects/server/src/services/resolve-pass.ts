@@ -924,6 +924,14 @@ export type WriteGate = { id: number; actor: UserRow; role: MemberRole };
  *    statement in ascending id, then its `project_meta`, so that a card
  *    still being created there either finishes first or waits for the
  *    cleanup.
+ *    And `project_meta` before the project's statuses: a transaction that
+ *    writes more than one existing status, or a status and the block clear
+ *    line (reordering statuses, making one the default), locks
+ *    `project_meta` FOR NO KEY UPDATE as its first statement, even when the
+ *    line stays where it is, so that such writes queue there and none holds
+ *    a status while it waits for another. Creating a card takes its number
+ *    before the foreign key share-locks its status, and cleaning up a
+ *    deleted project locks `project_meta` before it deletes the statuses.
  * 4. A row a transaction will update is locked in that update's mode before
  *    any statement of the transaction takes a weaker lock on it, such as the
  *    KEY SHARE a foreign-key check takes on the parent of a row it inserts.
