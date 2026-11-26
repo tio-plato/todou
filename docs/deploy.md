@@ -75,7 +75,7 @@ transaction-pooling proxy such as PgBouncer: `database.system` and, under
 dedicated placement, every project database, which todou also migrates when
 it creates a project.
 
-Two project migrations change existing data rather than only its shape.
+Three project migrations change existing data rather than only its shape.
 Migration 0013 renames stored attachment filenames so that no two on one card
 collide; see [Relabelling attachment links after the filename
 migration](#relabelling-attachment-links-after-the-filename-migration).
@@ -98,6 +98,38 @@ older version still writing, the upgrade can also fail once, on a deadlock
 with those writes or on a database whose default isolation is repeatable
 read; all of it rolls back, and starting the server or `todou-server migrate`
 again runs it anew.
+
+The `case_insensitive_names` migration makes a status or label name one name
+whatever its case or Unicode composition, as the API now compares them. Of the
+names of one project that equal each other that way, one already in Unicode
+NFC goes before one that is not, and otherwise the first created keeps its
+name; each other one becomes `<name> (<id>)`, which may take it past 60
+characters as above. Every name is stored in NFC, and from then on the
+database refuses two names of a project that are equal under `lower()`. Which
+letters count as case is the database's ctype: under `C`, or in a `SQL_ASCII`
+database, only ASCII letters do, so an `État` and an `état` stored before the
+upgrade both stay, though the API refuses a new such pair. On a database whose
+encoding is not UTF-8, or on PostgreSQL 12 or older, names are not composed,
+and two that differ only in composition both stay. The API compares names by
+lowercasing each letter on its own, as `lower()` does, and also takes a final
+sigma as a sigma, so where `lower()` goes letter by letter (a libc or builtin
+locale) an upper-case `ΤΕΛΟΣ` and a lower-case `τελος` stored before the
+upgrade both stay, though the API refuses a new such pair; under an ICU locale
+`lower()` knows the final sigma too, and the later of the two is renamed.
+Under a Turkish ctype `lower()` takes `I` as `ı`, which the API does not: a
+name differing from another only there passes the API's check and is refused
+by the unique index instead. A status whose chart role was never chosen takes
+the default for its name as the charts now read it, over its whole history:
+one named `done`, `shipped` or `invalid` in any case now counts as such, and a
+`Done` renamed `Done (<id>)` no longer does. The old spellings are kept
+nowhere, so take a backup first if you may want them back, and do not upgrade
+while a backup or another long transaction is reading the database: the
+migration locks the status and label tables until it commits, and from the
+moment it asks for that lock, every request that reads statuses or labels
+waits with it. With an older version still writing, the upgrade can fail once,
+as above, and runs anew when started again. Going back to an older version
+keeps the renamed names and the new indexes: it then fails with a server error
+where it would have stored a name differing from another only in case.
 
 ### What project search needs from PostgreSQL
 
