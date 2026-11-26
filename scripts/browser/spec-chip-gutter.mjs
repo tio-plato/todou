@@ -7,10 +7,14 @@ import { evaluate } from "../lib/browser-cdp.mjs";
 // Below 640px (Tailwind `sm`) the rendered spec gives up its right gutter and
 // the annotation chips ride on the card's border; from 640px up the gutter,
 // the chips in it and the popover opening to their left stay as they were.
-// At every width a chip's popover stays on screen, `EDGE` clear of the top
+// At every width a chip's popover opens on screen, `EDGE` clear of the top
 // and bottom, even when its thread is taller than the room beside the chip.
 // The cramped viewports, a phone held either way, have less room beside a
-// chip in the middle of the screen than the popover's 24rem cap.
+// chip in the middle of the screen than the popover's 24rem cap. On the
+// upright phone the popover opens centred on the screen but never past its
+// chip's top or bottom, then rides with the page: a scroll moves it with its
+// chip before any script runs, and it is never pushed back, flipped or
+// resized.
 const VIEWPORTS = [
   { width: 320, height: 844 },
   { width: 390, height: 844 },
@@ -28,10 +32,16 @@ const EDGE = 8;
 const CHIPS = 2;
 /** Comments on the second chip: together far taller than 24rem. */
 const THREAD = 6;
+/** The chip whose popover is scrolled with the page on the upright phone. */
+const RIDE_CHIP = 1;
+/** How far the page scrolls under that popover: past its top half. */
+const RIDE_SCROLL = 300;
+/** Where that chip's top sits when it opens near the top of the screen. */
+const RIDE_HIGH = 140;
 const PATH = "design.md";
 const FAULT_CSS = [
   '[aria-label$="on this block"] { right: 0 !important; translate: none !important; }',
-  '[data-slot="popover-content"] { max-height: 24rem !important; }',
+  '[data-slot="popover-content"] { max-height: none !important; }',
 ].join(" ");
 
 const narrow = (width) => width < SM;
@@ -184,20 +194,50 @@ function probeSource(fault) {
       const rect = chip.getBoundingClientRect();
       return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, chip: box(chip) };
     };
+    const chipAt = (index, top) => {
+      const chip = parts().chips[index];
+      if (!chip) return null;
+      window.scrollBy({ top: chip.getBoundingClientRect().top - top, behavior: 'instant' });
+      const rect = chip.getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, chip: box(chip) };
+    };
     const popover = () => {
       const content = document.querySelector('[data-radix-popper-content-wrapper] > *');
       return content && sized(content) ? { ...box(content), maxHeight: getComputedStyle(content).maxHeight } : null;
+    };
+    // Scroll events wait for the next rendering opportunity, so what this
+    // reads right after scrollBy is the layout no script has touched yet:
+    // where the screen shows the popover while the page scrolls off the
+    // main thread. Two frames later the popper has had its scroll event.
+    const ride = async (index, distance) => {
+      const chip = parts().chips[index];
+      const content = document.querySelector('[data-radix-popper-content-wrapper] > *');
+      if (!chip || !content) return null;
+      const read = () => {
+        const at = chip.getBoundingClientRect();
+        const rect = content.getBoundingClientRect();
+        return { chipTop: round(at.top), top: round(rect.top), height: round(rect.height), scrollY: round(window.scrollY) };
+      };
+      const frame = () => new Promise(done => requestAnimationFrame(done));
+      const rest = read();
+      window.scrollBy({ top: distance, behavior: 'instant' });
+      const synced = read();
+      await frame();
+      await frame();
+      const settled = read();
+      window.scrollBy({ top: -distance, behavior: 'instant' });
+      return { rest, synced, settled, middle: round(window.innerHeight / 2) };
     };
     const open = () => !!document.querySelector('[data-radix-popper-content-wrapper]');
     const inject = () => {
       if (!fault || !document.head || document.querySelector('style[data-spec-chip-gutter-fault]')) return;
       const style = document.createElement('style');
-      style.dataset.specChipGutterFault = 'chip-back-over-text popover-fixed-cap';
+      style.dataset.specChipGutterFault = 'chip-back-over-text popover-uncapped';
       style.textContent = ${JSON.stringify(FAULT_CSS)};
       document.head.append(style);
     };
     if (fault) { new MutationObserver(inject).observe(document, { childList: true, subtree: true }); inject(); }
-    window.__specChipGutter = { ready, measure, chipCenter, popover, open };
+    window.__specChipGutter = { ready, measure, chipCenter, chipAt, popover, ride, open };
   })()`;
 }
 
@@ -351,6 +391,102 @@ function inspectPopover(
   return failures;
 }
 
+/**
+ * On the upright phone, the open popover of `RIDE_CHIP`, its chip mid-screen:
+ * centred on the screen, carried by a scroll with no script to catch up, left
+ * where the scroll put it once the popper has run, and opened over its chip
+ * when centring would leave the chip's top above it. Leaves the last popover
+ * open.
+ */
+async function inspectRide(page, width, index) {
+  const failures = [];
+  const ride = await evaluate(
+    page,
+    (i, distance) => window.__specChipGutter.ride(i, distance),
+    index,
+    RIDE_SCROLL,
+  );
+  if (ride === null)
+    return [
+      failure("popover-missing", `chip ${index} popover not found`, width),
+    ];
+  const { rest, synced, settled, middle } = ride;
+  const centre = rest.top + rest.height / 2;
+  if (Math.abs(centre - middle) > EPSILON)
+    failures.push(
+      failure(
+        "popover-not-centred",
+        `chip ${index} popover centre ${centre} != viewport middle ${middle}`,
+        width,
+      ),
+    );
+  const scrolled = synced.scrollY - rest.scrollY;
+  if (Math.abs(scrolled - RIDE_SCROLL) > EPSILON)
+    failures.push(
+      failure(
+        "ride-scroll-short",
+        `the page scrolled ${scrolled}px of ${RIDE_SCROLL}`,
+        width,
+      ),
+    );
+  const offset = rest.top - rest.chipTop;
+  const syncedOffset = synced.top - synced.chipTop;
+  if (Math.abs(syncedOffset - offset) > EPSILON)
+    failures.push(
+      failure(
+        "popover-trails-chip",
+        `chip ${index} popover top - chip top ${offset} at rest, ${syncedOffset} right after scrolling ${RIDE_SCROLL}px`,
+        width,
+      ),
+    );
+  const settledOffset = settled.top - settled.chipTop;
+  if (
+    Math.abs(settledOffset - offset) > EPSILON ||
+    Math.abs(settled.height - rest.height) > EPSILON
+  )
+    failures.push(
+      failure(
+        "popover-moves-on-scroll",
+        `chip ${index} popover top - chip top ${offset}, height ${rest.height} at rest; ${settledOffset}, ${settled.height} two frames after scrolling ${RIDE_SCROLL}px`,
+        width,
+      ),
+    );
+  await pressEscape(page);
+  await waitFor(
+    page,
+    "the popover to unmount",
+    () => !window.__specChipGutter.open(),
+    5_000,
+  );
+  const target = await evaluate(
+    page,
+    (i, top) => window.__specChipGutter.chipAt(i, top),
+    index,
+    RIDE_HIGH,
+  );
+  await mouseClick(page, target.x, target.y);
+  const popover = await stableBox(page, "popover");
+  if (popover === null)
+    return [
+      ...failures,
+      failure("popover-missing", `chip ${index} reopened no popover`, width),
+    ];
+  const chip = await evaluate(
+    page,
+    (i) => window.__specChipGutter.measure().chips[i],
+    index,
+  );
+  if (Math.abs(popover.top - chip.top) > EPSILON)
+    failures.push(
+      failure(
+        "popover-leaves-chip",
+        `chip ${index} opened with its top at ${chip.top}, popover top ${popover.top}`,
+        width,
+      ),
+    );
+  return failures;
+}
+
 async function measureViewport({ context, stack, fixture, fault, viewport }) {
   const page = await context.newPage({
     viewport: { ...viewport, deviceScaleFactor: 1 },
@@ -397,6 +533,8 @@ async function measureViewport({ context, stack, fixture, fault, viewport }) {
             index,
           ),
         );
+        if (viewport.cramped && narrow(viewport.width) && index === RIDE_CHIP)
+          failures.push(...(await inspectRide(page, viewport.width, index)));
         await pressEscape(page);
         await waitFor(
           page,
@@ -456,7 +594,7 @@ async function runPass({ browser, stack, fixture, fault, label }) {
           ),
       ) &&
       measurements.every((m) =>
-        m.popovers.every(({ popover }) => popover.maxHeight === "384px"),
+        m.popovers.every(({ popover }) => popover.maxHeight === "none"),
       );
     const result = {
       name: `spec-chip-gutter:${label}`,

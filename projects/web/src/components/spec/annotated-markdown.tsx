@@ -512,6 +512,22 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(NO_FOLDS);
   const wide = useMediaQuery(SM_UP);
   const remarkPlugins = useMarkdownRemarkPlugins(slug, { document: true });
+  const [popoverLayer, setPopoverLayer] = useState<HTMLElement | null>(null);
+  // The ride-along layer the chips' popovers open in below `sm`: zero-sized
+  // at the document's origin, so it scrolls with the page, and a containing
+  // block for their `position: fixed` wrappers through its `translate`. On
+  // `<body>`, like the popover layer's own portal, so the container's
+  // selection and DOM lookups never see a thread. Made here rather than
+  // rendered through a portal: tests that empty `<body>` before unmounting
+  // would leave React a node to remove that is gone, while `remove()` does
+  // not mind.
+  useLayoutEffect(() => {
+    const layer = document.createElement("div");
+    layer.className = "absolute top-0 left-0 z-50 translate-0";
+    document.body.append(layer);
+    setPopoverLayer(layer);
+    return () => layer.remove();
+  }, []);
 
   const index = useMemo(() => buildSegmentIndex(body), [body]);
   const baselineIndex = useMemo(
@@ -1093,6 +1109,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
           onResolve={onResolve}
           resolving={resolving}
           wide={wide}
+          popoverLayer={popoverLayer}
         />
       ))}
 
@@ -1111,6 +1128,7 @@ const AnnotationChip = memo(function AnnotationChip({
   onResolve,
   resolving,
   wide,
+  popoverLayer,
 }: {
   /**
    * Which issue a published annotation's comment belongs to. Passed down
@@ -1126,8 +1144,10 @@ const AnnotationChip = memo(function AnnotationChip({
   onRemoveDraft: (id: string) => void;
   onResolve: (commentId: number) => void;
   resolving: boolean;
-  /** At least `sm`: the chip sits in the gutter and opens to its left. */
+  /** At least `sm`: the chip sits in the gutter. */
   wide: boolean;
+  /** Where the popover opens below `sm`; see `AnnotatedMarkdown`. */
+  popoverLayer: HTMLElement | null;
 }) {
   const draftCount = chip.items.filter((i) => i.kind === "draft").length;
   const locate = (item: DisplayedAnnotation) => (
@@ -1140,14 +1160,51 @@ const AnnotationChip = memo(function AnnotationChip({
       {labelOf(item)}
     </button>
   );
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [alignOffset, setAlignOffset] = useState(0);
+  // Below `sm` the popover opens centred on the visible part of the screen,
+  // but with its top no lower than the chip's and its bottom no higher, so
+  // it always spans the chip's row. Worked out as it opens, and again only
+  // when its own size changes: a thread resolved, or the width settling once
+  // Radix knows the room left of the chip. Never on scroll: from where it
+  // opened it rides with the page.
+  useLayoutEffect(() => {
+    if (wide || !open) return;
+    const trigger = triggerRef.current;
+    const content = contentRef.current;
+    if (trigger === null || content === null) return;
+    const place = () => {
+      // The height the cap leaves it, not the whole thread's.
+      const height = content.offsetHeight;
+      const at = trigger.getBoundingClientRect();
+      // Undefined, not the null the DOM types admit, where there is no API.
+      const view = window.visualViewport;
+      const middle =
+        view == null
+          ? window.innerHeight / 2
+          : view.offsetTop + view.height / 2;
+      const top = Math.min(
+        at.top,
+        Math.max(middle - height / 2, at.bottom - height),
+      );
+      setAlignOffset(top - at.top);
+    };
+    place();
+    const observer = new ResizeObserver(place);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [wide, open]);
   return (
-    <Popover>
+    <Popover onOpenChange={setOpen}>
       {/* Below `sm` the chip is a count badge centred on the card's right
           border, `--spec-card-inset` past the text's edge (0 where nothing
           sets it), and opaque, so the border does not run through it: the
           same tint, laid over the page's background. Its 24px height is
           also `chipHeight`'s: change one, change the other. */}
       <PopoverTrigger
+        ref={triggerRef}
         data-annotation-ui=""
         className={cn(
           "absolute right-0 inline-flex cursor-pointer items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs shadow-sm",
@@ -1164,23 +1221,43 @@ const AnnotationChip = memo(function AnnotationChip({
         {chip.items.length}
       </PopoverTrigger>
       <PopoverContent
-        side={wide ? "left" : "bottom"}
-        align={wide ? "start" : "end"}
-        // A thread belongs to its chip's block. The popover layer's "always"
+        ref={contentRef}
+        side="left"
+        // From `sm` up, the one layout that handles collisions (below): a
+        // thread belongs to its chip's block. The popover layer's "always"
         // keeps the surface on screen after the chip has scrolled away, which
         // pins it to the viewport edge over unrelated text; "partial" still
         // pushes it back while part of the chip shows, then lets it follow.
         sticky="partial"
+        // Radix moves its `position: fixed` wrapper from the page's scroll
+        // events, which reach the main thread a frame or more after the
+        // browser has scrolled the page: a popover beside its chip trails it.
+        // Below `sm` the ride-along layer is the wrapper's containing block,
+        // so the browser scrolls the popover with the text. With collisions
+        // off, where it sits depends on the chip alone, so what Floating UI
+        // works out on scroll is where it already is, and a popover leaving
+        // the screen is neither pushed back nor flipped to the chip's other
+        // side. From `sm` up `shift` holds a tall popover still on screen; in
+        // the layer it would ride a frame with the text before being pulled
+        // back each time, so that layout keeps the `<body>` portal.
+        container={wide ? null : popoverLayer}
+        avoidCollisions={wide}
+        alignOffset={wide ? 0 : alignOffset}
         // One `min()` for the cap: `cn()` keeps a single `max-h-*`, so a
-        // second one here would drop the popover layer's viewport cap. The
-        // Radix variable is the room Floating UI leaves the popover, never
-        // more than the viewport: all of its height beside a wide layout's
-        // chip, where the popover may shift up and down, only what is above
-        // or below the chip in the narrow one. With that chip mid-screen on
-        // an upright phone, neither side has 24rem. `transition-none`: the
-        // layer's `duration-100` also eases `max-height`, which then trails
-        // that room as the page scrolls.
-        className="max-h-[min(24rem,var(--radix-popover-content-available-height,calc(100dvh-1rem)))] w-96 max-w-[calc(100vw-2rem)] space-y-3 overflow-y-auto transition-none"
+        // second one here would drop the popover layer's viewport cap. From
+        // `sm` up the Radix variable is the room Floating UI leaves the
+        // popover beside its chip, never more than the viewport. Below it
+        // nothing a scroll changes sizes the popover: the cap is the small
+        // viewport's height, the one with the browser's bars out, and the
+        // width the room left of the chip, which a vertical scroll keeps.
+        // `transition-none`: the layer's `duration-100` also eases
+        // `max-height`, which then trails that room as the page scrolls.
+        className={cn(
+          "w-96 space-y-3 overflow-y-auto transition-none",
+          wide
+            ? "max-h-[min(24rem,var(--radix-popover-content-available-height,calc(100dvh-1rem)))] max-w-[calc(100vw-2rem)]"
+            : "max-h-[min(24rem,calc(100svh-1rem))] max-w-[var(--radix-popover-content-available-width,calc(100vw-2rem))]",
+        )}
       >
         {chip.items.map((item) =>
           item.kind === "draft" ? (
