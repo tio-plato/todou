@@ -213,8 +213,10 @@ let placedAt = 0;
 
 /**
  * Whether the scroll that left the page at `y` is the owner's own. Every
- * scroll the owner makes is instant, so its event finds the page where it put
- * it; a landing that scrolled smoothly would have to be told apart here too.
+ * placement the owner makes is instant, a glide's too, which is placed one
+ * frame at a time, so its event finds the page where it put it. Not always
+ * on iOS, where a glide's can find the page where it put it a frame or two
+ * before; only the hold knows those (see `EARLIER_PLACEMENTS`).
  */
 function ownScroll(y: number): boolean {
   return Math.abs(y - placedAt) <= 1;
@@ -239,6 +241,74 @@ const INPUTS = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
 
 /** How far short of a landing on the bottom still counts as at the end. */
 const END_SLACK = 40;
+
+/**
+ * How many of the places a hold put the page before the last one still count
+ * as its own when a `scroll` finds the page there. WebKit on iOS has the UI
+ * process report the page's position back, the one it has committed: with a
+ * glide placing every frame, the report can arrive once the next placement
+ * is made, and `scrollY` reads for a moment where the glide put the page a
+ * frame before (measured on a real iPhone); the read that stopped a glide
+ * went unrecorded, and may have been two behind. Three leaves room for that,
+ * for a frame more, and for the extra placement a frame of the page growing
+ * mid-glide makes. Few, and near the stop once the glide is over, so that a
+ * page moved with no input lands on one only by chance.
+ */
+const EARLIER_PLACEMENTS = 3;
+
+/**
+ * Fired on `window` once a glide has ended, arrived or stopped where it got
+ * to, unless another has taken over meanwhile.
+ */
+export const GLIDE_END_EVENT = "todou:glide-end";
+
+/** Whether a landing is gliding to its stop; see `hold`. */
+let gliding = false;
+
+/**
+ * Whether the page is moving by a landing's glide rather than standing where
+ * it was put: what it passes on the way was not read.
+ */
+export function isGliding(): boolean {
+  return gliding;
+}
+
+/** The longest a glide takes, however far it goes. */
+const GLIDE_MAX_MS = 450;
+
+/**
+ * How long a glide over `distance` takes: longer the further it goes, a
+ * screen in about 0.28 s, three in 0.36 s, seven or more in 0.45 s.
+ */
+function glideMs(distance: number): number {
+  return Math.min(
+    GLIDE_MAX_MS,
+    200 + 80 * Math.log2(1 + Math.abs(distance) / window.innerHeight),
+  );
+}
+
+/** Ease-out cubic: moving from the first frame, slowing into the stop. */
+function easeOut(progress: number): number {
+  return 1 - (1 - progress) ** 3;
+}
+
+/**
+ * Whether a landing its caller asked to glide does: not for a reader who
+ * asked the system for less motion, nor for a stop gone or no more than a
+ * pixel away, nor where nothing can hold it (happy-dom). Asked, the header
+ * settles first (see `pageLands`), and the stop is measured against it.
+ */
+function glides(asked: boolean, destination: () => number | null): boolean {
+  if (
+    !asked ||
+    typeof ResizeObserver === "undefined" ||
+    matchMedia("(prefers-reduced-motion: reduce)").matches
+  )
+    return false;
+  pageLands();
+  const to = destination();
+  return to !== null && Math.abs(to - window.scrollY) > 1;
+}
 
 /**
  * Whether an untouched reader is being held on a particular element, as
@@ -277,14 +347,15 @@ export function endHeldAt(): number | null {
  * the top at a tap on the status bar, or find in page scrolling to a match,
  * sends none of those inputs, and the next image or new item would put the
  * reader back at the end. Off means all of: away from where it last put the
- * page, more than `END_SLACK` from where it would put it now, and further
- * than the page has grown since, or the other way. A page that grows before
- * the hold has put it back can still deliver the `scroll` of the last
- * placement, the target moved and nobody having moved the page. Scroll
- * anchoring moves the page by what grew above what is on screen, which is
- * never more than all that grew, and usually moves the target with it; a
- * target above what grew stays behind, to be put back once the hold hears of
- * the growth.
+ * page and from the few places it put it before that, which WebKit on iOS can
+ * report late (see `EARLIER_PLACEMENTS`), more than `END_SLACK` from where it
+ * would put it now, and further than the page has grown since, or the other
+ * way. A page that grows before the hold has put it back can still deliver the
+ * `scroll` of the last placement, the target moved and nobody having moved the
+ * page. Scroll anchoring moves the page by what grew above what is on screen,
+ * which is never more than all that grew, and usually moves the target with
+ * it; a target above what grew stays behind, to be put back once the hold
+ * hears of the growth.
  *
  * With `target`, the page is also kept from getting shorter than the bottom
  * of the screen where the hold last put it, by a `min-height` on `<html>`,
@@ -307,12 +378,29 @@ export function endHeldAt(): number | null {
  * not one a new page declared since. A card swapped for another releases its
  * landing as it unmounts, after the next card's list is in, and that card has
  * had no input yet.
+ *
+ * Given `glide`, where the landing's stop is now (null once its target is
+ * gone), the hold first glides the page there from where it stands, in place
+ * of the landing's own first placement: one placement a frame, each the
+ * owner's own as any other, and so is iOS's late report of one, known by the
+ * places the hold put the page before its last. Each is made once the frame is
+ * drawn, not in the frame's callback: placed there, iOS draws the sticky
+ * header a frame late now and then, the page showing through where it stands.
+ * The glide eases out over a time set by its distance, the stop measured again
+ * at every placement: what grows above the stop carries the whole path along
+ * with it, and the glide arrives on the stop where it is by then. Its progress
+ * is time, not frames, so a busy main thread costs frames and never time; one
+ * late past its end goes straight to the stop. The page growing meanwhile is
+ * put back on the path, not the stop. The time up, the landing places the page
+ * itself, where it would have landed at once, and holds it there as ever.
+ * However the hold ends, the glide stops where it has got to.
  */
 function hold(
   container: Element,
   place: (release: () => void) => void,
   onEnd = false,
   target?: () => number,
+  glide?: () => number | null,
 ) {
   held?.retire();
   if (typeof ResizeObserver === "undefined") return () => {}; // happy-dom
@@ -338,12 +426,75 @@ function hold(
       `${placedAt + window.innerHeight}px`,
     );
   };
-  const observer = new ResizeObserver(() => {
-    place(release);
+  // Under way: when it began, how long it takes, how far it went from where
+  // the page stood to where the stop then was, and the next frame's request
+  // and placement.
+  let path: {
+    start: number;
+    ms: number;
+    distance: number;
+    frame: number;
+    task: ReturnType<typeof setTimeout> | undefined;
+  } | null = null;
+  const stopGlide = () => {
+    if (path === null) return;
+    cancelAnimationFrame(path.frame);
+    clearTimeout(path.task);
+    path = null;
+    gliding = false;
+    // Told once whatever ended it has run: a landing that takes over with a
+    // glide of its own and no input from the reader, as Back to a comment's
+    // address does after the old one is released, ends the move where that
+    // glide stops, not here. The reader's own input ends it here.
+    queueMicrotask(() => {
+      if (!gliding) window.dispatchEvent(new Event(GLIDE_END_EVENT));
+    });
+  };
+  // Where the page was put before `placedAt`, newest first, still its own
+  // in a scroll that reports them late; see `EARLIER_PLACEMENTS`.
+  let earlier: number[] = [];
+  // Where the page was put, which its scroll and the growth after it are
+  // read against.
+  const placed = () => {
     if (held?.release !== release) return;
+    earlier = [placedAt, ...earlier].slice(0, EARLIER_PLACEMENTS);
     placedAt = window.scrollY;
     floor();
     held.placedHeight = document.documentElement.scrollHeight;
+  };
+  // Put the page where it goes now: on the glide's path while it lasts,
+  // then where the landing puts it, which ends the glide.
+  const placeNow = () => {
+    const now = performance.now();
+    const progress = path === null ? 1 : (now - path.start) / path.ms;
+    const to = path !== null && progress < 1 ? (glide?.() ?? null) : null;
+    if (path === null || to === null) place(release);
+    else
+      window.scrollTo(0, onPage(to - path.distance * (1 - easeOut(progress))));
+    placed();
+    if (to === null) stopGlide();
+  };
+  const nextFrame = () => {
+    const under = path;
+    if (under === null) return;
+    under.frame = requestAnimationFrame(() => {
+      under.task = setTimeout(() => {
+        placeNow();
+        nextFrame();
+      }, 0);
+    });
+  };
+  // Mid-glide, only a page that grew is put back on the path in the frame:
+  // the observer reports once as soon as it starts observing, grown or not,
+  // and that report would place every glide's first frame in the frame.
+  const observer = new ResizeObserver(() => {
+    if (
+      path !== null &&
+      held?.release === release &&
+      document.documentElement.scrollHeight === held.placedHeight
+    )
+      return;
+    placeNow();
   });
   const end = (handOver: boolean) => {
     if (controller.signal.aborted) return;
@@ -353,6 +504,7 @@ function hold(
     if (target !== undefined)
       document.documentElement.style.removeProperty("min-height");
     if (handOver && heir !== null && readingList === heir) heir.handOver();
+    stopGlide();
   };
   const release = () => end(true);
   // The reader takes over the page as they last saw it: what grew since the
@@ -364,7 +516,7 @@ function hold(
       held?.release === release &&
       document.documentElement.scrollHeight !== held.placedHeight
     )
-      place(release);
+      placeNow();
     release();
   };
   observer.observe(container);
@@ -385,6 +537,7 @@ function hold(
         const grown = document.documentElement.scrollHeight - held.placedHeight;
         if (
           !ownScroll(y) &&
+          earlier.every((at) => Math.abs(y - at) > 1) &&
           Math.abs(y - target()) > END_SLACK &&
           (moved < Math.min(0, grown) - 1 || moved > Math.max(0, grown) + 1)
         )
@@ -401,6 +554,19 @@ function hold(
     onEnd,
     placedHeight: document.documentElement.scrollHeight,
   };
+  const to = glide?.() ?? null;
+  if (to !== null) {
+    const distance = to - window.scrollY;
+    path = {
+      start: performance.now(),
+      ms: glideMs(distance),
+      distance,
+      frame: 0,
+      task: undefined,
+    };
+    gliding = true;
+    nextFrame();
+  }
   return release;
 }
 
@@ -411,11 +577,73 @@ export function holdRevealed(
   mode: RevealMode = "auto",
   behavior?: ScrollBehavior,
 ): () => void {
-  return hold(container, (release) => {
+  return hold(container, revealing(finder(el), mode, behavior));
+}
+
+/**
+ * Glide to where `revealBlock` puts `target`, flashing it as that does when
+ * the glide begins, and hold it there as `holdRevealed` does; see `hold`. A
+ * target passed as a function is found anew for every placing and every
+ * frame of the glide. Where it does not glide, it is revealed at once.
+ *
+ * Where `revealBlock` leaves the page more than a pixel off the stop the
+ * glide aims at, `restingScrollY` within the page, every placing goes on to
+ * that stop: near the page's end WebKit on iOS stops `scrollIntoView` short
+ * of it, and the page would jump back from where the glide arrived, the
+ * counter of ↑↓, which reads `restingScrollY` too, a step behind.
+ */
+export function glideToRevealed(
+  target: HTMLElement | (() => HTMLElement | null),
+  {
+    mode = "auto",
+    flash: highlight = true,
+  }: { mode?: RevealMode; flash?: boolean } = {},
+): () => void {
+  const find = finder(target);
+  const el = find();
+  if (el === null) return () => {};
+  openEnclosingFolds(el);
+  const stop = () => {
+    const now = find();
+    return now === null ? null : onPage(startTarget(now, mode));
+  };
+  const reveal = revealing(find, mode);
+  const place = (release: () => void) => {
+    reveal(release);
+    const y = stop();
+    if (y !== null && Math.abs(y - window.scrollY) > 1)
+      window.scrollTo(window.scrollX, y);
+  };
+  if (!glides(true, stop)) {
+    if (highlight) flash(el);
+    place(() => {});
+    return hold(document.body, place);
+  }
+  if (highlight) flash(el);
+  return hold(document.body, place, false, undefined, stop);
+}
+
+/** A target as `glideToRevealed` takes it, as the function that finds it. */
+function finder(
+  target: HTMLElement | (() => HTMLElement | null),
+): () => HTMLElement | null {
+  return typeof target === "function"
+    ? target
+    : () => (target.isConnected ? target : null);
+}
+
+/** The placement holding what `find` finds where `revealBlock` puts it. */
+function revealing(
+  find: () => HTMLElement | null,
+  mode: RevealMode,
+  behavior?: ScrollBehavior,
+): (release: () => void) => void {
+  return (release) => {
+    const el = find();
     // Gone with a route change nobody touched the page for.
-    if (!el.isConnected) release();
+    if (el === null) release();
     else revealBlock(el, { mode, behavior, flash: false });
-  });
+  };
 }
 
 /** The element ending the page's conversation; see `useScrollInsets`. */
@@ -474,13 +702,22 @@ function visibleBottom(): number {
  * end — one blank white frame on every landing (T-585).
  */
 function endTarget(): number {
-  const root = document.documentElement;
-  const max = Math.max(0, root.scrollHeight - root.clientHeight);
   const el = endElement();
-  if (el === null) return max;
-  const target =
-    el.getBoundingClientRect().bottom + window.scrollY - visibleBottom();
-  return Math.min(max, Math.max(0, target));
+  if (el === null) return maxScroll();
+  return onPage(
+    el.getBoundingClientRect().bottom + window.scrollY - visibleBottom(),
+  );
+}
+
+/** The largest offset the page can be scrolled to. */
+function maxScroll(): number {
+  const root = document.documentElement;
+  return Math.max(0, root.scrollHeight - root.clientHeight);
+}
+
+/** `y` brought within the offsets the page can be scrolled to. */
+function onPage(y: number): number {
+  return Math.min(maxScroll(), Math.max(0, y));
 }
 
 function scrollToEnd() {
@@ -503,22 +740,34 @@ export function atConversationEnd(): boolean {
   );
 }
 
-/** Go to the end of the conversation and stay there; see `hold`. */
-export function landAtBottom(): () => void {
+/**
+ * Go to the end of the conversation and stay there, gliding there when told
+ * to; see `hold`.
+ */
+export function landAtBottom({
+  glide = false,
+}: {
+  glide?: boolean;
+} = {}): () => void {
+  if (glides(glide, endTarget))
+    return hold(document.body, scrollToEnd, true, endTarget, endTarget);
   scrollToEnd();
   return hold(document.body, scrollToEnd, true, endTarget);
 }
 
 /**
- * Where `revealBlock` in `"start"` mode puts the page for `el`, in page
- * coordinates.
+ * Where `revealBlock` in `mode`, `"start"` unless told otherwise, puts the
+ * page for `el`, in page coordinates.
  */
-export function startTarget(el: HTMLElement): number {
+export function startTarget(
+  el: HTMLElement,
+  mode: RevealMode = "start",
+): number {
   const rect = el.getBoundingClientRect();
   return restingScrollY(
     { top: rect.top + window.scrollY, height: rect.height },
     usableViewport(),
-    "start",
+    mode,
   );
 }
 
@@ -534,7 +783,10 @@ export function startTarget(el: HTMLElement): number {
  */
 export function revealAboveEnd(
   el: HTMLElement,
-  { flash: highlight = true }: { flash?: boolean } = {},
+  {
+    flash: highlight = true,
+    glide = false,
+  }: { flash?: boolean; glide?: boolean } = {},
 ): () => void {
   openEnclosingFolds(el);
   if (highlight) flash(el);
@@ -551,9 +803,19 @@ export function revealAboveEnd(
     window.scrollTo(0, y);
     return onEnd;
   };
+  let own: (() => void) | null = null;
+  // Measured again for each frame of a glide, which tells the hold too
+  // whether the stop is now short at the bottom.
+  const stop = () => {
+    if (!el.isConnected) return null;
+    const { y, onEnd } = spot();
+    if (own !== null && held?.release === own) held.onEnd = onEnd;
+    return y;
+  };
+  const glided = glides(glide, stop);
   // Placed before it is held, so the hold starts from where it put the page.
-  const onEnd = place();
-  return hold(
+  const onEnd = glided ? spot().onEnd : place();
+  own = hold(
     document.body,
     (release) => {
       // Gone with a route change nobody touched the page for.
@@ -565,7 +827,35 @@ export function revealAboveEnd(
     },
     onEnd,
     () => spot().y,
+    glided ? stop : undefined,
   );
+  return own;
+}
+
+/**
+ * Glide to the page offset `destination()` gives, asked again for every
+ * frame and every placing after, and hold the page there as `landAtBottom`
+ * holds the end; see `hold`. Where it does not glide, it goes there at once.
+ * Null from it means what it measures from is gone, and so is the hold.
+ */
+export function glideToY(destination: () => number | null): () => void {
+  const stop = () => {
+    const y = destination();
+    return y === null ? null : onPage(y);
+  };
+  const place = (release: () => void) => {
+    // Before anything is measured: the header settles first (see `pageLands`).
+    pageLands();
+    const y = stop();
+    if (y === null) release();
+    else window.scrollTo(0, y);
+  };
+  const target = () => stop() ?? window.scrollY;
+  if (glides(true, stop))
+    return hold(document.body, place, false, target, stop);
+  if (stop() === null) return () => {};
+  place(() => {});
+  return hold(document.body, place, false, target);
 }
 
 /**
