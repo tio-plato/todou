@@ -906,6 +906,8 @@ export type WriteGate = { id: number; actor: UserRow; role: MemberRole };
  *    KEY SHARE a foreign-key check takes on the parent of a row it inserts.
  * 5. Rows outside one card that a statement or a transaction locks several
  *    of are locked first, `ORDER BY id FOR UPDATE`, and only then written.
+ * 6. A background sweep that deletes rows writers lock skips the locked ones
+ *    instead of waiting for them.
  *
  * Two places keep another order, and neither can form a cycle. A single
  * autocommit statement that writes one row under a card without the card's

@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { reapDraftAttachments } from "../src/services/storage-admin.ts";
 import { addUserWithToken, makeTestApp, type TestApp } from "./helpers.ts";
 import {
   lockWaiters,
@@ -27,6 +28,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
   let database: TestDatabase | undefined;
   let t: TestApp;
   let seq: TestApp;
+  let indexed: TestApp;
   let holder: pg.Client;
   let observer: pg.Client;
   let holderPid: number;
@@ -63,6 +65,16 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       .system()
       .execute(sql`SHOW enable_indexscan`)) as { rows: unknown[] };
     expect(shown.rows).toEqual([{ enable_indexscan: "off" }]);
+    indexed = await makeTestApp("shared", {
+      systemUrl: withOptions(
+        database.url,
+        "-c enable_seqscan=off -c enable_bitmapscan=off",
+      ),
+    });
+    const unscanned = (await indexed.ctx.router
+      .system()
+      .execute(sql`SHOW enable_seqscan`)) as { rows: unknown[] };
+    expect(unscanned.rows).toEqual([{ enable_seqscan: "off" }]);
     holder = new pg.Client({ connectionString: database.url });
     observer = new pg.Client({ connectionString: database.url });
     await holder.connect();
@@ -79,6 +91,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       observer?.end(),
       t?.cleanup(),
       seq?.cleanup(),
+      indexed?.cleanup(),
     ]);
     await database?.drop();
     for (const result of closed) {
@@ -292,6 +305,72 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
     } finally {
       await holder.query("ROLLBACK");
       await Promise.allSettled([pending]);
+    }
+  });
+
+  it("the draft reaper skips drafts a write holds", async () => {
+    const p = await project();
+    const x = await card(p.slug, "X");
+    const d1 = (await uploadDraft(t, author.headers, p.slug, x.number)).id;
+    const d2 = (await uploadDraft(t, author.headers, p.slug, x.number)).id;
+    expect(d1).toBeLessThan(d2);
+    // Both past a 24-hour threshold, d2 the older: the reaper's index on
+    // created_at meets d2 first.
+    await observer.query(
+      "UPDATE attachments SET created_at = now() - interval '25 hours' WHERE id = $1",
+      [d1],
+    );
+    await observer.query(
+      "UPDATE attachments SET created_at = now() - interval '26 hours' WHERE id = $1",
+      [d2],
+    );
+
+    // The holder attaches both drafts after their card, d1 first: the other
+    // order from the reaper's.
+    const lines: string[] = [];
+    await holder.query("BEGIN");
+    let reaping: ReturnType<typeof reapDraftAttachments> | undefined;
+    try {
+      await holder.query(
+        "SELECT id FROM issues WHERE id = $1 FOR NO KEY UPDATE",
+        [x.id],
+      );
+      await holder.query("UPDATE attachments SET draft = false WHERE id = $1", [
+        d1,
+      ]);
+      let settled = false;
+      // The storage the drafts were uploaded to, with the router whose
+      // connections scan by index.
+      reaping = reapDraftAttachments(indexed.ctx.router, t.ctx.storage, {
+        dryRun: false,
+        minAgeHours: 24,
+        log: (line) => lines.push(line),
+      }).finally(() => {
+        settled = true;
+      });
+      await expect
+        .poll(
+          async () => settled || (await lockWaiters(observer, holderPid)) > 0,
+          { timeout: 5000, interval: 10 },
+        )
+        .toBe(true);
+      await holder.query("UPDATE attachments SET draft = false WHERE id = $1", [
+        d2,
+      ]);
+      await holder.query("COMMIT");
+      const report = await reaping;
+      expect(report.failedProjects).toBe(0);
+      expect(lines.filter((line) => line.startsWith("FAIL"))).toEqual([]);
+      const left = await observer.query<{ id: string; draft: boolean }>(
+        "SELECT id, draft FROM attachments WHERE id = ANY($1) ORDER BY id",
+        [[d1, d2]],
+      );
+      // d1 was attached; d2 was either reaped or attached.
+      expect(left.rows[0]).toEqual({ id: String(d1), draft: false });
+      expect(left.rows.slice(1).map((row) => row.draft)).not.toContain(true);
+    } finally {
+      await holder.query("ROLLBACK");
+      await Promise.allSettled([reaping]);
     }
   });
 });
