@@ -1,4 +1,5 @@
 import {
+  type Label,
   LabelStyle,
   type LabelUpdateInput,
   type TodouClient,
@@ -10,15 +11,31 @@ import { table } from "../format.ts";
 import { parseChoice, parseColor } from "../parse.ts";
 import { labelColorFor, resolveLabel, shellArg } from "../resolve.ts";
 
+/** A server from before label styles sends none; its labels are tinted. */
+function styleOf(label: Label): LabelStyle {
+  return label.style ?? "tint";
+}
+
+/**
+ * Whether a label is in another style than `--style` asked for. A server
+ * from before label styles drops `style` from the input without a word and
+ * sends none back, so asking it for `tint` has been done.
+ */
+function styleNotStored(asked: LabelStyle | undefined, label: Label): boolean {
+  return asked !== undefined && styleOf(label) !== asked;
+}
+
+const STYLE_NOT_STORED_HINT =
+  "a todou server from before label styles ignores --style; every label on it is tint";
+
 export class LabelListCommand extends ProjectCommand {
   static paths = [["label", "list"]];
   static usage = Command.Usage({ description: "List the project's labels" });
 
   protected async run(client: TodouClient): Promise<void> {
     const labels = await client.listLabels(this.requireProject());
-    // A server from before chip styles sends none; its labels are tinted.
     this.output(labels, () =>
-      table(labels.map((l) => [l.name, l.color, l.style ?? "tint"])),
+      table(labels.map((l) => [l.name, l.color, styleOf(l)])),
     );
   }
 }
@@ -57,6 +74,13 @@ export class LabelCreateCommand extends ProjectCommand {
         ? undefined
         : parseChoice(this.style, LabelStyle.options, "--style");
     const label = await client.createLabel(project, { name, color, style });
+    if (styleNotStored(style, label)) {
+      throw new CliError(
+        `created label ${label.name} (${label.color}) as ${styleOf(label)}: ` +
+          `the server did not store --style ${style}`,
+        STYLE_NOT_STORED_HINT,
+      );
+    }
     this.output(label, () => `created label ${label.name} (${label.color})`);
     if (this.color === undefined) {
       this.note(
@@ -116,8 +140,29 @@ export class LabelEditCommand extends ProjectCommand {
       );
     }
     const target = await resolveLabel(client, project, this.labelName);
-    const label = await client.updateLabel(project, target.id, input);
-    this.output(label, () => `updated label ${label.name} (${label.color})`);
+    // A server whose labels carry no style cannot store one, and those
+    // before T-730 (v0.6.8) answer a PATCH that is left with nothing to
+    // set with a 500, so a style-only edit sends nothing there.
+    const sendsNothing =
+      Object.keys(input).length === 1 &&
+      input.style !== undefined &&
+      target.style === undefined;
+    const label = sendsNothing
+      ? target
+      : await client.updateLabel(project, target.id, input);
+    if (styleNotStored(input.style, label)) {
+      throw new CliError(
+        `label ${label.name} (${label.color}) is ${styleOf(label)}: ` +
+          `the server did not store --style ${input.style}`,
+        STYLE_NOT_STORED_HINT,
+      );
+    }
+    // Nothing was sent, so nothing may read as updated.
+    this.output(label, () =>
+      sendsNothing
+        ? `label ${label.name} (${label.color}) is already ${styleOf(label)}`
+        : `updated label ${label.name} (${label.color})`,
+    );
   }
 }
 

@@ -891,7 +891,11 @@ describe("label create/edit/delete", () => {
           return { id: 9, name: "urgent", color: "#ef4444", style: "solid" };
         },
       ],
-      ["GET", "/api/projects/todou/labels", labels],
+      [
+        "GET",
+        "/api/projects/todou/labels",
+        labels.map((label) => ({ ...label, style: "tint" })),
+      ],
       [
         "PATCH",
         "/api/projects/todou/labels/7",
@@ -914,6 +918,111 @@ describe("label create/edit/delete", () => {
     });
     expect(edited.exitCode).toBe(0);
     expect(patched).toEqual({ style: "tint" });
+  });
+
+  it("fails a --style that a server without label styles did not store on create", async () => {
+    const { fetchImpl } = fakeFetch([
+      [
+        "POST",
+        "/api/projects/todou/labels",
+        // A server from before label styles drops the style and sends none.
+        (init: RequestInit) => ({
+          id: 9,
+          name: jsonBody(init).name,
+          color: "#ef4444",
+        }),
+      ],
+    ]);
+    const tinted = await runCli(
+      ["label", "create", "--name", "calm", "--style", "tint"],
+      { fetchImpl, env: loggedInEnv("todou") },
+    );
+    expect(tinted.exitCode).toBe(0);
+
+    const solid = await runCli(
+      ["label", "create", "--name", "urgent", "--style", "solid"],
+      { fetchImpl, env: loggedInEnv("todou") },
+    );
+    expect(solid.exitCode).not.toBe(0);
+    expect(solid.stdout).toBe("");
+    // The error line itself: the hint under it says tint and --style anyway.
+    const [error] = solid.stderr.split("\n");
+    for (const word of ["urgent", "created", "tint", "--style"]) {
+      expect(error).toContain(word);
+    }
+
+    const json = await runCli(
+      ["label", "create", "--name", "urgent", "--style", "solid", "--json"],
+      { fetchImpl, env: loggedInEnv("todou") },
+    );
+    expect(json.exitCode).not.toBe(0);
+    expect(json.stdout).toBe("");
+  });
+
+  it("fails a --style that a server without label styles cannot store on edit", async () => {
+    const patched: Record<string, unknown>[] = [];
+    const { fetchImpl, calls } = fakeFetch([
+      ["GET", "/api/projects/todou/labels", labels],
+      [
+        "PATCH",
+        "/api/projects/todou/labels/7",
+        (init: RequestInit) => {
+          const body = jsonBody(init);
+          patched.push(body);
+          return { id: 7, name: body.name ?? "bug", color: "#ef4444" };
+        },
+      ],
+    ]);
+    const patches = () => calls.filter((c) => c.init.method === "PATCH");
+
+    const tinted = await runCli(["label", "edit", "bug", "--style", "tint"], {
+      fetchImpl,
+      env: loggedInEnv("todou"),
+    });
+    expect(tinted.exitCode).toBe(0);
+    // Servers before v0.6.8 answer a style-only PATCH with a 500.
+    expect(patches()).toEqual([]);
+    // Nothing was sent: the label is said to be tint already, not updated.
+    expect(tinted.stdout).toContain("bug");
+    expect(tinted.stdout).toContain("is already tint");
+    expect(tinted.stdout).not.toContain("updated");
+
+    const solid = await runCli(["label", "edit", "bug", "--style", "solid"], {
+      fetchImpl,
+      env: loggedInEnv("todou"),
+    });
+    expect(solid.exitCode).not.toBe(0);
+    expect(solid.stdout).toBe("");
+    // The error line itself: the hint under it says tint and --style anyway.
+    const [error] = solid.stderr.split("\n");
+    expect(error).toContain("tint");
+    expect(error).toContain("--style");
+    // The style did not take; reading as updated was the bug.
+    expect(solid.stderr).not.toContain("updated");
+
+    const json = await runCli(
+      ["label", "edit", "bug", "--style", "solid", "--json"],
+      { fetchImpl, env: loggedInEnv("todou") },
+    );
+    expect(json.exitCode).not.toBe(0);
+    expect(json.stdout).toBe("");
+    expect(patches()).toEqual([]);
+
+    const renamed = await runCli(
+      ["label", "edit", "bug", "--name", "defect", "--style", "solid"],
+      { fetchImpl, env: loggedInEnv("todou") },
+    );
+    expect(patched).toEqual([{ name: "defect", style: "solid" }]);
+    expect(renamed.exitCode).not.toBe(0);
+    expect(renamed.stderr.split("\n")[0]).toContain("defect");
+
+    // Without --style nothing is checked, and an edit that was sent updated.
+    const recolored = await runCli(
+      ["label", "edit", "bug", "--color", "#22c55e"],
+      { fetchImpl, env: loggedInEnv("todou") },
+    );
+    expect(recolored.exitCode).toBe(0);
+    expect(recolored.stdout).toContain("updated label");
   });
 
   it("rejects an unknown --style", async () => {
