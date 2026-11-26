@@ -292,4 +292,20 @@ describe("source-line stamps around a fold", () => {
     expect(blocks[0]?.getAttribute("data-loc")).toBe(loc);
     for (const text of shown) expect(blocks[0]?.textContent).toContain(text);
   });
+
+  // micromark ends a line at a lone `\r`, and the fold cut out of the HTML
+  // counts its lines by `\n`: a body with CR line ends alone is one line to
+  // both, as it is to the server.
+  it("stamps a fold in a CR-only body's quote on its quote's lines", async () => {
+    const container = await mount(
+      "> <div>x</div>\r> <details><summary>S</summary>B</details>\r",
+      { stamped: true },
+    );
+    expect(
+      container.querySelector("blockquote")?.getAttribute("data-loc"),
+    ).toBe("1-1");
+    expect(container.querySelector("details")?.getAttribute("data-loc")).toBe(
+      "1-1",
+    );
+  });
 });
