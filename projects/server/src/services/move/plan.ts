@@ -1,4 +1,4 @@
-import type { UserRef } from "@todou/shared";
+import { findByName, type UserRef } from "@todou/shared";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { UserRow } from "../../auth/pat.ts";
 import type { AppContext } from "../../bootstrap.ts";
@@ -221,7 +221,7 @@ async function mapStatus(
 
   const sameCategory = candidates.filter((s) => s.category === from.category);
   const to =
-    candidates.find((s) => s.name === from.name) ??
+    findByName(candidates, from.name) ??
     sameCategory.find((s) => s.isDefault) ??
     sameCategory[0] ??
     (candidates[0] as StatusRow);
@@ -241,16 +241,23 @@ async function mapLabels(
     .where(eq(issueLabels.issueId, row.id));
   if (current.length === 0) return { ids: [], dropped: [] };
 
+  // Matched by name whatever its case. Two labels the database kept apart
+  // (see the case_insensitive_names migration) can match one target label,
+  // so its id is taken once.
   const names = current.map((l) => l.name);
-  const matched = await targetDb
+  const targetLabels = await targetDb
     .select({ id: labels.id, name: labels.name })
     .from(labels)
-    .where(and(eq(labels.projectId, targetId), inArray(labels.name, names)));
-  const byName = new Map(matched.map((l) => [l.name, l.id]));
-  return {
-    ids: names.map((n) => byName.get(n)).filter((id) => id !== undefined),
-    dropped: names.filter((n) => !byName.has(n)),
-  };
+    .where(eq(labels.projectId, targetId))
+    .orderBy(asc(labels.id));
+  const ids = new Set<number>();
+  const dropped: string[] = [];
+  for (const name of names) {
+    const match = findByName(targetLabels, name);
+    if (match === undefined) dropped.push(name);
+    else ids.add(match.id);
+  }
+  return { ids: [...ids], dropped };
 }
 
 async function mapAssignees(

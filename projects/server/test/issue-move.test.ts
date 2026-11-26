@@ -902,6 +902,41 @@ describe.each(PLACEMENTS)("issue move (%s placement)", (placement) => {
     expect(result.mapping.dropped_labels).toEqual([`only-in-a-${placement}`]);
   });
 
+  it("maps a status and a label whose names differ only in case", async () => {
+    const post = async (slug: string, path: string, body: unknown) => {
+      const res = await req(`/projects/${slug}/${path}`, admin, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      expect(res.status).toBe(201);
+      return (await json(res)) as { id: number; name: string };
+    };
+    const label = await post(A, "labels", { name: "Case-Label" });
+    const status = await post(A, "statuses", {
+      name: "In review",
+      category: "open",
+    });
+    const labelInB = await post(B, "labels", { name: "case-label" });
+    const statusInB = await post(B, "statuses", {
+      name: "IN REVIEW",
+      category: "open",
+    });
+    const source = await createIssue(A, "differs in case", "body");
+    await req(`/projects/${A}/issues/${source.number}`, author, {
+      method: "PATCH",
+      body: JSON.stringify({ label_ids: [label.id], status_id: status.id }),
+    });
+
+    const result = await moved(A, source.number, B);
+    expect(result.mapping.dropped_labels).toEqual([]);
+    expect(result.mapping.status.to).toBe("IN REVIEW");
+    const inB = await json(
+      await req(`/projects/${B}/issues/${result.moved_to.number}`, author),
+    );
+    expect(inB.status.id).toBe(statusInB.id);
+    expect(inB.labels.map((l: { id: number }) => l.id)).toEqual([labelInB.id]);
+  });
+
   it("writes nothing on a dry run", async () => {
     const source = await createIssue(A, "not actually moved", "body");
     const countB = async () =>
