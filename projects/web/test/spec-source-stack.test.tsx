@@ -13,6 +13,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import type { SpecComments, SpecFiles, SpecInfo } from "@todou/shared";
 import type { ReactNode } from "react";
@@ -625,7 +626,8 @@ function stageDraft(
   id: string,
   path: string,
   version: number,
-  line: number,
+  /** null for the file as a whole. */
+  line: number | null,
   body: string,
   end = line,
   cols: [number, number] | null = null,
@@ -1090,6 +1092,266 @@ describe("notes over several lines hang under their last line", () => {
   });
 });
 
+/**
+ * Four versions for notes the source diff draws neither side of: v2→v3 puts
+ * a line above notes.md's text and v3→v4 another, rewriting "gamma"; v3
+ * gives same.md a new first line and drops "four", and v4 keeps it as it is;
+ * empty.md has a line in v1, is empty in v2, gone in v3 and back, empty, in
+ * v4, the current version.
+ */
+const NOTES_V2 = "alpha\nbeta\ngamma\ndelta\n";
+const SAME_V2 = "one\ntwo\nthree\nfour\n";
+const SAME_V3 = "zero\none\ntwo\nthree\n";
+const OTHER: Record<number, Record<string, string>> = {
+  1: { "empty.md": "once full\n", "notes.md": NOTES_V2, "same.md": SAME_V2 },
+  2: { "empty.md": "", "notes.md": NOTES_V2, "same.md": SAME_V2 },
+  3: { "notes.md": "intro\nalpha\nbeta\ngamma\ndelta\n", "same.md": SAME_V3 },
+  4: {
+    "empty.md": "",
+    "notes.md": "intro\nlede\nalpha\nbeta\ngamma rewritten\ndelta\n",
+    "same.md": SAME_V3,
+  },
+};
+
+/** As the server reports `item` on the current version: at `line`, or outdated. */
+const carried = (item: ReturnType<typeof comment>, line: number | null) => ({
+  ...item,
+  outdated: line === null,
+  current_line_start: line,
+  current_line_end: line,
+});
+
+/** `item` anchored to its file rather than to a line. */
+const onFile = (item: ReturnType<typeof comment>) => ({
+  ...item,
+  anchor: { ...item.anchor, line_start: null, line_end: null },
+  current_line_start: null,
+  current_line_end: null,
+});
+
+const entryOf = (view: { container: HTMLElement }, path: string) =>
+  view.container.querySelector(
+    `[data-file-diff="${path}"], [data-file-unchanged="${path}"]`,
+  ) as HTMLElement;
+
+/** The side and line the note carrying `text` hangs on in `entry`'s diff. */
+const hungIn = (entry: Element, text: string) => {
+  const note = [
+    ...entry.querySelectorAll('[data-testid="diff-annotation"]'),
+  ].find((el) => el.textContent?.includes(text));
+  return note === undefined
+    ? null
+    : {
+        side: note.getAttribute("data-side"),
+        line: note.getAttribute("data-annotation-line"),
+      };
+};
+
+/** The list of notes without a place `entry` holds, once it shows. */
+const listIn = (entry: Element) =>
+  waitFor(() => {
+    const heading = within(entry as HTMLElement).getByText(
+      /^Comments without a place in v\d+$/,
+    );
+    return heading.parentElement as HTMLElement;
+  });
+
+/** The card in `list` that carries `text`. */
+const cardIn = (list: HTMLElement, text: string) =>
+  [...list.children].find((el) => el.textContent?.includes(text)) as
+    | HTMLElement
+    | undefined;
+
+describe("source diff notes from versions it does not draw", () => {
+  it("hangs a third version's notes on the new side, at the lines they moved to", async () => {
+    // v2's line 2, "beta", is v4's line 4.
+    stageDraft("d-third", "notes.md", 2, 2, "draft from v2");
+    // v3's line 5, "delta", is v4's line 6.
+    stageDraft("d-base", "notes.md", 3, 5, "draft on the baseline");
+    mockSpec(
+      [
+        // v2's line 1, "alpha", is v4's line 3.
+        carried(comment("notes.md", 2, 1, "comment from v2"), 3),
+        // So is v3's line 2.
+        carried(comment("notes.md", 3, 2, "comment on the baseline"), 3),
+      ],
+      OTHER,
+    );
+    const view = await stack("?v=4&compare=3");
+    const entry = entryOf(view, "notes.md");
+    await waitFor(() =>
+      expect(hungIn(entry, "draft from v2")).toEqual({
+        side: "additions",
+        line: "4",
+      }),
+    );
+    expect(hungIn(entry, "comment from v2")).toEqual({
+      side: "additions",
+      line: "3",
+    });
+    // The baseline's own stay on the side that draws it, where they were.
+    expect(hungIn(entry, "comment on the baseline")).toEqual({
+      side: "deletions",
+      line: "2",
+    });
+    expect(hungIn(entry, "draft on the baseline")).toEqual({
+      side: "deletions",
+      line: "5",
+    });
+  });
+
+  it("lists a third version's notes on changed lines in their file's box", async () => {
+    // v2's line 3, "gamma", is rewritten in v4.
+    stageDraft("d-gone", "notes.md", 2, 3, "draft on old gamma");
+    mockSpec(
+      [carried(comment("notes.md", 2, 3, "comment on old gamma"), null)],
+      OTHER,
+    );
+    const resolve = vi
+      .spyOn(api, "resolveSpecComments")
+      .mockResolvedValue({} as never);
+    const view = await stack("?v=4&compare=3");
+    const entry = entryOf(view, "notes.md");
+    const list = await listIn(entry);
+    expect(list.textContent).toContain("Comments without a place in v4");
+    // The draft is placed once v2's files arrive, after the comment.
+    const draftCard = await waitFor(() => {
+      const card = cardIn(list, "draft on old gamma");
+      if (card === undefined) throw new Error("draft not listed");
+      return card;
+    });
+    expect(
+      within(draftCard).getByRole("button", { name: "Edit" }),
+    ).toBeTruthy();
+    expect(hungIn(entry, "on old gamma")).toBeNull();
+    expect(view.getAllByText(/^Comments without a place/)).toHaveLength(1);
+
+    const commentCard = cardIn(list, "comment on old gamma") as HTMLElement;
+    fireEvent.click(
+      within(commentCard).getByRole("button", { name: "Resolve" }),
+    );
+    await waitFor(() => expect(resolve).toHaveBeenCalledWith("demo", 1, [203]));
+
+    fireEvent.click(within(draftCard).getByRole("button", { name: "Discard" }));
+    await waitFor(() =>
+      expect(view.queryByText("draft on old gamma")).toBeNull(),
+    );
+    expect(cardIn(await listIn(entry), "comment on old gamma")).toBeDefined();
+  });
+
+  it("hangs a third version's file notes at the file", async () => {
+    stageDraft("d-file", "notes.md", 2, null, "draft about the file");
+    mockSpec(
+      [onFile(comment("notes.md", 2, 50, "comment about the file"))],
+      OTHER,
+    );
+    const view = await stack("?v=4&compare=3");
+    const entry = entryOf(view, "notes.md");
+    await waitFor(() =>
+      expect(hungIn(entry, "draft about the file")).toEqual({
+        side: "additions",
+        line: "0",
+      }),
+    );
+    expect(hungIn(entry, "comment about the file")).toEqual({
+      side: "additions",
+      line: "0",
+    });
+  });
+
+  it("on an older version, lists the current one's comments and leaves its drafts out", async () => {
+    // v4's line 4, "beta", and line 3, "alpha".
+    stageDraft("d-current", "notes.md", 4, 4, "draft on v4");
+    mockSpec(
+      [
+        comment("notes.md", 4, 3, "alpha on v4"),
+        onFile(comment("notes.md", 4, 50, "the file on v4")),
+      ],
+      OTHER,
+    );
+    const view = await stack("?v=3&compare=2");
+    const entry = entryOf(view, "notes.md");
+    const list = await listIn(entry);
+    expect(list.textContent).toContain("Comments without a place in v3");
+    expect(cardIn(list, "alpha on v4")).toBeDefined();
+    expect(hungIn(entry, "alpha on v4")).toBeNull();
+    expect(hungIn(entry, "the file on v4")).toEqual({
+      side: "additions",
+      line: "0",
+    });
+    expect(view.queryByText("draft on v4")).toBeNull();
+  });
+
+  it("carries a third version's notes onto an unchanged file", async () => {
+    mockSpec(
+      [
+        // v2's line 2, "two", is v4's line 3.
+        carried(comment("same.md", 2, 2, "on two"), 3),
+        // v2's "four" is gone from v3 on.
+        carried(comment("same.md", 2, 4, "on four"), null),
+      ],
+      OTHER,
+    );
+    const view = await stack("?v=4&compare=3");
+    const entry = entryOf(view, "same.md");
+    // Listed while the file is still folded shut.
+    const list = await listIn(entry);
+    expect(entry.querySelector('[data-testid="file-view"]')).toBeNull();
+    expect(cardIn(list, "on four")).toBeDefined();
+
+    fireEvent.click(within(entry).getByRole("button", { name: /show file/ }));
+    expect(
+      await hungLines(
+        view,
+        '[data-file-unchanged="same.md"] [data-testid="file-annotation"]',
+        ["on two"],
+      ),
+    ).toEqual(["3"]);
+  });
+
+  it("draws file comments on an empty file's entry, and lists line ones", async () => {
+    mockSpec(
+      [
+        onFile(comment("empty.md", 4, 50, "why empty?")),
+        onFile(comment("empty.md", 2, 50, "empty since v2")),
+        // v1's only line is gone by v2.
+        carried(comment("empty.md", 1, 1, "once full"), null),
+      ],
+      OTHER,
+    );
+    const view = await stack("?v=4&compare=3");
+    const entry = entryOf(view, "empty.md");
+    expect(entry.textContent).toContain("Empty file — added in v4.");
+    await waitFor(() => expect(entry.textContent).toContain("why empty?"));
+    expect(entry.textContent).toContain("empty since v2");
+    const list = await listIn(entry);
+    expect(cardIn(list, "once full")).toBeDefined();
+    expect(list.textContent).not.toContain("empty since v2");
+  });
+
+  it("hangs a removed file's file notes on its old side, and lists its drafts", async () => {
+    // gone.md is in v1 and v2, and removed in v3, the current version.
+    stageDraft("d-gone-file", "gone.md", 1, null, "draft about gone.md");
+    mockSpec([onFile(comment("gone.md", 1, 50, "comment about gone.md"))], {
+      1: { "gone.md": "first\n", "kept.md": "kept\n" },
+      2: { "gone.md": "first\n", "kept.md": "kept\n" },
+      3: { "kept.md": "kept again\n" },
+    });
+    const view = await stack("?v=3&compare=2");
+    const entry = entryOf(view, "gone.md");
+    await waitFor(() =>
+      expect(hungIn(entry, "comment about gone.md")).toEqual({
+        side: "deletions",
+        line: "0",
+      }),
+    );
+    // A draft at the file has no place once its file is gone.
+    const list = await listIn(entry);
+    expect(cardIn(list, "draft about gone.md")).toBeDefined();
+    expect(hungIn(entry, "draft about gone.md")).toBeNull();
+  });
+});
+
 /** A stand-in for the browser's `Highlight`: the ranges it was built from. */
 class FakeHighlight {
   ranges: Range[];
@@ -1173,6 +1435,24 @@ describe("code highlights in the source view", () => {
         ?.closest("[data-line]")
         ?.getAttribute("data-line-type"),
     ).toBe("change-deletion");
+  });
+
+  it("paints a third version's column draft at the line it moved to", async () => {
+    // v2's line 2 is "beta", columns 2–4 "eta"; it is v4's line 4.
+    stageDraft("d-cols", "notes.md", 2, 2, "say beta", 2, [2, 4]);
+    mockSpec([], OTHER);
+    await stack("?v=4&compare=3");
+    const ranges = await waitFor(() => {
+      const found = registry.get("spec-draft")?.ranges ?? [];
+      expect(found).toHaveLength(1);
+      return found;
+    });
+    expect(ranges[0]?.toString()).toBe("eta");
+    expect(
+      ranges[0]?.startContainer.parentElement
+        ?.closest("[data-line]")
+        ?.getAttribute("data-line"),
+    ).toBe("4");
   });
   const lineMarks = (view: { container: HTMLElement }, selector: string) =>
     [...view.container.querySelectorAll(selector)].map((row) =>
