@@ -39,6 +39,9 @@ export const users = pgTable(
     isInstanceAdmin: boolean("is_instance_admin").notNull().default(false),
     // Soft deactivation (used for agents): blocks all authentication.
     disabledAt: timestamp("disabled_at", { withTimezone: true }),
+    // A machine's role in the projects its owner creates; null = it does not
+    // join them. Meaningless on a human.
+    newProjectRole: text("new_project_role", { enum: MEMBER_ROLES }),
     createdAt: createdAt(),
   },
   (t) => [
@@ -138,6 +141,29 @@ export const userPrefs = pgTable("user_prefs", {
     .notNull()
     .defaultNow(),
 });
+
+// A user's own project templates: statuses and labels a project can be
+// created from or have applied. A table rather than a user_prefs key, whose
+// shallow `||` merge would let two tabs overwrite each other's list. The body
+// is one jsonb read and written whole, validated by TemplateBody on both
+// sides; `revision` makes a whole replacement from a stale tab fail instead.
+export const projectTemplates = pgTable(
+  "project_templates",
+  {
+    id: id(),
+    ownerId: bigint("owner_id", { mode: "number" })
+      .notNull()
+      .references(() => users.id),
+    name: text("name").notNull(),
+    body: jsonb("body").notNull(),
+    revision: integer("revision").notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("project_templates_owner_idx").on(t.ownerId)],
+);
 
 export const projects = pgTable(
   "projects",
