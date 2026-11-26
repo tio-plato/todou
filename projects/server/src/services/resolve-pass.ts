@@ -55,7 +55,6 @@ import {
   gateColumns,
   live,
   referenceable,
-  type WriteGate,
 } from "./trash.ts";
 
 /** The content being saved, so a card never records a reference to itself. */
@@ -877,14 +876,19 @@ class Resolver {
   }
 }
 
+/** The card a write is about to write, and who is writing it. */
+export type WriteGate = { id: number; actor: UserRow; role: MemberRole };
+
 /**
  * Lock the issue rows a write in this project touches, before it locks or
  * writes anything else: `write`, the card it writes (null when it writes
- * none), asking the write gate again under its lock; `updates`, the other
- * cards it updates, which are the cards the drafts it attaches were
- * uploaded on (see `findLinkedDrafts`); and the cards `numbers` references.
- * Returns the referenced cards that are still referenceable, those it also
- * updates included, which are the ones owed a `referenced` event.
+ * none), asking the write gate again under its lock, and the cards
+ * `numbers` references. Returns the referenced cards that are still
+ * referenceable, which are the ones owed a `referenced` event.
+ * `updates` are the other cards the write updates: the cards the drafts it
+ * attaches were uploaded on (see `findLinkedDrafts`). They are locked in the
+ * same statement, and one of them that is also referenced is returned like
+ * any other.
  *
  * Row locks on PostgreSQL follow one order across the server, so that the
  * waits between transactions never form a cycle:
@@ -895,28 +899,31 @@ class Resolver {
  *    events), and asks the write gate again under that lock
  *    (`lockWritableIssue`, or this function for `write`). Writes to one card
  *    therefore queue on the card, and which of them locks a comment first no
- *    longer matters to any other. The gate is asked of the card the write is
- *    aimed at only: the cards whose drafts it attaches are locked with the
- *    others but not gated. A draft on a card in the trash is attached as it
- *    always was, and refusing it would fail a write on one card because of
- *    another the writer may not even see.
+ *    longer matters to any other.
+ *    The gate is asked of the card the write is aimed at only: the cards
+ *    whose drafts it attaches are locked with the others but not gated. A
+ *    draft on a card in the trash is attached as it always was, and refusing
+ *    it would fail a write on one card because of another the writer may not
+ *    even see.
  * 2. Every card a write touches, in one statement, in ascending id, FOR NO
- *    KEY UPDATE: the card it writes, the cards the drafts it attaches were
- *    uploaded on, and the cards it references. FOR UPDATE is for a
- *    transaction that deletes or moves cards away, as its first lock: a move
+ *    KEY UPDATE: the card it writes and the cards it references. FOR UPDATE
+ *    is for a transaction that moves a card away, as its first lock: a move
  *    on the card it moves (the same-database move, the copy of a move to
  *    another database when both share the project database, and the move's
- *    last step), and deleting a project on all its cards, in one statement,
- *    in ascending id. FOR KEY SHARE is for a transaction that writes rows
- *    under several cards and none of the cards (marking several cards read):
- *    the lock those rows' foreign keys take anyway, so it waits only for a
- *    transaction that deletes or moves the cards away. With one mode for each
- *    kind of write, no lock is ever upgraded.
+ *    last step). With one mode for every other write, no lock is ever
+ *    upgraded.
+ *    The cards whose drafts a write attaches are among the cards it touches.
+ *    A transaction that writes rows under several cards and none of the
+ *    cards (marking several cards read) locks the cards FOR KEY SHARE
+ *    instead: the lock those rows' foreign keys take anyway, so it waits
+ *    only for a transaction that deletes or moves the cards away.
  * 3. Cards before `project_meta`: creating a card locks the cards it
  *    touches, then takes a number; a same-database move locks its card, then
- *    the target's `project_meta`; cleaning up a deleted project locks its
- *    cards, then its `project_meta`, so a card still being created there
- *    either finishes first or waits for the cleanup.
+ *    the target's `project_meta`.
+ *    Cleaning up a deleted project takes all its cards FOR UPDATE, in one
+ *    statement in ascending id, then its `project_meta`, so that a card
+ *    still being created there either finishes first or waits for the
+ *    cleanup.
  *    And `project_meta` before the project's statuses: a transaction that
  *    writes more than one existing status, or a status and the block clear
  *    line (reordering statuses, making one the default), locks
@@ -925,45 +932,46 @@ class Resolver {
  *    a status while it waits for another. Creating a card takes its number
  *    before the foreign key share-locks its status, and cleaning up a
  *    deleted project locks `project_meta` before it deletes the statuses.
- * 4. Rows outside one card that a statement or a transaction locks several
- *    of (block edges, read positions, a deleted project's labels) are locked
- *    first, `ORDER BY id FOR UPDATE`, and only then written. A background
- *    sweep that deletes rows writers lock (the draft reaper) skips the locked
- *    ones instead of waiting.
- * 5. A row a transaction will update is locked in that update's mode before
+ * 4. A row a transaction will update is locked in that update's mode before
  *    any statement of the transaction takes a weaker lock on it, such as the
- *    KEY SHARE a foreign-key check takes on the parent of a row it inserts:
- *    renaming a project updates the project row before recording the slug in
- *    its history.
- * 6. The labels a write puts on a card (an edit's or a new card's
+ *    KEY SHARE a foreign-key check takes on the parent of a row it inserts.
+ * 5. Rows outside one card that a statement or a transaction locks several
+ *    of are locked first, `ORDER BY id FOR UPDATE`, and only then written.
+ * 6. A background sweep that deletes rows writers lock skips the locked ones
+ *    instead of waiting for them.
+ * 7. The labels a write puts on a card (an edit's or a new card's
  *    `label_ids`, the labels a command names), FOR KEY SHARE, in one
  *    statement, in ascending id, before it reads or writes the card's label
  *    rows (`lockLabels`): after the card (rule 1), and after `project_meta`
  *    when it creates the card (rule 3), the order cleaning up a deleted
  *    project takes them in.
  *
- * Two places keep another order, and neither can form a cycle. A move back
- * into a tombstone updates the tombstone after the card it moves, out of id
- * order, and locks nothing else in the tombstone's project before it:
- * whatever else locks a tombstone is a write about to be refused by the
+ * Two places keep another order, and neither can form a cycle. A single
+ * autocommit statement that writes one row under a card without the card's
+ * lock (a read position, a mute, a direct-upload request or its expiry)
+ * holds nothing to wait with. And a
+ * move back into a tombstone updates the tombstone after the card it moves,
+ * out of id order, and locks nothing else in the tombstone's project before
+ * it: whatever else locks a tombstone is a write about to be refused by the
  * gate, which while it holds it waits only for other cards of the
- * tombstone's project, none of which the move holds, a write attaching a
- * draft that was on the card before it moved, which waits only on rows of
- * that project, or a block event, which on a tombstone locks nothing else
- * and ends at once; references skip tombstones. And a single autocommit
- * statement that writes one row under a card without the card's lock (a
- * read position, a mute, a direct-upload request or its expiry) holds
- * nothing to wait with.
+ * tombstone's project, none of which the move holds, and references skip
+ * tombstones.
+ * A write attaching a draft that was on the card before it moved locks the
+ * tombstone as well, and waits only on rows of that project.
+ * A block event locks a tombstone too, and on it locks nothing else and ends
+ * at once.
  *
  * The one statement sorts the rows before it locks them: `ORDER BY` and the
  * locking clause belong to the same query, never a subquery. A card it
  * waits for may stop being referenceable meanwhile; PostgreSQL then checks
  * the row again as it is now, so a card only referenced drops out of the
- * rows returned, though it stays locked until the transaction ends, and one
- * also written or updated comes back but its `referenceable`, read from the
- * locked row, keeps it out of the cards returned. Referencing a card
- * therefore waits for the writes to it, and several writes referencing one
- * card queue on it. With no card at all nothing is locked.
+ * rows returned, though it stays locked until the transaction ends.
+ * Referencing a card therefore waits for the writes to it, and several
+ * writes referencing one card queue on it. With no card at all nothing is
+ * locked.
+ * A card that is updated as well as referenced matches by id too, so it
+ * comes back even once it stops being referenceable; its `referenceable`,
+ * read from the locked row, then keeps it out of the cards returned.
  *
  * The lock on a referenced card is also what makes a single-transaction
  * move wait: it takes FOR UPDATE on the same row, and without it an event
@@ -1009,13 +1017,29 @@ export async function lockIssueRows(
   }
   const named = new Set(numbers);
   return rows
-    .filter(
-      (row) =>
-        row.referenceable &&
-        row.projectId === project.id &&
-        named.has(row.number),
-    )
+    .filter((row) => row.referenceable && named.has(row.number))
     .map((row) => ({ id: row.id, number: row.number }));
+}
+
+/**
+ * `lockIssueRows` for a write to one card that references none: lock the
+ * card and ask the write gate again under the lock. The gate a request
+ * passes before its transaction only fails fast: a move, a freeze or a
+ * delete can commit between that check and the write, which would then land
+ * on a tombstone, or be emptied away with the source after the copy, behind
+ * a success. Once this holds the row, none of them can.
+ *
+ * FOR NO KEY UPDATE conflicts with a move's FOR UPDATE, a freeze's UPDATE
+ * and every other write's lock on the card, and not with the KEY SHARE a
+ * foreign-key check takes when another transaction inserts a row under the
+ * card.
+ */
+export async function lockWritableIssue(
+  tx: Db,
+  project: ProjectRow,
+  gate: WriteGate,
+): Promise<void> {
+  await lockIssueRows(tx, project, gate, [], []);
 }
 
 /**

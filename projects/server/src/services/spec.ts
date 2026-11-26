@@ -47,15 +47,17 @@ import {
 import { projectForRead, requireCapability, routeInfoOf } from "./access.ts";
 import { loadReferenceInputs } from "./cross-references.ts";
 import { encodeTimelineCursor } from "./cursor.ts";
-import { resolveContent } from "./resolve-pass.ts";
+import {
+  lockWritableIssue,
+  resolveContent,
+  type WriteGate,
+} from "./resolve-pass.ts";
 import { microIso } from "./timeline.ts";
 import {
   assertIssueReadable,
   assertIssueWritable,
   gateColumns,
-  lockWritableIssue,
   type TrashFields,
-  type WriteGate,
 } from "./trash.ts";
 import { getUserRefs } from "./users.ts";
 
@@ -151,20 +153,20 @@ async function filesOfVersion(db: Db | Tx, versionId: number) {
 export const utf8Size = (body: string) => Buffer.byteLength(body, "utf8");
 
 /**
- * Lock the card for a spec write and ask the write gate under the lock (see
- * lockWritableIssue), then read where its review stands. Every update of
- * that column waits for this lock, so the value read holds until the
+ * Lock the card for a spec write, read where its review stands, and ask the
+ * write gate under the lock, the way `lockWritableIssue` does. Every update
+ * of that column waits for this lock, so the value read holds until the
  * transaction ends.
  */
 async function lockSpecCard(tx: Tx, gate: WriteGate) {
-  await lockWritableIssue(tx, gate);
-  const [row] = await tx
-    .select({ specReviewStatus: issues.specReviewStatus })
+  const [locked] = await tx
+    .select({ ...gateColumns, specReviewStatus: issues.specReviewStatus })
     .from(issues)
-    .where(eq(issues.id, gate.id));
-  // The row is locked by this transaction, so it cannot have gone.
-  if (!row) throw new Error("locked issue read returned no row");
-  return row;
+    .where(eq(issues.id, gate.id))
+    .for("no key update");
+  if (!locked) throw new NotFoundError("issue not found");
+  assertIssueWritable(locked, gate.actor, gate.role);
+  return locked;
 }
 
 export async function pushSpec(
@@ -1003,14 +1005,9 @@ export async function resolveSpecComments(
   // `hideCommentsInTx` collapses a hide (T-651).
   const ids = [...new Set(input.comment_ids)];
   const resolved = await db.transaction(async (tx) => {
-    // The card before the comments it resolves (see lockIssueRows).
-    await lockWritableIssue(tx, { id: issue.id, actor, role });
-    // The card before the comments, as answering and deleting take them.
-    await tx
-      .select({ id: issues.id })
-      .from(issues)
-      .where(eq(issues.id, issue.id))
-      .for("no key update");
+    // The card before the comments, as answering and deleting take them,
+    // with the gate asked again under its lock (see lockIssueRows).
+    await lockWritableIssue(tx, project, { id: issue.id, actor, role });
     const rows = await tx
       .select()
       .from(comments)

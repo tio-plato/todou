@@ -11,7 +11,6 @@ import { parseRefLocator } from "@todou/shared";
 import {
   and,
   asc,
-  count,
   desc,
   eq,
   inArray,
@@ -765,7 +764,6 @@ export async function updateProject(
           // this transaction already holds. Inserting first, two renames
           // would each hold KEY SHARE and wait for the other's to update the
           // row (see lockIssueRows).
-          //
           // The availability check ran outside this transaction, so a
           // concurrent create or rename can still win the unique index.
           const updated = await tx
@@ -884,58 +882,40 @@ export async function deleteProject(
       await rm(url.slice("pglite://".length), { recursive: true, force: true });
     } else {
       const db = await ctx.router.forProject(routeInfoOf(project));
-      // One transaction, so a failure leaves the data whole rather than half
-      // deleted. It first waits for the writes still at work on these cards,
-      // taking the cards in id order the way those writes do, then for a
-      // card still being created, through the project_meta row it takes its
-      // number from (cards before project_meta), which also keeps it from
-      // holding a status the delete below waits for, then the read positions in
-      // the order marking everything read takes them, then the labels,
-      // before deleting the cards cascades to their label rows: a label
-      // deleted meanwhile takes the label first and then those rows (see
-      // lockIssueRows). The order the deletes meet them in no longer
-      // matters. Counted rather than returned, so a large project's ids
-      // never come back to this process; each lock still sorts before it
-      // locks.
+      // The deletes below meet the rows in whatever order their scans do.
+      // So the transaction first waits for the writes still at work on
+      // these cards, taking the cards in id order the way those writes do,
+      // then for a card still being created, through the project_meta row
+      // it takes its number from (cards before project_meta), which also
+      // keeps it from holding a status the deletes wait for, then the read
+      // positions in the order marking everything read takes them, then the
+      // labels, before deleting the cards cascades to their label rows: a
+      // label deleted meanwhile takes the label first and then those rows
+      // (see lockIssueRows).
       await db.transaction(async (tx) => {
         await tx
-          .select({ locked: count() })
-          .from(
-            tx
-              .select({ id: issues.id })
-              .from(issues)
-              .where(eq(issues.projectId, project.id))
-              .orderBy(asc(issues.id))
-              .for("update")
-              .as("locked"),
-          );
+          .select({ id: issues.id })
+          .from(issues)
+          .where(eq(issues.projectId, project.id))
+          .orderBy(asc(issues.id))
+          .for("update");
         await tx
           .select({ projectId: projectMeta.projectId })
           .from(projectMeta)
           .where(eq(projectMeta.projectId, project.id))
           .for("update");
         await tx
-          .select({ locked: count() })
-          .from(
-            tx
-              .select({ id: issueReads.id })
-              .from(issueReads)
-              .where(eq(issueReads.projectId, project.id))
-              .orderBy(asc(issueReads.id))
-              .for("update")
-              .as("locked"),
-          );
+          .select({ id: issueReads.id })
+          .from(issueReads)
+          .where(eq(issueReads.projectId, project.id))
+          .orderBy(asc(issueReads.id))
+          .for("update");
         await tx
-          .select({ locked: count() })
-          .from(
-            tx
-              .select({ id: labels.id })
-              .from(labels)
-              .where(eq(labels.projectId, project.id))
-              .orderBy(asc(labels.id))
-              .for("update")
-              .as("locked"),
-          );
+          .select({ id: labels.id })
+          .from(labels)
+          .where(eq(labels.projectId, project.id))
+          .orderBy(asc(labels.id))
+          .for("update");
         for (const table of PROJECT_OWNED_TABLES) {
           await tx.delete(table).where(eq(table.projectId, project.id));
         }

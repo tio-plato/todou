@@ -1,9 +1,10 @@
-import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { UserRow } from "../src/auth/pat.ts";
 import { type FakeS3, startFakeS3 } from "./fake-s3.ts";
 import { addUserWithToken, makeTestApp, type TestApp } from "./helpers.ts";
+import { pidOf, waitForLockWaiters } from "./pg-lock-helpers.ts";
+import { createTestDatabase, type TestDatabase } from "./postgres-database.ts";
 
 // biome-ignore lint/suspicious/noExplicitAny: test-side response poking
 const json = (response: Response): Promise<any> => response.json();
@@ -14,11 +15,8 @@ type Card = { id: number; number: number };
 // PGlite serializes on its one connection, so lock order never shows there.
 // An outside connection holds a lock between two statements of a request:
 // it plays the write running alongside a move, or parks the move halfway.
-// The suite makes a database of its own: test files that start together on
-// a new database race to create its migration tables.
 describe.skipIf(!PG_URL)("moves and writes on PostgreSQL", () => {
-  let admin: pg.Client | undefined;
-  let owned: string | undefined;
+  let database: TestDatabase | undefined;
   let t: TestApp;
   let fake: FakeS3 | undefined;
   let holder: pg.Client;
@@ -42,32 +40,18 @@ describe.skipIf(!PG_URL)("moves and writes on PostgreSQL", () => {
 
   beforeAll(async () => {
     if (!PG_URL) return;
-    admin = new pg.Client({ connectionString: PG_URL });
-    await admin.connect();
-    // Only a generated identifier enters CREATE/DROP DATABASE.
-    const name = `move_lock_${randomUUID().replaceAll("-", "")}`;
-    await admin.query(`CREATE DATABASE "${name}"`);
-    owned = name;
-    const url = new URL(PG_URL);
-    url.pathname = `/${name}`;
-    // pg connection strings may specify dbname separately from pathname.
-    url.searchParams.delete("database");
-    url.searchParams.delete("dbname");
+    database = await createTestDatabase(PG_URL, "move_lock");
     // A bucket rather than the filesystem, for the direct-upload write.
     fake = await startFakeS3();
     t = await makeTestApp("shared", {
-      systemUrl: url.toString(),
+      systemUrl: database.url,
       s3: { endpoint: fake.url },
     });
-    holder = new pg.Client({ connectionString: url.toString() });
-    observer = new pg.Client({ connectionString: url.toString() });
+    holder = new pg.Client({ connectionString: database.url });
+    observer = new pg.Client({ connectionString: database.url });
     await holder.connect();
     await observer.connect();
-    const [backend] = (
-      await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")
-    ).rows;
-    if (!backend) throw new Error("holder has no backend pid");
-    holderPid = backend.pid;
+    holderPid = await pidOf(holder);
     author = await addUserWithToken(t.ctx, `movelock-${stamp}`);
     const created = await send("POST", "/projects", {
       slug: source,
@@ -93,11 +77,7 @@ describe.skipIf(!PG_URL)("moves and writes on PostgreSQL", () => {
       t?.cleanup(),
       fake?.close(),
     ]);
-    try {
-      if (owned) await admin?.query(`DROP DATABASE "${owned}"`);
-    } finally {
-      await admin?.end();
-    }
+    await database?.drop();
     for (const result of closed) {
       if (result.status === "rejected") throw result.reason;
     }
@@ -135,31 +115,6 @@ describe.skipIf(!PG_URL)("moves and writes on PostgreSQL", () => {
       to_project: to,
     });
 
-  /** Requests queued behind the holder, directly or behind one another. */
-  const waitForLockWaiters = (count: number) =>
-    expect
-      .poll(
-        async () => {
-          const result = await observer.query<{ count: string }>(
-            `WITH RECURSIVE blocked(pid) AS (
-               SELECT $1::integer
-               UNION
-               SELECT activity.pid
-               FROM pg_stat_activity activity
-               JOIN blocked ON blocked.pid = ANY(pg_blocking_pids(activity.pid))
-             )
-             SELECT count(*) FROM pg_stat_activity
-             WHERE pid IN (SELECT pid FROM blocked WHERE pid <> $1)
-               AND datname = current_database()
-               AND wait_event_type = 'Lock'`,
-            [holderPid],
-          );
-          return Number(result.rows[0]?.count);
-        },
-        { timeout: 5000, interval: 10 },
-      )
-      .toBe(count);
-
   it("an edit that waited on the card finds its comment deleted", async () => {
     const x = await card();
     const edited = (await comment(x.number, { body: "plain" })).id as number;
@@ -176,7 +131,7 @@ describe.skipIf(!PG_URL)("moves and writes on PostgreSQL", () => {
       { body: "too late" },
     );
     try {
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query("DELETE FROM comments WHERE id = $1", [edited]);
       await holder.query("COMMIT");
       const refused = await editing;
@@ -407,10 +362,10 @@ describe.skipIf(!PG_URL)("moves and writes on PostgreSQL", () => {
       const moving = move(x.number, target.slug);
       let writing: Promise<Response> | undefined;
       try {
-        await waitForLockWaiters(1);
+        await waitForLockWaiters(observer, holderPid, 1);
         writing = write(x, prepared);
         // The write waits on the card, behind the move.
-        await waitForLockWaiters(2);
+        await waitForLockWaiters(observer, holderPid, 2);
         await holder.query("COMMIT");
 
         expect((await moving).status).toBe(200);
@@ -452,7 +407,7 @@ describe.skipIf(!PG_URL)("moves and writes on PostgreSQL", () => {
     ]);
     const pending = move(x.number, target.slug);
     try {
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query(
         `INSERT INTO issue_events (project_id, issue_id, actor_id, type, payload)
          VALUES ((SELECT project_id FROM issues WHERE id = $1), $1, $2,
@@ -522,7 +477,7 @@ describe.skipIf(!PG_URL)("moves and writes on PostgreSQL", () => {
     );
     const pending = move(x.number, target.slug);
     try {
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       // The holder plays a delete that commits after the move was planned.
       await holder.query(
         "UPDATE issues SET deleted_at = now(), deleted_by = author_id WHERE id = $1",

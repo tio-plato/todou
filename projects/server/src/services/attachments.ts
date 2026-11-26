@@ -65,11 +65,11 @@ import { visibleProjects } from "./cross-references.ts";
 import { formerSlugsOf } from "./projects.ts";
 import { currentRefPrefix } from "./references.ts";
 import { aliasAddressesOf, aliasOf } from "./relocation.ts";
+import { lockWritableIssue } from "./resolve-pass.ts";
 import {
   assertIssueReadable,
   assertIssueWritable,
   gateColumns,
-  lockWritableIssue,
   mayFollowAlias,
   type TrashFields,
 } from "./trash.ts";
@@ -143,7 +143,7 @@ export async function uploadAttachment(
     db.transaction(async (tx) => {
       // The gate again, under the card's lock (see lockIssueRows).
       if (issue !== null) {
-        await lockWritableIssue(tx, { id: issue.id, actor, role });
+        await lockWritableIssue(tx, project, { id: issue.id, actor, role });
       }
       const attachment = await insertNamed(tx, requested, {
         projectId: project.id,
@@ -568,10 +568,15 @@ export async function completeDirectUpload(
       db.transaction(async (tx) => {
         // The gate again, under the card's lock (see lockIssueRows).
         if (pending.issueId !== null) {
-          await lockWritableIssue(tx, { id: pending.issueId, actor, role });
+          await lockWritableIssue(tx, project, {
+            id: pending.issueId,
+            actor,
+            role,
+          });
         }
-        // Claimed before the insert: a concurrent complete blocks on this
-        // row until the winner commits, then matches nothing.
+        // Claimed before the insert: a concurrent complete waits on the
+        // card, or on this row for a draft with no card yet, until the
+        // winner commits, then matches nothing.
         const claimed = await tx
           .update(pendingUploads)
           .set({ completedAt: new Date(), attachmentKey })
@@ -911,7 +916,7 @@ export async function deleteAttachment(
     // The gate again, under the card's lock, before the row under it goes
     // (see lockIssueRows).
     if (row.issueId !== null) {
-      await lockWritableIssue(tx, { id: row.issueId, actor, role });
+      await lockWritableIssue(tx, project, { id: row.issueId, actor, role });
     }
     const gone = await tx
       .delete(attachments)
@@ -1102,7 +1107,9 @@ export type LinkedDrafts = { ids: number[]; cards: number[] };
  *
  * The read takes no lock, so it can come ahead of every lock the write
  * takes. An attachment's `issue_id` never changes once set, so attaching the
- * drafts writes no card but the ones read here.
+ * drafts writes no card but the ones read here. A draft read here without a
+ * card has none to lock: only `createIssue` gives it one, the card it
+ * creates, which no other transaction can see.
  *
  * Owners are this project's id and current slug only — what an editor
  * writes for a file it uploaded a moment ago. A draft lives a day at most,
@@ -1128,18 +1135,13 @@ export async function findLinkedDrafts(
         eq(attachments.projectId, project.id),
         eq(attachments.uploaderId, actorId),
         eq(attachments.draft, true),
-        // A draft with no card has no card to lock, and stays a draft: only
-        // `createIssue` gives it one, through `attachLooseDrafts`, and adds
-        // it to what it attaches itself.
-        isNotNull(attachments.issueId),
         inArray(attachments.id, [...ids]),
       ),
     );
   const linked: LinkedDrafts = { ids: [], cards: [] };
   for (const row of rows) {
-    if (row.issueId === null) continue;
     linked.ids.push(row.id);
-    linked.cards.push(row.issueId);
+    if (row.issueId !== null) linked.cards.push(row.issueId);
   }
   return linked;
 }
@@ -1152,10 +1154,9 @@ export async function findLinkedDrafts(
  * to publish somebody else's unsent file.
  *
  * The caller found `linked` with `findLinkedDrafts` and locked `linked.cards`
- * through `lockIssueRows`, or, for the drafts `createIssue` hung on the card
- * it creates, added a card no other transaction can see. An attachment's
- * `issue_id` never changes once set, so every issue row this writes is
- * already locked or new, and the order it writes them in makes no
+ * through `lockIssueRows`. An attachment's `issue_id` never changes once set,
+ * so every issue row this writes is already locked, or is the card
+ * `createIssue` is creating, and the order it writes them in makes no
  * transaction wait.
  *
  * Returns the change events to publish after commit.
@@ -1176,6 +1177,9 @@ export async function commitDraftAttachments(
         eq(attachments.projectId, project.id),
         eq(attachments.uploaderId, actorId),
         eq(attachments.draft, true),
+        // A draft with no card stays one: only `createIssue` gives it a card,
+        // through `attachLooseDrafts`, before it gets here.
+        isNotNull(attachments.issueId),
         inArray(attachments.id, linked.ids),
       ),
     )

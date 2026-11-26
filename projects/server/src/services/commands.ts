@@ -43,15 +43,12 @@ import {
   toIssue,
 } from "./issues.ts";
 import {
+  lockWritableIssue,
   type ReferenceTarget,
   recordCrossReferences,
   resolveContent,
 } from "./resolve-pass.ts";
-import {
-  assertIssueWritable,
-  gateColumns,
-  lockWritableIssue,
-} from "./trash.ts";
+import { assertIssueWritable, gateColumns } from "./trash.ts";
 import { getUserRefs } from "./users.ts";
 
 /**
@@ -190,7 +187,7 @@ export async function executeCommands(
     // The card before anything under it (see lockIssueRows): here when no
     // comment is posted, in `insertCommentInTx` when one is.
     if (resolved === null) {
-      await lockWritableIssue(tx, { id: issue.id, actor, role });
+      await lockWritableIssue(tx, project, { id: issue.id, actor, role });
     }
     let hide: HideInTxResult | null = null;
 
@@ -407,7 +404,7 @@ async function validateFieldCommands(
 }
 
 /**
- * Lock the labels the commands name (see lockIssueRows, rule 6), after the
+ * Lock the labels the commands name (see lockIssueRows, rule 7), after the
  * cards they write and before any of those cards' label rows. A label to add
  * that was deleted meanwhile fails the whole submission; one to remove has
  * nothing left to remove.
@@ -644,7 +641,7 @@ export async function executeBulkCommands(
   await db.transaction(async (tx) => {
     // Every card first, in one statement, in ascending id, asking the write
     // gate again under the lock, then the labels the commands name, and only
-    // then any row under a card (see lockIssueRows, rules 1, 2 and 6): two
+    // then any row under a card (see lockIssueRows, rules 1, 2 and 7): two
     // bulk requests over overlapping cards, or one and a single card's
     // write, queue instead of deadlocking.
     const locked = await tx

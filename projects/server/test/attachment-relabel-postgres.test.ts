@@ -2,6 +2,7 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { relabelAttachments } from "../src/services/attachment-relabel.ts";
 import { addUserWithToken, makeTestApp, type TestApp } from "./helpers.ts";
+import { pidOf, waitForLockWaiters } from "./pg-lock-helpers.ts";
 
 // biome-ignore lint/suspicious/noExplicitAny: test-side response poking
 const json = (response: Response): Promise<any> => response.json();
@@ -76,11 +77,7 @@ describe.skipIf(!PG_URL)("attachments relabel on PostgreSQL", () => {
     observer = new pg.Client({ connectionString: PG_URL });
     await holder.connect();
     await observer.connect();
-    const [backend] = (
-      await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")
-    ).rows;
-    if (!backend) throw new Error("holder has no backend pid");
-    holderPid = backend.pid;
+    holderPid = await pidOf(holder);
     author = await addUserWithToken(t.ctx, `${slug}-author`);
 
     const created = await send("POST", "/projects", {
@@ -121,31 +118,6 @@ describe.skipIf(!PG_URL)("attachments relabel on PostgreSQL", () => {
     await t?.cleanup();
   });
 
-  /** Connections queued behind the holder, directly or behind one another. */
-  const waitForLockWaiters = (count: number) =>
-    expect
-      .poll(
-        async () => {
-          const result = await observer.query<{ count: string }>(
-            `WITH RECURSIVE blocked(pid) AS (
-               SELECT $1::integer
-               UNION
-               SELECT activity.pid
-               FROM pg_stat_activity activity
-               JOIN blocked ON blocked.pid = ANY(pg_blocking_pids(activity.pid))
-             )
-             SELECT count(*) FROM pg_stat_activity
-             WHERE pid IN (SELECT pid FROM blocked WHERE pid <> $1)
-               AND datname = current_database()
-               AND wait_event_type = 'Lock'`,
-            [holderPid],
-          );
-          return Number(result.rows[0]?.count);
-        },
-        { timeout: 5000, interval: 10 },
-      )
-      .toBe(count);
-
   /**
    * Run relabel while the holder has done `before` in an open transaction,
    * wait until relabel queues behind it, then let the holder do `after` and
@@ -160,7 +132,7 @@ describe.skipIf(!PG_URL)("attachments relabel on PostgreSQL", () => {
     try {
       await before();
       running = relabel();
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await after();
       await holder.query("COMMIT");
       await running;

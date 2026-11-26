@@ -1,9 +1,16 @@
-import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { reapDraftAttachments } from "../src/services/storage-admin.ts";
 import { addUserWithToken, makeTestApp, type TestApp } from "./helpers.ts";
+import {
+  lockWaiters,
+  pidOf,
+  uploadDraft,
+  waitForLockWaiters,
+  withOptions,
+} from "./pg-lock-helpers.ts";
+import { createTestDatabase, type TestDatabase } from "./postgres-database.ts";
 
 // biome-ignore lint/suspicious/noExplicitAny: test-side response poking
 const json = (response: Response): Promise<any> => response.json();
@@ -17,11 +24,8 @@ const PG_URL = process.env.TODOU_TEST_POSTGRES_URL;
 // Where the order a request takes rows in is the order a scan meets them,
 // the request goes to an app whose connections never use an index, and the
 // test puts the rows in the table out of id order first.
-// The suite makes a database of its own: test files that start together on
-// a new database race to create its migration tables.
 describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
-  let admin: pg.Client | undefined;
-  let owned: string | undefined;
+  let database: TestDatabase | undefined;
   let t: TestApp;
   let seq: TestApp;
   let indexed: TestApp;
@@ -48,48 +52,34 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
 
   beforeAll(async () => {
     if (!PG_URL) return;
-    admin = new pg.Client({ connectionString: PG_URL });
-    await admin.connect();
-    // Only a generated identifier enters CREATE/DROP DATABASE.
-    const name = `lock_order_${randomUUID().replaceAll("-", "")}`;
-    await admin.query(`CREATE DATABASE "${name}"`);
-    owned = name;
-    const url = new URL(PG_URL);
-    url.pathname = `/${name}`;
-    // pg connection strings may specify dbname separately from pathname.
-    url.searchParams.delete("database");
-    url.searchParams.delete("dbname");
-    t = await makeTestApp("shared", { systemUrl: url.toString() });
-    const scanning = new URL(url);
-    scanning.searchParams.set(
-      "options",
-      "-c enable_indexscan=off -c enable_bitmapscan=off",
-    );
-    seq = await makeTestApp("shared", { systemUrl: scanning.toString() });
-    const ordered = new URL(url);
-    ordered.searchParams.set(
-      "options",
-      "-c enable_seqscan=off -c enable_bitmapscan=off",
-    );
-    indexed = await makeTestApp("shared", { systemUrl: ordered.toString() });
-    const unscanned = (await indexed.ctx.router
-      .system()
-      .execute(sql`SHOW enable_seqscan`)) as { rows: unknown[] };
-    expect(unscanned.rows).toEqual([{ enable_seqscan: "off" }]);
+    database = await createTestDatabase(PG_URL, "lock_order");
+    t = await makeTestApp("shared", { systemUrl: database.url });
+    seq = await makeTestApp("shared", {
+      systemUrl: withOptions(
+        database.url,
+        "-c enable_indexscan=off -c enable_bitmapscan=off",
+      ),
+    });
     // The setting reaches the app's own connections: SHOW answers "off".
     const shown = (await seq.ctx.router
       .system()
       .execute(sql`SHOW enable_indexscan`)) as { rows: unknown[] };
     expect(shown.rows).toEqual([{ enable_indexscan: "off" }]);
-    holder = new pg.Client({ connectionString: url.toString() });
-    observer = new pg.Client({ connectionString: url.toString() });
+    indexed = await makeTestApp("shared", {
+      systemUrl: withOptions(
+        database.url,
+        "-c enable_seqscan=off -c enable_bitmapscan=off",
+      ),
+    });
+    const unscanned = (await indexed.ctx.router
+      .system()
+      .execute(sql`SHOW enable_seqscan`)) as { rows: unknown[] };
+    expect(unscanned.rows).toEqual([{ enable_seqscan: "off" }]);
+    holder = new pg.Client({ connectionString: database.url });
+    observer = new pg.Client({ connectionString: database.url });
     await holder.connect();
     await observer.connect();
-    const [backend] = (
-      await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid")
-    ).rows;
-    if (!backend) throw new Error("holder has no backend pid");
-    holderPid = backend.pid;
+    holderPid = await pidOf(holder);
     author = await addUserWithToken(t.ctx, `lockorder-${stamp}`);
   });
 
@@ -103,11 +93,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       seq?.cleanup(),
       indexed?.cleanup(),
     ]);
-    try {
-      if (owned) await admin?.query(`DROP DATABASE "${owned}"`);
-    } finally {
-      await admin?.end();
-    }
+    await database?.drop();
     for (const result of closed) {
       if (result.status === "rejected") throw result.reason;
     }
@@ -186,41 +172,6 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       )
     ).rows.map((row) => Number(row.id));
 
-  const uploadDraft = async (slug: string, card: { number: number }) => {
-    const form = new FormData();
-    form.set("file", new File(["draft"], "draft.txt"));
-    form.set("issue_number", String(card.number));
-    form.set("draft", "true");
-    const res = await t.app.request(`/api/projects/${slug}/attachments`, {
-      method: "POST",
-      headers: author.headers,
-      body: form,
-    });
-    expect(res.status).toBe(201);
-    return (await json(res)).id as number;
-  };
-
-  /** Requests queued behind the holder, directly or behind one another. */
-  const lockWaiters = async () => {
-    const result = await observer.query<{ count: string }>(
-      `WITH RECURSIVE blocked(pid) AS (
-         SELECT $1::integer
-         UNION
-         SELECT activity.pid
-         FROM pg_stat_activity activity
-         JOIN blocked ON blocked.pid = ANY(pg_blocking_pids(activity.pid))
-       )
-       SELECT count(*) FROM pg_stat_activity
-       WHERE pid IN (SELECT pid FROM blocked WHERE pid <> $1)
-         AND datname = current_database()
-         AND wait_event_type = 'Lock'`,
-      [holderPid],
-    );
-    return Number(result.rows[0]?.count);
-  };
-  const waitForLockWaiters = (count: number) =>
-    expect.poll(lockWaiters, { timeout: 5000, interval: 10 }).toBe(count);
-
   it("two renames of one project queue instead of deadlocking", async () => {
     const p = await project();
     const renames = [`${p.slug}-one`, `${p.slug}-two`];
@@ -237,7 +188,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       pending = renames.map((slug) =>
         send("PATCH", `/projects/${p.slug}`, { slug }),
       );
-      await waitForLockWaiters(2);
+      await waitForLockWaiters(observer, holderPid, 2);
       await holder.query("COMMIT");
       const responses = await Promise.all(pending);
       expect(responses.map((r) => r.status)).toEqual([200, 200]);
@@ -295,7 +246,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       pending = send("PUT", `/projects/${p.slug}/statuses/order`, {
         ids: wanted,
       });
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query("UPDATE statuses SET position = 2 WHERE id = $1", [
         s1,
       ]);
@@ -338,7 +289,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       pending = send("PATCH", `/projects/${p.slug}/statuses/${s2}`, {
         is_default: true,
       });
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query("UPDATE statuses SET position = 2 WHERE id = $1", [
         s1,
       ]);
@@ -376,13 +327,13 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
           is_default: true,
         }),
       );
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       pending.push(
         send("PATCH", `/projects/${p.slug}/statuses/${s2}`, {
           is_default: true,
         }),
       );
-      await waitForLockWaiters(2);
+      await waitForLockWaiters(observer, holderPid, 2);
       await holder.query("COMMIT");
       const responses = await Promise.all(pending);
       expect(responses.map((r) => r.status)).toEqual([200, 200]);
@@ -430,7 +381,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
         undefined,
         seq,
       );
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query(
         "SELECT id FROM issue_blocks WHERE id = $1 FOR UPDATE",
         [e2],
@@ -490,7 +441,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
         { to_project: q.slug },
         seq,
       );
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query(
         "SELECT id FROM issue_blocks WHERE id = $1 FOR UPDATE",
         [e2],
@@ -550,7 +501,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
         status_id: done.id,
       });
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query(
         "UPDATE issues SET moving_since = now() WHERE id = $1",
         [y.id],
@@ -579,8 +530,8 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
   it("the draft reaper skips drafts a write holds", async () => {
     const p = await project();
     const x = await card(p.slug, "X");
-    const d1 = await uploadDraft(p.slug, x);
-    const d2 = await uploadDraft(p.slug, x);
+    const d1 = (await uploadDraft(t, author.headers, p.slug, x.number)).id;
+    const d2 = (await uploadDraft(t, author.headers, p.slug, x.number)).id;
     expect(d1).toBeLessThan(d2);
     // Both past a 24-hour threshold, d2 the older: the reaper's index on
     // created_at meets d2 first.
@@ -593,8 +544,8 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       [d2],
     );
 
-    // The holder attaches both drafts the way a write does: the card, then
-    // the drafts in id order.
+    // The holder attaches both drafts after their card, d1 first: the other
+    // order from the reaper's.
     const lines: string[] = [];
     await holder.query("BEGIN");
     let reaping: ReturnType<typeof reapDraftAttachments> | undefined;
@@ -617,10 +568,10 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
         settled = true;
       });
       await expect
-        .poll(async () => settled || (await lockWaiters()) > 0, {
-          timeout: 5000,
-          interval: 10,
-        })
+        .poll(
+          async () => settled || (await lockWaiters(observer, holderPid)) > 0,
+          { timeout: 5000, interval: 10 },
+        )
         .toBe(true);
       await holder.query("UPDATE attachments SET draft = false WHERE id = $1", [
         d2,
@@ -679,7 +630,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
           ],
         },
       );
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query("DELETE FROM labels WHERE id = $1", [label]);
       await holder.query("ROLLBACK");
       expect((await pending).status).toBe(200);
@@ -725,7 +676,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
         [e1],
       );
       pending = send("DELETE", `/projects/${p.slug}`, undefined, seq);
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query(
         "SELECT id FROM issue_blocks WHERE id = $1 FOR UPDATE",
         [e2],
@@ -784,7 +735,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
         [ra],
       );
       pending = send("DELETE", `/projects/${p.slug}`, undefined, seq);
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query(
         "SELECT id FROM issue_reads WHERE id = $1 FOR UPDATE",
         [rb],
@@ -833,7 +784,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
         )
       ).rows;
       pending = send("DELETE", `/projects/${p.slug}`);
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       const [inserted] = (
         await holder.query<{ id: string }>(
           `INSERT INTO issues (project_id, number, title, status_id, author_id)
@@ -887,7 +838,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
         label,
       ]);
       pending = send("DELETE", `/projects/${p.slug}`);
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query("DELETE FROM labels WHERE id = $1", [label]);
       await holder.query("COMMIT");
       expect((await pending).status).toBe(204);
@@ -936,7 +887,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
         `/projects/${p.slug}/issues/${x.number}/commands`,
         { body: "", commands: [{ type: "label_remove", label_id: label }] },
       );
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query("DELETE FROM labels WHERE id = $1", [label]);
       await holder.query("COMMIT");
       expect((await pending).status).toBe(200);
@@ -965,7 +916,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
         label_ids: [l],
       });
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query("DELETE FROM labels WHERE id = $1", [l]);
       await holder.query("COMMIT");
       const res = await pending;
@@ -1000,7 +951,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
           commands: [{ type: "label_add", label_id: l }],
         },
       );
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query("DELETE FROM labels WHERE id = $1", [l]);
       await holder.query("COMMIT");
       const res = await pending;
@@ -1048,7 +999,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
           { type: "label_add", label_id: l },
         ],
       });
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query("DELETE FROM labels WHERE id = $1", [l]);
       await holder.query("ROLLBACK");
       expect((await pending).status).toBe(200);
@@ -1080,7 +1031,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
         numbers: [a.number, b.number],
         commands: [{ type: "label_add", label_id: l }],
       });
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query("DELETE FROM labels WHERE id = $1", [l]);
       await holder.query("COMMIT");
       const res = await pending;
@@ -1117,7 +1068,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
         numbers: [a.number, b.number],
         commands: [{ type: "label_add", label_id: l }],
       });
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query("UPDATE issues SET deleted_at = now() WHERE id = $1", [
         b.id,
       ]);
@@ -1149,7 +1100,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
         title,
         label_ids: [l],
       });
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query("DELETE FROM labels WHERE id = $1", [l]);
       await holder.query("COMMIT");
       const res = await pending;
@@ -1186,7 +1137,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
         label_ids: [],
       });
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query("COMMIT");
       expect((await pending).status).toBe(200);
       expect(await eventsOf(x, "label_removed")).toEqual([]);
@@ -1213,7 +1164,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
         title: "with L",
         label_ids: [l],
       });
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query(
         "SELECT id FROM labels WHERE project_id = $1 ORDER BY id FOR UPDATE",
         [p.id],
@@ -1245,7 +1196,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
         label_ids: [l],
       });
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query(
         "SELECT id FROM labels WHERE project_id = $1 ORDER BY id FOR UPDATE",
         [p.id],
@@ -1293,7 +1244,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
         assignee_ids: [b.id],
       });
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query(
         "INSERT INTO issue_assignees (issue_id, user_id) VALUES ($1, $2)",
         [x.id, b.id],
@@ -1331,7 +1282,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
         numbers: [a.number, b.number],
         commands: [{ type: "label_add", label_id: l }],
       });
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query(
         "INSERT INTO issue_labels (issue_id, label_id) VALUES ($1, $2)",
         [a.id, l],
@@ -1370,7 +1321,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
         title: "renamed",
         assignee_ids: [],
       });
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query(
         "INSERT INTO issue_assignees (issue_id, user_id) VALUES ($1, $2)",
         [x.id, b.id],
@@ -1411,7 +1362,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
         body: "A",
       });
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query("UPDATE issues SET body = 'B' WHERE id = $1", [x.id]);
       await holder.query("COMMIT");
       const res = await pending;
@@ -1459,7 +1410,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
         body: typed,
       });
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query("UPDATE issues SET body = 'B' WHERE id = $1", [x.id]);
       await holder.query("COMMIT");
       const res = await pending;
@@ -1501,7 +1452,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
         body: typed,
       });
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query("UPDATE issues SET body = $2 WHERE id = $1", [
         x.id,
         typed,
@@ -1558,7 +1509,8 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       // Watches for the edit queueing behind z until it answers.
       queued = (async () => {
         while (!answered) {
-          if ((await lockWaiters()) > 0) return "queued behind z";
+          if ((await lockWaiters(observer, holderPid)) > 0)
+            return "queued behind z";
         }
         return "answered";
       })();
@@ -1599,7 +1551,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
         title: "T1",
         status_id: s1,
       });
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query(
         "UPDATE issues SET title = 'T2', status_id = $2 WHERE id = $1",
         [x.id, s2],
@@ -1625,8 +1577,8 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
 
   it("a PATCH reopening a card closed meanwhile blocks what it blocks again", async () => {
     const p = await project();
-    // Without the seeded clear line (T-711) the categories decide: Open,
-    // added after Shipped, would otherwise clear the block too.
+    // No clear line, so the verdict is the category fallback the statuses
+    // below are made for: a new project starts with Shipped as its line.
     expect(
       (
         await send("PATCH", `/projects/${p.slug}`, {
@@ -1665,7 +1617,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
         status_id: open,
       });
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query("UPDATE issues SET status_id = $2 WHERE id = $1", [
         x.id,
         closed,
@@ -1713,7 +1665,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       pending = send("PATCH", `/projects/${p.slug}/issues/${x.number}`, {
         label_ids: [],
       });
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query("UPDATE issues SET status_id = $2 WHERE id = $1", [
         x.id,
         moved,
@@ -1771,7 +1723,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
         { numbers: [a.number, b.number] },
         seq,
       );
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query(
         "SELECT id FROM issue_reads WHERE id = $1 FOR UPDATE",
         [ra],
@@ -1823,7 +1775,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
         [ra],
       );
       pending = send("PUT", "/me/read", { projects: [p.slug] }, seq);
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query(
         "SELECT id FROM issue_reads WHERE id = $1 FOR UPDATE",
         [rb],
@@ -1869,7 +1821,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
       pending = send("PUT", `/projects/${p.slug}/issues/read`, {
         numbers: [a.number, b.number],
       });
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query(
         "SELECT id FROM issue_reads WHERE project_id = $1 ORDER BY id FOR UPDATE",
         [p.id],
@@ -1928,7 +1880,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
         [a.id],
       );
       pending = send("DELETE", `/projects/${p.slug}`, undefined, seq);
-      await waitForLockWaiters(1);
+      await waitForLockWaiters(observer, holderPid, 1);
       await holder.query(
         "SELECT id FROM issues WHERE id = $1 FOR NO KEY UPDATE",
         [b.id],
@@ -1954,8 +1906,7 @@ describe.skipIf(!PG_URL)("lock order on PostgreSQL", () => {
 // next step is let go. Projects live in two bucket databases by id, and
 // every database the app uses scans without an index.
 describe.skipIf(!PG_URL)("lock order of moves across databases", () => {
-  let admin: pg.Client | undefined;
-  const owned: string[] = [];
+  const databases: TestDatabase[] = [];
   let t: TestApp;
   let author: { headers: { authorization: string } };
   const clients: pg.Client[] = [];
@@ -1964,7 +1915,6 @@ describe.skipIf(!PG_URL)("lock order of moves across databases", () => {
     | { step: number; reached: () => void; release: Promise<void> }
     | undefined;
   const projects: Array<{ slug: string; id: number; url: string }> = [];
-  let systemUrl: string;
 
   const send = (method: string, path: string, body?: unknown) =>
     Promise.resolve(
@@ -1975,34 +1925,21 @@ describe.skipIf(!PG_URL)("lock order of moves across databases", () => {
       }),
     );
 
-  const databaseUrl = (name: string, options?: string) => {
-    const url = new URL(PG_URL as string);
-    url.pathname = `/${name}`;
-    url.searchParams.delete("database");
-    url.searchParams.delete("dbname");
-    if (options !== undefined) url.searchParams.set("options", options);
-    return url.toString();
-  };
-
   beforeAll(async () => {
     if (!PG_URL) return;
-    admin = new pg.Client({ connectionString: PG_URL });
-    await admin.connect();
-    // Only generated identifiers enter CREATE/DROP DATABASE.
-    const base = `lock_moves_${randomUUID().replaceAll("-", "")}`;
-    for (const name of [base, `${base}_b0`, `${base}_b1`]) {
-      await admin.query(`CREATE DATABASE "${name}"`);
-      owned.push(name);
+    for (const prefix of ["lock_moves", "lock_moves_b0", "lock_moves_b1"]) {
+      databases.push(await createTestDatabase(PG_URL, prefix));
     }
-    systemUrl = databaseUrl(base);
     const scanning = "-c enable_indexscan=off -c enable_bitmapscan=off";
-    const template = databaseUrl(`${base}_b`, scanning).replace(
-      /_b(\?|$)/,
-      `_b\${project.id % 2}$1`,
+    const [system, b0, b1] = databases.map((database) =>
+      withOptions(database.url, scanning),
     );
     t = await makeTestApp(
       "dedicated",
-      { systemUrl: databaseUrl(base, scanning), urlTemplate: template },
+      {
+        systemUrl: system,
+        urlTemplate: `\${project.id % 2 ? ${JSON.stringify(b1)} : ${JSON.stringify(b0)}}`,
+      },
       {
         afterMoveStep: async (step) => {
           const held = pause;
@@ -2037,11 +1974,7 @@ describe.skipIf(!PG_URL)("lock order of moves across databases", () => {
       ...clients.map((client) => client.end()),
       t?.cleanup(),
     ]);
-    try {
-      for (const name of owned) await admin?.query(`DROP DATABASE "${name}"`);
-    } finally {
-      await admin?.end();
-    }
+    for (const database of databases) await database.drop();
     for (const result of closed) {
       if (result.status === "rejected") throw result.reason;
     }
@@ -2071,47 +2004,10 @@ describe.skipIf(!PG_URL)("lock order of moves across databases", () => {
     return { atStep, release: () => release() };
   };
 
-  /** Sessions in `observer`'s database queued behind `pid`, at any depth. */
-  const waitersOn = async (observer: pg.Client, pid: number) => {
-    const result = await observer.query<{ count: string }>(
-      `WITH RECURSIVE blocked(pid) AS (
-         SELECT $1::integer
-         UNION
-         SELECT activity.pid
-         FROM pg_stat_activity activity
-         JOIN blocked ON blocked.pid = ANY(pg_blocking_pids(activity.pid))
-       )
-       SELECT count(*) FROM pg_stat_activity
-       WHERE pid IN (SELECT pid FROM blocked WHERE pid <> $1)
-         AND datname = current_database()
-         AND wait_event_type = 'Lock'`,
-      [pid],
-    );
-    return Number(result.rows[0]?.count);
-  };
-  const pidOf = async (client: pg.Client) =>
-    Number(
-      (await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid"))
-        .rows[0]?.pid,
-    );
-
   const card = async (slug: string, title: string) => {
     const created = await send("POST", `/projects/${slug}/issues`, { title });
     expect(created.status).toBe(201);
     return (await json(created)) as { id: number; number: number };
-  };
-  const uploadDraft = async (slug: string, number: number) => {
-    const form = new FormData();
-    form.set("file", new File(["draft"], "draft.txt"));
-    form.set("issue_number", String(number));
-    form.set("draft", "true");
-    const res = await t.app.request(`/api/projects/${slug}/attachments`, {
-      method: "POST",
-      headers: author.headers,
-      body: form,
-    });
-    expect(res.status).toBe(201);
-    return (await json(res)).id as number;
   };
 
   /** Waits for the pause, or fails if the move ends before reaching it. */
@@ -2123,18 +2019,18 @@ describe.skipIf(!PG_URL)("lock order of moves across databases", () => {
       }),
     ]);
 
-  // The holder attaches two drafts on the frozen card the way a write does:
-  // the card, then the drafts. The step that deletes the card's attachment
-  // rows meets d2 first, so it has to wait for the card before it touches
-  // either.
+  // The holder takes the frozen card and then writes two of its attachment
+  // rows, the order every write keeps. The step that deletes the card's
+  // attachment rows meets d2 first, so it has to wait for the card before it
+  // touches either.
   const draftsRace = async (
     from: { slug: string; url: string },
     to: { slug: string },
     after: 2 | 4,
     f: { id: number; number: number },
   ) => {
-    const d1 = await uploadDraft(from.slug, f.number);
-    const d2 = await uploadDraft(from.slug, f.number);
+    const d1 = (await uploadDraft(t, author.headers, from.slug, f.number)).id;
+    const d2 = (await uploadDraft(t, author.headers, from.slug, f.number)).id;
     const holder = await connect(from.url);
     const observer = await connect(from.url);
     // A new version of d1 lands behind d2 in the table, which these
@@ -2168,7 +2064,7 @@ describe.skipIf(!PG_URL)("lock order of moves across databases", () => {
       ]);
       paused.release();
       await expect
-        .poll(() => waitersOn(observer, pid), { timeout: 5000, interval: 10 })
+        .poll(() => lockWaiters(observer, pid), { timeout: 5000, interval: 10 })
         .toBe(1);
       await holder.query("UPDATE attachments SET draft = false WHERE id = $1", [
         d2,
@@ -2230,7 +2126,8 @@ describe.skipIf(!PG_URL)("lock order of moves across databases", () => {
   // goes for e2.
   it("publishing a move holds its edges until both sides are rewritten", async () => {
     const [from, to] = projects;
-    if (!from || !to) throw new Error("no projects");
+    const [system] = databases;
+    if (!from || !to || !system) throw new Error("no projects");
     const x = await card(from.slug, "X");
     const w1 = await card(from.slug, "W1");
     const w2 = await card(from.slug, "W2");
@@ -2242,9 +2139,9 @@ describe.skipIf(!PG_URL)("lock order of moves across databases", () => {
       );
       expect(res.status).toBe(200);
     }
-    const first = await connect(systemUrl);
-    const second = await connect(systemUrl);
-    const observer = await connect(systemUrl);
+    const first = await connect(system.url);
+    const second = await connect(system.url);
+    const observer = await connect(system.url);
     const edges = await observer.query<{ id: string }>(
       `SELECT id FROM issue_blocks
        WHERE blocker_project_id = $1 AND blocker_number = $2 ORDER BY id`,
@@ -2285,7 +2182,7 @@ describe.skipIf(!PG_URL)("lock order of moves across databases", () => {
       );
       paused.release();
       await expect
-        .poll(() => waitersOn(observer, firstPid), {
+        .poll(() => lockWaiters(observer, firstPid), {
           timeout: 5000,
           interval: 10,
         })
@@ -2296,7 +2193,7 @@ describe.skipIf(!PG_URL)("lock order of moves across databases", () => {
         [e1],
       );
       await expect
-        .poll(() => waitersOn(observer, firstPid), {
+        .poll(() => lockWaiters(observer, firstPid), {
           timeout: 5000,
           interval: 10,
         })
@@ -2306,7 +2203,7 @@ describe.skipIf(!PG_URL)("lock order of moves across databases", () => {
       // Either the move is done with the edges, or it waits on the second.
       await expect
         .poll(
-          async () => settled || (await waitersOn(observer, secondPid)) > 0,
+          async () => settled || (await lockWaiters(observer, secondPid)) > 0,
           {
             timeout: 5000,
             interval: 10,

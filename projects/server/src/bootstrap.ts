@@ -48,8 +48,8 @@ export type TestHooks = DbTestHooks & {
   afterMoveStep?(step: 1 | 2 | 3 | 4 | 5 | 6): Promise<void>;
   /**
    * Shortens the lease on a cross-database move's registration row
-   * (`MOVE_LEASE_MS`), so a test can outlast it; its holder renews it every
-   * fifth of this, and housekeeping runs the move recovery once every lease.
+   * (`MOVE_LEASE_MS`), and everything timed by the lease, so a test can
+   * outlast it; its holder renews it every fifth of this.
    */
   moveLeaseMs?: number;
   /**

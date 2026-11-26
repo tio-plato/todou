@@ -487,7 +487,7 @@ async function validateLabelIds(
 /**
  * Lock the labels of this project that `ids` names, FOR KEY SHARE, in one
  * statement, in ascending id, where the lock order puts them (see
- * lockIssueRows, rule 6). Returns the ones still there once locked: a label
+ * lockIssueRows, rule 7). Returns the ones still there once locked: a label
  * deleted meanwhile is missing from the rows, and the caller refuses the
  * write or skips the label, rather than letting the foreign key of the row
  * it inserts fail.
@@ -685,12 +685,6 @@ export async function createIssue(
     const issue = inserted[0];
     if (!issue) throw new Error("issue insert returned no row");
     await attachLooseDrafts(tx, loose.drafts, issue.id);
-    // They are on the new card now, which no other transaction can see, so
-    // it needed no lock (see lockIssueRows); they attach with the others.
-    if (loose.drafts.length > 0) {
-      linked.ids.push(...loose.drafts.map((draft) => draft.id));
-      linked.cards.push(issue.id);
-    }
 
     if (input.assignee_ids.length > 0) {
       await tx

@@ -42,6 +42,7 @@ import { currentRefPrefix } from "./references.ts";
 import { throwIfCommentAliased } from "./relocation.ts";
 import {
   lockIssueRows,
+  lockWritableIssue,
   recordCrossReferences,
   recordIssueMentions,
   recordLocalReferences,
@@ -53,7 +54,6 @@ import {
   assertIssueReadable,
   assertIssueWritable,
   gateColumns,
-  lockWritableIssue,
   mayFollowAlias,
 } from "./trash.ts";
 import { getUserRefs } from "./users.ts";
@@ -582,7 +582,7 @@ export async function deleteComment(
   await db.transaction(async (tx) => {
     // The card first (see lockIssueRows): a move that took the comment away
     // answers here, before the missing comment does.
-    await lockWritableIssue(tx, { id: row.issueId, actor, role });
+    await lockWritableIssue(tx, project, { id: row.issueId, actor, role });
     // Lock the row before reading what it already gave back: an answer or a
     // resolve that committed while this request waited is then visible here,
     // and a delete that won the race leaves nothing to lock. Read outside
@@ -841,7 +841,10 @@ export type HideInTxResult = Omit<CommentHideResult, "settled"> & {
  * two copies of this would be two hide policies waiting to disagree.
  *
  * The caller checks the capabilities (`settleScan` says which ones a hide
- * will need) and owns the `ChangeEvent`s until the transaction commits.
+ * will need) and owns the `ChangeEvent`s until the transaction commits. It
+ * also holds the card already, locked with the write gate asked under the
+ * lock (`lockWritableIssue`, or `lockIssueRows` with the card as `write`),
+ * so the comments are locked after their card (see lockIssueRows).
  */
 export async function hideCommentsInTx(
   tx: Tx,
@@ -858,12 +861,6 @@ export async function hideCommentsInTx(
   // Settling counts one decline per entry it is handed, so a repeated id
   // would take other comments' open questions off the card with it (T-651).
   const ids = [...new Set(input.comment_ids)];
-  // The card before the comments, as answering and deleting take them.
-  await tx
-    .select({ id: issues.id })
-    .from(issues)
-    .where(eq(issues.id, args.issueId))
-    .for("no key update");
   const rows = await tx
     .select({
       id: comments.id,
@@ -1023,8 +1020,9 @@ export async function setCommentsHidden(
   await requireSettleCapabilities(ctx, actor, slug, db, issue.id, input);
 
   const result = await db.transaction(async (tx) => {
-    // The card before the comments it hides (see lockIssueRows).
-    await lockWritableIssue(tx, { id: issue.id, actor, role });
+    // The card before the comments, with the gate asked again under its
+    // lock (see lockIssueRows).
+    await lockWritableIssue(tx, project, { id: issue.id, actor, role });
     return hideCommentsInTx(tx, {
       projectId: project.id,
       issueId: issue.id,

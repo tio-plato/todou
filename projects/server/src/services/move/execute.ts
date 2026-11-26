@@ -223,7 +223,7 @@ async function moveWithinDb(
 /**
  * How long a lease on a registration row lasts unless renewed. A mover, or
  * a sweep recovering the row, renews its own every fifth of this for as
- * long as it runs, and housekeeping runs `sweepMoves` once every lease.
+ * long as it runs.
  */
 export const MOVE_LEASE_MS = 5 * 60 * 1000;
 
@@ -530,9 +530,9 @@ async function finishCopying(
 /**
  * Step 5: replayable, because the sweep may run it again.
  *
- * The card before anything under it, like every write (see lockIssueRows): a
- * write holding the card while it attaches a draft there finishes first, and
- * one that comes after finds the card gone.
+ * The card before anything under it, as rule 1 on `lockIssueRows` has every
+ * write take them: a write that holds the card while it writes rows under it
+ * finishes first, and one that comes after finds a tombstone.
  */
 async function retireSource(
   plan: MovePlan,
@@ -588,7 +588,7 @@ async function markDone(system: Db, moveToken: string): Promise<void> {
 
 /**
  * Drive every unfinished cross-database move whose lease has run out, or
- * was given up, to a conclusion. `now` is the time leases are judged at.
+ * was given up, to a conclusion.
  *
  * Safe to run concurrently from several instances and safe to replay, which
  * `housekeeping.ts` requires of everything it sweeps. Three things buy that:
@@ -609,10 +609,7 @@ async function markDone(system: Db, moveToken: string): Promise<void> {
  * is the system database on PGlite, whose one connection is the whole
  * process.
  */
-export async function sweepMoves(
-  ctx: AppContext,
-  now: Date = new Date(),
-): Promise<number> {
+export async function sweepMoves(ctx: AppContext): Promise<number> {
   const system = ctx.router.system();
   // `IN` rather than `<> 'done'`: done rows are never deleted, and only this
   // form can use `issue_moves_state_idx`.
@@ -622,13 +619,12 @@ export async function sweepMoves(
     .from(issueMoves)
     .where(unfinished);
   let finished = 0;
-  const started = Date.now();
 
   for (const { id } of pending) {
     const holder = randomUUID();
-    // Each claim is judged and leased at its own time, offset as `now` is:
-    // a slow recovery before it must not hand this row a lease already over.
-    const at = new Date(now.getTime() + (Date.now() - started));
+    // Each row is judged and leased at the time the sweep reaches it, so a
+    // slow recovery before it cannot hand this row a lease already over.
+    const at = new Date();
     let claimed: typeof issueMoves.$inferSelect | undefined;
     try {
       [claimed] = await system

@@ -33,12 +33,12 @@ import {
 } from "../errors.ts";
 import { projectForRead, requireCapability, routeInfoOf } from "./access.ts";
 import { encodeTimelineCursor } from "./cursor.ts";
+import { lockWritableIssue } from "./resolve-pass.ts";
 import { microIso } from "./timeline.ts";
 import {
   assertIssueReadable,
   assertIssueWritable,
   gateColumns,
-  lockWritableIssue,
 } from "./trash.ts";
 import { getUserRefs } from "./users.ts";
 
@@ -318,7 +318,7 @@ export async function submitAnswers(
   const row = await db.transaction(async (tx) => {
     // The card first (see lockIssueRows): a move that took the comment away
     // answers here, before the missing comment does.
-    await lockWritableIssue(tx, { id: issue.id, actor, role });
+    await lockWritableIssue(tx, project, { id: issue.id, actor, role });
     // Answer-once is comment-level and atomic: lock the comment row so two
     // concurrent submissions serialize, then the loser sees the winner's
     // event and conflicts instead of double-inserting. A delete that won the
@@ -445,7 +445,7 @@ export async function withdrawQuestions(
       // The card first, with the gate asked again under its lock: a
       // cross-database move that froze the card after the check above would
       // copy it without this withdrawal and then empty the source.
-      await lockWritableIssue(tx, { id: issue.id, actor, role });
+      await lockWritableIssue(tx, project, { id: issue.id, actor, role });
       // The lock answering and deleting take too: whichever comes second
       // sees the first one's settlement, or finds the comment gone.
       const [locked] = await tx

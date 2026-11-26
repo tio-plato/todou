@@ -617,9 +617,15 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
       const moving = move(t, admin, A, source.number, B);
       try {
         await reach(paused.reached, moving);
-        // An hour on: far past any lease the move could have renewed.
-        const later = new Date(Date.now() + 60 * 60 * 1000);
-        expect(await sweepMoves(t.ctx, later)).toBe(1);
+        // A mover that stopped renewing: its lease has run out. Its timer
+        // would renew it only a fifth of a lease from now, and by then the
+        // row is the sweep's.
+        await t.ctx.router
+          .system()
+          .update(issueMoves)
+          .set({ leasedUntil: new Date(Date.now() - 1000) })
+          .where(eq(issueMoves.fromNumber, source.number));
+        expect(await sweepMoves(t.ctx)).toBe(1);
         expect(
           (await req(t, `/projects/${A}/issues/${source.number}`, admin))
             .status,
