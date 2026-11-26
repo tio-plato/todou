@@ -209,10 +209,10 @@ export type Status = z.infer<typeof Status>;
 /**
  * A writable status name: canonical by the rule label names follow
  * (`canonicalizeLabelName`), since `issue list --status` trims each name it
- * is given and could never select a stored `"Done "`. Blank and length are
- * checked on the canonical form, so a padded 60-character name fits, while
- * the messages speak of what the caller sent. Read schemas stay loose: the
- * API lists whatever name is stored.
+ * is given and could never select a stored `"Done "`; stored as NFC. Blank
+ * and length are checked on the canonical form, so a padded 60-character
+ * name fits, while the messages speak of what the caller sent. Read schemas
+ * stay loose: the API lists whatever name is stored.
  */
 export const StatusName = z
   .string()
@@ -305,11 +305,46 @@ export const CANONICAL_STATUSES: ReadonlyArray<{
 ];
 
 /**
- * The name a label or a status is actually stored under: trimmed, spaces
- * collapsed.
+ * The name a label or a status is actually stored under: composed (Unicode
+ * NFC, so "e" plus a combining accent is stored as the one "é" it looks
+ * like), trimmed, spaces collapsed.
  */
 export function canonicalizeLabelName(input: string): string {
-  return input.trim().replace(/\s+/g, " ");
+  return input.normalize("NFC").trim().replace(/\s+/g, " ");
+}
+
+/**
+ * The yardstick two status or label names are compared with: one name
+ * whatever its case or Unicode composition. Each code point is lowercased
+ * on its own, the way the database's lower() does, and the letters
+ * databases fold differently count as one: a capital dotted I is plain i,
+ * and so is i with a combining dot above, a word-final capital sigma is σ,
+ * and ς counts as σ. The API so refuses whatever the unique index on
+ * lower() would under the usual locales; a Turkish one still folds I to ı.
+ * Whitespace is left as it is: a lookup does not respace what it is given.
+ */
+export function nameKey(name: string): string {
+  let key = "";
+  for (const c of name.normalize("NFC")) {
+    key += c === "\u0130" ? "i" : c.toLowerCase();
+  }
+  return key.replaceAll("i\u0307", "i").replaceAll("\u03c2", "\u03c3");
+}
+
+/**
+ * The entry `name` names: its exact spelling first, else the one with the
+ * same `nameKey`. Two entries can share a key only where the database's
+ * `lower()` folds less than `nameKey` (see the migration).
+ */
+export function findByName<T extends { name: string }>(
+  items: readonly T[],
+  name: string,
+): T | undefined {
+  const key = nameKey(name);
+  return (
+    items.find((item) => item.name === name) ??
+    items.find((item) => nameKey(item.name) === key)
+  );
 }
 
 /**
@@ -321,7 +356,8 @@ export function canonicalizeLabelName(input: string): string {
  *   renamed or deleted from the CLI again.
  * - **Canonical whitespace.** The CLI trims each comma-separated piece, so
  *   `" bug "` would be just as unreachable. Collapsing runs of whitespace
- *   comes along for free and matches what the web already sent.
+ *   comes along for free and matches what the web already sent. The name
+ *   is stored as NFC.
  *
  * Read schemas stay unconstrained on purpose: rows that predate this rule
  * must remain listable and renameable — the point is to stop new ones, not
