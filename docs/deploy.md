@@ -83,6 +83,25 @@ filename migration](#relabelling-attachment-links-after-the-filename-migration).
 reached a moved card at its old address or raced the move, which nothing can
 restore any more.
 
+The `canonical_names` migration changes existing data too: it rewrites every
+status and label name into the form the API stores: trimmed, runs of
+whitespace collapsed to one space. A name whose canonical form another status
+(or label) of the same project already holds becomes `<name> (<id>)`, and that
+suffix may take it past 60 characters. A name that is
+all whitespace becomes `Status <id>` or `Label <id>`. Cards refer to statuses
+and labels by id, so no link goes stale and there is nothing to run. A status
+whose chart role was never chosen takes the default for its new name, so one
+that becomes `Done`, `Shipped` or `Invalid` counts as such in the charts from
+then on. On a database whose encoding is not UTF-8, only ASCII whitespace is
+trimmed. The old spellings are kept nowhere, so take a backup first if you may
+want them back. The migration runs once: a name an older version writes while
+it runs or after it, during a rolling deploy or after a rollback, keeps its
+whitespace through the next upgrade, so rename such a name by hand. With an
+older version still writing, the upgrade can also fail once, on a deadlock
+with those writes or on a database whose default isolation is repeatable read;
+all of it rolls back, and starting the server or `todou-server migrate` again
+runs it anew.
+
 ### What project search needs from PostgreSQL
 
 Project search runs on `pg_trgm`, so a `postgres://` deployment has two
