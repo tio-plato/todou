@@ -86,6 +86,12 @@ describe("verdictOf", () => {
     expect(verdictOf("label", "nope", KNOWN)).toBe("invalid");
   });
 
+  it("knows a status or label name in any Unicode composition", () => {
+    expect(verdictOf("status", "cafe\u0301", { status: ["Caf\u00e9"] })).toBe(
+      "valid",
+    );
+  });
+
   it("stays quiet while the names are still loading", () => {
     // Flashing every value amber and back as the labels arrive is worse than
     // being briefly non-committal.

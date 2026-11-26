@@ -10,6 +10,7 @@ import type {
 import {
   actionTextProblem,
   canonicalizeLabelName,
+  findByName,
   SKIP_REASON_LABEL,
   selectHidable,
 } from "@todou/shared";
@@ -154,7 +155,7 @@ export function buildCommandRegistry({
   const commands: CommandDef[] = [];
 
   const statusByName = (name: string): Status | undefined =>
-    statuses.find((s) => s.name.toLowerCase() === name.trim().toLowerCase());
+    findByName(statuses, name.trim());
   const statusCommand = (
     name: string,
     target: Status,
@@ -190,10 +191,8 @@ export function buildCommandRegistry({
     },
   });
 
-  const labelByName = (name: string): Label | undefined => {
-    const wanted = canonicalizeLabelName(name).toLowerCase();
-    return labels.find((l) => l.name.toLowerCase() === wanted);
-  };
+  const labelByName = (name: string): Label | undefined =>
+    findByName(labels, canonicalizeLabelName(name));
   for (const [name, type] of [
     ["label", "label_add"],
     ["unlabel", "label_remove"],

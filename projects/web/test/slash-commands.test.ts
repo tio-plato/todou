@@ -190,6 +190,23 @@ describe("recognizeCommandLine", () => {
     });
   });
 
+  it("prefers the exact spelling where two names differ only in case", () => {
+    const twins = buildCommandRegistry({
+      statuses: [
+        status(5, "\u00c9tat", "open", 0),
+        status(6, "\u00e9tat", "open", 1),
+      ],
+      labels: [],
+      members: [],
+      me: ME,
+      surface: "comment",
+    });
+    expect(recognizeCommandLine("/status \u00e9tat", twins)?.compiled).toEqual({
+      type: "status",
+      status_id: 6,
+    });
+  });
+
   it("resolves me and @-prefixed logins for assignment", () => {
     expect(recognizeCommandLine("/assign me", registry)?.compiled).toEqual({
       type: "assign",
