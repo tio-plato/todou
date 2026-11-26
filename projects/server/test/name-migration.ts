@@ -1,7 +1,7 @@
 /**
- * What the tests of the migrations that rewrite status and label names
- * share: their statements, the two tables they touch, and a way to run a
- * scenario that leaves nothing behind.
+ * What the tests of the migrations and the pass that rewrite status and
+ * label names share: a migration's statements, the two tables they touch,
+ * and a way to run a scenario that leaves nothing behind.
  */
 
 import { readFile } from "node:fs/promises";

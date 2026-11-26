@@ -1,27 +1,25 @@
 /**
- * The canonical_names migration exercised against a real project schema.
+ * The canonical name pass (src/db/canonical-names.ts) exercised against a
+ * real project schema.
  *
- * By the time a test app is up the migration has already run, on tables that
- * held no such names; seeding them and running it again is the upgrade a
- * deployment with older rows goes through. Shared by the PGlite and the
- * real-postgres suite because the migration is SQL, not TypeScript: passing
- * on one driver says nothing about the other.
+ * By the time a test app is up its tables hold no names an older server
+ * could have stored; seeding them and running the pass is what the next
+ * migration of a deployment holding them does. Shared by the PGlite and the
+ * real-postgres suite because the pass is SQL: passing on one driver says
+ * nothing about the other.
  */
 
-import { sql } from "drizzle-orm";
 import { expect } from "vitest";
+import { canonicalizeNames } from "../src/db/canonical-names.ts";
 import type { Db } from "../src/db/driver.ts";
-import { migrationStatements, rolledBack, TABLES } from "./name-migration.ts";
-
-async function migrate(db: Db): Promise<void> {
-  for (const statement of await migrationStatements("canonical_names")) {
-    await db.execute(sql.raw(statement));
-  }
-}
+import { rolledBack, TABLES } from "./name-migration.ts";
 
 /**
  * The code points of the Basic Multilingual Plane past NUL, split by whether
- * JavaScript's `\s` (and so `trim()`) counts them as space.
+ * JavaScript's `\s` (and so `trim()`) counts them as space. Left out of
+ * `other` are those NFC may change wherever they stand, the combining marks
+ * and the code points with a decomposition: a run of them would be reordered
+ * or recomposed, which is M6's business.
  */
 function codePoints(): { space: string[]; other: string[] } {
   const space: string[] = [];
@@ -29,7 +27,8 @@ function codePoints(): { space: string[]; other: string[] } {
   for (let code = 1; code <= 0xffff; code++) {
     if (code >= 0xd800 && code <= 0xdfff) continue;
     const c = String.fromCharCode(code);
-    (/\s/.test(c) ? space : other).push(c);
+    if (/\s/.test(c)) space.push(c);
+    else if (!/\p{M}/u.test(c) && c.normalize("NFD") === c) other.push(c);
   }
   return { space, other };
 }
@@ -43,10 +42,10 @@ const hex = (c: string) =>
 export type ProjectIds = { projectA: number; projectB: number };
 
 /**
- * Seed names stored before the rule, run the migration, and check each table
+ * Seed names stored before the rule, run the pass, and check each table
  * comes out canonical, with clashes and blank names renamed by id.
  */
-export async function checkCanonicalNamesMigration(
+export async function checkCanonicalNames(
   db: Db,
   ids: ProjectIds,
 ): Promise<void> {
@@ -104,10 +103,31 @@ async function scenario(db: Db, ids: ProjectIds): Promise<void> {
     const other = await add(b, "Shared ");
     const elsewhere = new Map([[other, "Shared"]]);
 
-    seeded.push({ table, spaced, clashes, blanks, elsewhere });
+    // M5: a name equal to another under lower() is a clash, as the unique
+    // index has it; the canonical one keeps its spelling.
+    const p1 = await add(a, "Parked");
+    const p2 = await add(a, "parked ");
+    const cased = new Map([
+      [p1, "Parked"],
+      [p2, `parked (${p2})`],
+    ]);
+
+    // M6: a name is composed as well as trimmed.
+    const c1 = await add(a, "Cafe\u0301  ");
+    const composed = new Map([[c1, "Caf\u00e9"]]);
+
+    seeded.push({
+      table,
+      spaced,
+      clashes,
+      blanks,
+      elsewhere,
+      cased,
+      composed,
+    });
   }
 
-  await migrate(db);
+  await canonicalizeNames(db);
 
   for (const { table, ...groups } of seeded) {
     for (const [group, expected] of Object.entries(groups)) {

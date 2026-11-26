@@ -9,6 +9,7 @@ import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import { drizzle as drizzlePglite } from "drizzle-orm/pglite";
 import { migrate as migratePglite } from "drizzle-orm/pglite/migrator";
 import pg from "pg";
+import { canonicalizeNames } from "./canonical-names.ts";
 import { PGLITE_EXTENSIONS } from "./pglite-extensions.ts";
 import { sqlStateOf } from "./sql-state.ts";
 import { WorkerPgliteClient } from "./worker-client.ts";
@@ -106,7 +107,10 @@ export async function openDb(
       db: db as unknown as Db,
       kind,
       url,
-      migrate: (tier) => migratePglite(db, MIGRATIONS[tier]),
+      migrate: async (tier) => {
+        await migratePglite(db, MIGRATIONS[tier]);
+        if (tier === "project") await canonicalizeNames(db as unknown as Db);
+      },
       close: () => client.close(),
     };
   }
@@ -122,7 +126,13 @@ export async function openDb(
     kind,
     url,
     migrate: (tier) =>
-      migrateNodePgQueued(pool, tier, MIGRATIONS[tier], opts?.logger),
+      migrateNodePgQueued(
+        pool,
+        tier,
+        MIGRATIONS[tier],
+        opts?.logger,
+        tier === "project" ? canonicalizeNames : undefined,
+      ),
     close: () => pool.end(),
   };
 }
