@@ -105,11 +105,11 @@ export async function planMove(
     row,
   );
 
-  const lineage = await lineageOf(ctx.router.system(), source.id, number);
-  const reinhabit =
-    lineage === null
-      ? null
-      : await tombstoneNumberOf(ctx.router.system(), lineage, target.id);
+  const { lineage, reinhabit } = await addressPlan(
+    ctx.router.system(),
+    { projectId: source.id, number },
+    target.id,
+  );
 
   // Two independent questions. Collapsing them into one would misjudge the
   // deployment where A and B share a dedicated database while the system
@@ -148,12 +148,14 @@ export function assertStillMovable(row: IssueRow): void {
 }
 
 /**
- * The row-derived half of the plan, decided again from the held row,
- * because that row is what gets copied: an edit that committed after
- * `planMove` read the card would otherwise be dropped by the copy, or carry
- * the status and labels it had before. Each handle has to be the one the
- * caller holds the card through — a colocated move passes its transaction
- * for all three.
+ * The plan decided again from the held row. The row-derived half, because
+ * that row is what gets copied: an edit that committed after `planMove`
+ * read the card would otherwise be dropped by the copy, or carry the status
+ * and labels it had before. The address half, because a card that moved
+ * away and back after the plan left a tombstone in the target the plan
+ * never saw; held and arrived, the card's addresses cannot change any more.
+ * Each handle has to be the one the caller holds the card through — a
+ * colocated move passes its transaction for all three.
  *
  * The arrival is asked again too. A card that moved away after the plan
  * and is on its way back into the same row started an arrival the plan
@@ -166,6 +168,11 @@ export async function replanHeld(
   handles: { source: Db; target: Db; system: Db },
 ): Promise<MovePlan> {
   await assertArrived(handles, row);
+  const { lineage, reinhabit } = await addressPlan(
+    handles.system,
+    { projectId: plan.source.project.id, number: row.number },
+    plan.target.project.id,
+  );
   const status = await mapStatus(
     handles.source,
     handles.target,
@@ -192,7 +199,26 @@ export async function replanHeld(
     labelIds: labelMap.ids,
     assigneeIds: assigneeMap.ids,
     dropped: { labels: labelMap.dropped, assignees: assigneeMap.dropped },
+    reinhabit,
+    lineage,
   };
+}
+
+/**
+ * The card's lineage, if it has ever moved, and the number its tombstone
+ * still holds in the target, which a card moving back takes again.
+ */
+async function addressPlan(
+  system: Db,
+  source: { projectId: number; number: number },
+  targetId: number,
+): Promise<{ lineage: number | null; reinhabit: number | null }> {
+  const lineage = await lineageOf(system, source.projectId, source.number);
+  const reinhabit =
+    lineage === null
+      ? null
+      : await tombstoneNumberOf(system, lineage, targetId);
+  return { lineage, reinhabit };
 }
 
 /**
