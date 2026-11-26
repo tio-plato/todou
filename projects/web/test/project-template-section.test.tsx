@@ -620,6 +620,58 @@ describe("applying a template", () => {
     expect(box("Change default status Todo → Review").checked).toBe(false);
   });
 
+  it("lights an arrow while its box is ticked, wherever the pointer is", async () => {
+    fakeServer();
+    renderPage();
+    await pickKanban();
+    const name = "Move Doing below Todo";
+    const litOf = (tick: string) =>
+      document
+        .querySelector(`g[data-arrow-tick="${tick}"]`)
+        ?.getAttribute("data-lit") ?? null;
+    const lit = () => litOf("status.move:2");
+    await waitFor(() => expect(lit()).toBe("true"));
+    fireEvent.click(box(name));
+    expect(lit()).toBeNull();
+    hover(rowOf(name));
+    expect(lit()).toBeNull();
+    // A finger on the row.
+    fireEvent.pointerUp(rowOf(name), { pointerType: "touch" });
+    expect(lit()).toBeNull();
+    fireEvent.click(box(name));
+    expect(lit()).toBe("true");
+
+    // The default's arrow, by its own box too.
+    expect(litOf("status.default")).toBe("true");
+    fireEvent.click(box("Change default status Todo → Review"));
+    expect(litOf("status.default")).toBeNull();
+  });
+
+  it("says before Apply how many issues each label deletion takes the label off", async () => {
+    fakeServer();
+    renderPage();
+    await pickKanban();
+    const webName = "Delete label area:web — comes off 3 issues";
+    const web = () => within(rowOf(webName)).getByText("comes off 3 issues");
+    expect(web().closest("[data-cell]")?.getAttribute("data-cell")).toBe(
+      "before",
+    );
+    expect(
+      within(
+        rowOf("Delete label kind:docs — comes off 2 issues (1 in the trash)"),
+      ).getByText("comes off 2 issues (1 in the trash)"),
+    ).toBeTruthy();
+    expect(
+      within(rowOf("Delete label wontfix — on no issue")).queryByText(
+        /comes off|on no issue/,
+      ),
+    ).toBeNull();
+    fireEvent.click(box(webName));
+    expect(web().closest("[data-cell]")?.getAttribute("data-cell")).toBe(
+      "before",
+    );
+  });
+
   it("selects a section's deletions from its heading, and clears them again", async () => {
     fakeServer();
     renderPage();

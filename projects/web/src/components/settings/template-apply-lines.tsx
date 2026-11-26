@@ -55,21 +55,20 @@ function route(sx: number, sy: number, lx: number, ey: number, tx: number) {
  * The table's arrows, drawn over it from where its rows are measured to
  * be: from the end of the Before side's content, along the row to a lane
  * of the middle column, down it, and across the box in the row it ends in
- * to an open tip short of the After side. A box sits on its arrow because
- * the arrow is drawn through the box's measured middle.
+ * to an open tip short of the After side, or meeting the line there. A box
+ * sits on its arrow because the arrow is drawn through the box's measured
+ * middle.
  *
- * Faint until `hot`; dashed while its box is not ticked. The boxes and the
- * drawings in the cells paint over it, so an arrow passing a row runs
- * behind what that row holds.
+ * Faint while its box is not ticked; dashed while what it points to is not
+ * drawn there. The boxes and the drawings in the cells paint over it, so an
+ * arrow passing a row runs behind what that row holds.
  */
 export function MoveLines({
   arrows,
   lanes,
-  hot,
 }: {
   arrows: TableArrow[];
   lanes: number;
-  hot: ReadonlySet<number>;
 }) {
   const ref = useRef<SVGSVGElement>(null);
   const [drawn, setDrawn] = useState<Drawn[]>([]);
@@ -83,9 +82,12 @@ export function MoveLines({
   }, []);
 
   const measure = useCallback(() => {
-    const table = ref.current?.parentElement;
-    if (!table) return;
-    const origin = table.getBoundingClientRect();
+    const svg = ref.current;
+    const table = svg?.parentElement;
+    if (!svg || !table) return;
+    // From the drawing's own corner: it fills the table's padding box, inside
+    // the table's border.
+    const origin = svg.getBoundingClientRect();
     const box = (el: Element | null | undefined) => {
       if (!el) return null;
       const r = el.getBoundingClientRect();
@@ -122,16 +124,29 @@ export function MoveLines({
               x: box(before)?.right,
               y: box(before.querySelector("[data-rule]"))?.mid,
             }
-          : (() => {
-              const anchor = box(
-                from.querySelector(
-                  arrow.start === "default"
-                    ? '[data-anchor="default"]'
-                    : '[data-anchor="before"]',
-                ),
-              );
-              return { x: anchor && anchor.right + START_GAP, y: anchor?.mid };
-            })();
+          : arrow.start === "default"
+            ? (() => {
+                const badge = box(
+                  from.querySelector('[data-anchor="default"]'),
+                );
+                return { x: badge && badge.right + START_GAP, y: badge?.mid };
+              })()
+            : (() => {
+                // Along the status's first line, past all it holds there: a
+                // wrapped cell's later lines sit below the arrow.
+                const anchor = from.querySelector('[data-anchor="before"]');
+                const pill = anchor?.querySelector("[data-look]");
+                if (!anchor || !pill) return { x: null, y: null };
+                const line = pill.getBoundingClientRect();
+                const ends = [...anchor.children]
+                  .map((el) => el.getBoundingClientRect())
+                  .filter((r) => r.top < line.bottom)
+                  .map((r) => r.right);
+                return {
+                  x: Math.max(line.right, ...ends) - origin.left + START_GAP,
+                  y: box(pill)?.mid,
+                };
+              })();
       const end =
         box(
           arrow.tick
@@ -145,7 +160,10 @@ export function MoveLines({
         return;
       }
       const pad = Number.parseFloat(getComputedStyle(after).paddingLeft) || 0;
-      const tipX = cell.left + pad - TIP_GAP;
+      // The line's arrow meets the line where it starts.
+      const rule =
+        arrow.end === "line" ? box(after.querySelector("[data-rule]")) : null;
+      const tipX = rule?.left ?? cell.left + pad - TIP_GAP;
       const laneX = right - (lanes - arrow.lane - 0.5) * spacing;
       const endY = end.mid;
       out.push({
@@ -189,7 +207,7 @@ export function MoveLines({
 
   // The lit ones last, so they cross over the faint ones.
   const ordered = [...drawn].sort(
-    (a, b) => Number(hot.has(a.index)) - Number(hot.has(b.index)),
+    (a, b) => Number(a.arrow.on) - Number(b.arrow.on),
   );
   return (
     <svg
@@ -198,7 +216,7 @@ export function MoveLines({
       className="pointer-events-none absolute inset-0 z-1 size-full overflow-visible"
     >
       {ordered.map((line) => {
-        const lit = hot.has(line.index);
+        const { on } = line.arrow;
         return (
           <g
             key={line.index}
@@ -206,7 +224,7 @@ export function MoveLines({
             data-arrow-tick={line.arrow.tick ?? undefined}
             data-from={line.arrow.from}
             data-to={line.arrow.to}
-            data-lit={lit || undefined}
+            data-lit={on || undefined}
             data-lane-x={line.laneX}
             data-end-y={line.endY}
             data-tip-x={line.tipX}
@@ -218,8 +236,8 @@ export function MoveLines({
                 ? "var(--change-meaning)"
                 : "var(--change-move)"
             }
-            strokeWidth={lit ? 2 : 1.5}
-            strokeOpacity={lit ? 1 : 0.4}
+            strokeWidth={on ? 2 : 1.5}
+            strokeOpacity={on ? 1 : 0.4}
             strokeLinecap="round"
             strokeLinejoin="round"
           >

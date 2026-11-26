@@ -360,6 +360,17 @@ function LabelCell({ side }: { side: LabelSide }) {
 }
 
 const CELL = "relative flex min-w-0 items-center px-3 py-1.5";
+/*
+ * A status row's cells hold their content to its first line, so that its
+ * boxes, and an arrow drawn through one, stay beside the statuses when a
+ * cell wraps. The top padding puts a single line where centring it below
+ * the row's border in its min-h-11 would: a pill is 1.25rem and 2px of
+ * border tall, a box 1.25rem.
+ */
+const STATUS_CELL =
+  "relative flex min-w-0 items-start px-3 pt-[calc(0.75rem-1.5px)] pb-1.5";
+const STATUS_MID =
+  "relative flex items-start justify-end gap-1 pt-[calc(0.75rem-0.5px)] pb-1.5 pr-2";
 const HOT = "bg-accent";
 
 type SelectProps = {
@@ -471,19 +482,17 @@ export function ApplyTable({
 }) {
   const statusId = useId();
   const labelId = useId();
-  // The row the pointer is on, the row last tapped, and the box with the
-  // keyboard in it: each lights the arrows that start or end there.
+  // The row the pointer is on and the box with the keyboard in it: each
+  // marks the cells its arrows start and end in.
   const [hover, setHover] = useState<number | null>(null);
-  const [pinned, setPinned] = useState<number | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const name = (row: ChangeRow) => boxName(row, plan, statuses);
 
-  const lit = hover ?? pinned;
   const hot = new Set(
     statuses.arrows.flatMap((arrow, i) =>
-      arrow.from === lit ||
-      arrow.to === lit ||
+      arrow.from === hover ||
+      arrow.to === hover ||
       (focus !== null && arrow.tick === focus)
         ? [i]
         : [],
@@ -541,7 +550,6 @@ export function ApplyTable({
               hotBefore={hotBefore.has(index)}
               hotAfter={hotAfter.has(index)}
               onHover={setHover}
-              onPin={setPinned}
               onFocusTick={setFocus}
               name={name}
               {...select}
@@ -578,7 +586,7 @@ export function ApplyTable({
           ))}
         </RowGroup>
       )}
-      <MoveLines arrows={statuses.arrows} lanes={statuses.lanes} hot={hot} />
+      <MoveLines arrows={statuses.arrows} lanes={statuses.lanes} />
     </Table>
   );
 }
@@ -589,7 +597,6 @@ function StatusRow({
   hotBefore,
   hotAfter,
   onHover,
-  onPin,
   onFocusTick,
   name,
   selected,
@@ -600,7 +607,6 @@ function StatusRow({
   hotBefore: boolean;
   hotAfter: boolean;
   onHover: (index: number | null) => void;
-  onPin: (index: number) => void;
   onFocusTick: (tick: string | null) => void;
   name: (row: ChangeRow) => string;
 }) {
@@ -618,10 +624,6 @@ function StatusRow({
       }}
       onPointerLeave={(e) => {
         if (e.pointerType === "mouse") onHover(null);
-      }}
-      // Touch has no hover: a tap lights the row until another is tapped.
-      onPointerUp={(e) => {
-        if (e.pointerType !== "mouse") onPin(index);
       }}
       onFocus={(e) => {
         const tick = (e.target as HTMLElement)
@@ -670,7 +672,10 @@ function StatusRow({
         </>
       ) : (
         <>
-          <Cell data-cell="before" className={cn(CELL, hotBefore && HOT)}>
+          <Cell
+            data-cell="before"
+            className={cn(STATUS_CELL, hotBefore && HOT)}
+          >
             {row.before && (
               <StatusCell
                 face={row.before}
@@ -679,10 +684,7 @@ function StatusRow({
               />
             )}
           </Cell>
-          <Cell
-            data-cell="mid"
-            className="relative flex items-center justify-end gap-1 py-1.5 pr-2"
-          >
+          <Cell data-cell="mid" className={STATUS_MID}>
             <Boxes
               ticks={row.ticks}
               name={name}
@@ -690,7 +692,7 @@ function StatusRow({
               onSelect={onSelect}
             />
           </Cell>
-          <Cell data-cell="after" className={cn(CELL, hotAfter && HOT)}>
+          <Cell data-cell="after" className={cn(STATUS_CELL, hotAfter && HOT)}>
             {row.lineAbove && (
               <span
                 data-look="solid"
@@ -727,6 +729,11 @@ function LabelRow({
   name: (row: ChangeRow) => string;
 }) {
   const { group } = row;
+  // The cards a deletion takes the label off, there before Apply asks.
+  const loss = row.ticks.find(
+    (tick): tick is Extract<ChangeRow, { type: "label_delete" }> =>
+      tick.type === "label_delete",
+  );
   const cells = (
     <Row
       className={cn(
@@ -734,8 +741,21 @@ function LabelRow({
         row.tint && TINT[row.tint],
       )}
     >
-      <Cell data-cell="before" className={CELL}>
+      <Cell
+        data-cell="before"
+        className={cn(CELL, "flex-wrap gap-x-3 gap-y-1")}
+      >
         {row.before && <LabelCell side={row.before} />}
+        {loss && loss.issues + loss.trashed > 0 && (
+          <span
+            className={cn(
+              "text-sm",
+              row.tint ? "text-foreground" : "text-muted-foreground",
+            )}
+          >
+            {labelUses(loss.issues, loss.trashed)}
+          </span>
+        )}
       </Cell>
       <Cell
         data-cell="mid"
