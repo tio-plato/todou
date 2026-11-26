@@ -619,10 +619,11 @@ describe("applying a template", () => {
     renderPage();
     await pickKanban();
     const name = "Move Doing below Todo";
-    const lit = () =>
+    const litOf = (tick: string) =>
       document
-        .querySelector('g[data-arrow-tick="status.move:2"]')
+        .querySelector(`g[data-arrow-tick="${tick}"]`)
         ?.getAttribute("data-lit") ?? null;
+    const lit = () => litOf("status.move:2");
     await waitFor(() => expect(lit()).toBe("true"));
     fireEvent.click(box(name));
     expect(lit()).toBeNull();
@@ -633,6 +634,11 @@ describe("applying a template", () => {
     expect(lit()).toBeNull();
     fireEvent.click(box(name));
     expect(lit()).toBe("true");
+
+    // The default's arrow, by its own box too.
+    expect(litOf("status.default")).toBe("true");
+    fireEvent.click(box("Change default status Todo → Review"));
+    expect(litOf("status.default")).toBeNull();
   });
 
   it("says before Apply how many issues each label deletion takes the label off", async () => {

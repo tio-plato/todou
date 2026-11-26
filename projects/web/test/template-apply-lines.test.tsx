@@ -16,9 +16,17 @@ const at = (el: Element | null) => {
 
 /**
  * Each element where its `data-at` puts it, as a browser lays it out; the
- * drawing fills its table inside the table's 1px border.
+ * drawing fills its table inside the table's 1px border, which the table's
+ * `clientLeft` and `clientTop` read too.
  */
 function stubRects() {
+  for (const side of ["clientLeft", "clientTop"] as const) {
+    vi.spyOn(HTMLElement.prototype, side, "get").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      return this.querySelector(":scope > svg") ? 1 : 0;
+    });
+  }
   vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
     function (this: Element) {
       if (this.localName === "svg") {
@@ -177,9 +185,11 @@ describe("MoveLines", () => {
           {cell(
             "before",
             "101,237,280,80",
-            // The pill on the first line; what follows it wraps below.
+            // The pill and a badge on the first line; what follows them
+            // wraps below.
             <span data-anchor="before" data-at="113,245,200,66">
               <span data-look data-at="113,245,60,22" />
+              <span data-at="181,245,50,22" />
               <span data-at="113,271,200,40" />
             </span>,
           )}
@@ -198,6 +208,6 @@ describe("MoveLines", () => {
         />
       </div>,
     );
-    expect(startOf(0)).toEqual({ x: 173 + 8 - 101, y: 256 - 201 });
+    expect(startOf(0)).toEqual({ x: 231 + 8 - 101, y: 256 - 201 });
   });
 });
