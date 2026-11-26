@@ -635,6 +635,31 @@ describe("applying a template", () => {
     expect(lit()).toBe("true");
   });
 
+  it("says before Apply how many issues each label deletion takes the label off", async () => {
+    fakeServer();
+    renderPage();
+    await pickKanban();
+    const webName = "Delete label area:web — comes off 3 issues";
+    const web = () => within(rowOf(webName)).getByText("comes off 3 issues");
+    expect(web().closest("[data-cell]")?.getAttribute("data-cell")).toBe(
+      "before",
+    );
+    expect(
+      within(
+        rowOf("Delete label kind:docs — comes off 2 issues (1 in the trash)"),
+      ).getByText("comes off 2 issues (1 in the trash)"),
+    ).toBeTruthy();
+    expect(
+      within(rowOf("Delete label wontfix — on no issue")).queryByText(
+        /comes off|on no issue/,
+      ),
+    ).toBeNull();
+    fireEvent.click(box(webName));
+    expect(web().closest("[data-cell]")?.getAttribute("data-cell")).toBe(
+      "before",
+    );
+  });
+
   it("selects a section's deletions from its heading, and clears them again", async () => {
     fakeServer();
     renderPage();

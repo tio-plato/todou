@@ -729,6 +729,11 @@ function LabelRow({
   name: (row: ChangeRow) => string;
 }) {
   const { group } = row;
+  // The cards a deletion takes the label off, there before Apply asks.
+  const loss = row.ticks.find(
+    (tick): tick is Extract<ChangeRow, { type: "label_delete" }> =>
+      tick.type === "label_delete",
+  );
   const cells = (
     <Row
       className={cn(
@@ -736,8 +741,21 @@ function LabelRow({
         row.tint && TINT[row.tint],
       )}
     >
-      <Cell data-cell="before" className={CELL}>
+      <Cell
+        data-cell="before"
+        className={cn(CELL, "flex-wrap gap-x-3 gap-y-1")}
+      >
         {row.before && <LabelCell side={row.before} />}
+        {loss && loss.issues + loss.trashed > 0 && (
+          <span
+            className={cn(
+              "text-sm",
+              row.tint ? "text-foreground" : "text-muted-foreground",
+            )}
+          >
+            {labelUses(loss.issues, loss.trashed)}
+          </span>
+        )}
       </Cell>
       <Cell
         data-cell="mid"
