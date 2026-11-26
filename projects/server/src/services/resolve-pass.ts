@@ -901,6 +901,10 @@ export type WriteGate = { id: number; actor: UserRow; role: MemberRole };
  * 3. Cards before `project_meta`: creating a card locks the cards it
  *    touches, then takes a number; a same-database move locks its card, then
  *    the target's `project_meta`.
+ *    Cleaning up a deleted project takes all its cards FOR UPDATE, in one
+ *    statement in ascending id, then its `project_meta`, so that a card
+ *    still being created there either finishes first or waits for the
+ *    cleanup.
  * 4. A row a transaction will update is locked in that update's mode before
  *    any statement of the transaction takes a weaker lock on it, such as the
  *    KEY SHARE a foreign-key check takes on the parent of a row it inserts.

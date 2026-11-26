@@ -33,7 +33,12 @@ import {
   specVersions,
   statuses,
 } from "../db/project-schema.ts";
-import { projectMembers, projects, slugHistory } from "../db/system-schema.ts";
+import {
+  issueBlocks,
+  projectMembers,
+  projects,
+  slugHistory,
+} from "../db/system-schema.ts";
 import {
   ConflictError,
   SlugReservedError,
@@ -705,6 +710,20 @@ export async function deleteProject(
   // below only leave data behind, logged rather than fatal — and the list
   // is what the hourly tick retries from.
   await system.transaction(async (tx) => {
+    // The delete cascades to the block edges at either end of this project:
+    // locked first in id order, as every write of several edges does (see
+    // lockIssueRows).
+    await tx
+      .select({ id: issueBlocks.id })
+      .from(issueBlocks)
+      .where(
+        or(
+          eq(issueBlocks.blockerProjectId, project.id),
+          eq(issueBlocks.blockedProjectId, project.id),
+        ),
+      )
+      .orderBy(asc(issueBlocks.id))
+      .for("update");
     await enlistBlobs(tx, blobs);
     await tx.delete(projects).where(eq(projects.id, project.id));
   });
@@ -732,7 +751,40 @@ export async function deleteProject(
       await rm(url.slice("pglite://".length), { recursive: true, force: true });
     } else {
       const db = await ctx.router.forProject(routeInfoOf(project));
+      // The deletes below meet the rows in whatever order their scans do.
+      // So the transaction first waits for the writes still at work on
+      // these cards, taking the cards in id order the way those writes do,
+      // then for a card still being created, through the project_meta row
+      // it takes its number from (cards before project_meta), which also
+      // keeps it from holding a status the deletes wait for, then the read
+      // positions in the order marking everything read takes them, then the
+      // labels, before deleting the cards cascades to their label rows: a
+      // label deleted meanwhile takes the label first and then those rows
+      // (see lockIssueRows).
       await db.transaction(async (tx) => {
+        await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(eq(issues.projectId, project.id))
+          .orderBy(asc(issues.id))
+          .for("update");
+        await tx
+          .select({ projectId: projectMeta.projectId })
+          .from(projectMeta)
+          .where(eq(projectMeta.projectId, project.id))
+          .for("update");
+        await tx
+          .select({ id: issueReads.id })
+          .from(issueReads)
+          .where(eq(issueReads.projectId, project.id))
+          .orderBy(asc(issueReads.id))
+          .for("update");
+        await tx
+          .select({ id: labels.id })
+          .from(labels)
+          .where(eq(labels.projectId, project.id))
+          .orderBy(asc(labels.id))
+          .for("update");
         for (const table of PROJECT_OWNED_TABLES) {
           await tx.delete(table).where(eq(table.projectId, project.id));
         }
