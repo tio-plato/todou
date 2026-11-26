@@ -109,7 +109,7 @@ export async function openDb(
       url,
       migrate: async (tier) => {
         await migratePglite(db, MIGRATIONS[tier]);
-        if (tier === "project") await canonicalizeNames(db as unknown as Db);
+        if (tier === "project") await canonicalizeNames(db);
       },
       close: () => client.close(),
     };
@@ -247,7 +247,7 @@ export async function migrateNodePgQueued(
         await delay(MIGRATION_LOCK_RETRY_MS);
       }
     }
-    await afterwards?.(db as unknown as Db);
+    await afterwards?.(db);
   } finally {
     client.release(true);
   }
