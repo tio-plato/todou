@@ -440,6 +440,49 @@ describe("the table of statuses", () => {
     expect(moved.rows[solid?.to ?? -1]).toMatchObject({ after: "solid" });
   });
 
+  it("lights the line's arrow with its own box, though it stays dashed while its status stays put", () => {
+    // As above: X goes to the end and the line onto it.
+    const project: Plan["project"] = {
+      statuses: ["X", "A", "B"].map((name, i) => ({
+        id: i + 1,
+        name,
+        color: "#6b7280",
+        category: "open",
+        role: "remaining",
+        is_default: name === "X",
+      })),
+      line: 3,
+      labels: [],
+    };
+    const template: Plan["template"] = {
+      statuses: [
+        st("A", "open", "#6b7280", "remaining"),
+        st("B", "open", "#6b7280", "remaining"),
+        st("X", "open", "#6b7280", "remaining", {
+          is_default: true,
+          block_clear: true,
+        }),
+      ],
+      labels: [],
+    };
+    const rows: ChangeRow[] = [
+      { ...base("status.move:1", "statuses", "move"), type: "status_move" },
+      lineRow("B", "X"),
+    ];
+    const table = statusTable(
+      { project, template },
+      rows,
+      new Set(["status.line"]),
+    );
+    const line = table.arrows.find((a) => a.start === "line");
+    expect(line?.on).toBe(true);
+    expect(line?.ticked).toBe(false);
+    expect(table.arrows.find((a) => a.start === "status")?.on).toBe(false);
+
+    const none = statusTable({ project, template }, rows, new Set());
+    expect(none.arrows.find((a) => a.start === "line")?.on).toBe(false);
+  });
+
   it("keeps the default's box and a status's tint in their rows as its move is ticked", () => {
     // The template makes M the default, moves it to the end, and closes it.
     const project: Plan["project"] = {

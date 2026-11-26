@@ -82,7 +82,13 @@ export type TableArrow = {
   to: number;
   /** The box on it, in the `to` row; none for a line following its status. */
   tick: string | null;
+  /** Drawn where it points: dashed until then. */
   ticked: boolean;
+  /**
+   * Its box ticked, which lights it; for one with no box of its own, a line
+   * following its status, drawn where it points.
+   */
+  on: boolean;
   start: "status" | "line" | "default";
   end: "status" | "line";
   /**
@@ -288,6 +294,7 @@ export function statusTable(
       to: to.index,
       tick: to.row.tick,
       ticked: on(to.row.tick),
+      on: on(to.row.tick),
       start: "status",
       end: "status",
       below: above?.kind === "status" ? nameOf(above.key) : null,
@@ -310,12 +317,14 @@ export function statusTable(
     // status whose own move is not ticked is drawn above that status where
     // it stays, and the arrow is left pointing where it would go.
     const to = table[lineTo.index];
+    const drawn = to?.kind === "line" && to.after === "solid";
     arrows.push({
       kind: "move",
       from: lineFrom.index,
       to: lineTo.index,
       tick: lineTick === undefined ? null : lineTick.id,
-      ticked: to?.kind === "line" && to.after === "solid",
+      ticked: drawn,
+      on: lineTick === undefined ? drawn : on(lineTick.id),
       start: "line",
       end: "line",
     });
@@ -349,6 +358,7 @@ export function statusTable(
         to: to.index,
         tick: defaultTick.id,
         ticked: target?.kind === "status" && target.after?.isDefault === true,
+        on: on(defaultTick.id),
         start: "default",
         end: "status",
       });

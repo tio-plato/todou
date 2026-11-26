@@ -471,19 +471,17 @@ export function ApplyTable({
 }) {
   const statusId = useId();
   const labelId = useId();
-  // The row the pointer is on, the row last tapped, and the box with the
-  // keyboard in it: each lights the arrows that start or end there.
+  // The row the pointer is on and the box with the keyboard in it: each
+  // marks the cells its arrows start and end in.
   const [hover, setHover] = useState<number | null>(null);
-  const [pinned, setPinned] = useState<number | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const name = (row: ChangeRow) => boxName(row, plan, statuses);
 
-  const lit = hover ?? pinned;
   const hot = new Set(
     statuses.arrows.flatMap((arrow, i) =>
-      arrow.from === lit ||
-      arrow.to === lit ||
+      arrow.from === hover ||
+      arrow.to === hover ||
       (focus !== null && arrow.tick === focus)
         ? [i]
         : [],
@@ -541,7 +539,6 @@ export function ApplyTable({
               hotBefore={hotBefore.has(index)}
               hotAfter={hotAfter.has(index)}
               onHover={setHover}
-              onPin={setPinned}
               onFocusTick={setFocus}
               name={name}
               {...select}
@@ -578,7 +575,7 @@ export function ApplyTable({
           ))}
         </RowGroup>
       )}
-      <MoveLines arrows={statuses.arrows} lanes={statuses.lanes} hot={hot} />
+      <MoveLines arrows={statuses.arrows} lanes={statuses.lanes} />
     </Table>
   );
 }
@@ -589,7 +586,6 @@ function StatusRow({
   hotBefore,
   hotAfter,
   onHover,
-  onPin,
   onFocusTick,
   name,
   selected,
@@ -600,7 +596,6 @@ function StatusRow({
   hotBefore: boolean;
   hotAfter: boolean;
   onHover: (index: number | null) => void;
-  onPin: (index: number) => void;
   onFocusTick: (tick: string | null) => void;
   name: (row: ChangeRow) => string;
 }) {
@@ -618,10 +613,6 @@ function StatusRow({
       }}
       onPointerLeave={(e) => {
         if (e.pointerType === "mouse") onHover(null);
-      }}
-      // Touch has no hover: a tap lights the row until another is tapped.
-      onPointerUp={(e) => {
-        if (e.pointerType !== "mouse") onPin(index);
       }}
       onFocus={(e) => {
         const tick = (e.target as HTMLElement)

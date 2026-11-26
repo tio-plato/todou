@@ -58,18 +58,16 @@ function route(sx: number, sy: number, lx: number, ey: number, tx: number) {
  * to an open tip short of the After side. A box sits on its arrow because
  * the arrow is drawn through the box's measured middle.
  *
- * Faint until `hot`; dashed while its box is not ticked. The boxes and the
- * drawings in the cells paint over it, so an arrow passing a row runs
- * behind what that row holds.
+ * Faint while its box is not ticked; dashed while what it points to is not
+ * drawn there. The boxes and the drawings in the cells paint over it, so an
+ * arrow passing a row runs behind what that row holds.
  */
 export function MoveLines({
   arrows,
   lanes,
-  hot,
 }: {
   arrows: TableArrow[];
   lanes: number;
-  hot: ReadonlySet<number>;
 }) {
   const ref = useRef<SVGSVGElement>(null);
   const [drawn, setDrawn] = useState<Drawn[]>([]);
@@ -189,7 +187,7 @@ export function MoveLines({
 
   // The lit ones last, so they cross over the faint ones.
   const ordered = [...drawn].sort(
-    (a, b) => Number(hot.has(a.index)) - Number(hot.has(b.index)),
+    (a, b) => Number(a.arrow.on) - Number(b.arrow.on),
   );
   return (
     <svg
@@ -198,7 +196,7 @@ export function MoveLines({
       className="pointer-events-none absolute inset-0 z-1 size-full overflow-visible"
     >
       {ordered.map((line) => {
-        const lit = hot.has(line.index);
+        const { on } = line.arrow;
         return (
           <g
             key={line.index}
@@ -206,7 +204,7 @@ export function MoveLines({
             data-arrow-tick={line.arrow.tick ?? undefined}
             data-from={line.arrow.from}
             data-to={line.arrow.to}
-            data-lit={lit || undefined}
+            data-lit={on || undefined}
             data-lane-x={line.laneX}
             data-end-y={line.endY}
             data-tip-x={line.tipX}
@@ -218,8 +216,8 @@ export function MoveLines({
                 ? "var(--change-meaning)"
                 : "var(--change-move)"
             }
-            strokeWidth={lit ? 2 : 1.5}
-            strokeOpacity={lit ? 1 : 0.4}
+            strokeWidth={on ? 2 : 1.5}
+            strokeOpacity={on ? 1 : 0.4}
             strokeLinecap="round"
             strokeLinejoin="round"
           >

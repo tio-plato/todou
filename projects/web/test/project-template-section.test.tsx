@@ -614,6 +614,27 @@ describe("applying a template", () => {
     expect(box("Change default status Todo → Review").checked).toBe(false);
   });
 
+  it("lights an arrow while its box is ticked, wherever the pointer is", async () => {
+    fakeServer();
+    renderPage();
+    await pickKanban();
+    const name = "Move Doing below Todo";
+    const lit = () =>
+      document
+        .querySelector('g[data-arrow-tick="status.move:2"]')
+        ?.getAttribute("data-lit") ?? null;
+    await waitFor(() => expect(lit()).toBe("true"));
+    fireEvent.click(box(name));
+    expect(lit()).toBeNull();
+    hover(rowOf(name));
+    expect(lit()).toBeNull();
+    // A finger on the row.
+    fireEvent.pointerUp(rowOf(name), { pointerType: "touch" });
+    expect(lit()).toBeNull();
+    fireEvent.click(box(name));
+    expect(lit()).toBe("true");
+  });
+
   it("selects a section's deletions from its heading, and clears them again", async () => {
     fakeServer();
     renderPage();
