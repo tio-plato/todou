@@ -5,14 +5,12 @@ import {
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query";
-import { Link, Outlet, useNavigate, useParams } from "@tanstack/react-router";
+import { Outlet, useNavigate, useParams } from "@tanstack/react-router";
 import {
   type AccessDenial,
   enumValue,
   formatRef,
   type LabelCreateInput,
-  type Label as LabelEntity,
-  type LabelStyle,
   type LabelUpdateInput,
   Login,
   MEMBER_ROLES,
@@ -24,7 +22,6 @@ import {
   type TodouError,
 } from "@todou/shared";
 import {
-  ChevronDownIcon,
   CircleDotIcon,
   HashIcon,
   PlusIcon,
@@ -49,9 +46,8 @@ import {
 } from "@/api/queries.ts";
 import { referenceConfigQuery } from "@/api/references.ts";
 import { userQuery } from "@/api/users.ts";
-import { LabelChip } from "@/components/issue/label-chip.tsx";
-import { ColorSwatches } from "@/components/settings/color-swatches.tsx";
 import { DeleteProjectSection } from "@/components/settings/delete-project-section.tsx";
+import { LabelSetList } from "@/components/settings/label-set-list.tsx";
 import { StatusesSection } from "@/components/settings/statuses-section.tsx";
 import {
   SettingsLayout,
@@ -65,7 +61,6 @@ import { RolePermissionsDialog } from "@/components/shared/role-permissions-tabl
 import { displayNameOf, UserChip } from "@/components/shared/user-chip.tsx";
 import { UserOption } from "@/components/shared/user-picker.tsx";
 import { Button } from "@/components/ui/button";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -85,10 +80,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { labelColorFor, PRESET_COLORS } from "@/lib/labels.ts";
+import { PRESET_COLORS } from "@/lib/labels.ts";
 import { cappedRole } from "@/lib/roles.ts";
 import { useProjectRefs } from "@/lib/use-project-refs.ts";
-import { cn } from "@/lib/utils";
 
 /** Exported so a test can hold the picker to the schema's own list. */
 export const ROLES: readonly MemberRole[] = MEMBER_ROLES;
@@ -1219,11 +1213,7 @@ export function AccessDenialsSection({ slug }: { slug: string }) {
   );
 }
 
-/**
- * One list, a row per label; a row opens into its editor in place (T-713).
- * The open row's chip is the editor's preview, which is why the draft lives
- * here and not in the editor.
- */
+/** The project's labels, wired into the list that draws and edits them. */
 export function LabelsSection({ slug }: { slug: string }) {
   const labels = useSuspenseQuery(labelsQuery(slug));
   // A heavier read than the catalog; the list does not wait for it.
@@ -1231,15 +1221,6 @@ export function LabelsSection({ slug }: { slug: string }) {
     ...labelUsageQuery(slug),
     enabled: useNotRefused(slug, "label.usage"),
   });
-  const usageById = new Map(usage.data?.map((u) => [u.id, u]));
-  const [open, setOpen] = useState<number | "new" | null>(null);
-  const [name, setName] = useState("");
-  const [color, setColor] = useState("");
-  // Until one is picked, a new label's colour follows its name, the way the
-  // label picker's on-the-fly create colours it.
-  const [colorPicked, setColorPicked] = useState(false);
-  const [style, setStyle] = useState<LabelStyle>("tint");
-  const [deleting, setDeleting] = useState<LabelEntity | null>(null);
   const queryClient = useQueryClient();
   const invalidate = (slug: string) =>
     queryClient.invalidateQueries({ queryKey: ["labels", slug] });
@@ -1247,17 +1228,13 @@ export function LabelsSection({ slug }: { slug: string }) {
   const create = useMutation({
     mutationFn: (vars: { slug: string; input: LabelCreateInput }) =>
       api.createLabel(vars.slug, vars.input),
-    onSuccess: (_data, vars) => {
-      setOpen(null);
-      invalidate(vars.slug);
-    },
+    onSuccess: (_data, vars) => invalidate(vars.slug),
     onError: (error) => toast.error(error.message),
   });
   const update = useMutation({
     mutationFn: (vars: { slug: string; id: number; input: LabelUpdateInput }) =>
       api.updateLabel(vars.slug, vars.id, vars.input),
     onSuccess: (_data, vars) => {
-      setOpen(null);
       invalidate(vars.slug);
       // Issue rows and board cards embed label names and colours.
       queryClient.invalidateQueries({ queryKey: ["issues", vars.slug] });
@@ -1268,314 +1245,41 @@ export function LabelsSection({ slug }: { slug: string }) {
     mutationFn: (vars: { slug: string; id: number }) =>
       api.deleteLabel(vars.slug, vars.id),
     onSuccess: (_data, vars) => {
-      setDeleting(null);
-      setOpen(null);
       invalidate(vars.slug);
       queryClient.invalidateQueries({ queryKey: ["issues", vars.slug] });
     },
     onError: (error) => toast.error(error.message),
   });
 
-  function toggle(label: LabelEntity) {
-    if (open === label.id) return setOpen(null);
-    setName(label.name);
-    setColor(label.color);
-    setStyle(label.style ?? "tint");
-    setOpen(label.id);
-  }
-  function startNew() {
-    setName("");
-    setColor(labelColorFor(""));
-    setColorPicked(false);
-    setStyle("tint");
-    setOpen("new");
-  }
-
-  const trimmed = name.trim();
-  const deletingUses = deleting ? usageById.get(deleting.id)?.issues : 0;
-
   return (
-    <section className="space-y-3">
-      <div className="flex min-h-8 items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold">Labels</h2>
-        {open !== "new" && (
-          <Button variant="outline" onClick={startNew}>
-            <PlusIcon className="size-3.5" /> New label
-          </Button>
-        )}
-      </div>
-      {labels.data.length === 0 && open !== "new" ? (
-        <div className="rounded-lg border border-dashed p-10 text-center text-muted-foreground">
-          No labels yet.
-        </div>
-      ) : (
-        <div className="@container divide-y overflow-hidden rounded-lg border">
-          {open === "new" && (
-            <div className="bg-muted/45">
-              <div className="flex min-h-11 items-center pr-2 pl-3">
-                {trimmed ? (
-                  <LabelChip label={{ id: 0, name: trimmed, color, style }} />
-                ) : (
-                  <span className="text-sm text-muted-foreground">
-                    New label
-                  </span>
-                )}
-              </div>
-              <LabelEditor
-                name={name}
-                color={color}
-                style={style}
-                onName={(next) => {
-                  setName(next);
-                  if (!colorPicked) setColor(labelColorFor(next.trim()));
-                }}
-                onColor={(next) => {
-                  setColor(next);
-                  setColorPicked(true);
-                }}
-                onStyle={setStyle}
-                submitLabel="Create"
-                canSubmit={trimmed !== ""}
-                pending={create.isPending}
-                onCancel={() => setOpen(null)}
-                onSubmit={() =>
-                  create.mutate({
-                    slug,
-                    // Tint is left to the server's default, as the label
-                    // picker and the CLI leave it.
-                    input: {
-                      name: trimmed,
-                      color,
-                      ...(style !== "tint" && { style }),
-                    },
-                  })
-                }
-              />
-            </div>
-          )}
-          {labels.data.map((label) => {
-            const isOpen = open === label.id;
-            const uses = usageById.get(label.id);
-            const renamed = trimmed !== label.name;
-            const recolored = color !== label.color;
-            const restyled = style !== (label.style ?? "tint");
-            return (
-              <div key={label.id} className={cn(isOpen && "bg-muted/45")}>
-                <div
-                  className={cn(
-                    "flex min-h-11 items-center gap-3 pr-2 pl-3",
-                    !isOpen && "hover:bg-muted/60",
-                  )}
-                >
-                  <button
-                    type="button"
-                    aria-expanded={isOpen}
-                    aria-label={`edit label ${label.name}`}
-                    // The list clips its rows, so the ring is drawn inside
-                    // the button; `-mx-1 px-1` gives it room without moving
-                    // the chip.
-                    className="-mx-1 flex min-w-0 flex-1 cursor-pointer items-center self-stretch rounded-sm px-1 text-left focus-visible:outline-3 focus-visible:-outline-offset-3 focus-visible:outline-ring/50"
-                    onClick={() => toggle(label)}
-                  >
-                    <LabelChip
-                      label={
-                        isOpen && trimmed
-                          ? { id: label.id, name: trimmed, color, style }
-                          : label
-                      }
-                    />
-                  </button>
-                  {uses && (
-                    <Link
-                      to="/projects/$slug"
-                      params={{ slug }}
-                      search={{ label: String(label.id) }}
-                      className="text-sm whitespace-nowrap text-muted-foreground tabular-nums underline-offset-3 hover:text-foreground hover:underline"
-                    >
-                      {uses.open_issues} open
-                    </Link>
-                  )}
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    tabIndex={-1}
-                    aria-hidden
-                    onClick={() => toggle(label)}
-                  >
-                    <ChevronDownIcon
-                      className={cn(
-                        "size-4 text-muted-foreground transition-transform",
-                        isOpen && "rotate-180",
-                      )}
-                    />
-                  </Button>
-                </div>
-                {isOpen && (
-                  <LabelEditor
-                    name={name}
-                    color={color}
-                    style={style}
-                    onName={setName}
-                    onColor={setColor}
-                    onStyle={setStyle}
-                    submitLabel="Save"
-                    canSubmit={
-                      trimmed !== "" && (renamed || recolored || restyled)
-                    }
-                    pending={update.isPending}
-                    onCancel={() => setOpen(null)}
-                    onDelete={() => setDeleting(label)}
-                    onSubmit={() =>
-                      update.mutate({
-                        slug,
-                        id: label.id,
-                        input: {
-                          ...(renamed && { name: trimmed }),
-                          ...(recolored && { color }),
-                          ...(restyled && { style }),
-                        },
-                      })
-                    }
-                  />
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-      <ConfirmDialog
-        open={deleting !== null}
-        onOpenChange={(isOpen) => {
-          if (!isOpen) setDeleting(null);
-        }}
-        title="Delete this label?"
-        description={
-          deleting && (
-            <>
-              <LabelChip label={deleting} />{" "}
-              {deletingUses === 0
-                ? "No issue carries it."
-                : deletingUses === undefined
-                  ? "It comes off every issue that carries it, and there is no undo."
-                  : `It comes off ${deletingUses} ${deletingUses === 1 ? "issue" : "issues"} at once, and there is no undo.`}
-            </>
-          )
-        }
-        confirmLabel="Delete label"
-        destructive
-        pending={remove.isPending}
-        onConfirm={() => {
-          if (deleting) remove.mutate({ slug, id: deleting.id });
-        }}
-      />
-    </section>
+    <LabelSetList
+      labels={labels.data}
+      usage={usage.data}
+      // The page has never hidden its controls; the server refuses a
+      // reader's write.
+      canManage
+      issuesLink={(label) => ({
+        to: "/projects/$slug",
+        params: { slug },
+        search: { label: String(label.id) },
+      })}
+      onCreate={(input) => succeeded(create.mutateAsync({ slug, input }))}
+      onUpdate={(id, input) =>
+        succeeded(update.mutateAsync({ slug, id, input }))
+      }
+      onDelete={(id) => succeeded(remove.mutateAsync({ slug, id }))}
+      pending={{
+        create: create.isPending,
+        update: update.isPending,
+        delete: remove.isPending,
+      }}
+    />
   );
 }
 
-const LABEL_STYLES: ReadonlyArray<[LabelStyle, string]> = [
-  ["tint", "Tint"],
-  ["solid", "Solid"],
-];
-
-function LabelEditor({
-  name,
-  color,
-  style,
-  onName,
-  onColor,
-  onStyle,
-  submitLabel,
-  canSubmit,
-  pending,
-  onCancel,
-  onDelete,
-  onSubmit,
-}: {
-  name: string;
-  color: string;
-  style: LabelStyle;
-  onName: (name: string) => void;
-  onColor: (color: string) => void;
-  onStyle: (style: LabelStyle) => void;
-  submitLabel: string;
-  canSubmit: boolean;
-  pending: boolean;
-  onCancel: () => void;
-  onDelete?: () => void;
-  onSubmit: () => void;
-}) {
-  const preview = name.trim() || "new label";
-  return (
-    <form
-      className="grid gap-4 px-3 pt-1 pb-3 @xl:grid-cols-[minmax(0,18rem)_auto] @xl:gap-x-8"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (canSubmit) onSubmit();
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") onCancel();
-      }}
-    >
-      <div className="space-y-1.5">
-        <Label htmlFor="label-editor-name">Name</Label>
-        <Input
-          id="label-editor-name"
-          value={name}
-          onChange={(e) => onName(e.target.value)}
-          placeholder="area:web"
-          autoComplete="off"
-          autoFocus
-        />
-      </div>
-      {/* The style sits in the colour's cell rather than a cell of its own,
-          which the two-column layout would put under the name. */}
-      <div className="min-w-0 space-y-1.5">
-        <div className="text-sm leading-none font-medium">Color</div>
-        <ColorSwatches name={preview} color={color} onPick={onColor} />
-        {/* Each option is drawn as the chip it gives: no words needed. */}
-        <fieldset className="mt-4 min-w-0 space-y-1.5">
-          <legend className="text-sm leading-none font-medium">Style</legend>
-          <div className="flex flex-wrap gap-2">
-            {LABEL_STYLES.map(([value, title]) => (
-              <label
-                key={value}
-                className="flex min-w-0 cursor-pointer items-center gap-2 rounded-md border px-2.5 py-1.5 has-[:checked]:border-foreground has-[:checked]:ring-1 has-[:checked]:ring-foreground"
-              >
-                <input
-                  type="radio"
-                  name="label-editor-style"
-                  className="accent-primary"
-                  aria-label={title}
-                  checked={style === value}
-                  onChange={() => onStyle(value)}
-                />
-                <LabelChip
-                  label={{ id: 0, name: preview, color, style: value }}
-                />
-              </label>
-            ))}
-          </div>
-        </fieldset>
-      </div>
-      <div className="flex items-center gap-2 border-t pt-3 @xl:col-span-2">
-        {onDelete && (
-          <Button
-            type="button"
-            variant="ghost"
-            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-            onClick={onDelete}
-          >
-            <Trash2Icon className="size-3.5" /> Delete
-          </Button>
-        )}
-        <span className="flex-1" />
-        <Button type="button" variant="ghost" onClick={onCancel}>
-          Cancel
-        </Button>
-        <Button type="submit" disabled={!canSubmit || pending}>
-          {submitLabel}
-        </Button>
-      </div>
-    </form>
+/** A write's outcome for the list: its errors are already toasted. */
+const succeeded = (write: Promise<unknown>) =>
+  write.then(
+    () => true,
+    () => false,
   );
-}
