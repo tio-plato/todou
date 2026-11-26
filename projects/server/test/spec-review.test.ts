@@ -1,4 +1,10 @@
+import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  issues,
+  specVersionFiles,
+  specVersions,
+} from "../src/db/project-schema.ts";
 import { addUserWithToken, makeTestApp, type TestApp } from "./helpers.ts";
 
 // biome-ignore lint/suspicious/noExplicitAny: test-side response poking
@@ -8,6 +14,7 @@ describe("spec review loop T-23", () => {
   let t: TestApp;
   let cookie: string;
   let agentHeaders: Record<string, string>;
+  let projectId = 0;
   const slug = "spec-review";
   const headers = () => ({ "content-type": "application/json", cookie });
   const asAgent = () => ({
@@ -24,6 +31,7 @@ describe("spec review loop T-23", () => {
       body: JSON.stringify({ slug, name: "Spec review" }),
     });
     expect(res.status).toBe(201);
+    projectId = (await json(res)).id;
     // Owned, because a machine with no owner has no ceiling to judge
     // its role against and cannot be given one (T-340).
     const owner = await json(
@@ -366,6 +374,105 @@ describe("spec review loop T-23", () => {
     });
     expect(badLines.status).toBe(422);
     expect((await json(badLines)).error.message).toContain("exceeds the file");
+  });
+
+  it("anchors a line of a file whose line breaks are a lone \\r", async () => {
+    // Classic Mac line breaks: markdown ends a line at each `\r`, so the
+    // page shows "Second." on line 3 and anchors a comment there.
+    const created = await t.app.request(`/api/projects/${slug}/issues`, {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ title: "mac spec" }),
+    });
+    const { number } = await json(created);
+    const push = await t.app.request(
+      `/api/projects/${slug}/issues/${number}/spec/push`,
+      {
+        method: "POST",
+        headers: asAgent(),
+        body: JSON.stringify({
+          files: [{ path: "design.md", body: "# Design\r\rSecond.\rThird.\r" }],
+        }),
+      },
+    );
+    expect(push.status).toBe(200);
+    const res = await review(number, {
+      version: 1,
+      verdict: "request_changes",
+      comments: [
+        {
+          anchor: { path: "design.md", version: 1, line_start: 3, line_end: 4 },
+          body: "?",
+        },
+      ],
+    });
+    expect(res.status).toBe(201);
+    const comments = await json(
+      await t.app.request(
+        `/api/projects/${slug}/issues/${number}/spec/comments`,
+        { headers: headers() },
+      ),
+    );
+    expect(comments.items[0].anchor.quote).toBe("Second.\nThird.");
+  });
+
+  it("reads a file stored with lone-\\r line breaks as one line", async () => {
+    // A push from before such files were stored with `\n` kept the body as
+    // it came, and the comments on it were anchored to its one line: that
+    // version still reads as one line, so they keep their lines and quotes.
+    const number = await createIssueWithSpec();
+    const body = "# Design\r\rSecond.\rThird.\r";
+    const db = await t.ctx.router.forProject({
+      id: projectId,
+      slug,
+      database_url: null,
+    });
+    const [version] = await db
+      .select({ id: specVersions.id })
+      .from(specVersions)
+      .innerJoin(issues, eq(issues.id, specVersions.issueId))
+      .where(and(eq(issues.projectId, projectId), eq(issues.number, number)));
+    await db
+      .update(specVersionFiles)
+      .set({ body, size: body.length })
+      .where(eq(specVersionFiles.versionId, (version as { id: number }).id));
+
+    const stored = await json(
+      await t.app.request(`/api/projects/${slug}/issues/${number}/spec/files`, {
+        headers: headers(),
+      }),
+    );
+    expect(stored.files[0].body).toBe(body);
+    const past = await review(number, {
+      version: 1,
+      verdict: "request_changes",
+      comments: [
+        {
+          anchor: { path: "design.md", version: 1, line_start: 3, line_end: 3 },
+          body: "?",
+        },
+      ],
+    });
+    expect(past.status).toBe(422);
+    expect((await json(past)).error.message).toContain("(1 lines in v1)");
+    const res = await review(number, {
+      version: 1,
+      verdict: "request_changes",
+      comments: [
+        {
+          anchor: { path: "design.md", version: 1, line_start: 1, line_end: 1 },
+          body: "?",
+        },
+      ],
+    });
+    expect(res.status).toBe(201);
+    const comments = await json(
+      await t.app.request(
+        `/api/projects/${slug}/issues/${number}/spec/comments`,
+        { headers: headers() },
+      ),
+    );
+    expect(comments.items[0].anchor.quote).toBe(body);
   });
 
   it("approval lands on the columns and a later push resets it", async () => {

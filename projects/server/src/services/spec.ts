@@ -138,6 +138,19 @@ async function hasApprovedInCurrentRound(
   return row?.approved ?? false;
 }
 
+/**
+ * A file whose line breaks are all a lone `\r` (classic Mac) is stored with
+ * `\n` in their place. Markdown ends a line at a lone `\r`, while everything
+ * that reads a stored body counts lines by `\n` alone: the anchor check and
+ * the quote below, the remap's line diff, the web's source index. Such a file
+ * would be one line to all of them. A file with any `\n` keeps every `\r`:
+ * there a lone `\r` is content, such as a CRLF file's own line end in a
+ * patch, whose line then ends `\r\r\n`.
+ */
+function lineFeedBreaks(body: string): string {
+  return body.includes("\n") ? body : body.replaceAll("\r", "\n");
+}
+
 async function filesOfVersion(db: Db | Tx, versionId: number) {
   return db
     .select()
@@ -185,7 +198,7 @@ export async function pushSpec(
       project,
       actor,
       inputs: refInputs,
-      text: file.body,
+      text: lineFeedBreaks(file.body),
       self: { projectId: project.id, number: issueNumber },
     });
     files.push({ path: file.path, body: resolved.storedText });
