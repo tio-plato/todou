@@ -43,7 +43,8 @@ Cases:
                        stay off it and their popovers on screen; from 640px up
                        the 40px chip gutter and left-opening popovers stay.
   spec-chip-width      Below 640px a chip is a round 24px badge for 1 to 99
-                       notes.
+                       notes; from 640px up chips with as many digits are
+                       equally wide.
   focus-ring-clip      Every control a keyboard reaches on a set of pages and
                        overlays keeps its whole focus ring inside every
                        ancestor that clips or scrolls it, and focusing it
