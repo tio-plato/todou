@@ -57,9 +57,15 @@ export function ConfirmDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent container={container} onCloseAutoFocus={onCloseAutoFocus}>
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
+      <DialogContent
+        className="grid-cols-1"
+        container={container}
+        onCloseAutoFocus={onCloseAutoFocus}
+      >
+        <DialogHeader className="min-w-0 pr-7">
+          <DialogTitle className="min-w-0 leading-normal wrap-anywhere">
+            {title}
+          </DialogTitle>
           {description && <DialogDescription>{description}</DialogDescription>}
         </DialogHeader>
         {children}
