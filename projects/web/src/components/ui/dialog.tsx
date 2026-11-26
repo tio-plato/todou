@@ -298,4 +298,5 @@ export {
   DialogPortal,
   DialogTitle,
   DialogTrigger,
+  hasScrollRoom,
 };

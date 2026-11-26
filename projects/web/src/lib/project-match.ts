@@ -8,8 +8,11 @@ export type ProjectMatch = {
   range: { start: number; end: number } | null;
 };
 
-/** `undefined` = no hit; `null` = hit, nowhere safe to paint it. */
-function hit(
+/**
+ * Where `needle`, already lower-cased, sits in `text`, ignoring case.
+ * `undefined` = no hit; `null` = hit, nowhere safe to paint it.
+ */
+export function matchText(
   text: string,
   needle: string,
 ): { start: number; end: number } | null | undefined {
@@ -42,9 +45,9 @@ export function matchProject(
 ): ProjectMatch | null {
   const q = query.trim().toLowerCase();
 
-  const name = hit(project.name, q);
+  const name = matchText(project.name, q);
   if (name !== undefined) return { field: "name", range: name };
-  const slug = hit(project.slug, q);
+  const slug = matchText(project.slug, q);
   if (slug !== undefined) return { field: "slug", range: slug };
 
   if (project.prefix === null) return null;
@@ -52,6 +55,6 @@ export function matchProject(
   // number, where it comes with the hyphen still attached.
   const bare = q.replace(/-+$/, "");
   if (bare === "") return null;
-  const prefix = hit(project.prefix, bare);
+  const prefix = matchText(project.prefix, bare);
   return prefix === undefined ? null : { field: "prefix", range: prefix };
 }

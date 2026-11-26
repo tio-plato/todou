@@ -36,8 +36,20 @@ export type SearchableListboxProps<T, M> = {
   optionLink?: (option: T) => LinkProps | undefined;
   /** Announced in place of the row's own text. */
   optionAriaLabel?: (option: T) => string | undefined;
+  /**
+   * The id of an element in the row's body that describes it: announced
+   * after the name.
+   */
+  optionDescribedBy?: (option: T) => string | undefined;
   /** The key already in force; a check column appears alongside it. */
   selected?: string;
+  /**
+   * Put the keyboard cursor on `selected` rather than the first row, and
+   * keep it there, following `selected`, until the reader moves it or
+   * types. For a choice that is already made; a switcher, which goes
+   * somewhere else, starts on the first row.
+   */
+  startAtSelected?: boolean;
   label: string;
   /** Namespaces the row ids `aria-activedescendant` points at. */
   idPrefix: string;
@@ -71,7 +83,9 @@ export function SearchableListbox<T, M>({
   renderOption,
   optionLink,
   optionAriaLabel,
+  optionDescribedBy,
   selected,
+  startAtSelected = false,
   label,
   idPrefix,
   searchPlaceholder,
@@ -84,7 +98,10 @@ export function SearchableListbox<T, M>({
   ref,
 }: SearchableListboxProps<T, M>) {
   const [query, setQuery] = useState("");
-  const [highlight, setHighlight] = useState(0);
+  // Null follows `selected`.
+  const [highlight, setHighlight] = useState<number | null>(
+    startAtSelected ? null : 0,
+  );
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -103,9 +120,15 @@ export function SearchableListbox<T, M>({
     return hits;
   }, [options, q, match]);
 
+  const at =
+    highlight ??
+    Math.max(
+      0,
+      items.findIndex((item) => optionKey(item.option) === selected),
+    );
   // Clamped rather than reset per keystroke, so the highlight tracks a
   // shrinking list without jumping to the top when it grows back.
-  const hl = Math.min(highlight, Math.max(0, items.length - 1));
+  const hl = Math.min(at, Math.max(0, items.length - 1));
 
   useEffect(() => {
     listRef.current
@@ -146,7 +169,9 @@ export function SearchableListbox<T, M>({
   const listId = `${idPrefix}-list`;
 
   return (
-    <div className={className}>
+    // The group draws the highlight only while the list is in use: focus in
+    // it or the mouse over it. Otherwise only the check marks a row.
+    <div className={cn("group/listbox", className)}>
       {showSearch && (
         <div className="border-b p-2">
           <input
@@ -201,6 +226,7 @@ export function SearchableListbox<T, M>({
                 checked={selected === undefined ? undefined : key === selected}
                 link={optionLink?.(item.option)}
                 ariaLabel={optionAriaLabel?.(item.option)}
+                describedBy={optionDescribedBy?.(item.option)}
                 onHover={() => setHighlight(idx)}
                 onClick={() => onSelect?.(item.option)}
                 onLinkClick={onLinkClick}
@@ -222,6 +248,7 @@ function Row({
   checked,
   link,
   ariaLabel,
+  describedBy,
   onHover,
   onClick,
   onLinkClick,
@@ -234,6 +261,7 @@ function Row({
   checked?: boolean;
   link?: LinkProps;
   ariaLabel?: string;
+  describedBy?: string;
   onHover: () => void;
   onClick: () => void;
   onLinkClick?: (event: ReactMouseEvent) => void;
@@ -246,16 +274,23 @@ function Row({
     tabIndex: -1,
     "aria-selected": checked ?? false,
     ...(ariaLabel === undefined ? {} : { "aria-label": ariaLabel }),
+    ...(describedBy === undefined ? {} : { "aria-describedby": describedBy }),
     className: cn(
       "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm",
-      highlighted && "bg-accent",
+      // A row whose preview is open keeps its highlight while the mouse is
+      // in the preview, which is portalled out of the list.
+      "has-[[data-slot=hover-card-trigger][data-state=open]]:bg-accent",
+      highlighted &&
+        "group-focus-within/listbox:bg-accent group-hover/listbox:bg-accent",
     ),
     onMouseMove: onHover,
   };
   const content = (
     <>
       {checked !== undefined && (
-        <span className="w-3.5 shrink-0">
+        // A cell one `text-sm` line high at the row's top: beside the first
+        // line of a row that runs to more, where a one-line row has it anyway.
+        <span className="flex h-5 w-3.5 shrink-0 items-center self-start">
           {checked && <CheckIcon className="size-3.5" />}
         </span>
       )}

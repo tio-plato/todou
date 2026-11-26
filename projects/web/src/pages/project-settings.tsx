@@ -48,7 +48,10 @@ import { referenceConfigQuery } from "@/api/references.ts";
 import { userQuery } from "@/api/users.ts";
 import { DeleteProjectSection } from "@/components/settings/delete-project-section.tsx";
 import { LabelSetList } from "@/components/settings/label-set-list.tsx";
-import { StatusesSection } from "@/components/settings/statuses-section.tsx";
+import {
+  StatusesSection,
+  succeeded,
+} from "@/components/settings/statuses-section.tsx";
 import {
   SettingsLayout,
   SettingsNavGroup,
@@ -1276,10 +1279,3 @@ export function LabelsSection({ slug }: { slug: string }) {
     />
   );
 }
-
-/** A write's outcome for the list: its errors are already toasted. */
-const succeeded = (write: Promise<unknown>) =>
-  write.then(
-    () => true,
-    () => false,
-  );

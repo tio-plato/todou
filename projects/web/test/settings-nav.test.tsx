@@ -16,6 +16,7 @@ const USER = [
   ["Profile", "/settings/profile"],
   ["Appearance", "/settings/appearance"],
   ["Inbox", "/settings/inbox"],
+  ["Project templates", "/settings/templates"],
   ["Agents", "/settings/agents"],
   ["Personal tokens", "/settings/tokens"],
 ] as const;
@@ -67,7 +68,7 @@ function renderAt(url: string) {
     routeTree: rootRoute.addChildren([
       authed.addChildren([
         user.addChildren(
-          ["profile", "appearance", "inbox", "tokens"]
+          ["profile", "appearance", "inbox", "templates", "tokens"]
             .map((path) => child(user, path))
             .concat(
               child(user, "agents", {

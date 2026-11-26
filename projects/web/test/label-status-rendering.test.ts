@@ -67,6 +67,11 @@ const COLOR_EXCEPTIONS: Record<string, { count: number; reason: string }> = {
     count: 4,
     reason: "the status editor's draft colour, sent as the write it edits",
   },
+  "pages/project-templates-settings.tsx": {
+    count: 2,
+    reason:
+      "the status editor's draft colour, written into the template it edits",
+  },
 };
 
 /** Uses of the prefix split outside the drawing, with the same exact counts. */
@@ -125,6 +130,7 @@ function prefixSplits(file: string, source: string): Hit[] {
 const ALLOWED_PROPS: Record<string, string[]> = {
   LabelChip: ["label"],
   LabelChips: ["labels", "onRemove"],
+  LabelRows: ["labels"],
   StatusPill: ["status"],
   // The dot's cell doubles as a board column's or list group's select-all
   // box (T-732, T-768).
@@ -276,13 +282,15 @@ describe("labels and statuses are drawn only by their components (T-715)", () =>
   it("gives the owner components no styling props", () => {
     const owners = all.filter(({ file }) => OWNERS.has(file));
     expect(owners.flatMap((s) => extraProps(s.file, s.source))).toEqual([]);
-    // The four entry points, so a fifth is a decision rather than a drift.
+    // The five entry points, so a sixth is a decision rather than a drift.
+    // LabelRows: a template's preview lists labels one prefix to a row.
     const exported = owners.flatMap((s) =>
       [...s.source.matchAll(/export function (\w+)/g)].map((m) => m[1]),
     );
     expect(exported.sort()).toEqual([
       "LabelChip",
       "LabelChips",
+      "LabelRows",
       "StatusHeading",
       "StatusPill",
     ]);
@@ -307,6 +315,9 @@ describe("labels and statuses are drawn only by their components (T-715)", () =>
  * - Counted per file, not per row: the filter bar's sort rows may skip
  *   `PICKER_ROW`, so a wide status row added there goes unseen only if a
  *   sort row is removed in the same change.
+ * - A file in `NOT_STATUS_ROWS` is let through by the opening tags of its
+ *   rows that offer something else; a status row there written with one of
+ *   those exact tags goes unseen.
  */
 
 /** Opening tags that are a row of a menu, a select or a listbox. */
@@ -366,8 +377,28 @@ const narrow = (row: Hit) =>
     row.text,
   );
 
+/**
+ * Picker rows that offer something other than a status, in files that also
+ * draw a status pill, each by its opening tag: any other row makes the file
+ * a status picker again.
+ */
+const NOT_STATUS_ROWS: Record<string, { rows: string[]; reason: string }> = {
+  "pages/project-templates-settings.tsx": {
+    rows: [
+      "SelectItem key={String(template.ref)} value={String(template.ref)}",
+    ],
+    reason:
+      "the `SelectItem` picks the template new projects start from; the " +
+      "pill is in a template row's summary",
+  },
+};
+
 const isStatusPicker = (file: string, source: string) =>
-  /<StatusPill\b/.test(source) && rows(file, source).length > 0;
+  /<StatusPill\b/.test(source) &&
+  rows(file, source).some(
+    (row) =>
+      !NOT_STATUS_ROWS[file]?.rows.includes(row.text.replace(/\s+/g, " ")),
+  );
 
 /** The pickers that offer a status. A sixth is a decision, not a drift. */
 const STATUS_PICKERS = [

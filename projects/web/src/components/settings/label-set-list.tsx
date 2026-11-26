@@ -34,6 +34,7 @@ export function LabelSetList({
   onUpdate,
   onDelete,
   pending,
+  template = false,
 }: {
   labels: readonly LabelEntity[];
   /** Issues carrying each label; without it the rows show no count. */
@@ -49,6 +50,8 @@ export function LabelSetList({
   onUpdate: (id: number, input: LabelUpdateInput) => Promise<boolean>;
   onDelete: (id: number) => Promise<boolean>;
   pending: { create: boolean; update: boolean; delete: boolean };
+  /** The labels are a template's, on no issue: a delete takes none off. */
+  template?: boolean;
 }) {
   const usageById = new Map(usage?.map((u) => [u.id, u]));
   const [open, setOpen] = useState<number | "new" | null>(null);
@@ -114,7 +117,7 @@ export function LabelSetList({
               <LabelEditor
                 name={name}
                 color={color}
-                style={style}
+                style={template ? null : style}
                 onStyle={setStyle}
                 onName={(next) => {
                   setName(next);
@@ -215,7 +218,7 @@ export function LabelSetList({
                   <LabelEditor
                     name={name}
                     color={color}
-                    style={style}
+                    style={template ? null : style}
                     onName={setName}
                     onColor={setColor}
                     onStyle={setStyle}
@@ -251,12 +254,17 @@ export function LabelSetList({
         description={
           deleting && (
             <>
-              <LabelChip label={deleting} />{" "}
-              {deletingUses === 0
-                ? "No issue carries it."
-                : deletingUses === undefined
-                  ? "It comes off every issue that carries it, and there is no undo."
-                  : `It comes off ${deletingUses} ${deletingUses === 1 ? "issue" : "issues"} at once, and there is no undo.`}
+              <LabelChip label={deleting} />
+              {!template && (
+                <>
+                  {" "}
+                  {deletingUses === 0
+                    ? "No issue carries it."
+                    : deletingUses === undefined
+                      ? "It comes off every issue that carries it, and there is no undo."
+                      : `It comes off ${deletingUses} ${deletingUses === 1 ? "issue" : "issues"} at once, and there is no undo.`}
+                </>
+              )}
             </>
           )
         }
@@ -297,7 +305,8 @@ function LabelEditor({
 }: {
   name: string;
   color: string;
-  style: LabelStyle;
+  /** Null where the labels cannot keep a style: a template stores none. */
+  style: LabelStyle | null;
   onName: (name: string) => void;
   onColor: (color: string) => void;
   onStyle: (style: LabelStyle) => void;
@@ -337,29 +346,31 @@ function LabelEditor({
         <div className="text-sm leading-none font-medium">Color</div>
         <ColorSwatches name={preview} color={color} onPick={onColor} />
         {/* Each option is drawn as the chip it gives: no words needed. */}
-        <fieldset className="mt-4 min-w-0 space-y-1.5">
-          <legend className="text-sm leading-none font-medium">Style</legend>
-          <div className="flex flex-wrap gap-2">
-            {LABEL_STYLES.map(([value, title]) => (
-              <label
-                key={value}
-                className="flex min-w-0 cursor-pointer items-center gap-2 rounded-md border px-2.5 py-1.5 has-[:checked]:border-foreground has-[:checked]:ring-1 has-[:checked]:ring-foreground"
-              >
-                <input
-                  type="radio"
-                  name="label-editor-style"
-                  className="accent-primary"
-                  aria-label={title}
-                  checked={style === value}
-                  onChange={() => onStyle(value)}
-                />
-                <LabelChip
-                  label={{ id: 0, name: preview, color, style: value }}
-                />
-              </label>
-            ))}
-          </div>
-        </fieldset>
+        {style !== null && (
+          <fieldset className="mt-4 min-w-0 space-y-1.5">
+            <legend className="text-sm leading-none font-medium">Style</legend>
+            <div className="flex flex-wrap gap-2">
+              {LABEL_STYLES.map(([value, title]) => (
+                <label
+                  key={value}
+                  className="flex min-w-0 cursor-pointer items-center gap-2 rounded-md border px-2.5 py-1.5 has-[:checked]:border-foreground has-[:checked]:ring-1 has-[:checked]:ring-foreground"
+                >
+                  <input
+                    type="radio"
+                    name="label-editor-style"
+                    className="accent-primary"
+                    aria-label={title}
+                    checked={style === value}
+                    onChange={() => onStyle(value)}
+                  />
+                  <LabelChip
+                    label={{ id: 0, name: preview, color, style: value }}
+                  />
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        )}
       </div>
       <div className="flex items-center gap-2 border-t pt-3 @xl:col-span-2">
         {onDelete && (
