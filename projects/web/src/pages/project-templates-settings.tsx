@@ -306,13 +306,8 @@ function DeleteTemplateButton({
       <ConfirmDialog
         open={open}
         onOpenChange={setOpen}
-        title="Delete this template?"
-        description={
-          <>
-            <span className="font-medium text-foreground">{template.name}</span>
-            {" — there is no undo."}
-          </>
-        }
+        title={`Delete ${template.name}?`}
+        description="This cannot be undone."
         confirmLabel="Delete template"
         destructive
         pending={remove.isPending}
@@ -658,13 +653,8 @@ function DeleteTemplateRow({ template }: { template: ProjectTemplate }) {
         onOpenChange={(next) => {
           if (!deleting) setOpen(next);
         }}
-        title="Delete this template?"
-        description={
-          <>
-            <span className="font-medium text-foreground">{template.name}</span>
-            {" — there is no undo."}
-          </>
-        }
+        title={`Delete ${template.name}?`}
+        description="This cannot be undone."
         confirmLabel="Delete template"
         destructive
         pending={deleting}

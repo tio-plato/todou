@@ -353,12 +353,13 @@ const settle = () =>
 
 /** Delete the template whose page is open, through its confirmation. */
 async function deleteFromPage() {
-  fireEvent.click(
-    await screen.findByRole("button", { name: "Delete template" }),
-  );
+  const open = await screen.findByRole("button", { name: "Delete template" });
+  // Read before the dialog opens: it hides the page from the roles below it.
+  const name = screen.getByRole("heading", { level: 1 }).textContent;
+  fireEvent.click(open);
   fireEvent.click(
     within(
-      await screen.findByRole("dialog", { name: "Delete this template?" }),
+      await screen.findByRole("dialog", { name: `Delete ${name}?` }),
     ).getByRole("button", { name: "Delete template" }),
   );
 }
@@ -503,7 +504,7 @@ describe("the project templates list", () => {
     hover(remove);
     fireEvent.click(remove);
     expect(
-      await screen.findByRole("dialog", { name: "Delete this template?" }),
+      await screen.findByRole("dialog", { name: "Delete Kanban?" }),
     ).toBeTruthy();
     await pastOpenDelay();
     expect(
@@ -553,7 +554,7 @@ describe("the project templates list", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Delete Bugs" }));
     fireEvent.click(
       within(
-        await screen.findByRole("dialog", { name: "Delete this template?" }),
+        await screen.findByRole("dialog", { name: "Delete Bugs?" }),
       ).getByRole("button", { name: "Delete template" }),
     );
     await waitFor(() => {
@@ -576,7 +577,7 @@ describe("the project templates list", () => {
       );
       fireEvent.click(
         within(
-          await screen.findByRole("dialog", { name: "Delete this template?" }),
+          await screen.findByRole("dialog", { name: `Delete ${name}?` }),
         ).getByRole("button", { name: "Delete template" }),
       );
       await waitFor(() => {
@@ -1080,7 +1081,7 @@ describe("a template's page", () => {
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     await settle();
     expect(
-      screen.getByRole("dialog", { name: "Delete this template?" }),
+      screen.getByRole("dialog", { name: `Delete ${KANBAN.name}?` }),
     ).toBeTruthy();
 
     await server.release();
@@ -1133,7 +1134,7 @@ describe("a template's page", () => {
     await screen.findByText("Doing");
     // Still on its way: the page says so, and takes no edit before it lands.
     const waiting = await screen.findByRole("dialog", {
-      name: "Delete this template?",
+      name: `Delete ${KANBAN.name}?`,
     });
     expect(
       (
