@@ -3347,6 +3347,40 @@ describe("baseline annotations on deleted text", () => {
     ]);
   });
 
+  it("keeps apart phone badges that only touch, as Firefox measures them", async () => {
+    // A 24px badge's height apart, as Firefox measured two blocks 131,072px
+    // below the window's top: 1/128px short.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (!this.classList.contains("spec-del-structure")) {
+          return DOMRect.fromRect({ y: 0 });
+        }
+        return DOMRect.fromRect({
+          y: (this.textContent ?? "").startsWith("Old A") ? 300 : 323.9921875,
+        });
+      },
+    );
+    setViewportWidth(390);
+    const before = "Para one.\n\nOld A here.\n\nOld B here.\n\nPara two.\n";
+    const { view } = await renderDiff(
+      before,
+      "Para one.\n\nPara two.\n",
+      [],
+      undefined,
+      [
+        onBaseline("comment", before, 3, "A"),
+        onBaseline("comment", before, 5, "B"),
+      ],
+    );
+    const chips = await view.findAllByRole("button", {
+      name: /comment\(s\) on this block/,
+    });
+    expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
+      "1 comment(s) on this block",
+      "1 comment(s) on this block",
+    ]);
+  });
+
   it("hangs a baseline comment on the innermost restored block it reaches", async () => {
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
       function (this: HTMLElement) {

@@ -43,6 +43,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import {
+  CODE_RENDERED_EVENT,
   type CodeHighlightRanges,
   type LineMark,
   markRows,
@@ -80,6 +81,7 @@ import {
 } from "@/lib/rehype-fold-unchanged.ts";
 import {
   CODE_CONTENT_START_ATTR,
+  FENCE_PATCH_ATTR,
   OLD_FLAT_ATTR,
   OLD_LINE_ATTR,
   OLD_SOURCE_ATTR,
@@ -87,7 +89,11 @@ import {
   rehypeSourceLines,
   SOURCE_LINE_ATTR,
 } from "@/lib/rehype-source-lines.ts";
-import { glideToRevealed, useOwnHold } from "@/lib/scroll-insets.ts";
+import {
+  glideToRevealed,
+  openEnclosingFolds,
+  useOwnHold,
+} from "@/lib/scroll-insets.ts";
 import { anchorForSelection, OLD_CODE_BLOCK } from "@/lib/selection-anchor.ts";
 import type { SelectionEndpoints } from "@/lib/selection-endpoints.ts";
 import { buildBaselineTree } from "@/lib/spec-baseline-tree.ts";
@@ -136,6 +142,16 @@ export type DisplayedAnnotation = {
 );
 
 type Chip = {
+  /**
+   * The chip's identity across layouts, so never a position: a layout that
+   * moves the chip keeps it mounted, and its popover open. It is the key of
+   * the chip one of its annotations was in the layout before, else one made
+   * from the place it hangs at: its block's key (`start-end`, or `old-i` for
+   * a block put back of the baseline), followed for a row of code by `:L` or
+   * `:old-L` and the source line the row shows, and for the foot of a patch
+   * fence's box by `:below` or `:old-below`; with a `+` for each chip
+   * already going on under that key.
+   */
   blockKey: string;
   top: number;
   items: DisplayedAnnotation[];
@@ -163,6 +179,16 @@ const OLD_HOLDER = `[${OLD_LINE_ATTR}], .spec-del-block, .${DEL_ROW_CLASS}`;
 /** The wrappers of the code blocks pierre draws rows in, old ones included. */
 const CODE_WRAPPERS = `[${CODE_CONTENT_START_ATTR}], ${OLD_CODE_BLOCK}`;
 
+/** One of pierre's rows, and where it sits in the source. */
+type PlacedRow = { row: HTMLElement; source: CodeRowSource };
+
+/** The rows pierre drew for the code block `wrapper`, in document order. */
+function shadowRows(wrapper: Element): HTMLElement[] {
+  return [...wrapper.querySelectorAll("diffs-container")].flatMap((host) => [
+    ...(host.shadowRoot?.querySelectorAll<HTMLElement>("[data-line]") ?? []),
+  ]);
+}
+
 /**
  * How tall `AnnotationChip` draws a chip, so how close two can sit before
  * they overlap: from `sm` up a 16px line, 2px padding and a 1px border, top
@@ -170,6 +196,38 @@ const CODE_WRAPPERS = `[${CODE_CONTENT_START_ATTR}], ${OLD_CODE_BLOCK}`;
  */
 function chipHeight(wide: boolean): number {
   return wide ? 22 : 24;
+}
+
+/**
+ * How much less than a chip's height apart two chips can measure and still
+ * only touch. Firefox hands positions back as single-precision floats, which
+ * can put two places a chip's height apart up to 0.012px nearer 65,536px
+ * from the window's top. Chromium and WebKit lay out in 64ths of a pixel, so
+ * it stays under one: two chips that overlap there by a 64th still join.
+ * They hand positions back as such floats too, which hold every 64th only
+ * within 262,144px of the window's top (in WebKit, of the page's): past it,
+ * two chips that only touch can measure a 64th or more nearer and join. A
+ * hair that wide would part chips that overlap by a 64th anywhere on the
+ * page.
+ */
+const HAIR = 0.015;
+
+/**
+ * The box `row` scrolls in within the code block `wrapper`: the nearest
+ * element between them that scrolls on its own, as a patch's files do in
+ * pierre's view, else the wrapper, as in the raw view, which does not.
+ */
+function scrollBox(wrapper: Element, row: Element): Element {
+  const root = row.getRootNode();
+  for (
+    let el: Element | null = root instanceof ShadowRoot ? root.host : row;
+    el !== null && el !== wrapper;
+    el = el.parentElement
+  ) {
+    const { overflowY } = getComputedStyle(el);
+    if (overflowY === "auto" || overflowY === "scroll") return el;
+  }
+  return wrapper;
 }
 
 /** Runs of removed text, which say where in the baseline they start. */
@@ -196,8 +254,10 @@ function oldRunOf(el: Element): OldRun {
  * it was painted, which another annotation over the same text, or a block
  * marked whole, leaves without a key of its own: the first run of removed
  * text one of its `spans` covers, else the innermost block put back whole
- * on the first of its lines one reaches, else the first code row of the
- * baseline on its lines. Null when none of it was put back.
+ * on the first of its lines one reaches, else the wrapper of the first code
+ * row of the baseline on its lines. Null when none of it was put back. A
+ * code block's wrapper is where the chip's group is decided; the row inside
+ * it the chip hangs by is `layout`'s to find.
  */
 function baselinePlace(
   annotation: DisplayedAnnotation,
@@ -205,7 +265,7 @@ function baselinePlace(
   baseline: SegmentIndex,
   runs: OldRun[],
   restored: Array<{ el: Element; start: number; end: number }>,
-  rows: () => CodeRowSource[],
+  rows: () => PlacedRow[],
 ): Element | null {
   const run = runs.find(({ origin, length }) =>
     spans.some((span) => coverageOf(origin, length, span, baseline).length > 0),
@@ -223,11 +283,9 @@ function baselinePlace(
   }
   return (
     rows().find(
-      (row) =>
-        row.line !== null &&
-        row.line >= annotation.start &&
-        row.line <= annotation.end,
-    )?.wrapper ?? null
+      ({ source: { line } }) =>
+        line !== null && line >= annotation.start && line <= annotation.end,
+    )?.source.wrapper ?? null
   );
 }
 
@@ -507,8 +565,21 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [chips, setChips] = useState<Chip[]>([]);
-  /** The element each chip of a baseline annotation hangs on, by its key. */
-  const oldChipEls = useRef(new Map<string, HTMLElement>());
+  /** The key of the chip whose popover is open, if one is. */
+  const openChip = useRef<string | null>(null);
+  const trackOpen = useCallback((key: string, open: boolean) => {
+    if (open) openChip.current = key;
+    else if (openChip.current === key) openChip.current = null;
+  }, []);
+  /**
+   * Where each annotation's locate control scrolls to, by its key: the row
+   * of code its first line shows on, where pierre drew one, else its block.
+   * Its own, even when its chip joined another's. The hold that follows the
+   * jump reads it again each time it puts the target back.
+   */
+  const placeOf = useRef(
+    new Map<string, { block: HTMLElement; row: HTMLElement | null }>(),
+  );
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(NO_FOLDS);
   const wide = useMediaQuery(SM_UP);
   const remarkPlugins = useMarkdownRemarkPlugins(slug, { document: true });
@@ -636,16 +707,15 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     clear();
   }, [body, baselineBody, foldUnchanged]);
 
-  /** Where each code row the comparison drew of its baseline sits there. */
+  /** Each code row the comparison drew of its baseline, and where it sits. */
   const baselineCodeRows = useCallback(
-    (container: Element): CodeRowSource[] => {
+    (container: Element): PlacedRow[] => {
       if (baselineIndex === null || fenceBaselines === undefined) return [];
       return [...container.querySelectorAll(CODE_WRAPPERS)].flatMap((wrapper) =>
-        [...wrapper.querySelectorAll("diffs-container")].flatMap((host) =>
-          [...(host.shadowRoot?.querySelectorAll("[data-line]") ?? [])]
-            .map((row) => oldCodeRowSource(baselineIndex, fenceBaselines, row))
-            .filter((source) => source !== null),
-        ),
+        shadowRows(wrapper).flatMap((row) => {
+          const source = oldCodeRowSource(baselineIndex, fenceBaselines, row);
+          return source === null ? [] : [{ row, source }];
+        }),
       );
     },
     [baselineIndex, fenceBaselines],
@@ -680,7 +750,149 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     const owners = lineOwners(blocks);
     const shows = lineVisibility(index);
     const washedBy = new Map<HTMLElement, Set<DisplayedAnnotation["kind"]>>();
-    const grouped = new Map<number, DisplayedAnnotation[]>();
+    // Inside its block, a chip hangs by the row of code the annotation's
+    // first line shows on, where pierre has drawn one; else by the block's
+    // top. A patch fence's files scroll in a box of their own, and a chip
+    // there keeps beside that box: no higher than the block's top, and for a
+    // row reaching past the box's foot no lower than a chip's height above
+    // it, where a line below every row drawn hangs too. Each place is kept
+    // under its block's key, and a row's under that key and where in the
+    // source it starts, never where on the page, so that a layout moving it
+    // keeps its key.
+    type Place = {
+      key: string;
+      /** The key of the block it is in, whose places join one another. */
+      block: string;
+      /** Whether that block is one put back of the baseline. */
+      old: boolean;
+      top: number;
+      items: DisplayedAnnotation[];
+    };
+    const places = new Map<string, Place>();
+    const jumps = new Map<
+      string,
+      { block: HTMLElement; row: HTMLElement | null }
+    >();
+    /** A place inside a block: a row of code. */
+    type Line = { key: string; top: number };
+    const hang = (
+      annotation: DisplayedAnnotation,
+      block: { key: string; el: HTMLElement; old: boolean },
+      line: Line | null,
+      row: HTMLElement | null,
+    ) => {
+      const key = line?.key ?? block.key;
+      const place = places.get(key);
+      if (place !== undefined) place.items.push(annotation);
+      else {
+        places.set(key, {
+          key,
+          block: block.key,
+          old: block.old,
+          // The key still names the block the annotation belongs to; only
+          // what gets measured moves when the reader shuts a fold over it.
+          top: line?.top ?? chipTop(containerRect, visibleAnchor(block.el)),
+          items: [annotation],
+        });
+      }
+      jumps.set(annotation.key, { block: block.el, row });
+    };
+    const tall = chipHeight(wide);
+    // The foot of each patch fence's box, found once a layout, and only
+    // where asked.
+    const feet = new Map<Element, number>();
+    const footOf = (wrapper: HTMLElement, row: HTMLElement) => {
+      let foot = feet.get(wrapper);
+      if (foot === undefined) {
+        foot =
+          scrollBox(wrapper, row).getBoundingClientRect().bottom -
+          containerRect.top;
+        feet.set(wrapper, foot);
+      }
+      return foot;
+    };
+    /**
+     * A row of code as a place, keyed `prefix` and its source line; none
+     * under a shut fold, where every row measures 0 and the chip follows the
+     * fold up to its header, as its block's would. In a patch fence a row
+     * reaching past its box's foot hangs no lower than a chip's height above
+     * that foot, and one scrolled out above hangs no higher than the block's
+     * top: where the chip stays once pierre drops the row, by `belowRows` or
+     * by the block.
+     */
+    const rowLine = (
+      prefix: string,
+      wrapper: HTMLElement,
+      { row, source }: PlacedRow,
+    ): Line | null => {
+      if (visibleAnchor(wrapper) !== wrapper) return null;
+      const rect = row.getBoundingClientRect();
+      let top = rect.top - containerRect.top;
+      if (wrapper.hasAttribute(FENCE_PATCH_ATTR)) {
+        const foot = footOf(wrapper, row);
+        if (rect.bottom - containerRect.top > foot) {
+          top = Math.min(top, foot - tall);
+        }
+        top = Math.max(top, chipTop(containerRect, wrapper));
+      }
+      return { key: `${prefix}${source.line}`, top };
+    };
+    /**
+     * The first row, in document order, that shows one of an annotation's
+     * `lines` in the code block `wrapper`, placed by `rows`; in a patch fence
+     * too, whose chip `rowLine` keeps beside the box its rows scroll in.
+     */
+    const rowIn = (
+      wrapper: HTMLElement,
+      rows: () => PlacedRow[],
+      lines: LineRange,
+    ): PlacedRow | null =>
+      !wrapper.matches(CODE_WRAPPERS)
+        ? null
+        : (rows().find(
+            ({ source: { line } }) =>
+              line !== null && line >= lines.start && line <= lines.end,
+          ) ?? null);
+    /**
+     * The foot of the patch fence `wrapper`'s box as a place, keyed `key`,
+     * for an annotation starting on line `start` that no row shows, when
+     * every row pierre has drawn there, placed by `rows`, comes before it:
+     * the box has not scrolled down to it yet. None where it has drawn no
+     * row, or one after it: a line scrolled out above, or one no row shows
+     * between two that are, hangs by the block.
+     */
+    const belowRows = (
+      key: string,
+      wrapper: HTMLElement,
+      rows: () => PlacedRow[],
+      start: number,
+    ): Line | null => {
+      if (
+        !wrapper.hasAttribute(FENCE_PATCH_ATTR) ||
+        visibleAnchor(wrapper) !== wrapper
+      ) {
+        return null;
+      }
+      const drawn = rows().filter(({ source }) => source.line !== null);
+      const [first] = drawn;
+      return first === undefined ||
+        drawn.some(({ source: { line } }) => line !== null && line >= start)
+        ? null
+        : { key, top: footOf(wrapper, first.row) - tall };
+    };
+    // Each wrapper's rows placed once a layout, and only where asked.
+    const currentRows = new Map<Element, PlacedRow[]>();
+    const rowsOf = (wrapper: Element) => () => {
+      let rows = currentRows.get(wrapper);
+      if (rows === undefined) {
+        rows = shadowRows(wrapper).flatMap((row) => {
+          const source = codeRowSource(index, row);
+          return source === null ? [] : [{ row, source }];
+        });
+        currentRows.set(wrapper, rows);
+      }
+      return rows;
+    };
     for (const annotation of annotations) {
       let at = blockForLine(blocks, annotation.start);
       if ((annotation.colStart ?? null) === null) {
@@ -699,16 +911,26 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         const first = targets[0];
         if (first !== undefined) at = els.indexOf(first);
       }
-      if (at < 0) continue;
-      grouped.set(at, [...(grouped.get(at) ?? []), annotation]);
+      const block = blocks[at];
+      if (block === undefined) continue;
+      const key = `${block.start}-${block.end}`;
+      const rows = rowsOf(block.el);
+      const row = rowIn(block.el, rows, annotation);
+      hang(
+        annotation,
+        { key, el: block.el, old: false },
+        row !== null
+          ? rowLine(`${key}:L`, block.el, row)
+          : belowRows(`${key}:below`, block.el, rows, annotation.start),
+        row?.row ?? null,
+      );
     }
     // An annotation on the baseline hangs where its text was put back: on
     // the current block a removed word or a deleted code row sits in,
-    // sharing that block's chip, or on a restored block, a marker or a
-    // removed table row, with a chip of its own. One with none of its text
+    // sharing that block's chips, or on a restored block, a marker or a
+    // removed table row, with chips of its own. One with none of its text
     // put back hangs nowhere.
     const holders = [...container.querySelectorAll<HTMLElement>(OLD_HOLDER)];
-    const oldGrouped = new Map<number, DisplayedAnnotation[]>();
     if (baselineIndex !== null && baselineAnnotations.length > 0) {
       const runs = [...container.querySelectorAll(OLD_RUNS)].map(oldRunOf);
       const restored = holders.flatMap((el) => {
@@ -720,7 +942,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         if (span.key === undefined) continue;
         spansByKey.set(span.key, [...(spansByKey.get(span.key) ?? []), span]);
       }
-      let oldRows: CodeRowSource[] | null = null;
+      let oldRows: PlacedRow[] | null = null;
       const rows = () => {
         oldRows ??= baselineCodeRows(container);
         return oldRows;
@@ -734,15 +956,33 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
           restored,
           rows,
         );
-        const holder = put?.closest(`[${SOURCE_LINE_ATTR}], ${OLD_HOLDER}`);
-        if (holder == null) continue;
-        const own = holders.indexOf(holder as HTMLElement);
-        if (own >= 0) {
-          oldGrouped.set(own, [...(oldGrouped.get(own) ?? []), annotation]);
-          continue;
-        }
-        const at = els.indexOf(holder as HTMLElement);
-        if (at >= 0) grouped.set(at, [...(grouped.get(at) ?? []), annotation]);
+        const holder = put?.closest<HTMLElement>(
+          `[${SOURCE_LINE_ATTR}], ${OLD_HOLDER}`,
+        );
+        if (put == null || holder == null) continue;
+        const own = holders.indexOf(holder);
+        const current = own >= 0 ? undefined : blocks[els.indexOf(holder)];
+        if (own < 0 && current === undefined) continue;
+        const key =
+          current === undefined
+            ? `old-${own}`
+            : `${current.start}-${current.end}`;
+        // Its rows of a code block are the baseline's, which only the wrapper
+        // they were drawn in tells apart from another block's.
+        const code = put instanceof HTMLElement ? put : null;
+        const drawn = () =>
+          rows().filter(({ source }) => source.wrapper === put);
+        const row = code === null ? null : rowIn(code, drawn, annotation);
+        hang(
+          annotation,
+          { key, el: holder, old: current === undefined },
+          row !== null
+            ? rowLine(`${key}:old-L`, holder, row)
+            : code === null
+              ? null
+              : belowRows(`${key}:old-below`, code, drawn, annotation.start),
+          row?.row ?? null,
+        );
       }
     }
     // Innermost wins: one edited cell lights its own row, not the table it
@@ -768,42 +1008,80 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       el.classList.add(ANNOTATED_CLASS);
       if (!kinds.has("comment")) el.classList.add(ANNOTATED_DRAFT_CLASS);
     }
-    const next: Chip[] = [];
-    for (const [at, items] of grouped) {
-      const block = blocks[at];
-      if (block === undefined) continue;
-      next.push({
-        blockKey: `${block.start}-${block.end}`,
-        // The key still names the block the annotation belongs to; only what
-        // gets measured moves when the reader shuts a fold over it.
-        top: chipTop(containerRect, visibleAnchor(block.el)),
-        items,
-      });
+    // A block's places top to bottom: one less than a chip's height below
+    // the last kept would draw over it, and joins it instead. The block's
+    // own top is above every row in it, so a row joins upwards, inside its
+    // block; blocks never join one another here.
+    const byBlock = new Map<string, Place[]>();
+    for (const place of places.values()) {
+      byBlock.set(place.block, [...(byBlock.get(place.block) ?? []), place]);
     }
-    oldChipEls.current = new Map();
-    for (const [at, items] of oldGrouped) {
-      const el = holders[at];
-      if (el === undefined) continue;
-      const top = chipTop(containerRect, visibleAnchor(el));
+    // Less than a chip's height apart, two chips overlap; a hair less is
+    // Firefox measuring two that only touch.
+    const overlaps = (gap: number) => gap < tall - HAIR;
+    const next: Chip[] = [];
+    const oldChips: Chip[] = [];
+    for (const group of byBlock.values()) {
+      const kept: Chip[] = [];
+      for (const place of group.sort((a, b) => a.top - b.top)) {
+        const above = kept.at(-1);
+        if (above !== undefined && overlaps(place.top - above.top)) {
+          above.items = [...above.items, ...place.items];
+          continue;
+        }
+        kept.push({ blockKey: place.key, top: place.top, items: place.items });
+      }
+      (group[0]?.old ? oldChips : next).push(...kept);
+    }
+    for (const chip of oldChips) {
       // A block put back where another chip hangs — first in a current
       // block, inside another restored one, under the same closed fold —
       // would draw its chip over that one: it joins it instead.
-      const near = next.find(
-        (chip) => Math.abs(chip.top - top) < chipHeight(wide),
+      const near = next.find((other) =>
+        overlaps(Math.abs(other.top - chip.top)),
       );
       if (near !== undefined) {
-        near.items = [...near.items, ...items];
+        near.items = [...near.items, ...chip.items];
         continue;
       }
-      const blockKey = `old-${at}`;
-      oldChipEls.current.set(blockKey, el);
-      next.push({ blockKey, top, items });
+      next.push(chip);
     }
+    placeOf.current = jumps;
     next.sort((a, b) => a.top - b.top);
     // Chip by chip, so that one chip moving re-renders that chip alone.
     setChips((prev) => {
       const before = new Map(prev.map((chip) => [chip.blockKey, chip]));
-      const kept = next.map((chip) => {
+      // A chip goes on as the chip one of its annotations was in, under its
+      // key, so that it stays mounted and its popover open however the place
+      // it hangs at changed under it: the annotation that place was kept for
+      // discarded, one joining from above, a fold shut over it. Of two that
+      // join, it goes on as the one being read. A chip new to the page gets
+      // a key of its own, never one a chip on the page goes on under.
+      const heldIn = new Map(
+        prev.flatMap((chip) =>
+          chip.items.map((item) => [item.key, chip.blockKey] as const),
+        ),
+      );
+      const reading = openChip.current;
+      const taken = new Set<string>();
+      const goesOn = next.map((fresh) => {
+        const was = fresh.items.flatMap((item) => heldIn.get(item.key) ?? []);
+        const key =
+          reading !== null && was.includes(reading) && !taken.has(reading)
+            ? reading
+            : was.find((key) => !taken.has(key));
+        if (key !== undefined) taken.add(key);
+        return key;
+      });
+      const kept = next.map((fresh, i) => {
+        let key = goesOn[i];
+        if (key === undefined) {
+          key = fresh.blockKey;
+          while (taken.has(key)) key = `${key}+`;
+          taken.add(key);
+        }
+        const chip =
+          key === fresh.blockKey ? fresh : { ...fresh, blockKey: key };
         const old = before.get(chip.blockKey);
         return old !== undefined &&
           old.top === chip.top &&
@@ -993,24 +1271,46 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     window.addEventListener("resize", layout);
     // So does whatever changes the document's height with no resize: a
     // mermaid diagram taking its source's place, pierre drawing a block, an
-    // image or a font arriving. Folded into one layout per frame. The wash
-    // a layout toggles changes the height once more, and the next layout
-    // toggles nothing, so it settles there.
+    // image or a font arriving; and pierre drawing its rows again, which
+    // need not change any height, while chips hang by those rows; and a
+    // patch's files scrolling in their own box, which moves the rows chips
+    // hang by there and nothing else. Folded into one layout per frame. The
+    // wash a layout toggles changes the height once more, or has pierre draw
+    // again, and the next layout toggles nothing, so it settles there.
     const container = containerRef.current;
     let frame: number | null = null;
+    const schedule = () => {
+      frame ??= requestAnimationFrame(() => {
+        frame = null;
+        layout();
+      });
+    };
     let observer: ResizeObserver | null = null;
     if (container !== null && typeof ResizeObserver !== "undefined") {
-      observer = new ResizeObserver(() => {
-        frame ??= requestAnimationFrame(() => {
-          frame = null;
-          layout();
-        });
-      });
+      observer = new ResizeObserver(schedule);
       observer.observe(container);
     }
+    container?.addEventListener(CODE_RENDERED_EVENT, schedule);
+    // `scroll` does not bubble, so the capture phase hears it; and only a
+    // patch's, as a table or a block of code scrolling sideways moves no
+    // chip.
+    const scrolled = (event: Event) => {
+      if (
+        event.target instanceof Element &&
+        event.target.closest(`[${FENCE_PATCH_ATTR}]`) !== null
+      ) {
+        schedule();
+      }
+    };
+    container?.addEventListener("scroll", scrolled, {
+      capture: true,
+      passive: true,
+    });
     return () => {
       window.removeEventListener("resize", layout);
       observer?.disconnect();
+      container?.removeEventListener(CODE_RENDERED_EVENT, schedule);
+      container?.removeEventListener("scroll", scrolled, { capture: true });
       if (frame !== null) cancelAnimationFrame(frame);
     };
   }, [layout]);
@@ -1030,23 +1330,51 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     return () => container.removeEventListener("toggle", layout, true);
   }, [layout]);
 
+  // The latest layout, for a jump that finds its row drawn again since the
+  // last one ran; a ref, so that the jump stays one stable callback.
+  const layoutRef = useRef(layout);
+  useLayoutEffect(() => {
+    layoutRef.current = layout;
+  }, [layout]);
+
   const keepHold = useOwnHold();
-  /** Jump to what a popover entry points at — its own mark, or its block. */
+  /**
+   * Jump to what a popover entry points at — its own mark, else its row of
+   * code or its block — and hold it there. The hold looks it up again for
+   * each placing, by the same rule: pierre replaces every row of a block it
+   * draws again (highlighting arriving late, a theme change), the row jumped
+   * to among them. A row is not flashed: the flash is styled outside
+   * pierre's shadow root, and the row wears its annotation's tint already.
+   */
   const flashAnnotation = useCallback(
-    (annotation: DisplayedAnnotation, blockKey: string) => {
-      const container = containerRef.current;
-      if (!container) return;
-      const target =
-        container.querySelector<HTMLElement>(
+    (annotation: DisplayedAnnotation) => {
+      const find = () => {
+        const container = containerRef.current;
+        if (!container) return null;
+        const mark = container.querySelector<HTMLElement>(
           `[${MARK_KEY_ATTR}="${annotation.key}"]`,
-        ) ??
-        container.querySelector<HTMLElement>(
-          `[${SOURCE_LINE_ATTR}="${blockKey}"]`,
-        ) ??
-        oldChipEls.current.get(blockKey) ??
-        null;
-      if (target === null) return;
-      keepHold(glideToRevealed(target));
+        );
+        let place = placeOf.current.get(annotation.key);
+        if (mark === null && place?.row != null && !place.row.isConnected) {
+          layoutRef.current();
+          place = placeOf.current.get(annotation.key);
+        }
+        const row = mark === null && place?.row?.isConnected ? place.row : null;
+        const block = place?.block.isConnected ? place.block : null;
+        const target = mark ?? row ?? block;
+        return target === null ? null : { target, row, block };
+      };
+      const found = find();
+      if (found === null) return;
+      const { target, row, block } = found;
+      // The walk up to a shut fold that `revealBlock` takes stops at pierre's
+      // shadow root, so a row's folds are opened from its block.
+      if (row !== null && block !== null) openEnclosingFolds(block);
+      keepHold(
+        glideToRevealed(() => find()?.target ?? null, {
+          flash: target !== row,
+        }),
+      );
     },
     [keepHold],
   );
@@ -1103,6 +1431,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
           slug={slug}
           issueNumber={issueNumber}
           chip={chip}
+          onOpen={trackOpen}
           onFlash={flashAnnotation}
           onEditDraft={onEditDraft}
           onRemoveDraft={onRemoveDraft}
@@ -1122,6 +1451,7 @@ const AnnotationChip = memo(function AnnotationChip({
   slug,
   issueNumber,
   chip,
+  onOpen,
   onFlash,
   onEditDraft,
   onRemoveDraft,
@@ -1139,7 +1469,9 @@ const AnnotationChip = memo(function AnnotationChip({
   slug: string;
   issueNumber: number;
   chip: Chip;
-  onFlash: (annotation: DisplayedAnnotation, blockKey: string) => void;
+  /** Told when the chip's popover opens or closes, by the chip's key. */
+  onOpen: (key: string, open: boolean) => void;
+  onFlash: (annotation: DisplayedAnnotation) => void;
   onEditDraft: (draft: SpecReviewDraft) => void;
   onRemoveDraft: (id: string) => void;
   onResolve: (commentId: number) => void;
@@ -1155,7 +1487,7 @@ const AnnotationChip = memo(function AnnotationChip({
       type="button"
       className="cursor-pointer hover:underline"
       title="Scroll to what this points at"
-      onClick={() => onFlash(item, chip.blockKey)}
+      onClick={() => onFlash(item)}
     >
       {labelOf(item)}
     </button>
@@ -1197,7 +1529,12 @@ const AnnotationChip = memo(function AnnotationChip({
     return () => observer.disconnect();
   }, [wide, open]);
   return (
-    <Popover onOpenChange={setOpen}>
+    <Popover
+      onOpenChange={(next) => {
+        setOpen(next);
+        onOpen(chip.blockKey, next);
+      }}
+    >
       {/* Below `sm` the chip is a count badge centred on the card's right
           border, `--spec-card-inset` past the text's edge (0 where nothing
           sets it), and opaque, so the border does not run through it: the
