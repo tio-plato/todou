@@ -1,5 +1,9 @@
 import type { SearchPart, SearchQualifier, SearchValue } from "@todou/shared";
-import { canonicalQualifierValue, SEARCH_QUALIFIERS } from "@todou/shared";
+import {
+  canonicalQualifierValue,
+  nameKey,
+  SEARCH_QUALIFIERS,
+} from "@todou/shared";
 import type { ReactNode } from "react";
 
 /**
@@ -24,8 +28,8 @@ export function verdictOf(
   }
   const names = known[key];
   if (names === undefined) return spec.kind === "free" ? "valid" : "unknown";
-  const wanted = value.toLowerCase();
-  return names.some((n) => n.toLowerCase() === wanted) ? "valid" : "invalid";
+  const wanted = nameKey(value);
+  return names.some((n) => nameKey(n) === wanted) ? "valid" : "invalid";
 }
 
 /**
