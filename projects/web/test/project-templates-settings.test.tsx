@@ -17,6 +17,7 @@ import {
 } from "@testing-library/react";
 import {
   BUILTIN_TEMPLATES,
+  type MemberRole,
   type MePrefs,
   type Project,
   type ProjectTemplate,
@@ -126,12 +127,17 @@ const PREFS: MePrefs = {
   spec_strip_changes: true,
 };
 
-const project = (slug: string): Project => ({
+// Reader by default: the lowest role a template can be taken from.
+const project = (
+  slug: string,
+  viewer_role: MemberRole = "reader",
+): Project => ({
   id: slug.length,
   slug,
   name: slug,
   description: "",
   created_at: "2026-01-01T00:00:00Z",
+  viewer_role,
 });
 const PROJECTS = [project("todou"), project("homelab")];
 
@@ -1300,8 +1306,17 @@ describe("StartFromPicker", () => {
     expect(list.getAttribute("aria-activedescendant")).toBe(homelab.id);
   });
 
+  it("leaves out the projects the viewer is only a guest in", async () => {
+    renderPicker([project("todou"), project("guest-desk", "guest")]);
+    await screen.findByRole("listbox", { name: "Templates" });
+    fireEvent.click(screen.getByRole("button", { name: "Project" }));
+    const list = within(screen.getByRole("listbox", { name: "Projects" }));
+    expect(list.getAllByRole("option")).toHaveLength(1);
+    expect(list.getByRole("option", { name: /todou/ })).toBeTruthy();
+  });
+
   it("asks for no project when there is none to pick", async () => {
-    renderPicker([]);
+    renderPicker([project("guest-desk", "guest")]);
     await screen.findByRole("listbox", { name: "Templates" });
     fireEvent.click(screen.getByRole("button", { name: "Project" }));
     expect(screen.getByText("No project to start from.")).toBeTruthy();
