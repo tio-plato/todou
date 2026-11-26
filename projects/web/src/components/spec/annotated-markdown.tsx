@@ -275,11 +275,13 @@ function shadowRows(wrapper: Element): HTMLElement[] {
 
 /**
  * How tall `AnnotationChip` draws a chip, so how close two can sit before
- * they overlap: from `sm` up a 16px line, 2px padding and a 1px border, top
- * and bottom; below it a 24px count badge (`max-sm:h-6`).
+ * they overlap, at a root font size of `rem` pixels: from `sm` up a 1rem
+ * line (`text-xs`), 0.125rem padding and a 1px border, top and bottom; below
+ * it a 1.5rem count badge (`max-sm:h-6`). The border stays 1px at any font
+ * size, so the chip does not scale with it as a whole.
  */
-function chipHeight(wide: boolean): number {
-  return wide ? 22 : 24;
+function chipHeight(wide: boolean, rem: number): number {
+  return wide ? 1.25 * rem + 2 : 1.5 * rem;
 }
 
 /**
@@ -882,7 +884,12 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       }
       jumps.set(annotation.key, { block: block.el, row });
     };
-    const tall = chipHeight(wide);
+    // A chip is drawn in rem, which the root element's font size sets, not
+    // this text's; the reader may have set it to other than 16px.
+    const tall = chipHeight(
+      wide,
+      Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
+    );
     // The foot of each patch fence's box, found once a layout, and only
     // where asked.
     const feet = new Map<Element, number>();
@@ -1710,8 +1717,9 @@ const AnnotationChip = memo(function AnnotationChip({
       {/* Below `sm` the chip is a count badge centred on the card's right
           border, `--spec-card-inset` past the text's edge (0 where nothing
           sets it), and opaque, so the border does not run through it: the
-          same tint, laid over the page's background. Its 24px height is
-          also `chipHeight`'s: change one, change the other. */}
+          same tint, laid over the page's background. Its 1.5rem height, and
+          from `sm` up its line, padding and border, are also `chipHeight`'s:
+          change one, change the other. */}
       <PopoverTrigger
         ref={triggerRef}
         data-annotation-ui=""
