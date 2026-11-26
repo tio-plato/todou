@@ -1,10 +1,16 @@
 import {
+  useIsMutating,
   useMutation,
   useQuery,
   useQueryClient,
   useSuspenseQuery,
 } from "@tanstack/react-query";
-import { Link, useNavigate, useParams } from "@tanstack/react-router";
+import {
+  Link,
+  useNavigate,
+  useParams,
+  useRouter,
+} from "@tanstack/react-router";
 import {
   canonicalizeLabelName,
   defaultInsightsRole,
@@ -21,6 +27,9 @@ import {
 import {
   ArrowLeftIcon,
   CheckIcon,
+  CircleCheckIcon,
+  CircleIcon,
+  CopyIcon,
   PencilIcon,
   PlusIcon,
   Trash2Icon,
@@ -420,6 +429,86 @@ function NewTemplateDialog({
   );
 }
 
+const COPY = " copy";
+
+/**
+ * The name a copy of a template is offered: its own with " copy" after it,
+ * the name cut short where the two would run past the 100 characters a name
+ * may hold. Never cut between a surrogate pair's halves.
+ */
+function copyName(name: string): string {
+  let kept = name.slice(0, 100 - COPY.length);
+  if (/[\uD800-\uDBFF]$/.test(kept)) kept = kept.slice(0, -1);
+  return `${kept.trimEnd()}${COPY}`;
+}
+
+/** Names a copy of `template` as it is now, makes it, then opens it. */
+function DuplicateTemplateDialog({ template }: { template: UsableTemplate }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const field = useRef<HTMLInputElement>(null);
+  const create = useCreateTemplate(() => setOpen(false));
+  const trimmed = name.trim();
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (next) setName(copyName(template.name));
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm">
+          <CopyIcon /> Duplicate
+        </Button>
+      </DialogTrigger>
+      <DialogContent
+        aria-describedby={undefined}
+        className="grid-cols-1 sm:max-w-lg"
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          field.current?.focus();
+          field.current?.select();
+        }}
+      >
+        <DialogHeader className="min-w-0 pr-7">
+          <DialogTitle className="min-w-0 leading-normal wrap-anywhere">
+            Duplicate {template.name}
+          </DialogTitle>
+        </DialogHeader>
+        <form
+          className="min-w-0 space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (trimmed !== "" && !create.isPending) {
+              create.mutate({ name: trimmed, body: template.body });
+            }
+          }}
+        >
+          <div className="space-y-2">
+            <Label htmlFor="duplicate-template-name">Name</Label>
+            <Input
+              ref={field}
+              id="duplicate-template-name"
+              value={name}
+              maxLength={100}
+              onChange={(e) => setName(e.target.value)}
+              autoComplete="off"
+              required
+            />
+          </div>
+          <DialogFooter>
+            <Button type="submit" disabled={trimmed === "" || create.isPending}>
+              Duplicate
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function ProjectTemplateSettingsPage() {
   const { template } = useParams({
     from: "/authed/settings/templates/$template",
@@ -450,7 +539,8 @@ export function ProjectTemplateSettings({ template }: { template: string }) {
 
 /**
  * A template this version cannot read: what is wrong with it, place by
- * place. It can be deleted from the list; nothing can be made from it.
+ * place. It can be deleted, here or from the list; nothing can be made from
+ * it.
  */
 function IncompatibleTemplate({ template }: { template: ProjectTemplate }) {
   return (
@@ -477,6 +567,83 @@ function IncompatibleTemplate({ template }: { template: ProjectTemplate }) {
           </li>
         ))}
       </ul>
+      <DeleteTemplateRow template={template} />
+    </div>
+  );
+}
+
+/** Where a template's writes queue, so that each waits for the one before. */
+const writes = (ref: ProjectTemplate["ref"]) => `project-template-${ref}`;
+
+/**
+ * The account's own template deleted from its page, which is left before the
+ * template leaves the list: the other way round, the page would show it as
+ * missing first.
+ */
+function DeleteTemplateRow({ template }: { template: ProjectTemplate }) {
+  const [open, setOpen] = useState(false);
+  const navigate = useNavigate();
+  const router = useRouter();
+  const queryClient = useQueryClient();
+  const key = ["project-template-delete", template.ref];
+  const remove = useMutation({
+    mutationKey: key,
+    // Behind the edits still being saved, which would meet a 404 after it.
+    scope: { id: writes(template.ref) },
+    mutationFn: (id: number) => api.deleteProjectTemplate(id),
+    onSuccess: async (_data, id) => {
+      // Only from the template's own page, as the address now reads, a
+      // navigation still loading included: one left while the delete waited
+      // is not brought back to the list.
+      const here = router
+        .matchRoutes(router.latestLocation)
+        .some(
+          (match) =>
+            match.routeId === "/authed/settings/templates/$template" &&
+            match.params.template === String(id),
+        );
+      if (here) await navigate({ to: "/settings/templates" });
+      queryClient.setQueryData(templatesKey, (list) =>
+        list?.filter((t) => t.ref !== id),
+      );
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  // Also when this page was left and opened again while the delete waited:
+  // it is still on its way.
+  const deleting = useIsMutating({ mutationKey: key }) > 0 || remove.isPending;
+  const { ref } = template;
+  if (typeof ref !== "number") return null;
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg border border-destructive/35 py-3 pr-3 pl-4">
+      <p className="text-sm text-muted-foreground">
+        Projects made from it keep their statuses and labels.
+      </p>
+      <Button
+        variant="outline"
+        size="sm"
+        className="text-destructive"
+        onClick={() => setOpen(true)}
+      >
+        <Trash2Icon className="size-3.5" /> Delete template
+      </Button>
+      <ConfirmDialog
+        open={open || deleting}
+        // Kept open while the delete waits its turn: closed, it would read
+        // as called off, and an edit made then would queue behind it.
+        onOpenChange={(next) => {
+          if (!deleting) setOpen(next);
+        }}
+        title={`Delete ${template.name}?`}
+        description="This cannot be undone."
+        confirmLabel="Delete template"
+        destructive
+        pending={deleting}
+        onConfirm={() => {
+          if (!deleting) remove.mutate(ref);
+        }}
+      />
     </div>
   );
 }
@@ -596,7 +763,7 @@ function TemplateEditor({ template }: { template: UsableTemplate }) {
   // one a refetch brings in mid-queue: the edits behind were made without
   // what it carries, and sent on it they would put that back.
   const base = useRef(template.revision);
-  const scope = `project-template-${ref}`;
+  const scope = writes(ref);
   const writing = () =>
     queryClient.isMutating({
       predicate: (m) => m.options.scope?.id === scope,
@@ -691,11 +858,22 @@ function TemplateEditor({ template }: { template: UsableTemplate }) {
             onSave={(name) => queue({ name })}
           />
         ) : (
-          <div className="flex min-w-0 items-center gap-2">
-            <h1 className="truncate text-xl font-semibold">{template.name}</h1>
-            <Badge variant="outline">Built in</Badge>
+          <div className="space-y-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <h1 className="truncate text-xl font-semibold">
+                {template.name}
+              </h1>
+              <Badge variant="outline">Built in</Badge>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Comes with todou: an update can change it, but not your copies.
+            </p>
           </div>
         )}
+        <div className="flex flex-wrap items-center gap-2">
+          <UseForNewProjectsButton template={template} />
+          <DuplicateTemplateDialog template={template} />
+        </div>
       </div>
       <StatusSetList
         statuses={statuses}
@@ -879,7 +1057,41 @@ function TemplateEditor({ template }: { template: UsableTemplate }) {
         }}
         pending={{ create: false, update: false, delete: false }}
       />
+      {canManage && <DeleteTemplateRow template={template} />}
     </div>
+  );
+}
+
+// The outline button's own hover and dark colours are overridden too: left
+// in, the dark ones hide the fill and a hover turns the text back.
+const IN_USE =
+  "border-primary/45 bg-primary/15 text-primary hover:bg-primary/15 hover:text-primary dark:border-primary/45 dark:bg-primary/15 dark:hover:bg-primary/15";
+
+/**
+ * Whether new projects start from `template`, and the press that makes them.
+ * It looks the same width either way. Once pressed it does nothing: a new
+ * project always starts from some template, so there is nothing to unset.
+ */
+function UseForNewProjectsButton({ template }: { template: UsableTemplate }) {
+  const templates = useSuspenseQuery(projectTemplatesQuery);
+  const prefs = useSuspenseQuery(prefsQuery);
+  const patch = usePatchPrefs();
+  const inUse =
+    preferredTemplate(templates.data, prefs.data.new_project_template) ===
+    template.ref;
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      aria-pressed={inUse}
+      aria-disabled={inUse || undefined}
+      className={inUse ? IN_USE : undefined}
+      onClick={() => {
+        if (!inUse) patch.mutate({ new_project_template: template.ref });
+      }}
+    >
+      {inUse ? <CircleCheckIcon /> : <CircleIcon />} Use for new projects
+    </Button>
   );
 }
 
