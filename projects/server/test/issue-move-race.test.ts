@@ -48,18 +48,49 @@ function races(tag: string, open: (hooks: TestHooks) => Promise<TestApp>) {
     delete pending[key];
     await run?.();
   };
+  /** Moves that finish step 2 wait here until `size` of them have. */
+  let gate:
+    | { size: number; arrived: number; open: () => void; opened: Promise<void> }
+    | undefined;
   const hooks: TestHooks = {
     afterMovePlan: once("afterMovePlan"),
     beforeTrashWrite: once("beforeTrashWrite"),
+    afterMoveStep: async (step) => {
+      if (gate !== undefined && step === 2) {
+        const waiting = gate;
+        waiting.arrived += 1;
+        if (waiting.arrived === waiting.size) waiting.open();
+        await waiting.opened;
+      }
+    },
+  };
+  /**
+   * Runs `moves` with every one of them held after step 2 until all have
+   * got there. A move that ends without getting there opens the gate too,
+   * so the others fail instead of waiting out the timeout.
+   */
+  const together = async (moves: Array<() => Promise<Response>>) => {
+    let open = () => {};
+    const opened = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    gate = { size: moves.length, arrived: 0, open, opened };
+    try {
+      return await Promise.all(moves.map((run) => run().finally(open)));
+    } finally {
+      gate = undefined;
+    }
   };
 
   const req = (path: string, init?: RequestInit) =>
-    t.app.request(`/api${path}`, {
-      ...init,
-      headers: init?.body
-        ? { "content-type": "application/json", ...admin }
-        : admin,
-    });
+    Promise.resolve(
+      t.app.request(`/api${path}`, {
+        ...init,
+        headers: init?.body
+          ? { "content-type": "application/json", ...admin }
+          : admin,
+      }),
+    );
   const createIssue = async (title: string) => {
     const res = await req(`/projects/${A}/issues`, {
       method: "POST",
@@ -68,8 +99,8 @@ function races(tag: string, open: (hooks: TestHooks) => Promise<TestApp>) {
     expect(res.status).toBe(201);
     return (await json(res)) as { number: number };
   };
-  const move = (number: number, to: string) =>
-    req(`/projects/${A}/issues/${number}/move`, {
+  const move = (number: number, to: string, from = A) =>
+    req(`/projects/${from}/issues/${number}/move`, {
       method: "POST",
       body: JSON.stringify({ to_project: to }),
     });
@@ -221,6 +252,26 @@ function races(tag: string, open: (hooks: TestHooks) => Promise<TestApp>) {
       const copies = [...(await liveIn(B, title)), ...(await liveIn(C, title))];
       expect(copies).toHaveLength(1);
     }
+  });
+
+  // A card's first move mints its lineage, and every card minting one in
+  // the same project goes through the same placeholder address row.
+  it("lands every first move out of one project at once", async () => {
+    const cards = [];
+    for (let i = 0; i < 4; i++) cards.push(await createIssue(`first ${i}`));
+    const results = await together(
+      cards.map((card) => () => move(card.number, B)),
+    );
+    expect(results.map((r) => r.status)).toEqual([200, 200, 200, 200]);
+    const landed = new Set<string>();
+    for (const card of cards) {
+      const source = await req(`/projects/${A}/issues/${card.number}`);
+      expect(source.status).toBe(301);
+      const location = source.headers.get("location") ?? "";
+      expect(location).toMatch(new RegExp(`^/api/projects/${B}/issues/\\d+$`));
+      landed.add(location);
+    }
+    expect(landed.size).toBe(4);
   });
 
   it("never answers both a move and a trash with success", async () => {
