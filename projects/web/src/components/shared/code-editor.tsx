@@ -240,9 +240,12 @@ export function CodeEditor({
       const current = view.current;
       if (!current) return;
       const at = current.state.doc.length;
+      // A CRLF goes in as one line break: the caret goes after the text as
+      // the document holds it.
+      const insert = current.state.toText(text);
       current.dispatch({
-        changes: { from: at, insert: text },
-        selection: { anchor: at + text.length },
+        changes: { from: at, insert },
+        selection: { anchor: at + insert.length },
         scrollIntoView: true,
       });
     },
