@@ -75,10 +75,13 @@ transaction-pooling proxy such as PgBouncer: `database.system` and, under
 dedicated placement, every project database, which todou also migrates when
 it creates a project.
 
-Migration 0013 is the one that changes existing data rather than only its
-shape: it renames stored attachment filenames so that no two on one card
-collide. See [Relabelling attachment links after the filename
-migration](#relabelling-attachment-links-after-the-filename-migration).
+Project migrations 0013 and 0026 are the ones that change existing data
+rather than only its shape. 0013 renames stored attachment filenames so that
+no two on one card collide; see [Relabelling attachment links after the
+filename migration](#relabelling-attachment-links-after-the-filename-migration).
+0026 takes out of the trash the tombstones a delete used to mark when it
+reached a moved card at its old address or raced the move, which nothing can
+restore any more.
 
 ### What project search needs from PostgreSQL
 
