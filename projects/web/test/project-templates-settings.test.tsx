@@ -1,4 +1,4 @@
-import { QueryClientProvider } from "@tanstack/react-query";
+import { notifyManager, QueryClientProvider } from "@tanstack/react-query";
 import {
   createMemoryHistory,
   createRootRoute,
@@ -351,6 +351,21 @@ const added = (name: string) => ({
 const settle = () =>
   act(() => new Promise<void>((resolve) => setTimeout(resolve, 50)));
 
+/** Delete the template whose page is open, through its confirmation. */
+async function deleteFromPage() {
+  const open = await screen.findByRole("button", { name: "Delete template" });
+  // Read before the dialog opens: it hides the page from the roles below it.
+  const name = screen.getByRole("heading", { level: 1 }).textContent;
+  fireEvent.click(open);
+  fireEvent.click(
+    within(
+      await screen.findByRole("dialog", { name: `Delete ${name}?` }),
+    ).getByRole("button", { name: "Delete template" }),
+  );
+}
+
+const deletes = (calls: Call[]) => calls.filter((c) => c.method === "DELETE");
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -687,6 +702,25 @@ describe("a template this version cannot read", () => {
     expect(optionNames(dialog)).not.toContain("From the future");
   });
 
+  it("can be deleted from its page", async () => {
+    const server = fakeServer({ templates });
+    const router = renderAt("/settings/templates/11", undefined, templates);
+    expect(await screen.findByText("Incompatible")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Duplicate" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Use for new projects" }),
+    ).toBeNull();
+
+    await deleteFromPage();
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe("/settings/templates"),
+    );
+    await waitFor(() => expect(screen.queryByText(FUTURE.name)).toBeNull());
+    expect(deletes(server.calls).map((c) => c.path)).toEqual([
+      "/me/project-templates/11",
+    ]);
+  });
+
   it("says on its page where it cannot be read", async () => {
     fakeServer({ templates });
     renderAt("/settings/templates/11", undefined, templates);
@@ -932,6 +966,262 @@ describe("a template's page", () => {
     });
   });
 
+  it("sets the account's new-project template from a template's page, and does nothing when pressed again", async () => {
+    const server = fakeServer();
+    renderAt("/settings/templates/7");
+    const use = await screen.findByRole("button", {
+      name: "Use for new projects",
+    });
+    expect(use.getAttribute("aria-pressed")).toBe("false");
+    expect(use.getAttribute("aria-disabled")).toBeNull();
+    const patches = () => server.calls.filter((c) => c.method === "PATCH");
+
+    fireEvent.click(use);
+    await waitFor(() => expect(use.getAttribute("aria-pressed")).toBe("true"));
+    expect(use.getAttribute("aria-disabled")).toBe("true");
+    expect(patches()).toEqual([
+      {
+        method: "PATCH",
+        path: "/me/prefs",
+        body: { new_project_template: 7 },
+      },
+    ]);
+
+    fireEvent.click(use);
+    await settle();
+    expect(patches()).toHaveLength(1);
+  });
+
+  it("marks the built-in template as in use only when no other usable template is", async () => {
+    fakeServer();
+    const client = testQueryClient();
+    renderAt(`/settings/templates/${BASIC.ref}`, client);
+    act(() => {
+      client.setQueryData(prefsQuery.queryKey, {
+        ...PREFS,
+        new_project_template: 7,
+      });
+    });
+    const use = await screen.findByRole("button", {
+      name: "Use for new projects",
+    });
+    await waitFor(() => expect(use.getAttribute("aria-pressed")).toBe("false"));
+
+    // Gone, as when the template new projects used was deleted.
+    act(() => {
+      client.setQueryData(prefsQuery.queryKey, {
+        ...PREFS,
+        new_project_template: 99,
+      });
+    });
+    await waitFor(() => expect(use.getAttribute("aria-pressed")).toBe("true"));
+  });
+
+  it("duplicates the built-in template under a name typed in the dialog, then opens the copy", async () => {
+    const server = fakeServer();
+    const router = renderAt(`/settings/templates/${BASIC.ref}`);
+    fireEvent.click(await screen.findByRole("button", { name: "Duplicate" }));
+    const dialog = within(
+      await screen.findByRole("dialog", { name: `Duplicate ${BASIC.name}` }),
+    );
+    let field = dialog.getByLabelText("Name") as HTMLInputElement;
+    expect(field.value).toBe(`${BASIC.name} copy`);
+    await waitFor(() => expect(document.activeElement).toBe(field));
+    expect([field.selectionStart, field.selectionEnd]).toEqual([
+      0,
+      field.value.length,
+    ]);
+
+    // Closed with a name typed, it offers the copy's name again when reopened.
+    fireEvent.change(field, { target: { value: "Abandoned" } });
+    fireEvent.keyDown(field, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate" }));
+    const reopened = within(await screen.findByRole("dialog"));
+    field = reopened.getByLabelText("Name") as HTMLInputElement;
+    expect(field.value).toBe(`${BASIC.name} copy`);
+
+    fireEvent.change(field, { target: { value: "Mine" } });
+    fireEvent.click(reopened.getByRole("button", { name: "Duplicate" }));
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe("/settings/templates/12"),
+    );
+    expect(server.calls.filter((c) => c.method === "POST")).toEqual([
+      {
+        method: "POST",
+        path: "/me/project-templates",
+        body: { name: "Mine", body: BASIC.body },
+      },
+    ]);
+    expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe(
+      "Mine",
+    );
+    expect(server.calls.filter((c) => c.method === "PATCH")).toEqual([]);
+  });
+
+  it("suggests a copy name within 100 characters", async () => {
+    const long: UsableTemplate = { ...KANBAN, ref: 8, name: "x".repeat(100) };
+    const templates = [...TEMPLATES, long];
+    const server = fakeServer({ templates });
+    renderAt("/settings/templates/8", undefined, templates);
+    fireEvent.click(await screen.findByRole("button", { name: "Duplicate" }));
+    const dialog = within(await screen.findByRole("dialog"));
+    const suggested = (dialog.getByLabelText("Name") as HTMLInputElement).value;
+    // As much of the name as fits beside " copy" in 100 characters.
+    expect(suggested).toBe(`${"x".repeat(95)} copy`);
+
+    fireEvent.click(dialog.getByRole("button", { name: "Duplicate" }));
+    await waitFor(() =>
+      expect(
+        server.calls.filter((c) => c.method === "POST").map((c) => c.body),
+      ).toEqual([{ name: suggested, body: long.body }]),
+    );
+  });
+
+  it("cuts a name for its copy between characters, never inside one", async () => {
+    // The emoji's two UTF-16 halves are the 95th and 96th code units.
+    const long: UsableTemplate = {
+      ...KANBAN,
+      ref: 8,
+      name: `${"x".repeat(94)}😀xxxx`,
+    };
+    const templates = [...TEMPLATES, long];
+    fakeServer({ templates });
+    renderAt("/settings/templates/8", undefined, templates);
+    fireEvent.click(await screen.findByRole("button", { name: "Duplicate" }));
+    const dialog = within(await screen.findByRole("dialog"));
+    expect((dialog.getByLabelText("Name") as HTMLInputElement).value).toBe(
+      `${"x".repeat(94)} copy`,
+    );
+  });
+
+  it("deletes a template from its page, then shows the list without it, never the missing-template page", async () => {
+    const server = fakeServer();
+    const missing = "You have no template at this address.";
+    let shown = false;
+    // Records keep what was added, however soon the page replaces it.
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        const nodes = [record.target, ...record.addedNodes];
+        if (nodes.some((node) => node.textContent?.includes(missing))) {
+          shown = true;
+        }
+      }
+    });
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+    // A list change renders the moment it is made, not on the next timer
+    // tick: whether the page shows the template missing then depends on the
+    // order alone, not on which of two timers fires first.
+    notifyManager.setScheduler((callback) => callback());
+    try {
+      const router = renderAt("/settings/templates/7");
+      await deleteFromPage();
+      await waitFor(() =>
+        expect(router.state.location.pathname).toBe("/settings/templates"),
+      );
+      await waitFor(() =>
+        expect(screen.queryByRole("link", { name: KANBAN.name })).toBeNull(),
+      );
+      expect(screen.getByRole("link", { name: AGILE.name })).toBeTruthy();
+      expect(deletes(server.calls).map((c) => c.path)).toEqual([
+        "/me/project-templates/7",
+      ]);
+      await settle();
+      expect(shown).toBe(false);
+    } finally {
+      notifyManager.setScheduler((callback) => setTimeout(callback, 0));
+      observer.disconnect();
+    }
+  });
+
+  it("a delete waits for an edit still being saved", async () => {
+    const error = vi.spyOn(toast, "error");
+    const server = fakeServer({ hold: true });
+    renderAt("/settings/templates/7");
+    await screen.findByText("Doing");
+    await addStatus("Review");
+    await deleteFromPage();
+    await settle();
+    expect(server.puts()).toHaveLength(1);
+    expect(deletes(server.calls)).toEqual([]);
+    // Closed, it would read as called off, and an edit made then would be
+    // queued behind the delete.
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    await settle();
+    expect(
+      screen.getByRole("dialog", { name: `Delete ${KANBAN.name}?` }),
+    ).toBeTruthy();
+
+    await server.release();
+    await waitFor(() => expect(deletes(server.calls)).toHaveLength(1));
+    expect(
+      server.calls.indexOf(deletes(server.calls)[0] as Call),
+    ).toBeGreaterThan(server.calls.indexOf(server.puts()[0] as Call));
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it("a delete that lands once its page is left keeps the user where they went", async () => {
+    const server = fakeServer({ hold: true });
+    const router = renderAt("/settings/templates/7");
+    await screen.findByText("Doing");
+    await addStatus("Review");
+    await deleteFromPage();
+    await settle();
+    // Away while the confirmation is open, as Back would go: no dialog
+    // holds history off.
+    await act(() => router.history.push(`/settings/templates/${AGILE.ref}`));
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(
+        AGILE.name,
+      ),
+    );
+
+    await server.release();
+    await waitFor(() => expect(deletes(server.calls)).toHaveLength(1));
+    await settle();
+    expect(router.state.location.pathname).toBe(
+      `/settings/templates/${AGILE.ref}`,
+    );
+  });
+
+  it("a delete that lands once its page is left and opened again still leaves it for the list", async () => {
+    const server = fakeServer({ hold: true });
+    const router = renderAt("/settings/templates/7");
+    await screen.findByText("Doing");
+    await addStatus("Review");
+    await deleteFromPage();
+    await settle();
+    // Away, then Back, before the delete has gone out.
+    await act(() => router.history.push(`/settings/templates/${AGILE.ref}`));
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(
+        AGILE.name,
+      ),
+    );
+    await act(() => router.history.back());
+    await screen.findByText("Doing");
+    // Still on its way: the page says so, and takes no edit before it lands.
+    const waiting = await screen.findByRole("dialog", {
+      name: `Delete ${KANBAN.name}?`,
+    });
+    expect(
+      (
+        within(waiting).getByRole("button", {
+          name: "Delete template",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+
+    await server.release();
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe("/settings/templates"),
+    );
+  });
+
   it("shows Basic with nothing to change", async () => {
     fakeServer();
     renderAt("/settings/templates/basic");
@@ -939,6 +1229,9 @@ describe("a template's page", () => {
     expect(screen.queryByRole("button", { name: /New status/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /New label/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "Rename" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Delete template" }),
+    ).toBeNull();
   });
 });
 
