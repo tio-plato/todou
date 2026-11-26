@@ -1,13 +1,21 @@
+import { randomUUID } from "node:crypto";
 import { and, eq, inArray, max, ne, or } from "drizzle-orm";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "../src/db/driver.ts";
 import {
   comments,
   issueEvents,
   issues,
+  projectMeta,
   revisions,
+  statuses,
 } from "../src/db/project-schema.ts";
-import { issueAddresses, issueMoves } from "../src/db/system-schema.ts";
+import {
+  issueAddresses,
+  issueMoves,
+  projects,
+  users,
+} from "../src/db/system-schema.ts";
 import { routeInfoOf } from "../src/services/access.ts";
 import type { ActivityImportedMaxIds } from "../src/services/move/copy.ts";
 import { sweepMoves } from "../src/services/move/execute.ts";
@@ -599,13 +607,23 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
       const moving = move(t, admin, A, source.number, B);
       try {
         await reach(paused.reached, moving);
+        // A mover that stopped renewing: its lease has run out. Its timer
+        // would renew it only a fifth of a lease from now, and by then the
+        // row is the sweep's.
+        await t.ctx.router
+          .system()
+          .update(issueMoves)
+          .set({ leasedUntil: new Date(Date.now() - 1000) })
+          .where(eq(issueMoves.fromNumber, source.number));
         expect(await sweepMoves(t.ctx)).toBe(1);
         expect(
           (await req(t, `/projects/${A}/issues/${source.number}`, admin))
             .status,
         ).toBe(301);
       } finally {
+        // Pass or fail, the move ends before the app closes under it.
         paused.release();
+        await moving;
       }
 
       // Every step after the copy replays, so the move finishing what the
@@ -619,6 +637,134 @@ describe.each(["dedicated", "dedicated-bucketed"] as const)(
           .where(eq(issues.projectId, ids[B] as number)),
       ).toHaveLength(1);
     });
+
+    it("leaves a running move to its mover", async () => {
+      const { t, admin } = await app();
+      const source = await createIssue(t, admin, A, "still moving");
+      const paused = pauseAfter(t, 2);
+      const moving = move(t, admin, A, source.number, B);
+      try {
+        await reach(paused.reached, moving);
+        expect(await sweepMoves(t.ctx)).toBe(0);
+        // Accepted here, this write would be emptied out with the source.
+        const write = await req(
+          t,
+          `/projects/${A}/issues/${source.number}`,
+          admin,
+          { method: "PATCH", body: JSON.stringify({ title: "lost" }) },
+        );
+        expect(write.status).toBe(409);
+        expect((await json(write)).error.code).toBe("issue_moving");
+      } finally {
+        // Pass or fail, the move ends before the app closes under it.
+        paused.release();
+        await moving;
+      }
+
+      expect((await moving).status).toBe(200);
+      expect(
+        (await req(t, `/projects/${A}/issues/${source.number}`, admin)).status,
+      ).toBe(301);
+      expect(
+        await t.ctx.router
+          .system()
+          .select({ state: issueMoves.state })
+          .from(issueMoves),
+      ).toEqual([{ state: "done" }]);
+    });
+
+    // The source's one PGlite connection, held by a transaction, stands in
+    // for a lock the recovery waits on.
+    it.runIf(placement === "dedicated")(
+      "keeps a row a recovery is still working on from the next sweep",
+      async () => {
+        const { t, admin, ids } = await app(2);
+        t.ctx.testHooks = { ...t.ctx.testHooks, moveLeaseMs: 1000 };
+        const source = await createIssue(t, admin, A, "slow recovery");
+        expect((await move(t, admin, A, source.number, B)).status).toBe(500);
+
+        const dbA = await dbOf(t, ids[A] as number, A);
+        let hold = () => {};
+        let release = () => {};
+        const held = new Promise<void>((resolve) => {
+          hold = resolve;
+        });
+        const released = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const holding = dbA.transaction(async (tx) => {
+          await tx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(eq(issues.id, source.id));
+          hold();
+          await released;
+        });
+        let first: Promise<number> | undefined;
+        let second: Promise<number> | undefined;
+        try {
+          await held;
+          first = sweepMoves(t.ctx);
+          // Three leases: only a renewal keeps the first sweep's claim, and
+          // it has to come 800 ms late to lose it.
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+          second = sweepMoves(t.ctx);
+          let timer: NodeJS.Timeout | undefined;
+          const outcome = await Promise.race([
+            second,
+            new Promise<string>((resolve) => {
+              timer = setTimeout(() => resolve("still waiting after 2s"), 2000);
+            }),
+          ]);
+          clearTimeout(timer);
+          expect(outcome).toBe(0);
+        } finally {
+          // Pass or fail, both sweeps end before the app closes under them.
+          release();
+          await holding;
+          await Promise.all([first, second]);
+        }
+
+        expect(await first).toBe(1);
+        const write = await req(
+          t,
+          `/projects/${A}/issues/${source.number}`,
+          admin,
+          { method: "PATCH", body: JSON.stringify({ title: "thawed" }) },
+        );
+        expect(write.status).toBe(200);
+      },
+    );
+
+    // The renewals do not depend on the placement, and this waits for real.
+    it.runIf(placement === "dedicated")(
+      "keeps the lease of a move slower than the lease",
+      async () => {
+        const { t, admin } = await app();
+        t.ctx.testHooks = { ...t.ctx.testHooks, moveLeaseMs: 2000 };
+        const source = await createIssue(t, admin, A, "slow move");
+        const paused = pauseAfter(t, 2);
+        const moving = move(t, admin, A, source.number, B);
+        try {
+          await reach(paused.reached, moving);
+          // Two and a half leases: only a renewal keeps the row held.
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+          expect(await sweepMoves(t.ctx)).toBe(0);
+          const write = await req(
+            t,
+            `/projects/${A}/issues/${source.number}`,
+            admin,
+            { method: "PATCH", body: JSON.stringify({ title: "lost" }) },
+          );
+          expect(write.status).toBe(409);
+        } finally {
+          // Pass or fail, the move ends before the app closes under it.
+          paused.release();
+          await moving;
+        }
+        expect((await moving).status).toBe(200);
+      },
+    );
 
     it("refuses a second move during the freeze and leaves no second row", async () => {
       const { t, admin } = await app(3);
@@ -778,6 +924,148 @@ describe("two projects sharing a database", () => {
       expect(listed.status).toBe(200);
       expect(await json(listed)).toHaveLength(1);
     } finally {
+      await t.cleanup();
+    }
+  });
+});
+
+/**
+ * The source project in the system database on PGlite, the target pinned to
+ * a database of its own: the recovery reaches the source through the one
+ * connection the whole process shares.
+ */
+describe("recovery through PGlite's one connection", () => {
+  it("does not wait on itself", async () => {
+    const t = await makeTestApp("shared", undefined, {
+      afterMoveStep: async (step) => {
+        if (step === 2) throw new Error("injected failure at 2");
+      },
+    });
+    try {
+      const cookie = await t.login();
+      const headers = { "content-type": "application/json", cookie };
+      for (const slug of ["pin-a", "pin-b"]) {
+        const res = await t.app.request("/api/projects", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ slug, name: slug }),
+        });
+        expect(res.status).toBe(201);
+      }
+
+      // Not a state the API reaches: under shared placement a project is
+      // never pinned, so the pin is written here by hand, with the rows a
+      // new project gets in its own database.
+      const system = t.ctx.router.system();
+      const [shared] = await system
+        .select()
+        .from(projects)
+        .where(eq(projects.slug, "pin-b"));
+      if (shared === undefined) throw new Error("expected pin-b");
+      const seeded = await (await t.ctx.router.forProject(routeInfoOf(shared)))
+        .select()
+        .from(statuses)
+        .where(eq(statuses.projectId, shared.id));
+      await system
+        .update(projects)
+        .set({ databaseUrl: `pglite://memory/pinned-${randomUUID()}` })
+        .where(eq(projects.id, shared.id));
+      const [pinnedRow] = await system
+        .select()
+        .from(projects)
+        .where(eq(projects.id, shared.id));
+      if (pinnedRow === undefined) throw new Error("expected pin-b");
+      const pinned = await t.ctx.router.forProject(routeInfoOf(pinnedRow));
+      await pinned.insert(projectMeta).values({ projectId: shared.id });
+      await pinned
+        .insert(statuses)
+        .values(seeded.map(({ id: _id, ...status }) => status));
+
+      const card = await json(
+        await t.app.request("/api/projects/pin-a/issues", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ title: "one connection", body: "body" }),
+        }),
+      );
+      const moved = await t.app.request(
+        `/api/projects/pin-a/issues/${card.number}/move`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ to_project: "pin-b" }),
+        },
+      );
+      expect(moved.status).toBe(500);
+
+      // A timer of its own, so a hang fails here rather than as the
+      // runner's timeout.
+      let timer: NodeJS.Timeout | undefined;
+      const swept = await Promise.race([
+        sweepMoves(t.ctx),
+        new Promise<string>((resolve) => {
+          timer = setTimeout(() => resolve("still waiting after 5s"), 5000);
+        }),
+      ]);
+      clearTimeout(timer);
+      expect(swept).toBe(1);
+      const write = await t.app.request(
+        `/api/projects/pin-a/issues/${card.number}`,
+        {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify({ title: "writable again" }),
+        },
+      );
+      expect(write.status).toBe(200);
+    } finally {
+      await t.cleanup();
+    }
+  });
+});
+
+describe("claiming a row", () => {
+  it("leases each row from the time it is claimed", async () => {
+    let claims = 0;
+    // The first claim stands in for a recovery that takes ten minutes.
+    const t = await makeTestApp("shared", undefined, {
+      onQuery: (sql) => {
+        if (!sql.startsWith('update "issue_moves" set "leased_by"')) return;
+        claims += 1;
+        if (claims === 1) vi.setSystemTime(Date.now() + 10 * 60 * 1000);
+      },
+    });
+    try {
+      await t.login();
+      const system = t.ctx.router.system();
+      const [user] = await system.select({ id: users.id }).from(users);
+      // Rows whose source project is gone: the sweep claims them and leaves
+      // them as they are, so each keeps the lease it was given.
+      await system.insert(issueMoves).values(
+        [1, 2].map((number) => ({
+          moveToken: randomUUID(),
+          fromProjectId: 999_999,
+          fromNumber: number,
+          toProjectId: 999_998,
+          actorId: user?.id as number,
+          movedAt: new Date(),
+          state: "copying" as const,
+        })),
+      );
+
+      vi.useFakeTimers({ toFake: ["Date"] });
+      expect(await sweepMoves(t.ctx)).toBe(0);
+      expect(claims).toBe(2);
+      const leases = await system
+        .select({ until: issueMoves.leasedUntil })
+        .from(issueMoves);
+      // The row claimed after the slow one holds a lease that runs from then.
+      const latest = Math.max(
+        ...leases.map((row) => row.until?.getTime() ?? 0),
+      );
+      expect(latest).toBeGreaterThan(Date.now());
+    } finally {
+      vi.useRealTimers();
       await t.cleanup();
     }
   });
