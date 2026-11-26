@@ -66,6 +66,7 @@ import {
   ProjectSettingsLayout,
   ProjectStatusesSettingsPage,
 } from "@/pages/project-settings.tsx";
+import { ProjectSettingsTemplatePage } from "@/pages/project-settings-template.tsx";
 import {
   ProjectTemplateSettingsPage,
   ProjectTemplatesSettingsPage,
@@ -438,6 +439,12 @@ const projectLabelsSettingsRoute = createRoute({
   component: ProjectLabelsSettingsPage,
 });
 
+const projectSettingsTemplateRoute = createRoute({
+  getParentRoute: () => projectSettingsRoute,
+  path: "template",
+  component: ProjectSettingsTemplatePage,
+});
+
 const projectReferencesSettingsRoute = createRoute({
   getParentRoute: () => projectSettingsRoute,
   path: "references",
@@ -640,6 +647,7 @@ const routeTree = rootRoute.addChildren([
         projectMembersSettingsRoute,
         projectStatusesSettingsRoute,
         projectLabelsSettingsRoute,
+        projectSettingsTemplateRoute,
         projectReferencesSettingsRoute,
         projectInsightsSettingsRoute,
       ]),

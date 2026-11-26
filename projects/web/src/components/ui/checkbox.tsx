@@ -8,39 +8,66 @@ import { cn } from "@/lib/utils";
  * warm light theme is brighter than the card under it. The input stays native
  * so that `indeterminate`, `<label>` clicks and Space carrying `shiftKey`
  * into `onClick` all keep working. `className` lands on the input.
+ *
+ * With `icon` the box is a mark as well: the icon stands in it
+ * whether it is ticked or not, in the colour an ancestor sets as `--tick`,
+ * which edges the box and fills it once ticked; half-ticked is a pale fill.
+ * Its size is the input's, which `className` may change.
  */
 export function Checkbox({
   indeterminate = false,
+  icon,
   className,
   ...props
-}: Omit<ComponentProps<"input">, "type"> & { indeterminate?: boolean }) {
+}: Omit<ComponentProps<"input">, "type"> & {
+  indeterminate?: boolean;
+  icon?: ReactNode;
+}) {
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (ref.current) ref.current.indeterminate = indeterminate;
   }, [indeterminate]);
   return (
-    <span className="relative inline-grid size-4 shrink-0 place-items-center">
+    <span
+      className={cn(
+        "relative inline-grid shrink-0 place-items-center",
+        icon === undefined && "size-4",
+      )}
+    >
       <input
         ref={ref}
         type="checkbox"
         className={cn(
           "peer size-4 cursor-pointer appearance-none rounded-[4px] border-[1.5px] border-[color:color-mix(in_oklch,var(--foreground)_40%,transparent)] bg-transparent outline-none transition-[opacity,border-color,background-color] duration-150 hover:border-[color:color-mix(in_oklch,var(--foreground)_55%,transparent)] checked:border-primary checked:bg-primary indeterminate:border-primary indeterminate:bg-primary focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-default disabled:opacity-40",
+          icon !== undefined &&
+            "border-[color:var(--tick)] hover:border-[color:var(--tick)] checked:border-[color:var(--tick)] checked:bg-[var(--tick)] indeterminate:border-[color:var(--tick)] indeterminate:bg-[color-mix(in_oklch,var(--tick)_35%,transparent)] focus-visible:border-[color:var(--tick)]",
           className,
         )}
         {...props}
       />
-      {/* A native box can be checked and indeterminate at once; the dash
-          wins, as it does where the browser draws the box. */}
-      <CheckIcon
-        aria-hidden
-        strokeWidth={3}
-        className="pointer-events-none absolute hidden size-3 text-primary-foreground peer-[:checked:not(:indeterminate)]:block"
-      />
-      <MinusIcon
-        aria-hidden
-        strokeWidth={3}
-        className="pointer-events-none absolute hidden size-3 text-primary-foreground peer-indeterminate:block"
-      />
+      {icon === undefined ? (
+        <>
+          {/* A native box can be checked and indeterminate at once; the dash
+              wins, as it does where the browser draws the box. */}
+          <CheckIcon
+            aria-hidden
+            strokeWidth={3}
+            className="pointer-events-none absolute hidden size-3 text-primary-foreground peer-[:checked:not(:indeterminate)]:block"
+          />
+          <MinusIcon
+            aria-hidden
+            strokeWidth={3}
+            className="pointer-events-none absolute hidden size-3 text-primary-foreground peer-indeterminate:block"
+          />
+        </>
+      ) : (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inline-grid place-items-center text-[color:var(--tick)] peer-disabled:opacity-40 peer-indeterminate:text-foreground peer-[:checked:not(:indeterminate)]:text-background"
+        >
+          {icon}
+        </span>
+      )}
     </span>
   );
 }

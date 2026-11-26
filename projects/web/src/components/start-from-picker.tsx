@@ -45,21 +45,35 @@ export function preferredTemplate(
 }
 
 /**
+ * What a template list holds chosen. Null is none, where nothing has been
+ * picked yet; with `allowDeselect`, picking the chosen template again goes
+ * back to none, which a list that must always hold one does not offer.
+ */
+type TemplateChoice =
+  | {
+      value: TemplateRef | null;
+      onChange: (ref: TemplateRef) => void;
+      allowDeselect?: false;
+    }
+  | {
+      value: TemplateRef | null;
+      onChange: (ref: TemplateRef | null) => void;
+      allowDeselect: true;
+    };
+
+/**
  * Choosing one template. Rows match on the name and are keyed by the ref,
  * which is also what `value` names.
  */
 export function TemplateListbox({
   templates,
-  value,
-  onChange,
   label = "Templates",
   idPrefix = "template",
   className,
   listClassName,
-}: {
+  ...choice
+}: TemplateChoice & {
   templates: readonly ProjectTemplate[];
-  value: TemplateRef;
-  onChange: (ref: TemplateRef) => void;
   label?: string;
   /** Namespaces the row ids; two lists on one page need two. */
   idPrefix?: string;
@@ -111,9 +125,16 @@ export function TemplateListbox({
       // its name.
       optionAriaLabel={(template) => template.name}
       optionDescribedBy={summaryId}
-      selected={String(value)}
+      // Never undefined, so the check column stands before the first pick.
+      selected={choice.value === null ? "" : String(choice.value)}
       startAtSelected
-      onSelect={(template) => onChange(template.ref)}
+      onSelect={(template) => {
+        if (choice.allowDeselect) {
+          choice.onChange(template.ref === choice.value ? null : template.ref);
+        } else {
+          choice.onChange(template.ref);
+        }
+      }}
       label={label}
       idPrefix={idPrefix}
       searchPlaceholder="Search templates…"
