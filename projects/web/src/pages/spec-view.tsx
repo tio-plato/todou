@@ -2964,7 +2964,6 @@ function SpecDiff({
       sourceAnchorForSelection(container, ends, filesAt),
     [filesAt],
   );
-  const { pending, clear } = useSelectionEntry(containerRef, resolveSelection);
   const notes = useMemo(
     () =>
       placeDiffNotes(
@@ -3085,9 +3084,9 @@ function SpecDiff({
           </div>
         ))}
       </div>
-      <SelectionEntry
-        pending={pending}
-        clear={clear}
+      <SourceSelectionEntry
+        containerRef={containerRef}
+        resolveSelection={resolveSelection}
         onStage={stageSelection}
       />
     </div>
@@ -3692,7 +3691,6 @@ function SpecSourceFile({
       sourceAnchorForSelection(container, ends, filesAt),
     [filesAt],
   );
-  const { pending, clear } = useSelectionEntry(containerRef, resolveSelection);
   const marks = useMemo(
     () =>
       annotations.map(
@@ -3753,13 +3751,35 @@ function SpecSourceFile({
           />
         </SpecStackFrame>
       </div>
-      <SelectionEntry
-        pending={pending}
-        clear={clear}
+      <SourceSelectionEntry
+        containerRef={containerRef}
+        resolveSelection={resolveSelection}
         onStage={stageSelection}
       />
     </div>
   );
+}
+
+/**
+ * The selection entry over a source stack, in a component of its own: its
+ * anchor changes with every step of a keyboard extension and every frame of
+ * a handle drag, and held by the stack's owner it would render every file
+ * and every note along with it.
+ */
+function SourceSelectionEntry({
+  containerRef,
+  resolveSelection,
+  onStage,
+}: {
+  containerRef: RefObject<HTMLDivElement | null>;
+  resolveSelection: (
+    container: Element,
+    ends: SelectionEndpoints,
+  ) => SourceAnchor | null;
+  onStage: (anchor: SourceAnchor) => void;
+}) {
+  const { pending, clear } = useSelectionEntry(containerRef, resolveSelection);
+  return <SelectionEntry pending={pending} clear={clear} onStage={onStage} />;
 }
 
 /** What hangs under a source line: a submitted comment, or a staged draft. */
