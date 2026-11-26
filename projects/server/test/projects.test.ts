@@ -637,6 +637,78 @@ describe.each(PLACEMENTS)("projects domain (%s placement)", (placement) => {
     });
   });
 
+  // `issue list --status 'Done '` trims each name it is given, so a stored
+  // "Done " is a status the CLI can never select: status names follow the
+  // label rule above.
+  describe("status names stored canonical, like label names", () => {
+    const postStatus = (s: string, body: unknown) =>
+      t.app.request(`/api/projects/${s}/statuses`, {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(body),
+      });
+    const patchStatus = (s: string, id: number, body: unknown) =>
+      t.app.request(`/api/projects/${s}/statuses/${id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(body),
+      });
+
+    it("stores the canonical spelling on create, and a respaced name is a duplicate", async () => {
+      const s = slug();
+      await createProject(s);
+      const created = await postStatus(s, {
+        name: "  In   Review ",
+        category: "open",
+      });
+      expect(created.status).toBe(201);
+      expect((await json(created)).name).toBe("In Review");
+
+      expect(
+        (await postStatus(s, { name: "In Review ", category: "open" })).status,
+      ).toBe(409);
+    });
+
+    it("renames to the canonical spelling, and refuses a rename that only respaces another name", async () => {
+      const s = slug();
+      await createProject(s);
+      const blocked = await json(
+        await postStatus(s, { name: "Blocked", category: "open" }),
+      );
+      const renamed = await patchStatus(s, blocked.id, {
+        name: " Waiting   on  others ",
+      });
+      expect(renamed.status).toBe(200);
+      expect((await json(renamed)).name).toBe("Waiting on others");
+
+      expect((await patchStatus(s, blocked.id, { name: "Todo " })).status).toBe(
+        409,
+      );
+    });
+
+    it("refuses a name that is blank once trimmed, and counts the length after trimming", async () => {
+      const s = slug();
+      await createProject(s);
+      const blank = await postStatus(s, { name: "   ", category: "open" });
+      expect(blank.status).toBe(422);
+      expect((await json(blank)).error.message).toContain(
+        "status names cannot be blank",
+      );
+
+      const padded = await postStatus(s, {
+        name: `  ${"x".repeat(60)}  `,
+        category: "open",
+      });
+      expect(padded.status).toBe(201);
+      const long = await json(padded);
+      expect(long.name).toHaveLength(60);
+
+      expect((await patchStatus(s, long.id, { name: " \t " })).status).toBe(
+        422,
+      );
+    });
+  });
+
   it("deletes a project and its insights roles before it stops routing", async () => {
     const s = slug();
     const project = await createProject(s);
