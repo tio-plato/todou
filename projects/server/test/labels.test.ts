@@ -155,7 +155,7 @@ describe("label usage", () => {
   });
 
   it("counts open and all issues per label, skipping the trash", async () => {
-    const bug = await json(await post("/labels", { name: "kind:bug" }));
+    const bug = await json(await post("/labels", { name: "kind:defect" }));
     const docs = await json(await post("/labels", { name: "area:docs" }));
     const unused = await json(await post("/labels", { name: "unused" }));
     const statuses = await json(
@@ -187,7 +187,8 @@ describe("label usage", () => {
     });
     expect(res.status).toBe(200);
     const usage = await json(res);
-    expect(usage).toHaveLength(3);
+    // The three above, and the four the project started with, all unused.
+    expect(usage).toHaveLength(7);
     expect(usage).toEqual(
       expect.arrayContaining([
         { id: bug.id, open_issues: 2, issues: 3 },

@@ -238,6 +238,8 @@ const DECLARED: Readonly<Record<string, string>> = {
     "Configuration dictionary: saveCliConfig JSON-clones CliConfig, iterates Object.values(doc.servers ?? {}) to delete empty tokens/instead_of properties, then serializes doc with stringify. No enum discriminator indexes this object.",
   "projects/server/src/services/insights-settings.ts :: mapping nextRoles #1":
     "Status-id dictionary: routes/insights validates PutSettings, then validateCompleteMapping checks every current status id. nextRoles is persisted as insightsSettings.roles; rolesOf later indexes by status id and applies storedRole's literal allowlist plus defaultInsightsRole fallback.",
+  "projects/server/src/services/projects.ts :: mapping roles #1":
+    "Status-id dictionary: storedRoles keys a new project's chart roles by the ids its statuses were just inserted with, and seedProject persists it as insightsSettings.roles; rolesOf later indexes it by status id through storedRole's literal allowlist plus defaultInsightsRole fallback.",
   "projects/server/src/services/insights/aggregate.ts :: mapping result #1":
     "Closed server metric catalog: finishFlow maps local FLOW_KEYS literals to measured counts. Its result is spread into the Flow response, not indexed by an incoming enum discriminator.",
   "projects/shared/src/permissions.ts :: read BY_ID[id] #1":

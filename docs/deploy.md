@@ -87,7 +87,8 @@ The `canonical_names` migration changes existing data too: it rewrites every
 status and label name into the form the API stores: trimmed, runs of
 whitespace collapsed to one space. A name whose canonical form another status
 (or label) of the same project already holds becomes `<name> (<id>)`, and that
-suffix may take it past 60 characters. A name that is
+suffix may take it past 60 characters: until it is shortened, the project can
+be neither saved as a template nor copied into a new project. A name that is
 all whitespace becomes `Status <id>` or `Label <id>`. Cards refer to statuses
 and labels by id, so no link goes stale and there is nothing to run. A status
 whose chart role was never chosen takes the default for its new name, so one

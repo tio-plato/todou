@@ -282,6 +282,13 @@ describe("project templates", () => {
       guest.headers,
     );
     expect(saved.status).toBe(403);
+    const copied = await request(
+      "/projects",
+      "POST",
+      { slug: `tpl-guest-copy-${n++}`, name: "Copy", from_project: slug },
+      guest.headers,
+    );
+    expect(copied.status).toBe(403);
   });
 
   it("stores a status name trimmed, and refuses two that become one", async () => {
@@ -383,5 +390,17 @@ describe("project templates", () => {
     ).find((x: { ref: unknown }) => x.ref === extra[0]?.id);
     expect(newer.body).toBeNull();
     expect(newer.problems[0].path).toBe("statuses.0");
+
+    const slug = `tpl-future-${n++}`;
+    const refused = await request("/projects", "POST", {
+      slug,
+      name: slug,
+      template: id,
+    });
+    expect(refused.status).toBe(422);
+    expect((await json(refused)).error.details.problems).toHaveLength(1);
+    expect(
+      (await request("/projects", "POST", { slug, name: slug })).status,
+    ).toBe(201);
   });
 });
