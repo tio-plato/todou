@@ -1856,7 +1856,7 @@ const AnnotationChip = memo(function AnnotationChip({
         ref={triggerRef}
         data-annotation-ui=""
         className={cn(
-          "absolute right-0 inline-flex cursor-pointer items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs shadow-sm",
+          "absolute right-0 inline-flex cursor-pointer items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs tabular-nums shadow-sm",
           // 2px a side below `sm` keeps 1 to 99 notes in the 1.5rem circle.
           "max-sm:right-[calc(var(--spec-card-inset,0px)*-1)] max-sm:h-6 max-sm:min-w-6 max-sm:translate-x-1/2 max-sm:justify-center max-sm:px-0.5 max-sm:py-0",
           draftCount > 0

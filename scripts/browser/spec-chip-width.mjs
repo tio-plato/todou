@@ -5,7 +5,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { evaluate } from "../lib/browser-cdp.mjs";
 
 // An annotation chip shows how many notes its block has. Below 640px (Tailwind
-// `sm`) it is a round 24px badge on the card's border for any count up to 99.
+// `sm`) it is a round 24px badge on the card's border for any count up to 99;
+// from 640px up, chips whose counts have as many digits are equally wide.
 const VIEWPORTS = [
   { width: 390, height: 844 },
   { width: 1280, height: 800 },
@@ -13,11 +14,12 @@ const VIEWPORTS = [
 const SM = 640;
 const COUNTS = [1, 2, 8, 12, 99];
 const ROUND_EPSILON = 0.5;
+const DIGIT_EPSILON = 0.05;
 const PATH = "design.md";
 // By slot, not by screen-reader name: the name's wording differs between
 // branches that carry this case.
 const CHIP = '[data-testid="annotated-markdown"] [data-slot="popover-trigger"]';
-const FAULT_CSS = `${CHIP} { padding-left: 6px !important; padding-right: 6px !important; }`;
+const FAULT_CSS = `${CHIP} { padding-left: 6px !important; padding-right: 6px !important; font-variant-numeric: normal !important; }`;
 
 const narrow = (width) => width < SM;
 
@@ -130,14 +132,14 @@ function probeSource(fault) {
           count: chip.textContent.trim(),
           width: round(rect.width),
           height: round(rect.height),
-          css: { paddingLeft: style.paddingLeft, paddingRight: style.paddingRight },
+          css: { paddingLeft: style.paddingLeft, paddingRight: style.paddingRight, fontVariantNumeric: style.fontVariantNumeric },
         };
       }),
     });
     const inject = () => {
       if (!fault || !document.head || document.querySelector('style[data-spec-chip-width-fault]')) return;
       const style = document.createElement('style');
-      style.dataset.specChipWidthFault = 'chip-padding';
+      style.dataset.specChipWidthFault = 'chip-padding-and-digits';
       style.textContent = ${JSON.stringify(FAULT_CSS)};
       document.head.append(style);
     };
@@ -204,7 +206,7 @@ function inspect(measurement, width) {
       ),
     ];
   const failures = [];
-  if (narrow(width))
+  if (narrow(width)) {
     for (const chip of measurement.chips)
       if (Math.abs(chip.width - chip.height) > ROUND_EPSILON)
         failures.push(
@@ -215,6 +217,23 @@ function inspect(measurement, width) {
             chip.count,
           ),
         );
+  } else {
+    for (const digits of new Set(COUNTS.map((count) => String(count).length))) {
+      const group = measurement.chips.filter(
+        (chip) => chip.count.length === digits,
+      );
+      const widths = group.map((chip) => chip.width);
+      if (Math.max(...widths) - Math.min(...widths) > DIGIT_EPSILON)
+        failures.push({
+          ...failure(
+            "digit-widths-differ",
+            `${digits}-digit chips are ${group.map((chip) => `${chip.count}: ${chip.width}`).join(", ")}`,
+            width,
+          ),
+          digits,
+        });
+    }
+  }
   return failures;
 }
 
@@ -271,7 +290,9 @@ async function runPass({ browser, stack, fixture, fault, label }) {
           m.chips.length === COUNTS.length &&
           m.chips.every(
             (chip) =>
-              chip.css.paddingLeft === "6px" && chip.css.paddingRight === "6px",
+              chip.css.paddingLeft === "6px" &&
+              chip.css.paddingRight === "6px" &&
+              chip.css.fontVariantNumeric === "normal",
           ),
       );
     const result = {
@@ -322,24 +343,40 @@ export async function runSpecChipWidth(options) {
   });
   // Six pixels a side, the desktop's padding, spill two digits out of the
   // badge; a single digit still fits.
-  const caught = VIEWPORTS.filter((viewport) => narrow(viewport.width)).every(
-    ({ width }) =>
-      ["12", "99"].every((count) =>
-        fault.failures.some(
-          (item) =>
-            item.name === "badge-not-round" &&
-            item.width === width &&
-            item.count === count,
-        ),
+  const caughtNarrow = VIEWPORTS.filter((viewport) =>
+    narrow(viewport.width),
+  ).every(({ width }) =>
+    ["12", "99"].every((count) =>
+      fault.failures.some(
+        (item) =>
+          item.name === "badge-not-round" &&
+          item.width === width &&
+          item.count === count,
       ),
+    ),
+  );
+  // Proportional digits: 1 is narrower than 2 and 8, 12 than 99.
+  const caughtWide = VIEWPORTS.filter(
+    (viewport) => !narrow(viewport.width),
+  ).every(({ width }) =>
+    [1, 2].every((digits) =>
+      fault.failures.some(
+        (item) =>
+          item.name === "digit-widths-differ" &&
+          item.width === width &&
+          item.digits === digits,
+      ),
+    ),
   );
   const problems = [
     baseline.failures.length &&
       `baseline not clean: ${baseline.failures.map((item) => `${item.name}:${item.width ?? "all"}`).join(", ")}`,
     !fault.injectionConfirmed &&
       "the fault stylesheet did not take effect at every width",
-    !caught &&
+    !caughtNarrow &&
       "the fault was not reported as badge-not-round for chips 12 and 99 at every narrow width",
+    !caughtWide &&
+      "the fault was not reported as digit-widths-differ for one- and two-digit chips at every wide width",
     restored.failures.length &&
       `restored not clean: ${restored.failures.map((item) => `${item.name}:${item.width ?? "all"}`).join(", ")}`,
   ].filter(Boolean);

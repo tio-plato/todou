@@ -59,7 +59,8 @@ Cases:
                        folded heading it jumps to and marks the section past
                        the reading line.
   spec-chip-width      Below 640px a chip is a round 24px badge for 1 to 99
-                       notes.
+                       notes; from 640px up chips with as many digits are
+                       equally wide.
 
 Usage:
   node scripts/browser-layout-smoke.mjs
