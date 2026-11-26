@@ -10,6 +10,7 @@ import { drizzle as drizzlePglite } from "drizzle-orm/pglite";
 import { migrate as migratePglite } from "drizzle-orm/pglite/migrator";
 import pg from "pg";
 import { PGLITE_EXTENSIONS } from "./pglite-extensions.ts";
+import { sqlStateOf } from "./sql-state.ts";
 import { WorkerPgliteClient } from "./worker-client.ts";
 
 /** Driver-agnostic database type both pglite and node-postgres satisfy. */
@@ -29,10 +30,12 @@ export type DbHandle = {
 // Each tier keeps its own journal table: in shared placement both tiers
 // live in one database, and a common journal would let one tier's newer
 // timestamps mask the other tier's pending migrations.
-const MIGRATIONS: Record<
-  DbTier,
-  { migrationsFolder: string; migrationsTable: string }
-> = {
+export type MigrationSet = {
+  migrationsFolder: string;
+  migrationsTable: string;
+};
+
+const MIGRATIONS: Record<DbTier, MigrationSet> = {
   system: {
     migrationsFolder: fileURLToPath(
       new URL("../../drizzle/system", import.meta.url),
@@ -118,7 +121,8 @@ export async function openDb(
     db: db as unknown as Db,
     kind,
     url,
-    migrate: (tier) => migrateNodePgQueued(pool, tier, opts?.logger),
+    migrate: (tier) =>
+      migrateNodePgQueued(pool, tier, MIGRATIONS[tier], opts?.logger),
     close: () => pool.end(),
   };
 }
@@ -129,6 +133,8 @@ export async function openDb(
 // by creating. The value is "todou" in ASCII; any fixed number would do.
 export const MIGRATION_LOCK_KEY = 0x746f646f75;
 const MIGRATION_LOCK_RETRY_MS = 1_000;
+const MIGRATION_ATTEMPTS = 5;
+const DEADLOCK = "40P01";
 
 /**
  * drizzle's migrator cannot run twice at once on one database. It creates
@@ -162,11 +168,36 @@ const MIGRATION_LOCK_RETRY_MS = 1_000;
  * long but healthy migration, and the case it would rescue, a holder whose
  * machine vanished, lasts until TCP keepalive notices, by default hours.
  * Waiting is logged instead, so a start that hangs says why.
+ *
+ * An older server may still be writing while the migrations run, in a
+ * rolling deploy or with replicas not replaced together, and two things on
+ * that connection keep it from failing the upgrade:
+ *
+ * - The connection runs at READ COMMITTED whatever the database or the role
+ *   sets as default, so that each statement sees what was committed before
+ *   it got its locks. Under repeatable read a DROP INDEX takes the
+ *   transaction's snapshot before it waits for the table, and a rename pass
+ *   after it misses a name another session committed meanwhile, which then
+ *   fails the unique index built last. drizzle's migrator sends its BEGIN on
+ *   this same connection, so a session setting reaches its transaction.
+ * - A batch that loses a deadlock (40P01) to such a writer, which PostgreSQL
+ *   resolves by ending whichever session waited first, rolls back whole and
+ *   runs again on the same connection, the lock still held, a second later,
+ *   up to five times in all. Nothing else is retried, so any other failure
+ *   still stops the start at once. drizzle creates its schema and journal
+ *   table with IF NOT EXISTS outside the transaction, so a rerun repeats
+ *   that harmlessly.
+ *
+ * `afterwards`, when given, runs on the same connection once the migrations
+ * succeeded, the lock still held: work that has to follow every migration
+ * of the database and must not run twice at once.
  */
-async function migrateNodePgQueued(
+export async function migrateNodePgQueued(
   pool: pg.Pool,
-  tier: DbTier,
+  tier: string,
+  migrations: MigrationSet,
   logger: Logger | undefined,
+  afterwards?: (db: Db) => Promise<unknown>,
 ): Promise<void> {
   const client = await pool.connect();
   const tryLock = async () => {
@@ -187,7 +218,26 @@ async function migrateNodePgQueued(
         attempt = await tryLock();
       }
     }
-    await migrateNodePg(drizzleNodePg(client, { logger }), MIGRATIONS[tier]);
+    await client.query(
+      "SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED",
+    );
+    const db = drizzleNodePg(client, { logger });
+    for (let run = 1; ; run++) {
+      try {
+        await migrateNodePg(db, migrations);
+        break;
+      } catch (err) {
+        const code = sqlStateOf(err);
+        if (code !== DEADLOCK || run >= MIGRATION_ATTEMPTS) throw err;
+        console.log(
+          `migrate: the ${tier} tier migration of database "${attempt?.name}" ` +
+            `lost a deadlock (SQLSTATE ${code}), running it again ` +
+            `(attempt ${run + 1} of ${MIGRATION_ATTEMPTS})`,
+        );
+        await delay(MIGRATION_LOCK_RETRY_MS);
+      }
+    }
+    await afterwards?.(db as unknown as Db);
   } finally {
     client.release(true);
   }

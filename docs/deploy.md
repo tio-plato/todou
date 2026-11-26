@@ -73,7 +73,10 @@ running is done. The queue is a session-level lock, so todou needs a direct
 connection to every database it migrates, not one through a
 transaction-pooling proxy such as PgBouncer: `database.system` and, under
 dedicated placement, every project database, which todou also migrates when
-it creates a project.
+it creates a project. A migration runs at READ COMMITTED whatever isolation
+level the database or the role sets as default, and one that deadlocks with
+an older version still writing, as in a rolling deploy, rolls back whole and
+runs again a second later in the same process, up to five times.
 
 Three project migrations change existing data rather than only its shape.
 Migration 0013 renames stored attachment filenames so that no two on one card
@@ -94,11 +97,7 @@ database whose encoding is not UTF-8, only ASCII whitespace is trimmed. The
 old spellings are kept nowhere, so take a backup first if you may want them
 back. The migration runs once: a name an older version writes while it runs
 or after it, during a rolling deploy or after a rollback, keeps its
-whitespace through the next upgrade, so rename such a name by hand. With an
-older version still writing, the upgrade can also fail once, on a deadlock
-with those writes or on a database whose default isolation is repeatable
-read; all of it rolls back, and starting the server or `todou-server migrate`
-again runs it anew.
+whitespace through the next upgrade, so rename such a name by hand.
 
 The `case_insensitive_names` migration makes a status or label name one name
 whatever its case or Unicode composition, as the API now compares them. Of the
@@ -127,10 +126,9 @@ nowhere, so take a backup first if you may want them back, and do not upgrade
 while a backup or another long transaction is reading the database: the
 migration locks the status and label tables until it commits, and from the
 moment it asks for that lock, every request that reads statuses or labels
-waits with it. With an older version still writing, the upgrade can fail once,
-as above, and runs anew when started again. Going back to an older version
-keeps the renamed names and the new indexes: it then fails with a server error
-where it would have stored a name differing from another only in case.
+waits with it. Going back to an older version keeps the renamed names and the
+new indexes: it then fails with a server error where it would have stored a
+name differing from another only in case.
 
 ### What project search needs from PostgreSQL
 
