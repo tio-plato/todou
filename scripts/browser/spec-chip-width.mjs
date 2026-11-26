@@ -250,23 +250,70 @@ async function fullPageShot(page, file) {
   writeFileSync(file, Buffer.from(shot.data, "base64"));
 }
 
+/** The fixture's page with its chips laid out and Geist loaded. */
+async function openChips({
+  context,
+  stack,
+  fixture,
+  fault,
+  viewport,
+  blockFonts = false,
+}) {
+  const page = await context.newPage({
+    viewport: { ...viewport, deviceScaleFactor: 1 },
+    cookie: fixture.cookie,
+    scripts: [probeSource(fault)],
+  });
+  try {
+    if (blockFonts)
+      await page.send("Network.setBlockedURLs", { urls: ["*.woff2"] });
+    await page.navigate(`http://127.0.0.1:${stack.webPort}${fixture.url}`);
+    await waitFor(page, "rendered spec with its chips", () =>
+      window.__specChipWidth?.ready(),
+    );
+    await requireGeist(page, viewport.width);
+    return page;
+  } catch (error) {
+    await page.close().catch(() => {});
+    throw error;
+  }
+}
+
+/** With no font file reachable, the case stops at the Geist gate. */
+async function geistGateHolds({ browser, stack, fixture }) {
+  const context = await browser.newContext();
+  try {
+    const page = await openChips({
+      context,
+      stack,
+      fixture,
+      fault: false,
+      viewport: VIEWPORTS.at(-1),
+      blockFonts: true,
+    });
+    await page.close().catch(() => {});
+    return false;
+  } catch (error) {
+    return error.message.startsWith("Geist Variable did not load");
+  } finally {
+    await context.close();
+  }
+}
+
 async function runPass({ browser, stack, fixture, fault, label }) {
   const context = await browser.newContext();
   const failures = [];
   const measurements = [];
   try {
     for (const viewport of VIEWPORTS) {
-      const page = await context.newPage({
-        viewport: { ...viewport, deviceScaleFactor: 1 },
-        cookie: fixture.cookie,
-        scripts: [probeSource(fault)],
+      const page = await openChips({
+        context,
+        stack,
+        fixture,
+        fault,
+        viewport,
       });
       try {
-        await page.navigate(`http://127.0.0.1:${stack.webPort}${fixture.url}`);
-        await waitFor(page, "rendered spec with its chips", () =>
-          window.__specChipWidth?.ready(),
-        );
-        await requireGeist(page, viewport.width);
         const measurement = await stableMeasurement(page);
         if (measurement === null)
           throw new Error(`chips did not settle at ${viewport.width}px`);
@@ -341,6 +388,7 @@ export async function runSpecChipWidth(options) {
     fault: false,
     label: "restored",
   });
+  const gateHeld = await geistGateHolds({ ...options, fixture });
   // Six pixels a side, the desktop's padding, spill two digits out of the
   // badge; a single digit still fits.
   const caughtNarrow = VIEWPORTS.filter((viewport) =>
@@ -371,6 +419,8 @@ export async function runSpecChipWidth(options) {
   const problems = [
     baseline.failures.length &&
       `baseline not clean: ${baseline.failures.map((item) => `${item.name}:${item.width ?? "all"}`).join(", ")}`,
+    !gateHeld &&
+      "a page whose fonts were blocked was measured instead of stopping at the Geist gate",
     !fault.injectionConfirmed &&
       "the fault stylesheet did not take effect at every width",
     !caughtNarrow &&
