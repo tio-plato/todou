@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { Id, Timestamp } from "./common.ts";
-import { StatusCategory } from "./project.ts";
+import { nameKey, StatusCategory } from "./project.ts";
 
 const NonNegativeSafeInteger = z
   .number()
@@ -21,14 +21,16 @@ export type Role = z.infer<typeof Role>;
 
 /**
  * The role a status counts as until someone picks one. Shared so the server
- * and the Statuses page agree on which rows depart from it (T-712).
+ * and the Statuses page agree on which rows depart from it (T-712). The name
+ * is read whatever its case, as every other place reads a status name.
  */
 export function defaultInsightsRole(status: {
   name: string;
   category: string;
 }): Role {
-  if (status.name === "Invalid") return "excluded";
-  if (status.name === "Shipped" || status.name === "Done") return "completed";
+  const key = nameKey(status.name);
+  if (key === "invalid") return "excluded";
+  if (key === "shipped" || key === "done") return "completed";
   return status.category === "closed" ? "completed" : "remaining";
 }
 
