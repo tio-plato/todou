@@ -55,6 +55,8 @@ const counted = (n: number, one: string, many: string) =>
  * breaks only before its pill. A pill wider than the row is cut at its end
  * rather than pushing the row wide. The spaces between the parts are not
  * drawn, the gap is, but they keep the copied and announced text apart.
+ * The parts line up on their baseline, not their middle: the pill makes the
+ * last part taller, and centred, its words sat higher than the others'.
  */
 export function TemplateSummary({
   body,
@@ -71,7 +73,7 @@ export function TemplateSummary({
     <span
       id={id}
       className={cn(
-        "flex flex-wrap items-center gap-x-1 overflow-hidden text-sm text-muted-foreground",
+        "flex flex-wrap items-baseline gap-x-1 overflow-hidden text-sm text-muted-foreground",
         className,
       )}
     >
