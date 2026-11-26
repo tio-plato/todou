@@ -63,6 +63,13 @@ const arrow = (over: Partial<TableArrow>): TableArrow => ({
 const drawing = (index: number) =>
   document.querySelector(`g[data-arrow="${index}"]`);
 
+/** Where an arrow's line sets out from, in the drawing. */
+const startOf = (index: number) => {
+  const d = drawing(index)?.querySelector("path")?.getAttribute("d") ?? "";
+  const [, x, y] = /^M(\S+) (\S+)/.exec(d) ?? [];
+  return { x: Number(x), y: Number(y) };
+};
+
 describe("MoveLines", () => {
   it("lights an arrow by its box, though it is left dashed", () => {
     stubRects();
@@ -115,5 +122,41 @@ describe("MoveLines", () => {
       drawing(0)?.querySelector("path")?.getAttribute("stroke-dasharray"),
     ).toBe("4 3");
     expect(drawing(1)?.getAttribute("data-lit")).toBeNull();
+  });
+
+  it("draws the line's arrow from the Before line's end to where the After line starts", () => {
+    stubRects();
+    // The table's border box: the drawing is at 101,201, inside its border.
+    render(
+      <div style={{ position: "relative" }} data-at="100,200,600,300">
+        <div data-row="0">
+          {cell("before", "101,201,280,36")}
+          {cell(
+            "mid",
+            "381,201,80,36",
+            <span data-tick="status.line" data-at="430,209,20,20" />,
+          )}
+          {cell(
+            "after",
+            "461,201,238,36",
+            // The line starts 12px into its cell.
+            <span data-rule data-at="473,218,226,2" />,
+          )}
+        </div>
+        <div data-row="1">
+          {cell(
+            "before",
+            "101,237,280,36",
+            <span data-rule data-at="101,254,280,2" />,
+          )}
+          {cell("mid", "381,237,80,36")}
+          {cell("after", "461,237,238,36")}
+        </div>
+        <MoveLines arrows={[arrow({ from: 1, to: 0 })]} lanes={1} />
+      </div>,
+    );
+    expect(startOf(0)).toEqual({ x: 381 - 101, y: 255 - 201 });
+    expect(Number(drawing(0)?.getAttribute("data-tip-x"))).toBe(473 - 101);
+    expect(Number(drawing(0)?.getAttribute("data-end-y"))).toBe(219 - 201);
   });
 });

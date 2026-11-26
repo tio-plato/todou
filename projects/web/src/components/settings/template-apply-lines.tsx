@@ -55,8 +55,9 @@ function route(sx: number, sy: number, lx: number, ey: number, tx: number) {
  * The table's arrows, drawn over it from where its rows are measured to
  * be: from the end of the Before side's content, along the row to a lane
  * of the middle column, down it, and across the box in the row it ends in
- * to an open tip short of the After side. A box sits on its arrow because
- * the arrow is drawn through the box's measured middle.
+ * to an open tip short of the After side, or meeting the line there. A box
+ * sits on its arrow because the arrow is drawn through the box's measured
+ * middle.
  *
  * Faint while its box is not ticked; dashed while what it points to is not
  * drawn there. The boxes and the drawings in the cells paint over it, so an
@@ -81,9 +82,12 @@ export function MoveLines({
   }, []);
 
   const measure = useCallback(() => {
-    const table = ref.current?.parentElement;
-    if (!table) return;
-    const origin = table.getBoundingClientRect();
+    const svg = ref.current;
+    const table = svg?.parentElement;
+    if (!svg || !table) return;
+    // From the drawing's own corner: it fills the table's padding box, inside
+    // the table's border.
+    const origin = svg.getBoundingClientRect();
     const box = (el: Element | null | undefined) => {
       if (!el) return null;
       const r = el.getBoundingClientRect();
@@ -143,7 +147,10 @@ export function MoveLines({
         return;
       }
       const pad = Number.parseFloat(getComputedStyle(after).paddingLeft) || 0;
-      const tipX = cell.left + pad - TIP_GAP;
+      // The line's arrow meets the line where it starts.
+      const rule =
+        arrow.end === "line" ? box(after.querySelector("[data-rule]")) : null;
+      const tipX = rule?.left ?? cell.left + pad - TIP_GAP;
       const laneX = right - (lanes - arrow.lane - 0.5) * spacing;
       const endY = end.mid;
       out.push({
