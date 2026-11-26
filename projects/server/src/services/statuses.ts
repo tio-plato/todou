@@ -93,6 +93,14 @@ export async function reorderStatuses(
   const db = await ctx.router.forProject(routeInfoOf(project));
 
   const result = await db.transaction(async (tx) => {
+    // project_meta first, before any status is written: every transaction
+    // that writes both takes them in this order, applying a template among
+    // them, so none can hold a status while waiting on one holding the line.
+    const meta = await tx
+      .select({ lineId: projectMeta.blockClearStatusId })
+      .from(projectMeta)
+      .where(eq(projectMeta.projectId, project.id))
+      .for("no key update");
     const rows = await tx
       .select()
       .from(statuses)
@@ -127,10 +135,6 @@ export async function reorderStatuses(
       ordered.push({ ...row, position: index });
     }
 
-    const meta = await tx
-      .select({ lineId: projectMeta.blockClearStatusId })
-      .from(projectMeta)
-      .where(eq(projectMeta.projectId, project.id));
     const before = meta[0]?.lineId ?? null;
     const after = line === undefined ? before : line;
     if (after !== before) {
