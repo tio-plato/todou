@@ -40,7 +40,10 @@
  * non-canonical one is put right in turn. A rename that trips the unique
  * index on a name committed after its snapshot, or loses a deadlock to a
  * writer that holds that name and then writes the row being renamed, is run
- * again; after three tries the row is left for the next migration.
+ * again; after three tries the row is left for the next migration. So is a
+ * row the rename gave up waiting for under a lock_timeout or
+ * statement_timeout the role or the database sets: one row another session
+ * keeps locked does not stop the start.
  *
  * Renames publish no event: a page open on the project shows the new names
  * when it next fetches them.
@@ -61,8 +64,10 @@ const UNICODE_SPACE =
 const ASCII_SPACE = "[\\u0009-\\u000d\\u0020]";
 
 const RENAME_TRIES = 3;
-/** A unique violation (23505) or a lost deadlock (40P01). */
+/** A unique violation (23505) or a lost deadlock (40P01): tried again. */
 const RETRYABLE = new Set(["23505", "40P01"]);
+/** lock_timeout (55P03) or statement_timeout (57014): the row is left. */
+const TIMED_OUT = new Set(["55P03", "57014"]);
 
 type Rule = { space: string; compose: boolean };
 
@@ -123,11 +128,13 @@ export async function canonicalizeNames(
           break;
         } catch (err) {
           const code = sqlStateOf(err);
-          if (code === undefined || !RETRYABLE.has(code)) throw err;
-          if (tries >= RENAME_TRIES) {
+          if (code === undefined) throw err;
+          const timedOut = TIMED_OUT.has(code);
+          if (!timedOut && !RETRYABLE.has(code)) throw err;
+          if (timedOut || tries >= RENAME_TRIES) {
             console.warn(
-              `migrate: left ${table} row ${id} as it was after ` +
-                `${RENAME_TRIES} tries (SQLSTATE ${code}); the next migration tries again`,
+              `migrate: left ${table} row ${id} as it was (SQLSTATE ${code}); ` +
+                "the next migration tries again",
             );
             break;
           }

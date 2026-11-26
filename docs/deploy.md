@@ -106,7 +106,9 @@ are kept nowhere, so take a backup first if you may want them back. As the API
 stores no other form, this only ever finds names an older version wrote:
 before the upgrade, while it still ran beside the new one, as in a rolling
 deploy, or after a rollback. Each such name is put right by the next
-migration.
+migration. One whose row another session keeps locked past the
+`lock_timeout` or `statement_timeout` the role or the database sets is left
+as it is, and logged by table and id, until the migration after that.
 
 The `case_insensitive_names` migration makes a status or label name one name
 whatever its case or Unicode composition, as the API now compares them. Of the

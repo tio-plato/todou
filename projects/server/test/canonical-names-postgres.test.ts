@@ -267,6 +267,7 @@ describe.skipIf(!PG_URL)("canonical names on postgres", () => {
     await createNameTables(writer);
     return {
       writer,
+      migrator,
       watcher,
       /**
        * Starts the pass on its own connection, as a migration runs it, and
@@ -404,6 +405,42 @@ describe.skipIf(!PG_URL)("canonical names on postgres", () => {
       );
       expect(after).toEqual([{ name: "Ant" }, { name: "Bee" }]);
     } finally {
+      await s.end();
+    }
+  });
+
+  // Under a lock_timeout the role or the database sets, a rename that waits
+  // too long on a row another session holds fails; the pass leaves that row
+  // for the next migration and goes on, rather than stop the start.
+  it("leaves a row it timed out waiting for and goes on", async () => {
+    const s = await sessions();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { rows } = await s.writer.query<{ id: number }>(
+        "INSERT INTO statuses (project_id, name) " +
+          "VALUES (1, 'Kip '), (1, 'Lee ') RETURNING id",
+      );
+      const [kip] = rows.map((row) => row.id) as [number, number];
+
+      await s.writer.query("BEGIN");
+      await s.writer.query(
+        "SELECT id FROM statuses WHERE id = $1 FOR NO KEY UPDATE",
+        [kip],
+      );
+      await s.migrator.query("SET lock_timeout = '200ms'");
+      const { done } = await s.canonicalize();
+      const failure = await done;
+      await s.writer.query("ROLLBACK");
+      if (failure) throw failure;
+
+      const { rows: after } = await s.watcher.query<{ name: string }>(
+        "SELECT name FROM statuses ORDER BY id",
+      );
+      expect(after).toEqual([{ name: "Kip " }, { name: "Lee" }]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain(`statuses row ${kip} `);
+    } finally {
+      warn.mockRestore();
       await s.end();
     }
   });
