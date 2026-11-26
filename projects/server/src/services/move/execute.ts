@@ -27,6 +27,8 @@ import {
   clearIssueChildren,
   copyIssueTree,
   type IdMap,
+  readIssueTree,
+  writeIssueTree,
 } from "./copy.ts";
 import {
   assertStillMovable,
@@ -386,7 +388,8 @@ async function moveAcrossDbs(
     }
     await step(2);
 
-    // 3. The whole copy, in one transaction in the destination.
+    // 3. The whole copy: read from the source, then written in one
+    // transaction in the destination.
     const copied = await copyInDestination(
       ctx,
       plan,
@@ -446,6 +449,19 @@ async function copyInDestination(
     // carries it, and that event is written inside this transaction.
     (await registerLineageOnly(ctx, plan));
 
+  // Across databases the source is read in full before the transaction
+  // opens. The transaction holds a connection to the destination (PGlite's
+  // only one, or one of the pool's) until it commits; a read of the source
+  // made while holding it waits for whoever holds the source, and a card
+  // moving the other way at the same time holds it while waiting on this
+  // one. No database sees that cycle, so nothing ever breaks it. Within one
+  // database the copy reads through the transaction instead, after the lock
+  // below, so that the source attachment rows it deletes are the ones it
+  // copied; the outer handle would wait on this very transaction.
+  const tree = plan.sameProjectDb
+    ? null
+    : await readIssueTree(plan.source.db, plan);
+
   return plan.target.db.transaction(async (tx) => {
     if (plan.sameProjectDb) {
       // The copy deletes the source card's attachment rows below, so it
@@ -458,15 +474,11 @@ async function copyInDestination(
     }
     const number =
       plan.reinhabit ?? (await nextNumber(tx, plan.target.project.id));
-    // When both projects live in one database the source has to be read
-    // through this transaction as well. Reaching for the outer handle would
-    // block on the transaction that is waiting for the read — and it is the
-    // same database, so the source attachment delete belongs in here anyway.
-    const src = plan.sameProjectDb ? tx : plan.source.db;
-    const idMap = await copyIssueTree(src, tx, plan, {
-      number,
-      reinhabit: plan.reinhabit !== null,
-    });
+    const opts = { number, reinhabit: plan.reinhabit !== null };
+    const idMap =
+      tree === null
+        ? await copyIssueTree(tx, tx, plan, opts)
+        : await writeIssueTree(tx, tree, plan, opts);
     const movedInEventId = await writeMovedIn(
       tx,
       plan,
