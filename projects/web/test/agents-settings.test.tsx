@@ -212,6 +212,52 @@ describe("one agent's page (T-704)", () => {
     ).toBe("/settings/agents?state=deactivated");
   });
 
+  it("saves the agent's role in new projects as soon as it is changed", async () => {
+    const update = vi
+      .spyOn(api, "updateAgent")
+      .mockImplementation(async (_id, input) => ({ ...PROBE, ...input }));
+    const { view } = renderAgent([PROBE], "probe-bot");
+    const section = within(
+      await view.findByRole("region", { name: "New projects for probe-bot" }),
+    );
+    const role = () =>
+      section.getByRole("combobox", { name: "Role in new projects" });
+
+    fireEvent.click(
+      section.getByRole("checkbox", { name: "Join projects I create" }),
+    );
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledExactlyOnceWith(PROBE.id, {
+        new_project_role: "writer",
+      }),
+    );
+    expect(role().textContent).toBe("writer");
+
+    fireEvent.keyDown(role(), { key: "ArrowDown" });
+    fireEvent.click(await screen.findByRole("option", { name: "reporter" }));
+    await waitFor(() =>
+      expect(update).toHaveBeenLastCalledWith(PROBE.id, {
+        new_project_role: "reporter",
+      }),
+    );
+
+    fireEvent.click(
+      section.getByRole("checkbox", { name: "Join projects I create" }),
+    );
+    await waitFor(() =>
+      expect(update).toHaveBeenLastCalledWith(PROBE.id, {
+        new_project_role: null,
+      }),
+    );
+    expect(update).toHaveBeenCalledTimes(3);
+  });
+
+  it("has no New projects section for a disabled agent", async () => {
+    const { view } = renderAgent([RETIRED], "retired-bot");
+    await view.findByRole("region", { name: "Projects for retired-bot" });
+    expect(view.queryByRole("region", { name: /^New projects/ })).toBeNull();
+  });
+
   it("says so when the login names none of my agents", async () => {
     const { view } = renderAgent([PROBE], "someone-else");
 

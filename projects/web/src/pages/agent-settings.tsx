@@ -5,7 +5,12 @@ import {
   useSuspenseQuery,
 } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import type { Agent, AgentUpdateInput, TokenCreated } from "@todou/shared";
+import {
+  type Agent,
+  type AgentUpdateInput,
+  MemberRole,
+  type TokenCreated,
+} from "@todou/shared";
 import {
   ArrowLeftIcon,
   PencilIcon,
@@ -30,6 +35,7 @@ import { TokenReveal } from "@/components/shared/token-reveal.tsx";
 import { TokenTable } from "@/components/shared/token-table.tsx";
 import { UserAvatar } from "@/components/shared/user-chip.tsx";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -41,6 +47,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useReadFailure } from "@/lib/use-read-failure.ts";
 
 /**
@@ -114,11 +127,75 @@ export function AgentSettings({ login }: { login: string }) {
 
       {!disabled && (
         <>
+          <NewProjectsSection key={agent.id} agent={agent} />
           <AgentTokensSection key={agent.id} agent={agent} />
           <DisableAgentRow agent={agent} />
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * Whether the agent joins the projects its owner creates, and as what: the
+ * New project dialog's starting tick and role for it, and what an API call
+ * that names no agents adds. Each change saves at once.
+ */
+function NewProjectsSection({ agent }: { agent: Agent }) {
+  const queryClient = useQueryClient();
+  const save = useMutation({
+    // One after another, so the last change made is the last one saved.
+    scope: { id: `agent-${agent.id}-new-project-role` },
+    mutationFn: (role: MemberRole | null) =>
+      api.updateAgent(agent.id, { new_project_role: role }),
+    onSuccess: (updated) =>
+      queryClient.setQueryData(agentsQuery.queryKey, (list) =>
+        list?.map((a) => (a.id === updated.id ? updated : a)),
+      ),
+    onError: (error) => toast.error(error.message),
+  });
+  // The change in flight shows until it is answered; a refusal puts the
+  // saved one back.
+  const role = save.isPending
+    ? (save.variables ?? null)
+    : (agent.new_project_role ?? null);
+
+  return (
+    <section
+      aria-label={`New projects for ${agent.login}`}
+      className="space-y-3"
+    >
+      <h2 className="text-base font-semibold">New projects</h2>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <Label className="font-normal">
+          <Checkbox
+            checked={role !== null}
+            onChange={(e) => save.mutate(e.target.checked ? "writer" : null)}
+          />
+          Join projects I create
+        </Label>
+        <Select
+          value={role ?? "writer"}
+          disabled={role === null}
+          onValueChange={(next) => save.mutate(next as MemberRole)}
+        >
+          <SelectTrigger
+            size="sm"
+            className="w-28"
+            aria-label="Role in new projects"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {MemberRole.options.map((option) => (
+              <SelectItem key={option} value={option}>
+                {option}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    </section>
   );
 }
 
