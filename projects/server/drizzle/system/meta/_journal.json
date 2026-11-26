@@ -141,6 +141,13 @@
       "when": 1794845197121,
       "tag": "0019_token-scopes",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1794976486986,
+      "tag": "0020_project-templates",
+      "breakpoints": true
     }
   ]
 }
