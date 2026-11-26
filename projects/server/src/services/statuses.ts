@@ -1,6 +1,7 @@
 import {
   canonicalizeLabelName,
   INT4_MAX,
+  lineAfterDeleting,
   nameKey,
   type Status,
   type StatusCreateInput,
@@ -319,25 +320,56 @@ export async function deleteStatus(
       "status is used by existing issues — move them to another status first",
     );
   }
-  const meta = await db
-    .select({ lineId: projectMeta.blockClearStatusId })
-    .from(projectMeta)
-    .where(eq(projectMeta.projectId, project.id));
-  if ((meta[0]?.lineId ?? null) === statusId) {
-    throw new ConflictError(
-      "status is this project's block clear line — point it elsewhere first",
-    );
-  }
-  const deleted = await db
-    .delete(statuses)
-    .where(and(eq(statuses.id, statusId), eq(statuses.projectId, project.id)))
-    .returning({ id: statuses.id });
-  if (deleted.length === 0) throw new NotFoundError("status not found");
+  const lineChanged = await db.transaction(async (tx) => {
+    // project_meta before the statuses, the order every transaction writing
+    // both takes, so this one cannot wait on one waiting on it.
+    const meta = await tx
+      .select({ lineId: projectMeta.blockClearStatusId })
+      .from(projectMeta)
+      .where(eq(projectMeta.projectId, project.id))
+      .for("no key update");
+    const before = meta[0]?.lineId ?? null;
+    let after = before;
+    if (before === statusId) {
+      // The line moves down rather than holding the delete up: a line nobody
+      // can delete would have to be moved by hand first, which says nothing
+      // the moved line does not.
+      const order = await tx
+        .select({ id: statuses.id })
+        .from(statuses)
+        .where(eq(statuses.projectId, project.id))
+        .orderBy(asc(statuses.position), asc(statuses.id));
+      after = lineAfterDeleting(
+        order.map((row) => row.id),
+        before,
+        new Set([statusId]),
+      );
+      await tx
+        .update(projectMeta)
+        .set({ blockClearStatusId: after })
+        .where(eq(projectMeta.projectId, project.id));
+    }
+    const deleted = await tx
+      .delete(statuses)
+      .where(and(eq(statuses.id, statusId), eq(statuses.projectId, project.id)))
+      .returning({ id: statuses.id });
+    if (deleted.length === 0) throw new NotFoundError("status not found");
+    return after !== before;
+  });
   ctx.bus.publish(project.id, {
     entity: "status",
     id: statusId,
     action: "deleted",
   });
+  if (lineChanged) {
+    const changes = await reevaluateProjectBlocks(ctx, project, db);
+    await announceBlockChanges(ctx, changes, actor.id);
+    ctx.bus.publish(project.id, {
+      entity: "project",
+      id: project.id,
+      action: "updated",
+    });
+  }
 }
 
 /**
