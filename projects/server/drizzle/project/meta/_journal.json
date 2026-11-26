@@ -183,6 +183,13 @@
       "when": 1795092903938,
       "tag": "0025_require-title",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1795701140111,
+      "tag": "0026_canonical_names",
+      "breakpoints": true
     }
   ]
 }
