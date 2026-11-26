@@ -399,6 +399,14 @@ describe("project templates", () => {
     });
     expect(refused.status).toBe(422);
     expect((await json(refused)).error.details.problems).toHaveLength(1);
+    const source = await createProject();
+    expect(
+      (
+        await request(`/projects/${source}/template/preview`, "POST", {
+          template: id,
+        })
+      ).status,
+    ).toBe(422);
     expect(
       (await request("/projects", "POST", { slug, name: slug })).status,
     ).toBe(201);

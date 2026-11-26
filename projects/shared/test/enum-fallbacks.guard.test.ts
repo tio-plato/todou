@@ -242,6 +242,8 @@ const DECLARED: Readonly<Record<string, string>> = {
     "Status-id dictionary: storedRoles keys a new project's chart roles by the ids its statuses were just inserted with, and seedProject persists it as insightsSettings.roles; rolesOf later indexes it by status id through storedRole's literal allowlist plus defaultInsightsRole fallback.",
   "projects/server/src/services/insights/aggregate.ts :: mapping result #1":
     "Closed server metric catalog: finishFlow maps local FLOW_KEYS literals to measured counts. Its result is spread into the Flow response, not indexed by an incoming enum discriminator.",
+  "projects/server/src/services/template-apply.ts :: mapping roles #1":
+    "Status-id dictionary: storedRoles keys the chart roles by the ids of the statuses the apply kept or inserted, and write persists it as insightsSettings.roles; rolesOf later indexes it by status id through storedRole's literal allowlist plus defaultInsightsRole fallback.",
   "projects/shared/src/permissions.ts :: read BY_ID[id] #1":
     "Closed capability catalog: BY_ID is built from local CAPABILITIES. capabilityOf is called with literal capability ids, and by ownOnly with ids from role-permissions-table's local DISPLAY_ROWS.caps; no wire role value supplies this key.",
   "projects/shared/src/permissions.ts :: read BY_ID[id] #2":

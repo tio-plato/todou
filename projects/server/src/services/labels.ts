@@ -10,6 +10,7 @@ import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import { uniqueViolation } from "../auth/provision.ts";
 import type { AppContext } from "../bootstrap.ts";
+import type { Db } from "../db/driver.ts";
 import { issueLabels, issues, labels, statuses } from "../db/project-schema.ts";
 import { ConflictError, NotFoundError } from "../errors.ts";
 import { requireCapability, routeInfoOf } from "./access.ts";
@@ -52,6 +53,14 @@ export async function listLabelUsage(
 ): Promise<LabelUsage[]> {
   const { project } = await requireCapability(ctx, actor, slug, "label.usage");
   const db = await ctx.router.forProject(routeInfoOf(project));
+  return labelUsageRows(db, project.id);
+}
+
+/**
+ * Issues carrying each label, out of the trash: what the Labels page shows
+ * and what applying a template reports for a label it would delete.
+ */
+export function labelUsageRows(db: Db, projectId: number) {
   return db
     .select({
       id: labels.id,
@@ -65,7 +74,7 @@ export async function listLabelUsage(
       and(eq(issues.id, issueLabels.issueId), isNull(issues.deletedAt)),
     )
     .leftJoin(statuses, eq(statuses.id, issues.statusId))
-    .where(eq(labels.projectId, project.id))
+    .where(eq(labels.projectId, projectId))
     .groupBy(labels.id)
     .orderBy(asc(labels.id));
 }

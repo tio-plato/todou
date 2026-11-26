@@ -183,12 +183,65 @@ function sqlStateOf(error: unknown): string | undefined {
   return undefined;
 }
 
-type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+export type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+/**
+ * Runs `work` in a serializable transaction, retrying serialization
+ * failures, deadlocks and any SQLSTATE the caller adds in `alsoRetry`; once
+ * the retries are spent, a 503 saying `busy`.
+ */
+export async function inSerializableTransaction<T>(
+  db: Db,
+  busy: string,
+  work: (tx: Tx) => Promise<T>,
+  alsoRetry: readonly string[] = [],
+): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await db.transaction(async (tx) => {
+        // This must be the transaction's first business statement.
+        await tx.execute(
+          sql.raw("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"),
+        );
+        return work(tx);
+      });
+    } catch (error) {
+      const code = sqlStateOf(error);
+      const retryable =
+        code !== undefined &&
+        (RETRYABLE_SQLSTATES.has(code) || alsoRetry.includes(code));
+      if (!retryable) throw error;
+      if (attempt >= MAX_TRANSACTION_RETRIES) {
+        throw new DomainError(503, "service_unavailable", busy);
+      }
+    }
+  }
+}
+
+/** The project's settings row, locked, created first if it is absent. */
+export async function ensureSettingsRow(
+  tx: Tx,
+  projectId: number,
+): Promise<SavedRow> {
+  await tx
+    .insert(insightsSettings)
+    .values({ projectId, revision: 0, roles: {} })
+    .onConflictDoNothing();
+  const savedRows = await tx
+    .select()
+    .from(insightsSettings)
+    .where(eq(insightsSettings.projectId, projectId))
+    .for("update");
+  const saved = savedRows[0];
+  if (!saved) throw new Error("insights settings row was not created");
+  return saved;
+}
 
 /**
  * Runs `write` against the project's settings row, locked, in a serializable
  * transaction, retrying serialization failures. The row is created first if
- * absent, so `write` always has one to compare against and swap.
+ * absent, so `write` always has one to compare against and swap. Both the
+ * initial insert race and the later compare-and-swap use serializable rules.
  */
 async function writeSettings(
   ctx: AppContext,
@@ -200,51 +253,27 @@ async function writeSettings(
     currentStatuses: StatusRow[],
   ) => Promise<{ response: Settings; changed: boolean }>,
 ): Promise<Settings> {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      const result = await db.transaction(async (tx) => {
-        // This must be the transaction's first business statement: both the
-        // initial insert race and later compare-and-swap use serializable rules.
-        await tx.execute(
-          sql.raw("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"),
-        );
-        await tx
-          .insert(insightsSettings)
-          .values({ projectId, revision: 0, roles: {} })
-          .onConflictDoNothing();
-        const savedRows = await tx
-          .select()
-          .from(insightsSettings)
-          .where(eq(insightsSettings.projectId, projectId))
-          .for("update");
-        const saved = savedRows[0];
-        if (!saved) throw new Error("insights settings row was not created");
-        return write(tx, saved, await statusRows(tx, projectId));
-      });
-
-      if (result.changed) {
-        ctx.bus.publish(projectId, {
-          entity: "project",
-          action: "updated",
-          id: projectId,
-        });
-      }
-      return result.response;
-    } catch (error) {
-      const code = sqlStateOf(error);
-      if (!code || !RETRYABLE_SQLSTATES.has(code)) throw error;
-      if (attempt >= MAX_TRANSACTION_RETRIES) {
-        throw new DomainError(
-          503,
-          "service_unavailable",
-          "insights settings are busy — reload and try again shortly",
-        );
-      }
-    }
+  const result = await inSerializableTransaction(
+    db,
+    "insights settings are busy — reload and try again shortly",
+    async (tx) =>
+      write(
+        tx,
+        await ensureSettingsRow(tx, projectId),
+        await statusRows(tx, projectId),
+      ),
+  );
+  if (result.changed) {
+    ctx.bus.publish(projectId, {
+      entity: "project",
+      action: "updated",
+      id: projectId,
+    });
   }
+  return result.response;
 }
 
-async function swapRoles(
+export async function swapRoles(
   tx: Tx,
   saved: SavedRow,
   roles: SavedRow["roles"],
