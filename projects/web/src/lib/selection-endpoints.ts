@@ -85,16 +85,15 @@ export function orderedEndpoints(
 }
 
 /**
- * The first range `getComposedRanges` gives, asked with the dictionary and
- * then with the shadow roots as arguments; undefined where the API is
- * missing, gives no range, or throws on both.
+ * The first range `getComposedRanges` gives for `shadowRoots`, asked with
+ * the dictionary and then with the roots as arguments; undefined where the
+ * API is missing, gives no range, or throws on both.
  */
 function composedRange(
   selection: Selection,
-  container: Element,
+  shadowRoots: ShadowRoot[],
 ): StaticRange | undefined {
   if (typeof selection.getComposedRanges !== "function") return undefined;
-  const shadowRoots = openShadowRoots(container);
   try {
     return selection.getComposedRanges({ shadowRoots })[0];
   } catch {
@@ -108,6 +107,28 @@ function composedRange(
       return undefined;
     }
   }
+}
+
+/**
+ * Whether `selection` plainly selects nothing, told without walking a single
+ * shadow root. `toString()` tells it in every engine but Firefox: there a
+ * selection that crosses a shadow boundary — a shift-click from prose into a
+ * code block, a drag from a note hung under a source line up into the line —
+ * leaves `toString()` empty and the legacy range collapsed, and only
+ * `getComposedRanges` still holds what was selected. Asked with no shadow
+ * roots it walks none. A caret outside every shadow root stays collapsed
+ * there; one inside a root is widened to its host's edges, so only its
+ * endpoints, read next, show that nothing is selected.
+ */
+export function plainlyEmpty(selection: Selection): boolean {
+  if (selection.toString() !== "") return false;
+  // A legacy range that spans something is a selection of no text at all,
+  // an image alone, not the collapse Firefox leaves.
+  if (selection.rangeCount === 0 || !selection.getRangeAt(0).collapsed) {
+    return true;
+  }
+  const light = composedRange(selection, []);
+  return light === undefined || light.collapsed;
 }
 
 /**
@@ -131,7 +152,7 @@ export function selectionEndpoints(
   selection: Selection,
   container: Element,
 ): SelectionEndpoints | null {
-  const composed = composedRange(selection, container);
+  const composed = composedRange(selection, openShadowRoots(container));
   if (composed !== undefined) {
     return {
       start: { node: composed.startContainer, offset: composed.startOffset },
