@@ -33,7 +33,7 @@ import {
   scanReferenceTokens,
   spliceResolved,
 } from "@todou/shared";
-import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import type { AppContext, DbContext } from "../bootstrap.ts";
 import type { Db } from "../db/driver.ts";
@@ -870,6 +870,10 @@ export type WriteGate = { id: number; actor: UserRow; role: MemberRole };
  * none), asking the write gate again under its lock, and the cards
  * `numbers` references. Returns the referenced cards that are still
  * referenceable, which are the ones owed a `referenced` event.
+ * `updates` are the other cards the write updates: the cards the drafts it
+ * attaches were uploaded on (see `findLinkedDrafts`). They are locked in the
+ * same statement, and one of them that is also referenced is returned like
+ * any other.
  *
  * Row locks on PostgreSQL follow one order across the server, so that the
  * waits between transactions never form a cycle:
@@ -881,6 +885,11 @@ export type WriteGate = { id: number; actor: UserRow; role: MemberRole };
  *    (`lockWritableIssue`, or this function for `write`). Writes to one card
  *    therefore queue on the card, and which of them locks a comment first no
  *    longer matters to any other.
+ *    The gate is asked of the card the write is aimed at only: the cards
+ *    whose drafts it attaches are locked with the others but not gated. A
+ *    draft on a card in the trash is attached as it always was, and refusing
+ *    it would fail a write on one card because of another the writer may not
+ *    even see.
  * 2. Every card a write touches, in one statement, in ascending id, FOR NO
  *    KEY UPDATE: the card it writes and the cards it references. FOR UPDATE
  *    is for a transaction that moves a card away, as its first lock: a move
@@ -888,6 +897,7 @@ export type WriteGate = { id: number; actor: UserRow; role: MemberRole };
  *    another database when both share the project database, and the move's
  *    last step). With one mode for every other write, no lock is ever
  *    upgraded.
+ *    The cards whose drafts a write attaches are among the cards it touches.
  * 3. Cards before `project_meta`: creating a card locks the cards it
  *    touches, then takes a number; a same-database move locks its card, then
  *    the target's `project_meta`.
@@ -902,6 +912,8 @@ export type WriteGate = { id: number; actor: UserRow; role: MemberRole };
  * gate, which while it holds it waits only for other cards of the
  * tombstone's project, none of which the move holds, and references skip
  * tombstones.
+ * A write attaching a draft that was on the card before it moved locks the
+ * tombstone as well, and waits only on rows of that project.
  *
  * The one statement sorts the rows before it locks them: `ORDER BY` and the
  * locking clause belong to the same query, never a subquery. A card it
@@ -911,6 +923,9 @@ export type WriteGate = { id: number; actor: UserRow; role: MemberRole };
  * Referencing a card therefore waits for the writes to it, and several
  * writes referencing one card queue on it. With no card at all nothing is
  * locked.
+ * A card that is updated as well as referenced matches by id too, so it
+ * comes back even once it stops being referenceable; its `referenceable`,
+ * read from the locked row, then keeps it out of the cards returned.
  *
  * The lock on a referenced card is also what makes a single-transaction
  * move wait: it takes FOR UPDATE on the same row, and without it an event
@@ -925,14 +940,19 @@ export async function lockIssueRows(
   project: ProjectRow,
   write: WriteGate | null,
   numbers: number[],
+  updates: readonly number[],
 ): Promise<Array<{ id: number; number: number }>> {
-  if (write === null && numbers.length === 0) return [];
+  const ids = write === null ? [...updates] : [write.id, ...updates];
+  if (ids.length === 0 && numbers.length === 0) return [];
   const rows = await tx
-    .select(gateColumns)
+    .select({
+      ...gateColumns,
+      referenceable: sql<boolean>`${referenceable}`,
+    })
     .from(issues)
     .where(
       or(
-        write === null ? undefined : eq(issues.id, write.id),
+        ids.length === 0 ? undefined : inArray(issues.id, ids),
         numbers.length === 0
           ? undefined
           : and(
@@ -951,7 +971,7 @@ export async function lockIssueRows(
   }
   const named = new Set(numbers);
   return rows
-    .filter((row) => named.has(row.number))
+    .filter((row) => row.referenceable && named.has(row.number))
     .map((row) => ({ id: row.id, number: row.number }));
 }
 
@@ -973,7 +993,7 @@ export async function lockWritableIssue(
   project: ProjectRow,
   gate: WriteGate,
 ): Promise<void> {
-  await lockIssueRows(tx, project, gate, []);
+  await lockIssueRows(tx, project, gate, [], []);
 }
 
 /**
