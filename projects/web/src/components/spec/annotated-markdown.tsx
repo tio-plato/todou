@@ -94,7 +94,11 @@ import {
   openEnclosingFolds,
   useOwnHold,
 } from "@/lib/scroll-insets.ts";
-import { anchorForSelection, OLD_CODE_BLOCK } from "@/lib/selection-anchor.ts";
+import {
+  anchorForSelection,
+  OLD_CODE_BLOCK,
+  rangeAtSource,
+} from "@/lib/selection-anchor.ts";
 import type { SelectionEndpoints } from "@/lib/selection-endpoints.ts";
 import { buildBaselineTree } from "@/lib/spec-baseline-tree.ts";
 import { type LineRange, rangesIntersect } from "@/lib/spec-changes.ts";
@@ -148,9 +152,11 @@ type Chip = {
    * the chip one of its annotations was in the layout before, else one made
    * from the place it hangs at: its block's key (`start-end`, or `old-i` for
    * a block put back of the baseline), followed for a row of code by `:L` or
-   * `:old-L` and the source line the row shows, and for the foot of a patch
-   * fence's box by `:below` or `:old-below`; with a `+` for each chip
-   * already going on under that key.
+   * `:old-L` and the source line the row shows, for the foot of a patch
+   * fence's box by `:below` or `:old-below`, for a line of text by `:@`
+   * and the source offset its first character is drawn from, and for a run
+   * of removed text by `:old@` and where the run starts in the baseline;
+   * with a `+` for each chip already going on under that key.
    */
   blockKey: string;
   top: number;
@@ -178,6 +184,84 @@ const OLD_HOLDER = `[${OLD_LINE_ATTR}], .spec-del-block, .${DEL_ROW_CLASS}`;
 
 /** The wrappers of the code blocks pierre draws rows in, old ones included. */
 const CODE_WRAPPERS = `[${CODE_CONTENT_START_ATTR}], ${OLD_CODE_BLOCK}`;
+
+/**
+ * Whether a shut `<details>` hides `node`: it is inside one, and not in the
+ * summary a shut fold still shows. What its box measures there is no place
+ * on the page: nothing in one browser, where it would be if open in another.
+ */
+function shutAway(node: Node): boolean {
+  const el = node instanceof Element ? node : node.parentElement;
+  const fold = el?.closest("details:not([open])");
+  return fold != null && el?.closest("summary")?.parentElement !== fold;
+}
+
+/**
+ * The box of the first character or picture `el` draws: the first, in
+ * document order, whose box has any height, with whatever a comparison put
+ * back of its baseline and without the annotation UI. Null where it draws
+ * neither. Shadow roots stay shut: a document card opening a block is the
+ * block's first character, which is measured by itself.
+ */
+function firstDrawn(el: Element): DOMRect | null {
+  const walk = document.createTreeWalker(
+    el,
+    NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
+    {
+      acceptNode: (node) =>
+        node instanceof Element && node.matches("[data-annotation-ui]")
+          ? NodeFilter.FILTER_REJECT
+          : NodeFilter.FILTER_ACCEPT,
+    },
+  );
+  const range = document.createRange();
+  for (let node = walk.nextNode(); node !== null; node = walk.nextNode()) {
+    if (node instanceof Element) {
+      if (node.tagName !== "IMG") continue;
+      range.selectNode(node);
+    } else {
+      const at = node.nodeValue?.search(/\S/) ?? -1;
+      if (at < 0) continue;
+      range.setStart(node, at);
+      range.setEnd(node, at + 1);
+    }
+    const box = range.getBoundingClientRect();
+    if (box.height > 0) return box;
+  }
+  return null;
+}
+
+/**
+ * How a text block's first line is measured. `top` is the box of `opening`,
+ * its first character, or of the first thing one of its columns draws,
+ * where that is drawn higher. The first character need not be on the first
+ * line: a comparison puts back before it what the source no longer holds, a
+ * swapped picture's old half or removed words, which a narrow screen can
+ * spread over a line or more; and a table row's cells are centred, so a
+ * short first cell starts below a long one's first line. Each cell of a row
+ * is a column, any other block one. Only higher: on the line they share,
+ * the first character keeps its place, a hair above the old picture beside
+ * it, and so does a comparison opening a block, which draws inside itself.
+ * `line` is the height of the shortest of those boxes, which half a line is
+ * half of: a picture is no line of words, and where a row's cell holds
+ * words beside a taller picture in another, half the picture would take
+ * the words' first lines for the row's first.
+ */
+function firstLine(
+  el: Element,
+  opening: Range,
+): { top: DOMRect; line: number } {
+  let top = opening.getBoundingClientRect();
+  let line = top.height;
+  const columns = el.tagName === "TR" ? [...el.children] : [el];
+  for (const column of columns) {
+    const box = firstDrawn(column);
+    if (box === null) continue;
+    if (box.top < top.top) top = box;
+    if (line === 0 || box.height < line) line = box.height;
+  }
+  return { top, line };
+}
 
 /** One of pierre's rows, and where it sits in the source. */
 type PlacedRow = { row: HTMLElement; source: CodeRowSource };
@@ -751,14 +835,15 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     const shows = lineVisibility(index);
     const washedBy = new Map<HTMLElement, Set<DisplayedAnnotation["kind"]>>();
     // Inside its block, a chip hangs by the row of code the annotation's
-    // first line shows on, where pierre has drawn one; else by the block's
-    // top. A patch fence's files scroll in a box of their own, and a chip
-    // there keeps beside that box: no higher than the block's top, and for a
-    // row reaching past the box's foot no lower than a chip's height above
-    // it, where a line below every row drawn hangs too. Each place is kept
-    // under its block's key, and a row's under that key and where in the
-    // source it starts, never where on the page, so that a layout moving it
-    // keeps its key.
+    // first line shows on, where pierre has drawn one, or by the line of text
+    // on the page its first character is drawn on; else by the block's top.
+    // A patch fence's files scroll in a box of their own, and a chip there
+    // keeps beside that box: no higher than the block's top, and for a row
+    // reaching past the box's foot no lower than a chip's height above it,
+    // where a line below every row drawn hangs too. Each place is kept under
+    // its block's key, and a row's or a line's under that key and where in
+    // the source it starts, never where on the page, so that a layout moving
+    // it keeps its key.
     type Place = {
       key: string;
       /** The key of the block it is in, whose places join one another. */
@@ -773,7 +858,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       string,
       { block: HTMLElement; row: HTMLElement | null }
     >();
-    /** A place inside a block: a row of code. */
+    /** A place inside a block: a row of code, or a line of text. */
     type Line = { key: string; top: number };
     const hang = (
       annotation: DisplayedAnnotation,
@@ -880,6 +965,65 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         ? null
         : { key, top: footOf(wrapper, first.row) - tall };
     };
+    // Each text block lined up once a layout, and only where asked, with
+    // what `firstLine` measures its first line by: the box its later lines
+    // are measured from, and the height half a line is half of. Null where
+    // it does not line up, or nothing has a box.
+    const texts = new Map<
+      Element,
+      {
+        at: (source: number) => Range | null;
+        first: DOMRect;
+        line: number;
+      } | null
+    >();
+    /**
+     * The line of the text block `block` that what `drawn` picks sits on, as
+     * a place: as far below the block's top as it is below the box
+     * `firstLine` measures the block's first line by, so that a chip keeps
+     * from its line what the first line's keeps from it. Null on the first
+     * line, which the block's own place stands for, and wherever nothing
+     * measures, a shut fold's hidden body included. Less than half a line
+     * below it, half the `line` `firstLine` gives, is still the first line:
+     * inline code, a fallback font or an atom's box start a few pixels off
+     * the text's.
+     */
+    const textLine = (
+      block: { el: HTMLElement; start: number },
+      key: string,
+      drawn: (at: (source: number) => Range | null) => Range | Element | null,
+    ): Line | null => {
+      if (
+        block.el.matches(CODE_WRAPPERS) ||
+        visibleAnchor(block.el) !== block.el
+      ) {
+        return null;
+      }
+      let text = texts.get(block.el);
+      if (text === undefined) {
+        const at = rangeAtSource(index, block.el);
+        const start = index.lineStarts[block.start - 1];
+        const opening = at === null || start === undefined ? null : at(start);
+        const measured = opening === null ? null : firstLine(block.el, opening);
+        text =
+          at === null || measured === null || measured.top.height === 0
+            ? null
+            : { at, first: measured.top, line: measured.line };
+        texts.set(block.el, text);
+      }
+      const at = text === null ? null : drawn(text.at);
+      if (
+        text === null ||
+        at === null ||
+        shutAway(at instanceof Range ? at.startContainer : at)
+      ) {
+        return null;
+      }
+      const below = at.getBoundingClientRect().top - text.first.top;
+      return below < text.line / 2
+        ? null
+        : { key, top: chipTop(containerRect, block.el) + below };
+    };
     // Each wrapper's rows placed once a layout, and only where asked.
     const currentRows = new Map<Element, PlacedRow[]>();
     const rowsOf = (wrapper: Element) => () => {
@@ -916,12 +1060,23 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       const key = `${block.start}-${block.end}`;
       const rows = rowsOf(block.el);
       const row = rowIn(block.el, rows, annotation);
+      // Its first character; for whole lines, the first line's start, unless
+      // that is the block's own first line or above it.
+      const from =
+        annotation.colStart != null
+          ? offsetAt(index, annotation.start, annotation.colStart)
+          : annotation.start > block.start
+            ? (index.lineStarts[annotation.start - 1] ?? null)
+            : null;
       hang(
         annotation,
         { key, el: block.el, old: false },
         row !== null
           ? rowLine(`${key}:L`, block.el, row)
-          : belowRows(`${key}:below`, block.el, rows, annotation.start),
+          : (belowRows(`${key}:below`, block.el, rows, annotation.start) ??
+              (from === null
+                ? null
+                : textLine(block, `${key}:@${from}`, (on) => on(from)))),
         row?.row ?? null,
       );
     }
@@ -973,14 +1128,31 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
         const drawn = () =>
           rows().filter(({ source }) => source.wrapper === put);
         const row = code === null ? null : rowIn(code, drawn, annotation);
+        // A run of removed text in a current block is measured where it is
+        // drawn; in a block put back whole it would take the baseline's
+        // source to line its text up, and it hangs by that block's top.
+        const run =
+          current !== undefined && put.matches(OLD_RUNS)
+            ? put.hasAttribute(OLD_FLAT_ATTR)
+              ? `f${put.getAttribute(OLD_FLAT_ATTR)}`
+              : `s${put.getAttribute(OLD_SOURCE_ATTR)}`
+            : null;
         hang(
           annotation,
           { key, el: holder, old: current === undefined },
           row !== null
             ? rowLine(`${key}:old-L`, holder, row)
-            : code === null
-              ? null
-              : belowRows(`${key}:old-below`, code, drawn, annotation.start),
+            : ((code === null
+                ? null
+                : belowRows(
+                    `${key}:old-below`,
+                    code,
+                    drawn,
+                    annotation.start,
+                  )) ??
+                (current === undefined || run === null
+                  ? null
+                  : textLine(current, `${key}:old@${run}`, () => put))),
           row?.row ?? null,
         );
       }
