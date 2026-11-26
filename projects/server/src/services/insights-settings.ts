@@ -72,6 +72,42 @@ export function insightsSettingsResponse(
   };
 }
 
+/** A change to a project's statuses, as it bears on the stored chart roles. */
+export type RoleChange =
+  | {
+      kind: "added";
+      statusId: number;
+      status: { name: string; category: string };
+      role: Role;
+    }
+  | { kind: "edited"; statusId: number; role: Role }
+  | { kind: "deleted"; statusId: number };
+
+/**
+ * The stored chart roles after some status changes, by the Statuses page's
+ * two rules (T-712): a new status stores its role only when it is not the
+ * default, so a role nobody picked keeps following the default; an edited
+ * status stores the role it was given, default or not, the way picking one
+ * does. A deleted status's key goes, and every other key stays as stored.
+ */
+export function storedRoles(
+  current: Readonly<Record<string, string>>,
+  changes: readonly RoleChange[],
+): Record<string, string> {
+  const next = { ...current };
+  for (const change of changes) {
+    const key = String(change.statusId);
+    if (change.kind === "deleted") {
+      delete next[key];
+    } else if (change.kind === "edited") {
+      next[key] = change.role;
+    } else if (change.role !== defaultInsightsRole(change.status)) {
+      next[key] = change.role;
+    }
+  }
+  return next;
+}
+
 async function statusRows(db: Db, projectId: number): Promise<StatusRow[]> {
   return db
     .select()

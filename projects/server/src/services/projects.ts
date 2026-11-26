@@ -5,8 +5,9 @@ import type {
   ProjectBrief,
   ProjectCreateInput,
   ProjectUpdateInput,
+  TemplateBody,
 } from "@todou/shared";
-import { BUILTIN_TEMPLATES, parseRefLocator } from "@todou/shared";
+import { parseRefLocator } from "@todou/shared";
 import { and, asc, desc, eq, inArray, like, ne, or } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import { uniqueViolation } from "../auth/provision.ts";
@@ -41,7 +42,12 @@ import {
 } from "../errors.ts";
 import { type ProjectRow, requireCapability, routeInfoOf } from "./access.ts";
 import { announceBlockChanges, reevaluateProjectBlocks } from "./blocks.ts";
+import { storedRoles } from "./insights-settings.ts";
 import { markPendingMirror } from "./pending-mirror.ts";
+import {
+  resolveTemplate,
+  templateBodyFromProject,
+} from "./project-templates.ts";
 import { mirrorRefFormat } from "./reference-directory.ts";
 import {
   type BlobReapEntry,
@@ -191,7 +197,8 @@ async function canSeeProject(
 /**
  * Everything a new project owns beyond its registry row, split by tier: the
  * system database holds the slug history and the memberships, the project's
- * own database the rest. Taking both handles as parameters is what lets a
+ * own database the rest — the template's statuses, line, chart roles and
+ * labels among it. Taking both handles as parameters is what lets a
  * colocated create pass the same transaction twice.
  */
 async function seedProject(
@@ -200,6 +207,7 @@ async function seedProject(
   row: ProjectRow,
   input: ProjectCreateInput,
   actor: UserRow,
+  template: TemplateBody,
 ): Promise<void> {
   // Anchored at createdAt for the same reason the ref format is: the
   // history has to cover every instant this project could hold content.
@@ -208,11 +216,10 @@ async function seedProject(
     slug: row.slug,
     effectiveFrom: row.createdAt,
   });
-  const seed = BUILTIN_TEMPLATES.basic.body.statuses;
   const seeded = await db
     .insert(statuses)
     .values(
-      seed.map((s, i) => ({
+      template.statuses.map((s, i) => ({
         projectId: row.id,
         name: s.name,
         category: s.category,
@@ -222,14 +229,46 @@ async function seedProject(
       })),
     )
     .returning({ id: statuses.id, name: statuses.name });
-  const clearName = seed.find((s) => s.block_clear)?.name;
+  // By name, which a template holds once, rather than by RETURNING order.
+  const ids = new Map(seeded.map((s) => [s.name, s.id]));
+  const idOf = (name: string): number => {
+    const id = ids.get(name);
+    if (id === undefined) throw new Error(`status ${name} was not inserted`);
+    return id;
+  };
+  const clearName = template.statuses.find((s) => s.block_clear)?.name;
   await db
     .insert(projectMeta)
     .values({
       projectId: row.id,
-      blockClearStatusId: seeded.find((s) => s.name === clearName)?.id ?? null,
+      blockClearStatusId: clearName === undefined ? null : idOf(clearName),
     })
     .onConflictDoNothing();
+  // Only the roles that depart from the default are stored, as the Statuses
+  // page stores a new status's; with none, no row, as before templates.
+  const roles = storedRoles(
+    {},
+    template.statuses.map((s) => ({
+      kind: "added" as const,
+      statusId: idOf(s.name),
+      status: s,
+      role: s.chart_role,
+    })),
+  );
+  if (Object.keys(roles).length > 0) {
+    await db
+      .insert(insightsSettings)
+      .values({ projectId: row.id, revision: 0, roles });
+  }
+  if (template.labels.length > 0) {
+    await db.insert(labels).values(
+      template.labels.map((label) => ({
+        projectId: row.id,
+        name: label.name,
+        color: label.color,
+      })),
+    );
+  }
   // Anchored at the registry row's own createdAt, not now(): the history
   // then covers every instant the project could already hold content.
   if (input.ref_prefix != null) {
@@ -303,6 +342,13 @@ export async function createProject(
   input: ProjectCreateInput,
 ): Promise<Project> {
   const system = ctx.router.system();
+  // Before anything is written, so a template or source project that is not
+  // there leaves no half-made project behind. Naming neither template nor
+  // source means the built-in Basic, whoever asks.
+  const template =
+    input.from_project === undefined
+      ? (await resolveTemplate(ctx, actor, input.template ?? "basic")).body
+      : await templateBodyFromProject(ctx, actor, input.from_project);
 
   if (ctx.router.newProjectSharesSystemDatabase()) {
     // No `provision` call: for a project resolving to the system database it
@@ -323,7 +369,7 @@ export async function createProject(
       if (!ctx.router.sharesSystemDatabase(routeInfoOf(row))) {
         throw new Error("project routed out of the system database mid-create");
       }
-      await seedProject(tx, tx, row, input, actor);
+      await seedProject(tx, tx, row, input, actor, template);
       return row;
     });
     // After the commit: a subscriber that reacts by reading the project has
@@ -357,7 +403,7 @@ export async function createProject(
     // leaves a registry row with no database behind it. It adds no catch of
     // its own — a failure here is a 5xx, same as any other step.
     if (input.ref_prefix != null) await markPendingMirror(ctx, row);
-    await seedProject(system, db, row, input, actor);
+    await seedProject(system, db, row, input, actor, template);
   } catch (cause) {
     // Cross-database creation cannot be one transaction; compensate by
     // removing the registry row so the failed project is unroutable.

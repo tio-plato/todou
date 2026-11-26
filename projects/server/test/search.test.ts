@@ -498,7 +498,7 @@ describe("search qualifiers", () => {
     }
     // A label name carrying a colon, because todou's own do — the parser has
     // to keep the whole `area:web` as one value.
-    for (const name of ["area:web", "kind:bug"]) {
+    for (const name of ["area:web", "kind:defect"]) {
       const res = await t.app.request(`/api/projects/${QUAL}/labels`, {
         method: "POST",
         headers: headers(),
@@ -534,11 +534,11 @@ describe("search qualifiers", () => {
       session_id: "sess-b",
     });
 
-    // 2 — opened from a browser, labelled kind:bug, moved to Next, and its
+    // 2 — opened from a browser, labelled kind:defect, moved to Next, and its
     // spec pushed by codex under a third session.
     await createIssue("限定符锚点二", "正文二 限定符锚点");
     await patch(2, {
-      label_ids: [labelId.get("kind:bug")],
+      label_ids: [labelId.get("kind:defect")],
       status_id: statusId.get("Next"),
     });
     await comment(2, "评论 限定符锚点 乙");
@@ -554,7 +554,7 @@ describe("search qualifiers", () => {
       session_id: "",
     });
     await patch(3, {
-      label_ids: [labelId.get("area:web"), labelId.get("kind:bug")],
+      label_ids: [labelId.get("area:web"), labelId.get("kind:defect")],
       status_id: statusId.get("Done"),
     });
   });
@@ -620,7 +620,7 @@ describe("search qualifiers", () => {
         "3:issue",
         "1:issue",
       ]);
-      expect(await kinds('label:"kind:bug" is:body 限定符锚点')).toEqual([
+      expect(await kinds('label:"kind:defect" is:body 限定符锚点')).toEqual([
         "3:issue",
         "2:issue",
       ]);
@@ -641,11 +641,11 @@ describe("search qualifiers", () => {
 
   describe("combining values", () => {
     it("commas are any-of, repeating the key is all-of", async () => {
-      expect(await kinds("label:area:web,kind:bug is:body 限定符锚点")).toEqual(
-        ["3:issue", "2:issue", "1:issue"],
-      );
       expect(
-        await kinds("label:area:web label:kind:bug is:body 限定符锚点"),
+        await kinds("label:area:web,kind:defect is:body 限定符锚点"),
+      ).toEqual(["3:issue", "2:issue", "1:issue"]);
+      expect(
+        await kinds("label:area:web label:kind:defect is:body 限定符锚点"),
       ).toEqual(["3:issue"]);
     });
 
@@ -654,7 +654,7 @@ describe("search qualifiers", () => {
         "2:issue",
       ]);
       expect(
-        await kinds("-label:area:web,kind:bug is:body 限定符锚点"),
+        await kinds("-label:area:web,kind:defect is:body 限定符锚点"),
       ).toEqual([]);
       expect(await kinds("-state:closed is:body 限定符锚点")).toEqual([
         "2:issue",
@@ -943,10 +943,10 @@ describe("search qualifiers", () => {
 
   describe("what stays plain text", () => {
     it("leaves an unknown key alone", async () => {
-      // `kind:bug` is a label here, but `kind:` is not a qualifier — so this
+      // `kind:defect` is a label here, but `kind:` is not a qualifier — so this
       // is a literal search, and it finds nothing rather than the two cards
       // carrying the label.
-      expect(await kinds("kind:bug")).toEqual([]);
+      expect(await kinds("kind:defect")).toEqual([]);
       expect(await kinds("https://example.com/x")).toEqual([]);
     });
 
