@@ -59,6 +59,7 @@ import {
   GLIDE_END_EVENT,
   isGliding,
   isHoldingTarget,
+  keepGlideOnPath,
   landAtBottom,
   revealAboveEnd,
   startTarget,
@@ -117,6 +118,16 @@ function theirsAfter(
   return at === -1
     ? []
     : items.slice(at + 1).filter((item) => !madeBy(item, viewerId));
+}
+
+/**
+ * What the browser does with the scroll of an entry of the card at `hash`
+ * when Back or Forward returns to it. One naming a comment or an event is the
+ * anchor's to land on, gliding there from where the page stands, so the
+ * browser restores nothing first; any other is restored.
+ */
+function restorationOnReturn(hash: string): ScrollRestoration {
+  return parseTimelineAnchor(hash) !== null ? "manual" : "auto";
 }
 
 /** Whether the reader is at the end of the conversation, and where they are. */
@@ -321,7 +332,11 @@ export function Timeline({
   // the end on the card's next navigation, a hash or a search change. Only
   // without a hash, too: the router renders no arrival a newer navigation has
   // taken over, and for a location with a hash, a comment link's, it leaves
-  // the page alone, the landing being the anchor's.
+  // the page alone, the landing being the anchor's. Not for an entry it did
+  // not push with `hashScrollIntoView: false`, as the one a card was opened
+  // at by its address: Back to it has the router scroll the anchor into view
+  // once the anchor's glide has set out. Put back in the same task, before it
+  // is drawn, the glide goes on from where it stood.
   // Subscribed in a layout effect, which has run by the end of any commit,
   // since the router emits after the commit it waits for.
   const router = useRouter();
@@ -329,6 +344,7 @@ export function Timeline({
   useLayoutEffect(
     () =>
       router.subscribe("onRendered", ({ toLocation }) => {
+        keepGlideOnPath();
         if (!landAfterArrival.current) return;
         landAfterArrival.current = false;
         if (!toLocation.hash) scrollToBottom();
@@ -344,24 +360,31 @@ export function Timeline({
   // itself, so the entry it leaves for another page is not restored. A
   // comment link's push stays on the card, which does not mount again and
   // leaves the page to the browser, so the entry it leaves is restored, and
-  // Back returns to where the link was pressed. Set from a blocker that
-  // never blocks: the history asks it before each push, while the entry
-  // being left is still the current one. A link the router does not take, a
-  // footnote's or a bare `#anchor` to anything but a comment or an event
-  // (taken below), the browser follows past the blocker: a plain click on one
-  // to another fragment of this page sets the entry from the document, after
-  // the page's own handlers and before the browser follows the link. A click
-  // the router took is left to the blocker, and one with a modifier opens
-  // another tab and moves nothing here; nor does a link to
-  // another query, which loads a new page. Without `enableBeforeUnload: false`
-  // the history takes it for a blocker that wants the browser to confirm every
-  // reload and closing of the tab once the page had a click or a key. A passive
-  // effect, as the list's restore sets the entry in one and hands its value
-  // back in the cleanup: when one commit swaps the two, every cleanup runs
-  // before any set-up, so the page arriving sets it last. On unmount the
-  // current entry is the next page's, which its push copied from the card's, so
-  // it gets the browser's default back rather than the value found on mount,
-  // which, the card having come back by Back, is its own.
+  // Back returns to where the link was pressed; unless that entry names a
+  // comment or an event itself, which Back returns to by the anchor's glide
+  // (see `restorationOnReturn`). Set from a blocker that never blocks: the
+  // history asks it before each push, while the entry being left is still
+  // the current one. The entry pushed starts with the value of the one it
+  // leaves, so one on the card naming neither a comment nor an event, pushed
+  // from one naming either, is set to be restored as the history announces
+  // it, once the push has been handed to the browser. A link the router does
+  // not take, a footnote's or a bare `#anchor` to anything but a comment or
+  // an event (taken below), the browser follows past the blocker: a plain
+  // click on one to another fragment of this page sets the entry by the same
+  // rule, restored unless it names a comment or an event, from the document,
+  // after the page's own handlers and before the browser follows the link. A
+  // click the router took is left to the blocker, and one with a modifier
+  // opens another tab and moves nothing here; nor does a link to another
+  // query, which loads a new page. Without
+  // `enableBeforeUnload: false` the history takes it for a blocker that wants
+  // the browser to confirm every reload and closing of the tab once the page
+  // had a click or a key. A passive effect, as the list's restore sets the
+  // entry in one and hands its value back in the cleanup: when one commit
+  // swaps the two, every cleanup runs before any set-up, so the page arriving
+  // sets it last. On unmount the current entry is the next page's, which its
+  // push copied from the card's, so it gets the browser's default back rather
+  // than the value found on mount, which, the card having come back by Back,
+  // is its own.
   // A plain click on a link written in a body to one of the card's own
   // comments or events, a bare `#comment-N`, is taken from the browser and
   // pushed as the card's comment links are: followed by the browser, it
@@ -380,10 +403,30 @@ export function Timeline({
         if (action === "PUSH")
           window.history.scrollRestoration =
             nextLocation.pathname === currentLocation.pathname
-              ? "auto"
+              ? restorationOnReturn(currentLocation.hash)
               : "manual";
         return false;
       },
+    });
+    let at = router.history.location;
+    const unlisten = router.history.subscribe(({ location, action }) => {
+      const left = at;
+      at = location;
+      if (
+        action.type !== "PUSH" ||
+        location.pathname !== left.pathname ||
+        restorationOnReturn(left.hash) === "auto" ||
+        restorationOnReturn(location.hash) === "manual"
+      )
+        return;
+      // The browser is handed a push only in a microtask after it is
+      // announced: set now, the value would land on the entry being left.
+      try {
+        router.history.flush();
+      } catch {
+        return;
+      }
+      window.history.scrollRestoration = "auto";
     });
     const onClick = (event: MouseEvent) => {
       if (
@@ -419,16 +462,34 @@ export function Timeline({
             });
           return;
         }
-        window.history.scrollRestoration = "auto";
+        window.history.scrollRestoration = restorationOnReturn(
+          window.location.hash,
+        );
       }
     };
     document.addEventListener("click", onClick);
     return () => {
       document.removeEventListener("click", onClick);
+      unlisten();
       unblock();
       window.history.scrollRestoration = "auto";
     };
   }, [router, returnState]);
+  // Back or Forward to an entry naming a comment or an event has the anchor
+  // glide to it from where the page stands. The browser restoring that
+  // entry's scroll as well does so after the glide has set out and before
+  // its first frame: the page shows the target, then jumps back to glide to
+  // it. So the entry is set not to be restored while it is the current one,
+  // pushed, replaced or returned to: once Back or Forward is under way, a
+  // value set comes too late in Chromium and Firefox both. Leaving it, the
+  // blocker and the click above keep it so.
+  useEffect(() => {
+    if (
+      "scrollRestoration" in window.history &&
+      restorationOnReturn(anchorHash ?? "") === "manual"
+    )
+      window.history.scrollRestoration = "manual";
+  }, [anchorHash]);
   const questionLanding = useQuestionLanding(slug, issueNumber);
   const timelineReady = tail.isSuccess && (!headEnabled || head.isSuccess);
 
