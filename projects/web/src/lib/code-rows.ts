@@ -142,20 +142,22 @@ export function codeBodyLines(
 
 /**
  * The 0-based line of a code block's body a row shows, or null. `body` is
- * the body the row is numbered against, and `patch` says whether the patch
- * viewer drew it.
+ * the body the row is numbered against, `patch` says whether the patch
+ * viewer drew it, and `numbered` names the attribute that numbers any other
+ * row on that body's side.
  */
 function bodyLineOf(
   body: string | null,
   patch: boolean,
   row: Element,
+  numbered = "data-line",
 ): number | null {
   if (patch) {
     // The patch viewer numbers rows by the patched files, so only the fence
     // body itself can say which of its lines a row is.
     return body === null ? null : patchLineOfRow(body, row);
   }
-  const number = Number(row.getAttribute("data-line"));
+  const number = Number(row.getAttribute(numbered));
   return Number.isInteger(number) && number >= 1 ? number - 1 : null;
 }
 
@@ -282,17 +284,59 @@ export function oldCodeRowSource(
   fences: ReadonlyMap<number, SourceFence>,
   row: Element,
 ): CodeRowSource | null {
+  return baselineRow(baseline, fences, row, false);
+}
+
+/**
+ * Where a row shows a line of the compare baseline, or null when it shows
+ * none: each row `oldCodeRowSource` places, and a context row of a block
+ * edited in place too, which shows a line of either version. pierre numbers
+ * such a row on the version shown and keeps the baseline's number as
+ * `data-alt-line`; a row without one shows a baseline line no-one can name.
+ * A context row is not removed content, which is what `oldCodeRowSource`
+ * tells its callers, so only what the baseline hides from a selection asks
+ * this.
+ */
+export function baselineRowSource(
+  baseline: SegmentIndex,
+  fences: ReadonlyMap<number, SourceFence>,
+  row: Element,
+): CodeRowSource | null {
+  return baselineRow(baseline, fences, row, true);
+}
+
+function isContext(row: Element): boolean {
+  const type = row.getAttribute(LINE_TYPE_ATTR);
+  return type === "context" || type === "context-expanded";
+}
+
+/** `oldCodeRowSource`, with a block's context rows too where `context`. */
+function baselineRow(
+  baseline: SegmentIndex,
+  fences: ReadonlyMap<number, SourceFence>,
+  row: Element,
+  context: boolean,
+): CodeRowSource | null {
   const wrapper = stampedAbove(
     row,
     `[${SOURCE_LINE_ATTR}], [${OLD_LINE_ATTR}]`,
   );
   if (wrapper === null) return null;
   let line: number | null = null;
+  let numbered = "data-line";
   if (wrapper.hasAttribute(OLD_LINE_ATTR)) {
     line = parseSourceLoc(wrapper.getAttribute(OLD_LINE_ATTR))?.start ?? null;
   } else if (wrapper.hasAttribute(CODE_CONTENT_START_ATTR) && isDeletion(row)) {
     const loc = parseSourceLoc(wrapper.getAttribute(SOURCE_LINE_ATTR));
     line = loc === null ? null : (fences.get(loc.start)?.line ?? null);
+  } else if (
+    context &&
+    wrapper.hasAttribute(CODE_CONTENT_START_ATTR) &&
+    isContext(row)
+  ) {
+    const loc = parseSourceLoc(wrapper.getAttribute(SOURCE_LINE_ATTR));
+    line = loc === null ? null : (fences.get(loc.start)?.line ?? null);
+    numbered = "data-alt-line";
   }
   const fence = line === null ? null : fenceAt(baseline, line);
   if (fence === null) return null;
@@ -302,6 +346,7 @@ export function oldCodeRowSource(
     fence.value,
     wrapper.hasAttribute(FENCE_PATCH_ATTR),
     row,
+    numbered,
   );
   return {
     wrapper,

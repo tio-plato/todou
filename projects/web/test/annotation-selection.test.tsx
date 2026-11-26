@@ -3217,6 +3217,142 @@ describe("anchoring a compared document", () => {
     );
   });
 
+  it("leaves an edited block's fence markers out of a baseline anchor crossing them", async () => {
+    const before = [
+      "Intro.",
+      "",
+      "Removed para.",
+      "",
+      "```ts",
+      "old();",
+      "keep();",
+      "gone();",
+      "```",
+      "",
+      "Removed too.",
+      "",
+    ].join("\n");
+    const after = ["Intro.", "", "```ts", "new();", "keep();", "```", ""].join(
+      "\n",
+    );
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    // pierre numbers a context row on the version shown and keeps the
+    // baseline's number as `data-alt-line`.
+    const shadow = drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-line-type="change-deletion">old();</div>
+       <div data-line="1" data-line-type="change-addition">new();</div>
+       <div data-line="2" data-alt-line="2" data-line-type="context">keep();</div>
+       <div data-line="3" data-line-type="change-deletion">gone();</div>`,
+    );
+    const rows = [...shadow.querySelectorAll("[data-line]")];
+    const [old, gone] = [rows[0], rows[3]].map((row) => row?.firstChild);
+    // From the paragraph removed above the block to its first row's start,
+    // and from its last row to the start of the one removed below it.
+    const para = textAt(container, "p.spec-del-structure", "Removed para.");
+    expect(quoted(before, anchor(ends(para.node, para.at, old, 0)))).toBe(
+      "Removed para.",
+    );
+    const below = textAt(container, "p.spec-del-structure", "Removed too.");
+    expect(quoted(before, anchor(ends(gone, 0, below.node, below.at)))).toBe(
+      "gone();",
+    );
+  });
+
+  it("leaves the closing marker of a block that only gained a line out of a baseline anchor, past its unchanged rows", async () => {
+    const kept = ["k1();", "k2();", "k3();", "k4();", "k5();", "k6();"];
+    const before = [
+      "Intro.",
+      "",
+      "Removed para.",
+      "",
+      "```ts",
+      ...kept,
+      "```",
+      "",
+      "Removed too.",
+      "",
+    ].join("\n");
+    const after = ["Intro.", "", "```ts", "new();", ...kept, "```", ""].join(
+      "\n",
+    );
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    // Past a hunk's context pierre draws the unchanged rows as
+    // `context-expanded`, numbered the same way.
+    drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-line-type="change-addition">new();</div>
+       <div data-line="2" data-alt-line="1" data-line-type="context">k1();</div>
+       <div data-line="3" data-alt-line="2" data-line-type="context">k2();</div>
+       <div data-line="4" data-alt-line="3" data-line-type="context">k3();</div>
+       <div data-line="5" data-alt-line="4" data-line-type="context">k4();</div>
+       <div data-line="6" data-alt-line="5" data-line-type="context-expanded">k5();</div>
+       <div data-line="7" data-alt-line="6" data-line-type="context-expanded">k6();</div>`,
+    );
+    const para = textAt(container, "p.spec-del-structure", "Removed para.");
+    const below = textAt(container, "p.spec-del-structure", "Removed too.");
+    expect(
+      quoted(before, anchor(ends(para.node, para.at, below.node, below.at))),
+    ).toBe(["Removed para.", "", "```ts", ...kept].join("\n"));
+  });
+
+  it("starts a baseline anchor past the indent of an edited block's context row", async () => {
+    const before =
+      "- item text\n\n  ```ts\n  keep();\n  drop1();\n  mid();\n  drop2();\n  ```\n";
+    const after = "- item text\n\n  ```ts\n  keep();\n  mid();\n  ```\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    const shadow = drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-alt-line="1" data-line-type="context">keep();</div>
+       <div data-line="2" data-line-type="change-deletion">drop1();</div>
+       <div data-line="2" data-alt-line="3" data-line-type="context">mid();</div>
+       <div data-line="4" data-line-type="change-deletion">drop2();</div>`,
+    );
+    const rows = [...shadow.querySelectorAll("[data-line]")];
+    const [drop1, drop2] = [rows[1], rows[3]].map((row) => row?.firstChild);
+    // From the end of a deleted row past the context row below it.
+    expect(quoted(before, anchor(ends(drop1, 8, drop2, 2)))).toBe(
+      "mid();\n  dr",
+    );
+  });
+
+  it("anchors a drag from an edited block's context row into a deleted row to the version shown", async () => {
+    const before =
+      "- item text\n\n  ```ts\n  keep();\n  drop1();\n  mid();\n  ```\n";
+    const after = "- item text\n\n  ```ts\n  keep();\n  mid();\n  ```\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    const shadow = drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-alt-line="1" data-line-type="context">keep();</div>
+       <div data-line="2" data-line-type="change-deletion">drop1();</div>
+       <div data-line="2" data-alt-line="3" data-line-type="context">mid();</div>`,
+    );
+    const rows = [...shadow.querySelectorAll("[data-line]")];
+    const [keep, drop1] = [rows[0], rows[1]].map((row) => row?.firstChild);
+    // A context row is the version shown's as much as the baseline's: the
+    // end in the deleted row moves out of it, onto the row above.
+    const selected = anchor(ends(keep, 0, drop1, 4));
+    expect(selected?.baseline).toBeUndefined();
+    if (selected === null) throw new Error("no anchor");
+    expect(cut(after.split("\n"), selected)).toBe("keep();");
+  });
+
   it("leaves an edited block's closing marker out of a current anchor past its last row", async () => {
     const before = "Intro.\n\n```ts\na();\nb();\n```\n\nOutro.\n";
     const after = "Intro.\n\n```ts\na();\nc();\n```\n\nOutro.\n";

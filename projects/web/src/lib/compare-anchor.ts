@@ -1,5 +1,5 @@
 import type { AnchorRange } from "@/components/spec/selection-entry.tsx";
-import { oldCodeRowSource } from "./code-rows.ts";
+import { baselineRowSource, oldCodeRowSource } from "./code-rows.ts";
 import {
   DELETION_LINE_TYPE,
   LINE_TYPE_ATTR,
@@ -213,19 +213,16 @@ function oldEnd(
 
 /**
  * `hiddenInRows` for the baseline, in the blocks a comparison draws rows of
- * removed code in: each spans the baseline block its first such row names,
- * so listing the blocks reads their rows. Of a block edited in place only
- * the deletion rows are placed in the baseline, and the rest count as
- * unplaced: a context row because it shows a baseline line too, an addition
- * along with it. Such a block hides no line whole unless every row of it is
- * a deletion.
+ * it in: each spans the baseline block its first such row names, so listing
+ * the blocks reads their rows. Of a block edited in place, the deletion and
+ * context rows show the baseline's lines, and an addition none of them.
  */
 function hiddenInOldCode(
   container: Element,
   baseline: SegmentIndex,
   fences: ReadonlyMap<number, SourceFence>,
 ): (offset: number) => boolean {
-  const placed = (row: Element) => oldCodeRowSource(baseline, fences, row);
+  const placed = (row: Element) => baselineRowSource(baseline, fences, row);
   return hiddenInRows(
     baseline,
     () =>
@@ -243,7 +240,7 @@ function hiddenInOldCode(
         }
         return [];
       }),
-    (row) => placed(row) ?? { line: null, textStart: null },
+    placed,
   );
 }
 
