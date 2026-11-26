@@ -238,6 +238,8 @@ const DECLARED: Readonly<Record<string, string>> = {
     "Closed capability catalog: BY_ID is built from local CAPABILITIES. capabilityOf is called with literal capability ids, and by ownOnly with ids from role-permissions-table's local DISPLAY_ROWS.caps; no wire role value supplies this key.",
   "projects/shared/src/permissions.ts :: read BY_ID[id] #2":
     "Closed capability ids: minRoleOf callers use local literals, DISPLAY_ROWS.caps, or wrappers can/useCan/roleTag/requireCapability that forward those ids. members.targetOf chooses between literal capability arguments. Wire role strings are separately handled by roleRankOf and never index BY_ID.",
+  "projects/shared/src/schemas/project-template.ts :: mapping BUILTIN_TEMPLATES #1":
+    "Closed built-in template catalog keyed by local BUILTIN_TEMPLATE_KEYS literals: seedProject and status init read the fixed basic property. No wire value indexes it here.",
   "projects/web/src/lib/activity-calendar-search.ts :: mapping values #1":
     "Intl date-parts dictionary: activityToday maps formatToParts from an en-US-u-ca-gregory-nu-latn formatter with year/month/day options. It reads only fixed year, month and day properties to build the date string; no wire enum selects a label.",
   "projects/web/src/pages/agents-settings.tsx :: mapping search #1":

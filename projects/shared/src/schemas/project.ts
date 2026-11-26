@@ -124,15 +124,64 @@ export const ProjectBrief = Project.pick({
 });
 export type ProjectBrief = z.infer<typeof ProjectBrief>;
 
-export const ProjectCreateInput = z.object({
-  slug: ProjectSlugInput,
-  name: z.string().min(1).max(200),
-  description: z.string().max(4000).default(""),
-  // Omitted and null both mean `#N`: no format history row is written, so
-  // the project claims nothing in the cross-project prefix directory.
-  ref_prefix: InternalRefPrefix.optional(),
-  reclaim: z.boolean().optional(),
-});
+/**
+ * The keys of the templates that ship with todou, each one an entry
+ * of `BUILTIN_TEMPLATES` in project-template.ts. Here rather than there
+ * because `TemplateRef` needs them and project creation takes one, and
+ * project-template.ts imports this file — the other direction would cycle.
+ *
+ * `"basic"` is what a project is created from when no template is named,
+ * whatever else this list grows to hold.
+ *
+ * A key is the template's identifier, not its display name: it is stored in
+ * prefs and written in URLs and requests, the way the caller's own templates
+ * are known by their row id (a built-in one has no row). Renaming a built-in
+ * template changes its `name` in `BUILTIN_TEMPLATES`, never its key.
+ */
+export const BUILTIN_TEMPLATE_KEYS = ["basic"] as const;
+export const BuiltinTemplateKey = z.enum(BUILTIN_TEMPLATE_KEYS);
+export type BuiltinTemplateKey = z.infer<typeof BuiltinTemplateKey>;
+
+/** A built-in template's key, or the id of one of the caller's own. */
+export const TemplateRef = z.union([BuiltinTemplateKey, Id]);
+export type TemplateRef = z.infer<typeof TemplateRef>;
+
+export const ProjectCreateInput = z
+  .object({
+    slug: ProjectSlugInput,
+    name: z.string().min(1).max(200),
+    description: z.string().max(4000).default(""),
+    // Omitted and null both mean `#N`: no format history row is written, so
+    // the project claims nothing in the cross-project prefix directory.
+    ref_prefix: InternalRefPrefix.optional(),
+    reclaim: z.boolean().optional(),
+    /**
+     * What the project's statuses and labels start as. Omitted means
+     * the built-in `"basic"`, never the template the caller's new projects
+     * start from: the same request then creates the same project whoever
+     * sends it.
+     */
+    template: TemplateRef.optional(),
+    /** Start from another project's current statuses and labels instead. */
+    from_project: ProjectRef.optional(),
+    /**
+     * The caller's agents to add, exactly these; an empty list adds none.
+     * Omitted means every agent of theirs that has a join role set.
+     */
+    agents: z
+      .array(z.object({ login: Login, role: MemberRole }))
+      .max(50)
+      .optional(),
+  })
+  .superRefine((input, ctx) => {
+    if (input.template !== undefined && input.from_project !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["from_project"],
+        message: "give template or from_project, not both",
+      });
+    }
+  });
 export type ProjectCreateInput = z.infer<typeof ProjectCreateInput>;
 
 export const ProjectUpdateInput = z.object({
@@ -194,7 +243,7 @@ export type MemberSetInput = z.infer<typeof MemberSetInput>;
 export const StatusCategory = z.enum(["open", "closed"]);
 export type StatusCategory = z.infer<typeof StatusCategory>;
 
-const ColorHex = z.string().regex(/^#[0-9a-f]{6}$/i);
+export const ColorHex = z.string().regex(/^#[0-9a-f]{6}$/i);
 
 export const Status = z.object({
   id: Id,
@@ -269,40 +318,6 @@ export const StatusUsage = z.object({
   trashed: z.number().int().nonnegative(),
 });
 export type StatusUsage = z.infer<typeof StatusUsage>;
-
-/**
- * The status flow agents work in (see the todou-workflow skill). Shared because
- * two places must agree on it: the server seeds it into every new project,
- * and `todou status init` applies it to projects that predate it.
- *
- * Colors run gray (not started) → cyan/blue (active) → amber (awaiting
- * delivery) → violet (out) → green (done). Invalid, the other closed status,
- * is a dark slate: clear of green so a card closed without being done never
- * reads as finished, and darker than the not-started grays.
- *
- * Todo is pinned as the default rather than left to the first-by-position
- * fallback, which Backlog now sits ahead of.
- *
- * Shipped is the block clear line (T-711): the card that waits on a blocker
- * can start once the blocker is deployed, not only once the user has
- * verified it. Invalid sits past Done, so it clears too.
- */
-export const CANONICAL_STATUSES: ReadonlyArray<{
-  name: string;
-  category: StatusCategory;
-  color: string;
-  is_default?: true;
-  block_clear?: true;
-}> = [
-  { name: "Backlog", category: "open", color: "#9ca3af" },
-  { name: "Todo", category: "open", color: "#6b7280", is_default: true },
-  { name: "Next", category: "open", color: "#06b6d4" },
-  { name: "In Progress", category: "open", color: "#3b82f6" },
-  { name: "Ready to Ship", category: "open", color: "#f59e0b" },
-  { name: "Shipped", category: "open", color: "#8b5cf6", block_clear: true },
-  { name: "Done", category: "closed", color: "#22c55e" },
-  { name: "Invalid", category: "closed", color: "#475569" },
-];
 
 /**
  * The name a label or a status is actually stored under: composed (Unicode
