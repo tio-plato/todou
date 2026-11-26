@@ -9,6 +9,7 @@ import {
 } from "@todou/shared";
 import { and, asc, count, eq, ne, sql } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
+import { uniqueViolation } from "../auth/provision.ts";
 import type { AppContext } from "../bootstrap.ts";
 import type { Db } from "../db/driver.ts";
 import { issues, projectMeta, statuses } from "../db/project-schema.ts";
@@ -186,7 +187,11 @@ export async function createStatus(
       color: input.color,
       position,
     })
-    .returning();
+    .returning()
+    .catch((cause: unknown) => {
+      if (uniqueViolation(cause) !== "statuses_project_name_idx") throw cause;
+      throw statusNameTaken(input.name);
+    });
   const row = inserted[0];
   if (!row) throw new Error("status insert returned no row");
   ctx.bus.publish(project.id, {
@@ -262,7 +267,17 @@ export async function updateStatus(
           : { isDefault: input.is_default }),
       })
       .where(and(eq(statuses.id, statusId), eq(statuses.projectId, project.id)))
-      .returning();
+      .returning()
+      .catch((cause: unknown) => {
+        // Thrown, not returned: the rollback takes the demotion above with it.
+        if (
+          input.name === undefined ||
+          uniqueViolation(cause) !== "statuses_project_name_idx"
+        ) {
+          throw cause;
+        }
+        throw statusNameTaken(input.name);
+      });
     const updatedRow = updated[0];
     if (!updatedRow) throw new NotFoundError("status not found");
     return updatedRow;
@@ -330,6 +345,15 @@ export async function deleteStatus(
   });
 }
 
+/**
+ * The name check and the write are two statements, so a concurrent create or
+ * rename of the same name can still win the unique index between them; the
+ * loser gets this same 409 rather than a 500.
+ */
+function statusNameTaken(name: string): ConflictError {
+  return new ConflictError(`status "${name}" already exists`);
+}
+
 async function ensureNameFree(
   db: Db,
   projectId: number,
@@ -341,7 +365,7 @@ async function ensureNameFree(
     .from(statuses)
     .where(and(eq(statuses.projectId, projectId), eq(statuses.name, name)));
   if (rows.some((r) => r.id !== exceptId)) {
-    throw new ConflictError(`status "${name}" already exists`);
+    throw statusNameTaken(name);
   }
 }
 
