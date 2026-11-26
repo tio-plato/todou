@@ -7,9 +7,14 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { Project, ProjectCreateInput } from "@todou/shared";
+import {
+  BUILTIN_TEMPLATES,
+  type Project,
+  type ProjectCreateInput,
+  type ProjectTemplate,
+} from "@todou/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api } from "../src/api/queries.ts";
+import { agentsQuery, api, projectTemplatesQuery } from "../src/api/queries.ts";
 import { ProjectsPage } from "../src/pages/projects.tsx";
 import { testQueryClient } from "./render.tsx";
 
@@ -33,6 +38,20 @@ function renderDialog() {
   const client = testQueryClient();
   client.setQueryData(["projects"], []);
   vi.spyOn(api, "listProjects").mockResolvedValue([]);
+  // Create waits for both lists.
+  const templates: ProjectTemplate[] = [
+    {
+      ref: "basic",
+      name: "Basic",
+      builtin: true,
+      revision: 0,
+      body: BUILTIN_TEMPLATES.basic.body,
+    },
+  ];
+  client.setQueryData(projectTemplatesQuery.queryKey, templates);
+  vi.spyOn(api, "listProjectTemplates").mockResolvedValue(templates);
+  client.setQueryData(agentsQuery.queryKey, []);
+  vi.spyOn(api, "listAgents").mockResolvedValue([]);
 
   const rootRoute = createRootRoute();
   const authedRoute = createRoute({
