@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ensureBuiltinUser } from "../src/bootstrap.ts";
 import { statuses } from "../src/db/project-schema.ts";
@@ -291,4 +292,86 @@ describe("handles in flight", () => {
     await router.forProject(project(2));
     expect(router.openHandleCount()).toBe(1);
   });
+
+  // Most callers take a Db from forProject and use it bare, in no task body
+  // and no request: the handle itself has to say it is still at work.
+  it.each([false, true])(
+    "keeps a handle a bare transaction is using (workers = %s)",
+    async (workers) => {
+      const dir = testTmpDir("todou-router-busy-");
+      const { router } = await open("dedicated", {
+        maxOpen: 1,
+        urlTemplate: `pglite://${dir}/p\${project.id}`,
+        workers,
+      });
+      await insertStatus(router, 1);
+      await insertStatus(router, 2);
+      const inTx = gate();
+      const intruder = gate();
+      const db = await router.forProject(project(1));
+      const task = db.transaction(async (tx) => {
+        await tx.select().from(statuses);
+        inTx.open();
+        await intruder.wait;
+        return (await tx.select().from(statuses)).length;
+      });
+      await inTx.wait;
+      await router.forProject(project(2));
+      // Before the gate opens, for the reason the case above gives.
+      expect(router.openHandleCount()).toBe(2);
+      intruder.open();
+      expect(await task).toBe(1);
+    },
+  );
 });
+
+// The card's own case: pg-pool's end() waits for every borrowed connection,
+// and the open that evicts awaits end(), so it waits out the transaction.
+describe.skipIf(!process.env.TODOU_TEST_POSTGRES_URL)(
+  "handles in flight on PostgreSQL",
+  () => {
+    // One database, two pools: the router caches by url, and a different
+    // application_name is a different url.
+    const urlNamed = (name: string) => {
+      const url = new URL(process.env.TODOU_TEST_POSTGRES_URL as string);
+      url.searchParams.set("application_name", name);
+      return url.toString();
+    };
+
+    it("opens another database while a transaction holds the only connection", async () => {
+      const { router } = await open("dedicated", {
+        maxOpen: 1,
+        extraToml: "[database.pool]\nmax = 1",
+      });
+      const a = project(1, urlNamed("todou-router-busy-a"));
+      const b = project(2, urlNamed("todou-router-busy-b"));
+      const inTx = gate();
+      const release = gate();
+      const db = await router.forProject(a);
+      const task = db.transaction(async (tx) => {
+        await tx.execute(sql`select 1`);
+        inTx.open();
+        await release.wait;
+        await tx.execute(sql`select 2`);
+      });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await inTx.wait;
+        const opened = await Promise.race([
+          router.forProject(b).then(() => "opened"),
+          new Promise((resolve) => {
+            timer = setTimeout(() => resolve("still waiting"), 2000);
+          }),
+        ]);
+        expect(opened).toBe("opened");
+        // The router always takes a handle out of the table before closing
+        // it, so two handles means a's pool was never ended.
+        expect(router.openHandleCount()).toBe(2);
+      } finally {
+        clearTimeout(timer);
+        release.open();
+        await task;
+      }
+    });
+  },
+);
