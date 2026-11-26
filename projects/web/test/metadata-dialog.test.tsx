@@ -426,6 +426,56 @@ describe("the metadata editor tabs", () => {
     );
   });
 
+  it("greys Save while the text has nothing to write, and sends nothing then", async () => {
+    // An untouched document used to send `entries: []`, which the server
+    // refuses with a 422. Falsifies by: judging Save by whether the reader
+    // typed (changed and changed back stays enabled), or against a snapshot
+    // frozen at mount (Save stays enabled after the save). A click on a grey
+    // Save that went out would show up in the call list.
+    const spy = vi
+      .spyOn(api, "writeIssueMetadata")
+      .mockResolvedValue({ entries: [] });
+    mount([
+      entry("ci", "run", "green"),
+      entry("ci", "branch", "fix/tabs"),
+      entry("deploy", "env", "staging"),
+    ]);
+    await openDialog();
+    await openTab("Bulk");
+    const host = await editorReady();
+    const original = cmGetValue(host);
+    const edited = original.replace(
+      "ci/branch = fix/tabs",
+      "ci/branch = fix/other",
+    );
+    const save = () =>
+      screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
+    expect(save().disabled).toBe(true);
+    fireEvent.click(save());
+    cmSetValue(host, edited);
+    expect(save().disabled).toBe(false);
+    cmSetValue(host, original);
+    expect(save().disabled).toBe(true);
+    fireEvent.click(save());
+    cmSetValue(host, edited);
+    fireEvent.click(save());
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+    expect(spy.mock.calls.map((call) => call[2])).toEqual([
+      {
+        entries: [
+          {
+            namespace: "ci",
+            key: "branch",
+            value: "fix/other",
+            if_match: "fix/tabs",
+          },
+        ],
+      },
+    ]);
+    // The shell folds the write into the snapshot: text and snapshot agree.
+    await waitFor(() => expect(save().disabled).toBe(true));
+  });
+
   it("Discard restores the server's current values and unlocks Browse", async () => {
     // Falsifies by: not remounting the editor (key unchanged) — CodeEditor
     // reads initialValue only at mount, so the text would stay "impl".

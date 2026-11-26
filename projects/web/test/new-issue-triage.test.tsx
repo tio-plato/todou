@@ -456,8 +456,31 @@ describe("the new-issue page's Ctrl-Enter", () => {
     });
   });
 
-  it("creates nothing when the title is empty", async () => {
+  it("creates an untitled issue from a body alone (T-785)", async () => {
     const { view, createIssue } = start();
+    await screen.findByLabelText("Title");
+    cmSetValue(view.container, "a body with no title");
+    cmPressKey(view.container, "Enter", { ctrlKey: true });
+
+    await waitFor(() => expect(createIssue).toHaveBeenCalledOnce());
+    expect(createIssue.mock.calls[0]?.[1]).toMatchObject({
+      title: "",
+      body: "a body with no title",
+    });
+  });
+
+  it("creates nothing with neither a title nor a body", async () => {
+    const { view, createIssue } = start();
+    await screen.findByLabelText("Title");
+    cmPressKey(view.container, "Enter", { ctrlKey: true });
+
+    await act(async () => {});
+    expect(createIssue).not.toHaveBeenCalled();
+  });
+
+  it("creates nothing without a title where the project requires one", async () => {
+    const createIssue = vi.spyOn(api, "createIssue").mockResolvedValue(created);
+    const view = renderAs("admin", { require_title: true });
     await screen.findByLabelText("Title");
     cmSetValue(view.container, "a body with no title");
     cmPressKey(view.container, "Enter", { ctrlKey: true });

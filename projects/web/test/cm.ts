@@ -108,11 +108,15 @@ export function cmGetValue(root: ParentNode, index = 0): string {
 
 export function cmSetValue(root: ParentNode, value: string, index = 0): void {
   const view = cmView(root, index);
-  view.dispatch({
-    changes: { from: 0, to: view.state.doc.length, insert: value },
-    // Matches what typing produces, so history and updateListener consumers
-    // see the same shape they would in a browser.
-    userEvent: "input.type",
+  // Inside act, so state an onChange derives commits before the next step,
+  // as it would between two user actions in a browser.
+  act(() => {
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: value },
+      // Matches what typing produces, so history and updateListener consumers
+      // see the same shape they would in a browser.
+      userEvent: "input.type",
+    });
   });
 }
 
