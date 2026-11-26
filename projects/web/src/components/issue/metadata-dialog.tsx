@@ -2,6 +2,7 @@ import type { EditorView } from "@codemirror/view";
 import { useQuery } from "@tanstack/react-query";
 import type { IssueMetadataWriteEntry } from "@todou/shared";
 import { type ComponentProps, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { toast } from "sonner";
 import {
   conflictsOf,
@@ -101,8 +102,6 @@ export function MetadataDialog({
   const [tab, setTab] = useState<TabName>("browse");
   /** One draft, two spellings: open on leaving Browse, closed on returning. */
   const [session, setSession] = useState<EditSession | null>(null);
-  /** Bumped on Discard so the panel remounts and re-reads its initial text. */
-  const [sessionSeq, setSessionSeq] = useState(0);
   /** The write a 409 refused, kept so it can be re-sent against what is there now. */
   const [refused, setRefused] = useState<IssueMetadataWriteEntry[] | null>(
     null,
@@ -116,6 +115,7 @@ export function MetadataDialog({
   const bulkView = useRef<EditorView | null>(null);
   const pendingJump = useRef<((view: EditorView) => void) | null>(null);
   const editorRef = useRef<CodeEditorHandle | null>(null);
+  const browseTab = useRef<HTMLButtonElement | null>(null);
   // useDirtySource's effect deps are empty — its closure froze at the first
   // render — so the session and the active tab are read through refs kept
   // in step on every render.
@@ -291,8 +291,7 @@ export function MetadataDialog({
           // The Browse lock is also conditional on provenance: a document
           // the reader never edited cannot hold unsaved work, even when an
           // editor-internal rewrite (CRLF normalization) makes the parsed
-          // doc differ from the literal snapshot — without this, Discard
-          // could not rescue it either.
+          // doc differ from the literal snapshot.
           if (edited && diffMetadata(session.snapshot, read.doc).length > 0) {
             setGate({
               message:
@@ -323,16 +322,16 @@ export function MetadataDialog({
     setTab(next);
   };
 
-  /** Drop the draft and reopen the session from what the server has now. */
+  /**
+   * Drop the draft, close the session and return to Browse, which shows
+   * what the server has now. Focus moves to the Browse tab only once it is
+   * the selected one: Radix activates a tab on focus, which would run the
+   * switch gate, and left alone, focus would fall from the unmounted
+   * Discard button to the dialog itself.
+   */
   const onDiscard = () => {
-    const base = new Map(
-      entries.map((e) => [`${e.namespace}/${e.key}`, e.value]),
-    );
-    setSession({ snapshot: base, doc: base, edited: false });
-    setSessionSeq((n) => n + 1);
-    setGate(null);
-    setRefused(null);
-    setConflictNotice([]);
+    flushSync(() => reset());
+    browseTab.current?.focus();
   };
 
   const openSessionAtBulk = () => {
@@ -427,7 +426,9 @@ export function MetadataDialog({
           <Tabs value={tab} onValueChange={onValueChange} className="w-full">
             <div className="flex items-center justify-between gap-2">
               <TabsList>
-                <TabsTrigger value="browse">Browse</TabsTrigger>
+                <TabsTrigger ref={browseTab} value="browse">
+                  Browse
+                </TabsTrigger>
                 <TabsTrigger value="bulk">Bulk</TabsTrigger>
                 <TabsTrigger value="json">JSON</TabsTrigger>
               </TabsList>
@@ -502,11 +503,11 @@ export function MetadataDialog({
                     slug={slug}
                     issueNumber={issueNumber}
                     canWrite={canWrite}
-                    key={`bulk-${sessionSeq}`}
                     initialText={serializeBulk(docRows(session.doc))}
                     snapshot={session.snapshot}
                     editorRef={editorRef}
                     gate={gate}
+                    writing={write.isPending}
                     onDirty={clearGate}
                     onDiscard={onDiscard}
                     onView={onBulkView}
@@ -529,12 +530,12 @@ export function MetadataDialog({
                     slug={slug}
                     issueNumber={issueNumber}
                     canWrite={canWrite}
-                    key={`json-${sessionSeq}`}
                     initialText={serializeJsonDoc(docRows(session.doc))}
                     snapshot={session.snapshot}
                     editorRef={editorRef}
                     onDirty={clearGate}
                     gate={gate}
+                    writing={write.isPending}
                     onDiscard={onDiscard}
                     onConflict={(payload) => {
                       setRefused(payload.refused);
