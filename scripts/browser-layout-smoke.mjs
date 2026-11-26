@@ -25,6 +25,7 @@ import { fileURLToPath } from "node:url";
 import { runBadgeClip } from "./browser/badge-clip.mjs";
 import { runBoardScrollbars } from "./browser/board-scrollbars.mjs";
 import { runSpecChipGutter } from "./browser/spec-chip-gutter.mjs";
+import { runSpecChipWidth } from "./browser/spec-chip-width.mjs";
 import { runSpecComposerCover } from "./browser/spec-composer-cover.mjs";
 import { selfCheckCdpPipe, startBrowser } from "./lib/browser-cdp.mjs";
 import { createBrowserStack } from "./lib/browser-stack.mjs";
@@ -39,6 +40,8 @@ Cases:
   spec-chip-gutter     Below 640px spec text reaches the card's padding, chips
                        stay off it and their popovers on screen; from 640px up
                        the 40px chip gutter and left-opening popovers stay.
+  spec-chip-width      Below 640px a chip is a round 24px badge for 1 to 99
+                       notes.
 
 Usage:
   node scripts/browser-layout-smoke.mjs
@@ -201,6 +204,7 @@ async function main() {
       ["badge-clip", runBadgeClip],
       ["spec-composer-cover", runSpecComposerCover],
       ["spec-chip-gutter", runSpecChipGutter],
+      ["spec-chip-width", runSpecChipWidth],
     ]) {
       const stage = Date.now();
       try {
