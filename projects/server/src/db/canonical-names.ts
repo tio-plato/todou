@@ -99,19 +99,22 @@ export async function canonicalizeNames(
     );
     for (const { id } of stale) {
       const base = sql`coalesce(nullif(${canonical(sql`s.name`, rule)}, ''), ${`${blank} `}::text || s.id)`;
+      const taken = (name: SQL) =>
+        sql`EXISTS (SELECT 1 FROM ${t} o WHERE o.project_id = s.project_id AND o.id <> s.id AND lower(o.name) = lower(${name}))`;
+      // The plain name is nearly always free, and is tried on its own first:
+      // the search through the suffixes checks every one of them before it
+      // can pick the lowest, which costs a pass over the project.
       const rename = sql`
         UPDATE ${t} AS s SET name = (
-          SELECT c.name
-            FROM (SELECT ${base} AS base) b,
-                 generate_series(0, (SELECT count(*) FROM ${t} o
-                                      WHERE o.project_id = s.project_id)) AS g(n),
-                 LATERAL (SELECT b.base || CASE WHEN g.n = 0 THEN ''
-                   ELSE ' (' || s.id || CASE WHEN g.n > 1 THEN '-' || g.n ELSE '' END || ')'
-                   END AS name) c
-           WHERE NOT EXISTS (SELECT 1 FROM ${t} o
-                              WHERE o.project_id = s.project_id AND o.id <> s.id
-                                AND lower(o.name) = lower(c.name))
-           ORDER BY g.n LIMIT 1)
+          SELECT CASE WHEN NOT ${taken(sql`b.base`)} THEN b.base ELSE (
+            SELECT c.name
+              FROM generate_series(1, (SELECT count(*) FROM ${t} o
+                                        WHERE o.project_id = s.project_id)) AS g(n),
+                   LATERAL (SELECT b.base || ' (' || s.id
+                     || CASE WHEN g.n > 1 THEN '-' || g.n ELSE '' END || ')' AS name) c
+             WHERE NOT ${taken(sql`c.name`)}
+             ORDER BY g.n LIMIT 1) END
+            FROM (SELECT ${base} AS base) b)
          WHERE s.id = ${id} AND ${canonical(sql`s.name`, rule)} <> s.name
         RETURNING s.id`;
       for (let tries = 1; ; tries++) {
