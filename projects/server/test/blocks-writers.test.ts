@@ -38,6 +38,8 @@ const DECLARED: Record<string, string> = {
     "route wiring for a status's chart role, which the verdict never reads",
   "services/inbox.ts": "reads the status for the keep-check",
   "services/labels.ts": "reads each card's status to count a label's open uses",
+  "services/project-templates.ts":
+    "reads the line to mark its status in a template, and writes nothing",
   "services/search.ts": "reads the status for the facets",
   "services/user-issues.ts": "reads the status to render someone's card list",
   "services/insights.ts": "reads each card's status to seed the burn replay",
