@@ -297,6 +297,18 @@ describe("quotableSelection", () => {
     });
   });
 
+  it("cuts a word after a CRLF soft break to its characters", async () => {
+    const { a } = await renderTwo(
+      comment(1, "> one\r\n> two three\r\n"),
+      comment(2, B),
+    );
+    const second = a.querySelector("p[data-loc]")?.lastChild;
+    if (!(second instanceof Text)) throw new Error("no second line");
+    expect(
+      quoted(quotableSelection(select(second, 0, second, 2), targets)),
+    ).toBe("tw");
+  });
+
   it("passes over a question form popped out into a window of its own", async () => {
     const { a } = await renderTwo(comment(1, A), comment(2, B));
     // Its texts render into that window's document, and register there.
