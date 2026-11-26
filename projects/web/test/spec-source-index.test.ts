@@ -163,6 +163,16 @@ describe("buildSegmentIndex", () => {
       "<div>block words</div>\n",
       [{ text: "<div>block words</div>", start: 0, end: 22 }],
     ],
+    [
+      // The fold's tags pair into elements in a cell too; the `<kbd>` is no
+      // fold tag and shows as text.
+      "a table cell holding a fold and a tag",
+      "| <details><summary>a</summary>b</details> <kbd>k</kbd> |\n| - |\n",
+      [
+        { text: "<kbd>", start: 43, end: 48 },
+        { text: "</kbd>", start: 49, end: 55 },
+      ],
+    ],
   ])("keeps the text shown of %s as a literal", (_shape, source, literals) => {
     const index = buildSegmentIndex(source);
     expect(
