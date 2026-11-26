@@ -9,7 +9,7 @@ import type {
   IssueListRow,
   TimelineComment,
 } from "@todou/shared";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import type { AppContext } from "../bootstrap.ts";
 import type { Db } from "../db/driver.ts";
@@ -37,6 +37,7 @@ import {
 import { loadReferenceInputs } from "./cross-references.ts";
 import {
   bundleIssues,
+  lockLabels,
   type StatusRow,
   statusEventOf,
   toIssue,
@@ -208,29 +209,10 @@ export async function executeCommands(
       events.push(...result.timeline);
     }
 
-    // The labels the commands name, before the card's rows under them:
-    // deleting a label locks it and then the rows its cascade removes, and
-    // adding one takes KEY SHARE on it for its foreign key. Taken here, it
-    // makes the deletion wait for this write or this write wait for it,
-    // never each for the other, and the card's labels are read below only
-    // once a deletion this waited for has removed its row.
-    const named = [
-      ...new Set(
-        input.commands.flatMap((command) =>
-          command.type === "label_add" || command.type === "label_remove"
-            ? [command.label_id]
-            : [],
-        ),
-      ),
-    ];
-    if (named.length > 0) {
-      await tx
-        .select({ id: labels.id })
-        .from(labels)
-        .where(inArray(labels.id, named))
-        .orderBy(asc(labels.id))
-        .for("key share");
-    }
+    // The labels the commands name, before the card's rows under them (see
+    // lockIssueRows), so the card's labels are read below only once a
+    // deletion this waited for has removed its row.
+    await lockCommandLabels(tx, project.id, input.commands);
     const fields = await readFieldState(tx, issue.id);
     const statusBefore = fields.statusId;
     const target = {
@@ -419,6 +401,36 @@ async function validateFieldCommands(
     }
   }
   return { statusById, labelById, userIds };
+}
+
+/**
+ * Lock the labels the commands name (see lockIssueRows, rule 7), after the
+ * cards they write and before any of those cards' label rows. A label to add
+ * that was deleted meanwhile fails the whole submission; one to remove has
+ * nothing left to remove.
+ */
+async function lockCommandLabels(
+  tx: Tx,
+  projectId: number,
+  commands: readonly CommandInput[],
+): Promise<void> {
+  const named = [
+    ...new Set(
+      commands.flatMap((command) =>
+        command.type === "label_add" || command.type === "label_remove"
+          ? [command.label_id]
+          : [],
+      ),
+    ),
+  ];
+  const locked = new Set(
+    (await lockLabels(tx, projectId, named)).map((row) => row.id),
+  );
+  for (const [i, command] of commands.entries()) {
+    if (command.type === "label_add" && !locked.has(command.label_id)) {
+      throw new ValidationFailedError(`command[${i}]: unknown label_id`);
+    }
+  }
 }
 
 type FieldState = {

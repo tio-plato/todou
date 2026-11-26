@@ -927,6 +927,12 @@ export type WriteGate = { id: number; actor: UserRow; role: MemberRole };
  *    of are locked first, `ORDER BY id FOR UPDATE`, and only then written.
  * 6. A background sweep that deletes rows writers lock skips the locked ones
  *    instead of waiting for them.
+ * 7. The labels a write puts on a card (an edit's or a new card's
+ *    `label_ids`, the labels a command names), FOR KEY SHARE, in one
+ *    statement, in ascending id, before it reads or writes the card's label
+ *    rows (`lockLabels`): after the card (rule 1), and after `project_meta`
+ *    when it creates the card (rule 3), the order cleaning up a deleted
+ *    project takes them in.
  *
  * Two places keep another order, and neither can form a cycle. A single
  * autocommit statement that writes one row under a card without the card's
