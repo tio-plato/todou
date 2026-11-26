@@ -260,6 +260,13 @@ describe("New project: Start from", () => {
     expect(selectedTemplates(dialog)).toEqual(["Kanban"]);
   });
 
+  it("keeps the template chosen when it is picked again", async () => {
+    renderDialog({ preferred: 7 });
+    const dialog = await openDialog();
+    fireEvent.click(dialog.getByRole("option", { name: "Kanban" }));
+    expect(selectedTemplates(dialog)).toEqual(["Kanban"]);
+  });
+
   it("puts the keyboard cursor on the chosen template", async () => {
     renderDialog({ preferred: 7 });
     const dialog = await openDialog();
