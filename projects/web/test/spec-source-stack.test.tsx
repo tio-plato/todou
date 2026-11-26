@@ -902,6 +902,26 @@ describe("baseline notes on text kept as it was", () => {
     expect(view.queryByText(/Comments without a place/)).toBeNull();
   });
 
+  it("hangs a comment on v1 where the server moved it on the current version", async () => {
+    // v1's line 3, "Kept paragraph.", is v3's line 4; v3's line 3 is blank.
+    mockSpec(
+      [
+        {
+          ...comment("kept.md", 1, 3, "still true?"),
+          current_line_start: 4,
+          current_line_end: 4,
+        },
+      ],
+      KEPT,
+    );
+    const view = renderSpecView("?v=3&file=kept.md&view=rendered");
+    await waitFor(() =>
+      expect(classesOf(view, "Kept paragraph.")).toContain("spec-annotated"),
+    );
+    expect(classesOf(view, "Inserted line.")).not.toContain("spec-annotated");
+    expect(view.queryByText(/Comments without a place/)).toBeNull();
+  });
+
   it("hangs a renamed file's comment from under its old path", async () => {
     // drift.md's first three lines are drifted.md's, unchanged; the current
     // version has no drift.md, so the server outdates the comment.
