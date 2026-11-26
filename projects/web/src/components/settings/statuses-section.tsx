@@ -25,6 +25,7 @@ import { Link } from "@tanstack/react-router";
 import {
   defaultInsightsRole,
   enumValue,
+  lineAfterDeleting,
   Role,
   type Status,
   type StatusOrderInput,
@@ -247,12 +248,19 @@ export function StatusesSection({ slug }: { slug: string }) {
   });
 
   const remove = useMutation({
-    mutationFn: (vars: { slug: string; id: number }) =>
+    // `heldLine` as the delete was asked for: by its answer the project may
+    // already have been read again, the line moved on.
+    mutationFn: (vars: { slug: string; id: number; heldLine: boolean }) =>
       api.deleteStatus(vars.slug, vars.id),
     onSuccess: (_data, vars) => {
       setDeleting(null);
       setOpen(null);
       afterWrite(vars.slug);
+      // Deleting the line's status moves the line.
+      queryClient.invalidateQueries({
+        queryKey: projectQuery(vars.slug).queryKey,
+      });
+      if (vars.heldLine) invalidateBlocks();
     },
     onError: (error, vars) => {
       toast.error(error.message);
@@ -357,6 +365,16 @@ export function StatusesSection({ slug }: { slug: string }) {
 
   const firstStatus = statuses.data[0];
   const deletingStatus = deleting;
+  const lineAfterDelete =
+    deletingStatus !== null && deletingStatus.id === lineStatusId
+      ? byId.get(
+          lineAfterDeleting(
+            statuses.data.map((s) => s.id),
+            lineStatusId,
+            new Set([deletingStatus.id]),
+          ) ?? -1,
+        )
+      : undefined;
 
   return (
     <section className="space-y-3">
@@ -422,7 +440,6 @@ export function StatusesSection({ slug }: { slug: string }) {
                         slug,
                         status,
                         usageById.get(status.id),
-                        lineStatusId,
                       )}
                       onDelete={() => setDeleting(status)}
                       onSubmit={() => {
@@ -528,6 +545,13 @@ export function StatusesSection({ slug }: { slug: string }) {
             <>
               <StatusPill status={deletingStatus} /> Burn charts will count time
               spent in it as unknown.
+              {lineAfterDelete && (
+                <>
+                  {" "}
+                  The block clear line moves to{" "}
+                  <StatusPill status={lineAfterDelete} />.
+                </>
+              )}
             </>
           )
         }
@@ -535,7 +559,13 @@ export function StatusesSection({ slug }: { slug: string }) {
         destructive
         pending={remove.isPending}
         onConfirm={() => {
-          if (deletingStatus) remove.mutate({ slug, id: deletingStatus.id });
+          if (deletingStatus) {
+            remove.mutate({
+              slug,
+              id: deletingStatus.id,
+              heldLine: deletingStatus.id === lineStatusId,
+            });
+          }
         }}
       />
     </section>
@@ -571,7 +601,6 @@ function deleteBlock(
   slug: string,
   status: Status,
   uses: StatusUsage | undefined,
-  lineStatusId: number | null,
 ): ReactNode {
   if (uses && uses.issues > 0) {
     return (
@@ -586,9 +615,6 @@ function deleteBlock(
   }
   if (uses && uses.trashed > 0) {
     return `${plural(uses.trashed, "trashed issue")} ${uses.trashed === 1 ? "is" : "are"} still in it.`;
-  }
-  if (lineStatusId === status.id) {
-    return "Blocks clear here — move the line first.";
   }
   return null;
 }

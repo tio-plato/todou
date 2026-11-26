@@ -560,9 +560,9 @@ const cardStatesOf = (
  * The line is applied in the project's own database: at or past the
  * configured status by position, or — with none configured — in the closed
  * category. A configured status that is no longer there falls back to the
- * same default; `deleteStatus` refuses to remove a line, so that can only be
- * a hand-edited database, and inventing a different answer for it would be
- * a second rule nobody wrote down. A status belonging to a DIFFERENT project
+ * same default; `deleteStatus` moves the line down off a status it deletes,
+ * so that can only be a hand-edited database, and inventing a different
+ * answer for it would be a second rule nobody wrote down. A status belonging to a DIFFERENT project
  * does not resolve either, which is why the lookup is keyed by the pair.
  *
  * The projects are asked for with `inArray` rather than one `or()` branch
