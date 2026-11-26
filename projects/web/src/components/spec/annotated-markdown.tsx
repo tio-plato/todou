@@ -1207,7 +1207,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     // places go in one pass, whatever block they are in, so a place joins
     // the chip of the block above it as readily as its own block's. A block
     // put back of the baseline joins only its own places here; further down,
-    // `near` joins it to another chip it would draw over.
+    // `near` joins it to the nearest chip it would draw over.
     const byBlock = new Map<string, Place[]>();
     for (const place of places.values()) {
       const group = place.old ? place.block : "";
@@ -1230,13 +1230,25 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       }
       (group[0]?.old ? oldChips : next).push(...kept);
     }
-    for (const chip of oldChips) {
-      // A block put back where another chip hangs — first in a current
+    // Top to bottom, so that which chip one joins rests on where the chips
+    // hang, not on the order their annotations came in; chips at one height
+    // still go in that order, which picks whose key the joined chip keeps.
+    // A chip it joins, a current one or a restored one above it, joins no
+    // other after: every annotation stays less than a chip's height from
+    // its own block.
+    for (const chip of oldChips.sort((a, b) => a.top - b.top)) {
+      // A block put back where other chips hang — first in a current
       // block, inside another restored one, under the same closed fold —
-      // would draw its chip over that one: it joins it instead.
-      const near = next.find((other) =>
-        overlaps(Math.abs(other.top - chip.top)),
-      );
+      // would draw its chip over them: it joins the nearest instead, and of
+      // two as near the upper one.
+      const off = (other: Chip) => Math.abs(other.top - chip.top);
+      // Firefox can measure a block halfway between two chips nearer one of
+      // them, the more the further down the page: up to 0.04px just past
+      // 131,072px from the window's top. No reader can tell a chip 0.05px
+      // nearer, so distances less than that apart are as near.
+      const nearer = (a: Chip, b: Chip) =>
+        Math.abs(off(a) - off(b)) < 0.05 ? a.top - b.top : off(a) - off(b);
+      const near = next.filter((other) => overlaps(off(other))).sort(nearer)[0];
       if (near !== undefined) {
         near.items = [...near.items, ...chip.items];
         continue;

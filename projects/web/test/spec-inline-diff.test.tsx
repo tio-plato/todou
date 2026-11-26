@@ -4060,6 +4060,145 @@ describe("baseline annotations on deleted text", () => {
     ).toEqual([["322.4px", "3 comments"]]);
   });
 
+  it("joins a restored block's chip to the nearer of the two chips around it", async () => {
+    // A restored block 15px under one current paragraph and 10px over the
+    // next, both inside a 22px chip; the paragraphs hang 25px apart. Its
+    // chip joins the lower one.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        const text = this.textContent ?? "";
+        const y = this.classList.contains("spec-del-structure")
+          ? 305
+          : this.tagName !== "P"
+            ? 0
+            : text.startsWith("Para one")
+              ? 290
+              : text.startsWith("Para two")
+                ? 315
+                : 0;
+        return DOMRect.fromRect({ y });
+      },
+    );
+    const before = "Para one.\n\nOld A here.\n\nPara two.\n";
+    const { container } = await renderDiff(
+      before,
+      "Para one.\n\nPara two.\n",
+      [wholeLines("comment", 1, 1), wholeLines("comment", 3, 3)],
+      undefined,
+      [onBaseline("comment", before, 3, "A")],
+    );
+    await settleChips();
+    expect(
+      [
+        ...container.querySelectorAll<HTMLElement>(
+          "[aria-label$=' comment'], [aria-label$=' comments']",
+        ),
+      ].map((chip) => [chip.style.top, chip.getAttribute("aria-label")]),
+    ).toEqual([
+      ["290px", "1 comment"],
+      ["315px", "2 comments"],
+    ]);
+  });
+
+  it.each(["A", "B"])(
+    "joins a restored block's chip to the nearest chip whatever order its annotations come in (%s's first)",
+    async (first) => {
+      // 22px chips: restored blocks A and B 10px apart, B 15px over a
+      // current paragraph that hangs 25px under A. A keeps its chip, and
+      // B's joins it.
+      vi.spyOn(
+        HTMLElement.prototype,
+        "getBoundingClientRect",
+      ).mockImplementation(function (this: HTMLElement) {
+        const text = this.textContent ?? "";
+        const y = this.classList.contains("spec-del-structure")
+          ? text.startsWith("Old A")
+            ? 100
+            : 110
+          : this.tagName !== "P"
+            ? 0
+            : text.startsWith("Para two")
+              ? 125
+              : 0;
+        return DOMRect.fromRect({ y });
+      });
+      const before = "Para one.\n\nOld A here.\n\nOld B here.\n\nPara two.\n";
+      const a = onBaseline("comment", before, 3, "A");
+      const b = onBaseline("comment", before, 5, "B");
+      const { container } = await renderDiff(
+        before,
+        "Para one.\n\nPara two.\n",
+        [wholeLines("comment", 3, 3)],
+        undefined,
+        first === "A" ? [a, b] : [b, a],
+      );
+      await settleChips();
+      expect(
+        [
+          ...container.querySelectorAll<HTMLElement>(
+            "[aria-label$=' comment'], [aria-label$=' comments']",
+          ),
+        ].map((chip) => [chip.style.top, chip.getAttribute("aria-label")]),
+      ).toEqual([
+        ["100px", "2 comments"],
+        ["125px", "1 comment"],
+      ]);
+    },
+  );
+
+  it.each([
+    ["measured even", 123],
+    ["measured a hair nearer the lower, as Firefox may", 122.99998],
+    [
+      "measured 0.039px nearer the lower, as Firefox did 131,072px down",
+      122.961,
+    ],
+  ])(
+    "joins a restored block's chip to the upper of two chips as near (%s)",
+    async (_, lower) => {
+      // 22px chips: restored block B as far under restored block A as over
+      // a current paragraph, which hangs 23px under A. B's chip joins A's.
+      vi.spyOn(
+        HTMLElement.prototype,
+        "getBoundingClientRect",
+      ).mockImplementation(function (this: HTMLElement) {
+        const text = this.textContent ?? "";
+        const y = this.classList.contains("spec-del-structure")
+          ? text.startsWith("Old A")
+            ? 100
+            : 111.5
+          : this.tagName !== "P"
+            ? 0
+            : text.startsWith("Para two")
+              ? lower
+              : 0;
+        return DOMRect.fromRect({ y });
+      });
+      const before = "Para one.\n\nOld A here.\n\nOld B here.\n\nPara two.\n";
+      const { container } = await renderDiff(
+        before,
+        "Para one.\n\nPara two.\n",
+        [wholeLines("comment", 3, 3)],
+        undefined,
+        [
+          onBaseline("comment", before, 3, "A"),
+          onBaseline("comment", before, 5, "B"),
+        ],
+      );
+      await settleChips();
+      expect(
+        [
+          ...container.querySelectorAll<HTMLElement>(
+            "[aria-label$=' comment'], [aria-label$=' comments']",
+          ),
+        ].map((chip) => [chip.style.top, chip.getAttribute("aria-label")]),
+      ).toEqual([
+        ["100px", "2 comments"],
+        [`${lower}px`, "1 comment"],
+      ]);
+    },
+  );
+
   it("lists a removed word's note before the current version's on its line", async () => {
     const { view } = await renderDiff(
       WORD_BEFORE,
