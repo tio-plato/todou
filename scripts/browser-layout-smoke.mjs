@@ -3,8 +3,9 @@
  * Manual real-Chromium layout smoke for board overlay scrollbars, collapsed
  * assignee badge clipping, the spec comment composer staying above the
  * compare view's stacked file headers, the rendered spec's annotation
- * gutter, and keyboard focus rings cut off by a clipping or scrolling
- * container. It is intentionally independent of `pnpm test`/CI.
+ * gutter, keyboard focus rings cut off by a clipping or scrolling
+ * container, and the spec page's outline and change strip. It is
+ * intentionally independent of `pnpm test`/CI.
  *
  * Usage: node scripts/browser-layout-smoke.mjs [--self-test|--self-test-cdp] [--keep] [--help]
  * Preconditions: the devshell's Node 24+, installed workspace dependencies,
@@ -29,6 +30,7 @@ import { runFocusRingClip } from "./browser/focus-ring-clip.mjs";
 import { runSpecChipGutter } from "./browser/spec-chip-gutter.mjs";
 import { runSpecChipWidth } from "./browser/spec-chip-width.mjs";
 import { runSpecComposerCover } from "./browser/spec-composer-cover.mjs";
+import { runSpecOutlineStrip } from "./browser/spec-outline-strip.mjs";
 import { selfCheckCdpPipe, startBrowser } from "./lib/browser-cdp.mjs";
 import { createBrowserStack } from "./lib/browser-stack.mjs";
 
@@ -49,6 +51,13 @@ Cases:
                        overlays keeps its whole focus ring inside every
                        ancestor that clips or scrolls it, and focusing it
                        does not scroll a box that only clips.
+  spec-outline-strip   The change strip sits on the card's right border, runs
+                       once stuck from below the toolbar to as far above the
+                       window's foot, holds its ticks still while the page
+                       scrolls and lands a click where ↓ lands; its tooltip
+                       covers an open comment popover; the outline opens a
+                       folded heading it jumps to and marks the section past
+                       the reading line.
 
 Usage:
   node scripts/browser-layout-smoke.mjs
@@ -135,6 +144,11 @@ const COVERAGE_FAILURES = new Set([
   "focus-ring-root-missing",
   "focus-ring-scroll-not-observed",
   "focus-ring-sidebar-scrolls",
+  "spec-strip-missing",
+  "fixture-deletions",
+  "fixture-not-folded",
+  "outline-row-missing",
+  "tooltip-popover-apart",
 ]);
 
 function isCoverageFailure(entry) {
@@ -217,6 +231,7 @@ async function main() {
       ["spec-chip-gutter", runSpecChipGutter],
       ["spec-chip-width", runSpecChipWidth],
       ["focus-ring-clip", runFocusRingClip],
+      ["spec-outline-strip", runSpecOutlineStrip],
     ]) {
       const stage = Date.now();
       try {
