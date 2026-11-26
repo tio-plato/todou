@@ -306,7 +306,7 @@ export async function executeCommands(
   const row = after[0];
   if (!row) throw new NotFoundError("issue not found");
   const bundle = (await bundleIssues(ctx, db, [project.id], [row], actor))[0];
-  if (!bundle) throw new Error("bundle missing");
+  if (!bundle) throw new NotFoundError("issue not found");
 
   let comment: TimelineComment | null = null;
   if (commentRow !== null) {

@@ -61,6 +61,14 @@ export type TestHooks = DbTestHooks & {
   afterMovePlan?(): Promise<void>;
   beforeTrashWrite?(): Promise<void>;
   /**
+   * The gap between reading cards and reading their statuses: a project
+   * deletion, or a card leaving a status that is then deleted, can commit
+   * there and leave the card read pointing at a status that is gone. Racing
+   * real requests cannot pick which side of the gap that commit lands on;
+   * this lets a test put it there.
+   */
+  beforeStatusRead?(): Promise<void>;
+  /**
    * The two points in the prefix-mirror protocol (T-511) where a test needs
    * to run something of its own *before* the next write: after the pending
    * mark has committed but before the authoritative history row does, and
