@@ -65,6 +65,7 @@ const project = (slug: string): Project => ({
   name: slug,
   description: "",
   created_at: "2026-01-01T00:00:00Z",
+  viewer_role: "reader",
 });
 const PROJECTS = [project("todou"), project("homelab")];
 

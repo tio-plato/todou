@@ -1,8 +1,9 @@
-import type {
-  Project,
-  ProjectTemplate,
-  TemplateBody,
-  TemplateRef,
+import {
+  can,
+  type Project,
+  type ProjectTemplate,
+  type TemplateBody,
+  type TemplateRef,
 } from "@todou/shared";
 import { useCallback, useMemo } from "react";
 import { ProjectListbox } from "@/components/project-listbox.tsx";
@@ -157,7 +158,10 @@ export type StartFrom = {
   project: string | null;
 };
 
-/** A template, or one of the viewer's projects as it stands. */
+/**
+ * A template, or one of the viewer's projects as it stands: those whose
+ * statuses and labels the viewer can read as a template.
+ */
 export function StartFromPicker({
   templates,
   projects,
@@ -172,7 +176,15 @@ export function StartFromPicker({
   idPrefix?: string;
 }) {
   const options = useMemo(
-    () => projects.map((project) => ({ project })),
+    () =>
+      projects
+        // The server reads a project's chart roles before taking a template
+        // from it, which a guest may not (T-788), so a guest's projects
+        // would only fail, in the preview and on Create. The server checks
+        // this again; listing only what can be taken keeps the picker from
+        // offering dead ends.
+        .filter((project) => can(project.viewer_role ?? null, "insights.read"))
+        .map((project) => ({ project })),
     [projects],
   );
   return (
@@ -228,7 +240,7 @@ export function StartFromPicker({
       )}
       {value.kind === "project" &&
         value.project === null &&
-        projects.length > 0 && (
+        options.length > 0 && (
           // Create also waits for a name, and greyed it cannot say which.
           <p className="text-sm text-muted-foreground">
             Pick a project to start from.
