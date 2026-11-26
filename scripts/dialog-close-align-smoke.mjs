@@ -4,6 +4,8 @@
  * the attachment viewer, the full-document view and the edit history, the
  * close button has to sit in the title bar's row — same vertical centre and
  * height as the controls beside it, and its right edge on the content edge.
+ * A confirm's title, whose X is pinned to the corner instead, has to wrap
+ * clear of it and inside the content edge, a long name included.
  * Usage: node scripts/dialog-close-align-smoke.mjs [--keep] [--help]
  * Requires the same installed dependencies, Node 24+, flock and CHROMIUM
  * (default /usr/bin/chromium) as the other browser smokes.
@@ -26,6 +28,11 @@ Opens the attachment viewer (fit and maximized), the full-document view and
 the edit history at desktop and phone widths, and compares the close button's
 box with the title bar's other control: vertical centre and height within
 0.5px, right edge on the dialog's content edge within 0.5px.
+
+Opens the delete confirm of two attachments with long names at both widths,
+and both titles have to wrap: the one of short words must end every line
+beside the close button left of it, and the one long word must break inside
+the content edge, within 0.5px.
 
 Then a fault run nudges the close button by 1px and must turn every centre
 case red, so a pass is evidence the tolerance can fail.
@@ -116,6 +123,21 @@ async function seed(stack) {
     Buffer.from("# Notes\n\nA document to open in full.\n"),
     "text/markdown",
   );
+  // Names for the delete confirm's title, one per way it can go wrong. Words
+  // of one letter, none of them wide, end the first line less than a letter
+  // and a space short of the edge it wraps at, which is under the X unless
+  // the header keeps clear of it.
+  const breakable = await upload(
+    "abcdefgh".repeat(10).split("").join(" ").slice(0, 79),
+    Buffer.from("breakable\n"),
+    "text/plain",
+  );
+  // No space or hyphen: only `overflow-wrap: anywhere` breaks it.
+  const unbreakable = await upload(
+    "abcdefghij".repeat(8),
+    Buffer.from("unbreakable\n"),
+    "text/plain",
+  );
   // The second write is what gives the description an edit history.
   await call("PATCH", `/projects/${slug}/issues/${issue.number}`, {
     body: `![](${notes.url})\n\nbefore`,
@@ -130,13 +152,23 @@ async function seed(stack) {
     issueUrl: `${stack.webUrl}/projects/${slug}/issues/${issue.number}`,
     image: sheet.filename,
     document: notes.filename,
+    breakable: breakable.filename,
+    unbreakable: unbreakable.filename,
   };
+}
+
+/** The delete confirm of the attachment named `file`, from its row's trash. */
+function openDelete(_image, _document, file) {
+  const button = document.querySelector(`button[aria-label="delete ${file}"]`);
+  button?.click();
+  return button !== null;
 }
 
 /**
  * Each opener clicks its way to one dialog and names the title-bar control
  * the X is compared with. Clicked through the DOM: what is measured here is
- * where the dialog lays out, not how it was reached.
+ * where the dialog lays out, not how it was reached. A confirm has no such
+ * control; it names the seeded file whose title it opens and its own cases.
  */
 const DIALOGS = {
   viewer: {
@@ -187,14 +219,49 @@ const DIALOGS = {
     },
     neighbour: '[aria-label="wrap long lines"]',
   },
+  "confirm-breakable": {
+    open: openDelete,
+    file: "breakable",
+    cases: (name, box) => [
+      wraps(name, box),
+      {
+        name: `${name}:clear-of-close`,
+        ok: overlap(box).every(
+          (line) => line.right - box.close.left <= TOLERANCE,
+        ),
+        detail: {
+          dr: overlap(box).map((line) => line.right - box.close.left),
+        },
+      },
+    ],
+  },
+  "confirm-unbreakable": {
+    open: openDelete,
+    file: "unbreakable",
+    cases: (name, box) => [
+      wraps(name, box),
+      {
+        name: `${name}:inside`,
+        ok: box.lines.every(
+          (line) => line.right - box.contentRight <= TOLERANCE,
+        ),
+        detail: { dr: box.lines.map((line) => line.right - box.contentRight) },
+      },
+    ],
+  },
 };
 
 function measure(neighbourSelector) {
   const dialog = document.querySelector('[role="dialog"]');
   if (!dialog) return null;
-  const close = dialog.querySelector('[data-slot="dialog-close"]');
-  const neighbour = dialog.querySelector(neighbourSelector);
-  if (!close || !neighbour) return null;
+  // A confirm's Cancel is a dialog-close too, and comes first.
+  const close = dialog.querySelector(
+    '[data-slot="dialog-close"]:not([data-slot="dialog-footer"] *)',
+  );
+  const neighbour = neighbourSelector
+    ? dialog.querySelector(neighbourSelector)
+    : null;
+  if (!close || (neighbourSelector && !neighbour)) return null;
   // The open animation scales from 95%, and the button transitions every
   // property; a box read mid-way through either is not the layout.
   if (
@@ -205,13 +272,31 @@ function measure(neighbourSelector) {
     return null;
   const box = (el) => {
     const r = el.getBoundingClientRect();
-    return { top: r.top, height: r.height, width: r.width, right: r.right };
+    return {
+      top: r.top,
+      height: r.height,
+      width: r.width,
+      left: r.left,
+      right: r.right,
+    };
   };
+  // The text's own boxes, one per line it wrapped onto: the title element is
+  // as wide as its column, whatever the words in it reach.
+  const title = dialog.querySelector('[data-slot="dialog-title"]');
+  const range = document.createRange();
+  if (title) range.selectNodeContents(title);
   const style = getComputedStyle(dialog);
   const frame = dialog.getBoundingClientRect();
   return {
     close: box(close),
-    neighbour: box(neighbour),
+    neighbour: neighbour && box(neighbour),
+    lines: title
+      ? [...range.getClientRects()].map((r) => ({
+          top: r.top,
+          bottom: r.bottom,
+          right: r.right,
+        }))
+      : [],
     contentRight:
       frame.right -
       Number.parseFloat(style.borderRightWidth) -
@@ -243,6 +328,7 @@ async function openDialog(context, fixture, viewport, fault, name) {
           dialog.open,
           fixture.image,
           fixture.document,
+          fixture[dialog.file],
         ).catch(() => false);
       if (!opened) continue;
       if (fault)
@@ -267,6 +353,34 @@ async function openDialog(context, fixture, viewport, fault, name) {
     await page.close();
     throw error;
   }
+}
+
+/**
+ * The title's lines. A line's text can come back in more than one box, so
+ * boxes on one line merge into one that reaches the furthest right.
+ */
+function titleLines(box) {
+  const lines = [];
+  for (const r of box.lines) {
+    const line = lines.find((l) => Math.abs(l.top - r.top) <= TOLERANCE);
+    if (line) line.right = Math.max(line.right, r.right);
+    else lines.push({ ...r });
+  }
+  return lines;
+}
+
+/** One line proves nothing about where the title wraps. */
+function wraps(name, box) {
+  const lines = titleLines(box).length;
+  return { name: `${name}:wraps`, ok: lines >= 2, detail: { lines } };
+}
+
+/** Lines that share some height with the X, the ones it can cover. */
+function overlap(box) {
+  const bottom = box.close.top + box.close.height;
+  return titleLines(box).filter(
+    (line) => line.top < bottom && line.bottom > box.close.top,
+  );
 }
 
 function cases(name, box) {
@@ -358,7 +472,9 @@ async function main() {
               name,
             );
             await page.close();
-            results.push(...cases(`${label}:${name}`, box));
+            results.push(
+              ...(DIALOGS[name].cases ?? cases)(`${label}:${name}`, box),
+            );
           } finally {
             await context.close();
           }
