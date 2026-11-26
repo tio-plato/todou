@@ -27,9 +27,10 @@
  * row of the same project already holds, compared by lower() as the unique
  * index compares them, becomes "<name> (<id>)", then "<name> (<id>-2)" and
  * so on; of two rows that both need renaming, the one with the lower id is
- * renamed first and so keeps the plain name. A name that is all whitespace
- * becomes "Status <id>" or "Label <id>". The suffix is not cut back to fit
- * the 60-character limit, as 0013 does not cut its own.
+ * renamed first and so keeps the plain name, unless it is left for a later
+ * migration (below). A name that is all whitespace becomes "Status <id>" or
+ * "Label <id>". The suffix is not cut back to fit the 60-character limit, as
+ * 0013 does not cut its own.
  *
  * Each row is renamed by a statement of its own, committed on its own, so
  * this holds one row's lock at a time and never waits for one row while
