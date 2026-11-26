@@ -713,6 +713,26 @@ async function landed(view: View, scroll: Scrolling, id: number, count = 1) {
   expect(view.queryByText(UNAVAILABLE)).toBeNull();
 }
 
+/** Every address the router hands the browser from here on. */
+function writes(view: View) {
+  const seen: Array<{ type: string; href: string }> = [];
+  disposers.push(
+    view.router.history.subscribe(
+      ({
+        action,
+        location,
+      }: {
+        action: { type: string };
+        location: { href: string };
+      }) => {
+        if (action.type === "PUSH" || action.type === "REPLACE")
+          seen.push({ type: action.type, href: location.href });
+      },
+    ),
+  );
+  return seen;
+}
+
 async function refetchTail(view: View, slug = "p", number = 7) {
   await act(async () => {
     await view.client.refetchQueries({
@@ -1879,26 +1899,6 @@ describe("the card's own question badge", () => {
     });
   }
 
-  /** Every address the router hands the browser from here on. */
-  function writes(view: View) {
-    const seen: Array<{ type: string; href: string }> = [];
-    disposers.push(
-      view.router.history.subscribe(
-        ({
-          action,
-          location,
-        }: {
-          action: { type: string };
-          location: { href: string };
-        }) => {
-          if (action.type === "PUSH" || action.type === "REPLACE")
-            seen.push({ type: action.type, href: location.href });
-        },
-      ),
-    );
-    return seen;
-  }
-
   /** The browser's history keeps a row for every address a page writes. */
   const asksInTheAddress = (seen: Array<{ href: string }>) =>
     seen.filter(({ href }) => href.includes(ENTRY));
@@ -2562,5 +2562,94 @@ describe("gliding on a card that has landed", () => {
     expect(scroll.position()).toBe(
       centred(view.container.querySelector("#comment-10") as Element),
     );
+  });
+
+  /**
+   * A card whose last comment holds a link written as `#comment-10`, and one
+   * to the same fragment of another page.
+   */
+  async function writtenLink() {
+    const model = card([question(10), question(14)]);
+    model.items.push(
+      comment(
+        31,
+        "see [comment 10](#comment-10), or [elsewhere](/elsewhere#comment-10)",
+      ),
+    );
+    serve({ "p/7": model });
+    const scroll = scrolling({ below: BELOW, revealedAt: centred });
+    layOut(scroll);
+    const view = renderAt("/projects/p/issues/7");
+    await view.findByText("Decision 14?");
+    await waitFor(() => expect(scroll.bottoms()).toBe(1));
+    const link = await view.findByRole("link", { name: "comment 10" });
+    return { view, scroll, link };
+  }
+
+  async function press(link: HTMLElement, init?: MouseEventInit) {
+    let unhandled = false;
+    await act(async () => {
+      unhandled = fireEvent.click(link, init);
+    });
+    return unhandled;
+  }
+
+  it("hands a link written in a comment to the card's own glide", async () => {
+    const { view, scroll, link } = await writtenLink();
+    const seen = writes(view);
+
+    // A modified click opens another tab, which is the browser's to do.
+    expect(await press(link, { ctrlKey: true })).toBe(true);
+    expect(seen).toEqual([]);
+    // So is a link to another page, fragment or not.
+    let taken: boolean | null = null;
+    const stopHere = (event: Event) => {
+      taken = event.defaultPrevented;
+      // happy-dom would load that page.
+      event.preventDefault();
+    };
+    window.addEventListener("click", stopHere);
+    try {
+      await press(view.getByRole("link", { name: "elsewhere" }));
+    } finally {
+      window.removeEventListener("click", stopHere);
+    }
+    expect(taken).toBe(false);
+    expect(seen).toEqual([]);
+
+    frameByFrame();
+    expect(await press(link)).toBe(false);
+    expect(seen).toEqual([
+      { type: "PUSH", href: "/projects/p/issues/7#comment-10" },
+    ]);
+    // The entry left behind is the browser's to restore: Back returns to
+    // where the link was pressed.
+    expect(window.history.scrollRestoration).toBe("auto");
+    // Not revealed on the way there: the glide sets out from where the
+    // reader is.
+    expect(scroll.reveals("comment-10")).toBe(0);
+  });
+
+  it("lands again on the comment the address names when its link is pressed again", async () => {
+    const { view, scroll, link } = await writtenLink();
+    const frame = frameByFrame();
+    await press(link);
+    await frame();
+    await frame(1_000);
+    await landed(view, scroll, 10);
+
+    scroll.userAt(5_000);
+    const seen = writes(view);
+    expect(await press(link)).toBe(false);
+    await frame();
+    await frame();
+    expect(scroll.reveals("comment-10")).toBe(1);
+    await frame(1_000);
+    await landed(view, scroll, 10, 2);
+    expect(scroll.position()).toBe(
+      centred(view.container.querySelector("#comment-10") as Element),
+    );
+    // The address already names it: no new entry for Back to step through.
+    expect(seen).toEqual([]);
   });
 });
