@@ -20,6 +20,7 @@ import {
   ValidationFailedError,
 } from "../errors.ts";
 import { projectForRead, requireCapability, routeInfoOf } from "./access.ts";
+import { lockWritableIssue } from "./resolve-pass.ts";
 import {
   assertIssueReadable,
   assertIssueWritable,
@@ -211,6 +212,9 @@ export async function writeIssueMetadata(
   const writtenAt = new Date();
 
   const changes = await db.transaction(async (tx) => {
+    // Asked again under the card's lock, before any row under it is written
+    // (see lockIssueRows).
+    await lockWritableIssue(tx, project, { id: issue.id, actor, role });
     const before = await tx
       .select({
         namespace: issueMetadata.namespace,

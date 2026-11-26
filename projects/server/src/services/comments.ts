@@ -8,6 +8,7 @@ import type {
   CommentHideResult,
   CommentLocation,
   CommentUpdateInput,
+  MemberRole,
   SettledByHide,
   TimelineComment,
 } from "@todou/shared";
@@ -40,6 +41,8 @@ import {
 import { currentRefPrefix } from "./references.ts";
 import { throwIfCommentAliased } from "./relocation.ts";
 import {
+  lockIssueRows,
+  lockWritableIssue,
   recordCrossReferences,
   recordIssueMentions,
   recordLocalReferences,
@@ -108,6 +111,10 @@ async function loadIssue(db: Db, projectId: number, number: number) {
  * `body` arrives already resolved and `localRefs` comes from the same pass,
  * because resolving reads the system database and other projects' — which a
  * project transaction must not hold a second connection for.
+ *
+ * The referenced cards and this one are locked in id order before anything
+ * is written, and this one is checked against the write gate under its lock
+ * (see `lockIssueRows`).
  */
 export async function insertCommentInTx(
   tx: Db,
@@ -122,6 +129,8 @@ export async function insertCommentInTx(
     component?: CommentComponent | null;
     kind?: CommentRow["kind"];
     agentContext: AgentContext | null;
+    /** Who is writing, for the gate asked under the card's lock. */
+    gate: { actor: UserRow; role: MemberRole };
   },
 ): Promise<{
   comment: CommentRow;
@@ -133,6 +142,12 @@ export async function insertCommentInTx(
   const component = args.component ?? null;
   const issueNumber = issue.number;
 
+  const targets = await lockIssueRows(
+    tx,
+    project,
+    { id: issue.id, ...args.gate },
+    localRefs,
+  );
   const inserted = await tx
     .insert(comments)
     .values({
@@ -175,7 +190,7 @@ export async function insertCommentInTx(
     project,
     actorId,
     { issueNumber, commentId: comment.id },
-    localRefs,
+    targets,
     agentContext,
   );
   for (const ref of refs) {
@@ -251,6 +266,7 @@ export async function createComment(
       component,
       kind: input.kind,
       agentContext,
+      gate: { actor, role },
     });
     events.push(...result.timeline);
     // updated_at moved (and maybe the counter) → issue list ordering and
@@ -390,7 +406,12 @@ async function loadCommentForWrite(
   slug: string,
   issueNumber: number,
   commentId: number,
-): Promise<{ project: ProjectRow; db: Db; row: CommentRow }> {
+): Promise<{
+  project: ProjectRow;
+  db: Db;
+  row: CommentRow;
+  role: MemberRole;
+}> {
   const { project, role } = await requireCapability(
     ctx,
     actor,
@@ -410,7 +431,7 @@ async function loadCommentForWrite(
   if (row.authorId !== actor.id && role !== "admin") {
     throw new ForbiddenError("only the author or a project admin may modify");
   }
-  return { project, db, row };
+  return { project, db, row, role };
 }
 
 export async function updateComment(
@@ -424,7 +445,7 @@ export async function updateComment(
   // events born from this edit carry the editing request's context.
   agentContext: AgentContext | null = null,
 ): Promise<TimelineComment> {
-  const { project, db, row } = await loadCommentForWrite(
+  const { project, db, row, role } = await loadCommentForWrite(
     ctx,
     actor,
     slug,
@@ -460,13 +481,21 @@ export async function updateComment(
     return toTimelineComment(ctx, row, { elideHidden: false });
 
   const { after, refs, drafts } = await db.transaction(async (tx) => {
+    // The cards before the comment (see lockIssueRows). A comment gone by
+    // now went with a move or a delete; the gate answers for a move first.
+    const targets = await lockIssueRows(
+      tx,
+      project,
+      { id: row.issueId, actor, role },
+      resolved.local,
+    );
     const updated = await tx
       .update(comments)
       .set({ body: resolved.storedText, editedAt: new Date() })
       .where(eq(comments.id, row.id))
       .returning();
     const after = updated[0];
-    if (!after) throw new Error("comment update returned no row");
+    if (!after) throw new NotFoundError("comment not found");
 
     await recordRevision(tx, {
       projectId,
@@ -482,7 +511,7 @@ export async function updateComment(
       project,
       actor.id,
       { issueNumber, commentId: row.id },
-      resolved.local,
+      targets,
       agentContext,
     );
     await recordIssueMentions(
@@ -535,7 +564,7 @@ export async function deleteComment(
   issueNumber: number,
   commentId: number,
 ): Promise<void> {
-  const { project, db, row } = await loadCommentForWrite(
+  const { project, db, row, role } = await loadCommentForWrite(
     ctx,
     actor,
     slug,
@@ -545,12 +574,9 @@ export async function deleteComment(
   const projectId = project.id;
   let counterChanged = false;
   await db.transaction(async (tx) => {
-    // The card before the comment, as answering takes them.
-    await tx
-      .select({ id: issues.id })
-      .from(issues)
-      .where(eq(issues.id, row.issueId))
-      .for("no key update");
+    // The card first (see lockIssueRows): a move that took the comment away
+    // answers here, before the missing comment does.
+    await lockWritableIssue(tx, project, { id: row.issueId, actor, role });
     // Lock the row before reading what it already gave back: an answer or a
     // resolve that committed while this request waited is then visible here,
     // and a delete that won the race leaves nothing to lock. Read outside
@@ -805,7 +831,10 @@ export type HideInTxResult = Omit<CommentHideResult, "settled"> & {
  * two copies of this would be two hide policies waiting to disagree.
  *
  * The caller checks the capabilities (`settleScan` says which ones a hide
- * will need) and owns the `ChangeEvent`s until the transaction commits.
+ * will need) and owns the `ChangeEvent`s until the transaction commits. It
+ * also holds the card already, locked with the write gate asked under the
+ * lock (`lockWritableIssue`, or `lockIssueRows` with the card as `write`),
+ * so the comments are locked after their card (see lockIssueRows).
  */
 export async function hideCommentsInTx(
   tx: Tx,
@@ -822,12 +851,6 @@ export async function hideCommentsInTx(
   // Settling counts one decline per entry it is handed, so a repeated id
   // would take other comments' open questions off the card with it (T-651).
   const ids = [...new Set(input.comment_ids)];
-  // The card before the comments, as answering and deleting take them.
-  await tx
-    .select({ id: issues.id })
-    .from(issues)
-    .where(eq(issues.id, args.issueId))
-    .for("no key update");
   const rows = await tx
     .select({
       id: comments.id,
@@ -986,16 +1009,19 @@ export async function setCommentsHidden(
   assertIssueWritable(issue, actor, role);
   await requireSettleCapabilities(ctx, actor, slug, db, issue.id, input);
 
-  const result = await db.transaction((tx) =>
-    hideCommentsInTx(tx, {
+  const result = await db.transaction(async (tx) => {
+    // The card before the comments, with the gate asked again under its
+    // lock (see lockIssueRows).
+    await lockWritableIssue(tx, project, { id: issue.id, actor, role });
+    return hideCommentsInTx(tx, {
       projectId: project.id,
       issueId: issue.id,
       issueNumber,
       actorId: actor.id,
       input,
       agentContext,
-    }),
-  );
+    });
+  });
 
   for (const event of result.events) ctx.bus.publish(project.id, event);
   return {

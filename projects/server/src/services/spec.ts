@@ -47,7 +47,11 @@ import {
 import { projectForRead, requireCapability, routeInfoOf } from "./access.ts";
 import { loadReferenceInputs } from "./cross-references.ts";
 import { encodeTimelineCursor } from "./cursor.ts";
-import { resolveContent } from "./resolve-pass.ts";
+import {
+  lockWritableIssue,
+  resolveContent,
+  type WriteGate,
+} from "./resolve-pass.ts";
 import { microIso } from "./timeline.ts";
 import {
   assertIssueReadable,
@@ -148,6 +152,23 @@ async function filesOfVersion(db: Db | Tx, versionId: number) {
 
 export const utf8Size = (body: string) => Buffer.byteLength(body, "utf8");
 
+/**
+ * Lock the card for a spec write, read where its review stands, and ask the
+ * write gate under the lock, the way `lockWritableIssue` does. Every update
+ * of that column waits for this lock, so the value read holds until the
+ * transaction ends.
+ */
+async function lockSpecCard(tx: Tx, gate: WriteGate) {
+  const [locked] = await tx
+    .select({ ...gateColumns, specReviewStatus: issues.specReviewStatus })
+    .from(issues)
+    .where(eq(issues.id, gate.id))
+    .for("no key update");
+  if (!locked) throw new NotFoundError("issue not found");
+  assertIssueWritable(locked, gate.actor, gate.role);
+  return locked;
+}
+
 export async function pushSpec(
   ctx: AppContext,
   actor: UserRow,
@@ -195,13 +216,7 @@ export async function pushSpec(
   const result = await db.transaction(async (tx) => {
     // Serialize concurrent pushes on the issue row; the unique
     // (issue, number) index backstops anything that slips through.
-    const [locked] = await tx
-      .select({ ...gateColumns, specReviewStatus: issues.specReviewStatus })
-      .from(issues)
-      .where(eq(issues.id, issue.id))
-      .for("update");
-    if (!locked) throw new NotFoundError("issue not found");
-    assertIssueWritable(locked, actor, role);
+    const locked = await lockSpecCard(tx, { id: issue.id, actor, role });
 
     const current = await currentVersionRow(tx, issue.id);
     const currentNumber = current?.number ?? 0;
@@ -378,13 +393,7 @@ export async function withdrawSpec(
   const events: ChangeEvent[] = [];
   const result = await db.transaction(
     async (tx): Promise<SpecWithdrawResult> => {
-      const [locked] = await tx
-        .select({ ...gateColumns, specReviewStatus: issues.specReviewStatus })
-        .from(issues)
-        .where(eq(issues.id, issue.id))
-        .for("update");
-      if (!locked) throw new NotFoundError("issue not found");
-      assertIssueWritable(locked, actor, role);
+      const locked = await lockSpecCard(tx, { id: issue.id, actor, role });
       const current = await currentVersionRow(tx, issue.id);
       if (!current) throw new NotFoundError("this issue has no spec");
       if (input.version !== current.number) {
@@ -725,13 +734,7 @@ export async function submitSpecReview(
   const result = await db.transaction(async (tx) => {
     // Same lock as pushSpec: a review and a push racing on one issue
     // serialize, so the version check below cannot go stale mid-commit.
-    const [locked] = await tx
-      .select({ ...gateColumns, specReviewStatus: issues.specReviewStatus })
-      .from(issues)
-      .where(eq(issues.id, issue.id))
-      .for("update");
-    if (!locked) throw new NotFoundError("issue not found");
-    assertIssueWritable(locked, actor, role);
+    const locked = await lockSpecCard(tx, { id: issue.id, actor, role });
 
     const current = await currentVersionRow(tx, issue.id);
     if (!current) throw new NotFoundError("this issue has no spec");
@@ -1002,12 +1005,9 @@ export async function resolveSpecComments(
   // `hideCommentsInTx` collapses a hide (T-651).
   const ids = [...new Set(input.comment_ids)];
   const resolved = await db.transaction(async (tx) => {
-    // The card before the comments, as answering and deleting take them.
-    await tx
-      .select({ id: issues.id })
-      .from(issues)
-      .where(eq(issues.id, issue.id))
-      .for("no key update");
+    // The card before the comments, as answering and deleting take them,
+    // with the gate asked again under its lock (see lockIssueRows).
+    await lockWritableIssue(tx, project, { id: issue.id, actor, role });
     const rows = await tx
       .select()
       .from(comments)

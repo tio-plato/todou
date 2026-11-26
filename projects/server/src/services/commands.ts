@@ -42,6 +42,7 @@ import {
   toIssue,
 } from "./issues.ts";
 import {
+  lockWritableIssue,
   type ReferenceTarget,
   recordCrossReferences,
   resolveContent,
@@ -182,6 +183,11 @@ export async function executeCommands(
   let listRow: IssueListRow | undefined;
 
   const applied = await db.transaction(async (tx) => {
+    // The card before anything under it (see lockIssueRows): here when no
+    // comment is posted, in `insertCommentInTx` when one is.
+    if (resolved === null) {
+      await lockWritableIssue(tx, project, { id: issue.id, actor, role });
+    }
     let hide: HideInTxResult | null = null;
 
     let comment: CommentRow | null = null;
@@ -195,6 +201,7 @@ export async function executeCommands(
         mentions: resolved.mentions,
         kind: input.kind,
         agentContext,
+        gate: { actor, role },
       });
       comment = result.comment;
       crossTargets = resolved.cross;

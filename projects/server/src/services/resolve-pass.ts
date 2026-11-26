@@ -33,7 +33,7 @@ import {
   scanReferenceTokens,
   spliceResolved,
 } from "@todou/shared";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
 import type { UserRow } from "../auth/pat.ts";
 import type { AppContext, DbContext } from "../bootstrap.ts";
 import type { Db } from "../db/driver.ts";
@@ -45,11 +45,17 @@ import {
   issues,
 } from "../db/project-schema.ts";
 import { projectMembers, projects, users } from "../db/system-schema.ts";
+import { NotFoundError } from "../errors.ts";
 import { type ProjectRow, projectRoleOf, routeInfoOf } from "./access.ts";
 import type { ReferenceInputs } from "./cross-references.ts";
 import { currentRefPrefix } from "./references.ts";
 import { type Address, aliasOf, currentAddressOf } from "./relocation.ts";
-import { live, referenceable } from "./trash.ts";
+import {
+  assertIssueWritable,
+  gateColumns,
+  live,
+  referenceable,
+} from "./trash.ts";
 
 /** The content being saved, so a card never records a reference to itself. */
 export type ResolveSource = { issueNumber: number; commentId?: number };
@@ -855,34 +861,135 @@ class Resolver {
   }
 }
 
+/** The card a write is about to write, and who is writing it. */
+export type WriteGate = { id: number; actor: UserRow; role: MemberRole };
+
 /**
- * Land `referenced` events on the cards this content names, in the same
- * project and in the same transaction.
+ * Lock the issue rows a write in this project touches, before it locks or
+ * writes anything else: `write`, the card it writes (null when it writes
+ * none), asking the write gate again under its lock, and the cards
+ * `numbers` references. Returns the referenced cards that are still
+ * referenceable, which are the ones owed a `referenced` event.
  *
- * The share lock is what makes a single-transaction move wait: it takes FOR
- * UPDATE on the same row, and without it an event could land on the card
- * between the copy and the source-side cleanup that deletes it again.
+ * Row locks on PostgreSQL follow one order across the server, so that the
+ * waits between transactions never form a cycle:
+ *
+ * 1. A card before the rows under it. A transaction that writes a card locks
+ *    that card's issue row before it locks or writes any row under it
+ *    (comments, assignees, labels, metadata, attachments, pending uploads,
+ *    events), and asks the write gate again under that lock
+ *    (`lockWritableIssue`, or this function for `write`). Writes to one card
+ *    therefore queue on the card, and which of them locks a comment first no
+ *    longer matters to any other.
+ * 2. Every card a write touches, in one statement, in ascending id, FOR NO
+ *    KEY UPDATE: the card it writes and the cards it references. FOR UPDATE
+ *    is for a transaction that moves a card away, as its first lock: a move
+ *    on the card it moves (the same-database move, the copy of a move to
+ *    another database when both share the project database, and the move's
+ *    last step). With one mode for every other write, no lock is ever
+ *    upgraded.
+ * 3. Cards before `project_meta`: creating a card locks the cards it
+ *    touches, then takes a number; a same-database move locks its card, then
+ *    the target's `project_meta`.
+ *
+ * Two places keep another order, and neither can form a cycle. A single
+ * autocommit statement that writes one row under a card without the card's
+ * lock (a read position, a mute, a block event, a cross-project reference,
+ * a direct-upload request or its expiry) holds nothing to wait with. And a
+ * move back into a tombstone updates the tombstone after the card it moves,
+ * out of id order, and locks nothing else in the tombstone's project before
+ * it: whatever else locks a tombstone is a write about to be refused by the
+ * gate, which while it holds it waits only for other cards of the
+ * tombstone's project, none of which the move holds, and references skip
+ * tombstones.
+ *
+ * The one statement sorts the rows before it locks them: `ORDER BY` and the
+ * locking clause belong to the same query, never a subquery. A card it
+ * waits for may stop being referenceable meanwhile; PostgreSQL then checks
+ * the row again as it is now, so a card only referenced drops out of the
+ * rows returned, though it stays locked until the transaction ends.
+ * Referencing a card therefore waits for the writes to it, and several
+ * writes referencing one card queue on it. With no card at all nothing is
+ * locked.
+ *
+ * The lock on a referenced card is also what makes a single-transaction
+ * move wait: it takes FOR UPDATE on the same row, and without it an event
+ * could land on the card between the copy and the source-side cleanup that
+ * deletes it again.
+ *
+ * A locked row's `deleted_at`, `moved_at` and `moving_since` cannot change
+ * until this transaction ends, so the cards returned are the set to record.
+ */
+export async function lockIssueRows(
+  tx: Db,
+  project: ProjectRow,
+  write: WriteGate | null,
+  numbers: number[],
+): Promise<Array<{ id: number; number: number }>> {
+  if (write === null && numbers.length === 0) return [];
+  const rows = await tx
+    .select(gateColumns)
+    .from(issues)
+    .where(
+      or(
+        write === null ? undefined : eq(issues.id, write.id),
+        numbers.length === 0
+          ? undefined
+          : and(
+              eq(issues.projectId, project.id),
+              inArray(issues.number, numbers),
+              referenceable,
+            ),
+      ),
+    )
+    .orderBy(asc(issues.id))
+    .for("no key update");
+  if (write !== null) {
+    const row = rows.find((r) => r.id === write.id);
+    if (row === undefined) throw new NotFoundError("issue not found");
+    assertIssueWritable(row, write.actor, write.role);
+  }
+  const named = new Set(numbers);
+  return rows
+    .filter((row) => named.has(row.number))
+    .map((row) => ({ id: row.id, number: row.number }));
+}
+
+/**
+ * `lockIssueRows` for a write to one card that references none: lock the
+ * card and ask the write gate again under the lock. The gate a request
+ * passes before its transaction only fails fast: a move, a freeze or a
+ * delete can commit between that check and the write, which would then land
+ * on a tombstone, or be emptied away with the source after the copy, behind
+ * a success. Once this holds the row, none of them can.
+ *
+ * FOR NO KEY UPDATE conflicts with a move's FOR UPDATE, a freeze's UPDATE
+ * and every other write's lock on the card, and not with the KEY SHARE a
+ * foreign-key check takes when another transaction inserts a row under the
+ * card.
+ */
+export async function lockWritableIssue(
+  tx: Db,
+  project: ProjectRow,
+  gate: WriteGate,
+): Promise<void> {
+  await lockIssueRows(tx, project, gate, []);
+}
+
+/**
+ * Land `referenced` events on `targets`, in the same project and in the same
+ * transaction. `targets` comes from `lockIssueRows` earlier in that
+ * transaction.
  */
 export async function recordLocalReferences(
   tx: Db,
   project: ProjectRow,
   actorId: number,
   source: ResolveSource,
-  numbers: number[],
+  targets: Array<{ id: number; number: number }>,
   agentContext: AgentContext | null,
 ): Promise<Array<{ eventId: number; issueNumber: number }>> {
-  if (numbers.length === 0) return [];
-  const targets = await tx
-    .select({ id: issues.id, number: issues.number })
-    .from(issues)
-    .where(
-      and(
-        eq(issues.projectId, project.id),
-        inArray(issues.number, numbers),
-        referenceable,
-      ),
-    )
-    .for("share");
+  if (targets.length === 0) return [];
   return insertReferenceEvents(
     tx,
     project,
