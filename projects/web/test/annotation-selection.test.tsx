@@ -2795,7 +2795,180 @@ describe("column anchors at the edges of code rows", () => {
     );
     if (into === null) throw new Error("no anchor");
     expect(cut(lines, into)).toBe("const");
+    // The same two drags with the paragraph's end on its element, where
+    // Chromium puts it: at the start of the one below, at the end of the
+    // one above.
+    const below = outro?.parentNode;
+    const downToElement = anchorForSelection(
+      container,
+      index,
+      ends(last, 6, below, 0),
+    );
+    if (downToElement === null) throw new Error("no anchor");
+    expect(cut(lines, downToElement)).toBe("charlie = 3;");
+    const above = intro?.parentNode;
+    const intoFromElement = anchorForSelection(
+      container,
+      index,
+      ends(above, above?.childNodes.length ?? 0, first, 5),
+    );
+    if (intoFromElement === null) throw new Error("no anchor");
+    expect(cut(lines, intoFromElement)).toBe("const");
   });
+
+  it("keeps a fence's lines for an element end in the gap after it", () => {
+    const source = `Intro words.\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n\nOutro words.\n`;
+    const { container, shadow, index } = fenceWithRows(source, TOKEN_ROWS);
+    const last = shadow.querySelector("[data-line='3'] span")?.firstChild;
+    const wrapper = container.querySelector("[data-loc-content-start]");
+    const gap = wrapper?.parentNode;
+    if (!wrapper || !gap) throw new Error("no fence");
+    const at = [...gap.childNodes].indexOf(wrapper as ChildNode) + 1;
+    // Only the line feed between two blocks is at that place, no text to
+    // take the end as.
+    expect(gap.childNodes[at]?.textContent).toBe("\n");
+    expect(
+      anchorForSelection(container, index, ends(last, 6, gap, at)),
+    ).toEqual({ lineStart: 3, lineEnd: 7, colStart: null, colEnd: null });
+  });
+
+  it("keeps a fence's lines for an element end at the next fence", () => {
+    const source = `Intro words.\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n\n\`\`\`ts\nnext();\n\`\`\`\n`;
+    const { container, shadow, index } = fenceWithRows(source, TOKEN_ROWS);
+    const last = shadow.querySelector("[data-line='3'] span")?.firstChild;
+    const next = container.querySelectorAll("[data-loc-content-start]")[1];
+    const gap = next?.parentNode;
+    if (!next || !gap) throw new Error("no second fence");
+    const lines = { lineStart: 3, lineEnd: 7, colStart: null, colEnd: null };
+    // Just before the next fence and just inside it, the place is that
+    // fence's, with no text there to take the end as.
+    const before = [...gap.childNodes].indexOf(next as ChildNode);
+    expect(
+      anchorForSelection(container, index, ends(last, 6, gap, before)),
+    ).toEqual(lines);
+    expect(
+      anchorForSelection(container, index, ends(last, 6, next, 0)),
+    ).toEqual(lines);
+  });
+
+  it("keeps a fence's lines for an element end before text no source line holds", () => {
+    const source = `Intro words[^1].\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n\n[^1]: A note.\n`;
+    const { container, shadow, index } = fenceWithRows(source, TOKEN_ROWS);
+    const last = shadow.querySelector("[data-line='3'] span")?.firstChild;
+    const footnotes = container.querySelector("section[data-footnotes]");
+    if (footnotes === null) throw new Error("no footnotes");
+    // The section opens with a heading for screen readers, on no line.
+    expect(
+      anchorForSelection(container, index, ends(last, 6, footnotes, 0)),
+    ).toEqual({ lineStart: 3, lineEnd: 7, colStart: null, colEnd: null });
+  });
+
+  it("keeps a fence's lines for an element end at a quote below it", () => {
+    const source = `Intro words.\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n\n> Outro words\n`;
+    const { container, shadow, index } = fenceWithRows(source, TOKEN_ROWS);
+    const last = shadow.querySelector("[data-line='3'] span")?.firstChild;
+    const quote = container.querySelector("blockquote");
+    // The quote opens with a line feed inside its own stamped element: no
+    // text there to take the end as.
+    expect(quote?.firstChild?.textContent).toBe("\n");
+    expect(
+      anchorForSelection(container, index, ends(last, 6, quote, 0)),
+    ).toEqual({ lineStart: 3, lineEnd: 7, colStart: null, colEnd: null });
+  });
+
+  it("keeps the columns of a text end beside a fence pierre has not drawn", () => {
+    const source = `Intro words.\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n\nOutro words.\n`;
+    const view = render(
+      <QueryClientProvider client={testQueryClient()}>
+        <MarkdownView rehypePlugins={[rehypeSourceLines]}>
+          {source}
+        </MarkdownView>
+      </QueryClientProvider>,
+    );
+    const index = buildSegmentIndex(source);
+    const [intro, outro] = [
+      ...view.container.querySelectorAll("p[data-loc]"),
+    ].map((p) => p.firstChild);
+    // With no rows, the block's text is what the page shows: the selection
+    // maps to columns as any text does.
+    expect(
+      anchorForSelection(view.container, index, ends(intro, 0, outro, 0)),
+    ).toMatchObject({ lineStart: 1, colStart: 1 });
+  });
+
+  it.each([
+    ["a heading", "## Outro words", "\n"],
+    ["a heading, in a CRLF body", "## Outro words", "\r\n"],
+    ["a list item", "- Outro words", "\n"],
+    ["a quote", "> Outro words", "\n"],
+    ["a table", "| Outro | words |\n|---|---|\n| a | b |", "\n"],
+    ["bold words", "**Outro** words.", "\n"],
+    ["a link", "[Outro](https://example.com) words.", "\n"],
+  ])(
+    "ends a selection down from a fence before the markup that opens %s",
+    (_name, next, eol) => {
+      const source =
+        `Intro words.\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n\n${next}\n`.replaceAll(
+          "\n",
+          eol,
+        );
+      const { container, shadow, index, lines } = fenceWithRows(
+        source,
+        TOKEN_ROWS,
+      );
+      const last = shadow.querySelector("[data-line='3'] span")?.firstChild;
+      const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+      let outro = walker.nextNode();
+      while (outro !== null && !outro.textContent?.startsWith("Outro")) {
+        outro = walker.nextNode();
+      }
+      if (outro === null) throw new Error("no next block");
+      // On the text, as WebKit and Firefox end such a drag, and on the element
+      // holding it, as Chromium does: either way, no `## `, `- `, `> `, `| `,
+      // `**` or `[` of the next line.
+      for (const [node, at] of [
+        [outro, 0],
+        [outro.parentNode, 0],
+      ] as const) {
+        const down = anchorForSelection(
+          container,
+          index,
+          ends(last, 6, node, at),
+        );
+        if (down === null) throw new Error("no anchor");
+        expect(cut(lines, down)).toBe("charlie = 3;");
+      }
+    },
+  );
+
+  it.each([
+    ["bold words", "Intro **words**"],
+    ["a link", "Intro [words](https://example.com)"],
+  ])(
+    "starts a selection into a fence past the markup that closes %s",
+    (_name, prev) => {
+      const source = `${prev}\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n\nOutro words.\n`;
+      const { container, shadow, index, lines } = fenceWithRows(
+        source,
+        TOKEN_ROWS,
+      );
+      const first = shadow.querySelector("[data-line='1'] span")?.firstChild;
+      const words = container.querySelector("strong, a")?.firstChild;
+      if (!(words instanceof Text)) throw new Error("no closing markup");
+      for (const [node, at] of [
+        [words, words.length],
+        [words.parentNode, words.parentNode?.childNodes.length ?? 0],
+      ] as const) {
+        const into = anchorForSelection(
+          container,
+          index,
+          ends(node, at, first, 5),
+        );
+        if (into === null) throw new Error("no anchor");
+        expect(cut(lines, into)).toBe("const");
+      }
+    },
+  );
 
   it("reaches a patch row that names no single line", () => {
     const source = `Some prose.\n\n\`\`\`patch\n${[
@@ -3688,6 +3861,385 @@ describe("anchoring a compared document", () => {
     expect(
       quoted(before, anchor(ends(para.node, para.at, below.node, below.at))),
     ).toBe(["Removed para.", "", "```ts", ...kept].join("\n"));
+  });
+
+  it("anchors an element end beside an edited block to the baseline as the text end there", async () => {
+    const before = [
+      "Intro.",
+      "",
+      "Removed para.",
+      "",
+      "```ts",
+      "old();",
+      "keep();",
+      "gone();",
+      "```",
+      "",
+      "Removed too.",
+      "",
+    ].join("\n");
+    const after = ["Intro.", "", "```ts", "new();", "keep();", "```", ""].join(
+      "\n",
+    );
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    const shadow = drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-line-type="change-deletion">old();</div>
+       <div data-line="1" data-line-type="change-addition">new();</div>
+       <div data-line="2" data-alt-line="2" data-line-type="context">keep();</div>
+       <div data-line="3" data-line-type="change-deletion">gone();</div>`,
+    );
+    const rows = [...shadow.querySelectorAll("[data-line]")];
+    const [old, gone] = [rows[0], rows[3]].map((row) => row?.firstChild);
+    const [above, below] = container.querySelectorAll("p.spec-del-structure");
+    // From the last row to the start of the paragraph removed below, on its
+    // element, as Chromium ends such a drag: on the baseline, from that row.
+    expect(anchor(ends(gone, 0, below, 0))).toMatchObject({
+      lineStart: 8,
+      colStart: 1,
+      baseline: true,
+    });
+    // From the end of the paragraph removed above, on its element, into the
+    // first row: on the baseline, up to that row.
+    expect(
+      anchor(ends(above, above?.childNodes.length ?? 0, old, 3)),
+    ).toMatchObject({ lineEnd: 6, colEnd: 3, baseline: true });
+  });
+
+  it("anchors an element end below an edited block whose last line is unchanged to the baseline", async () => {
+    const kept = ["k1();", "k2();", "k3();"];
+    const before = [
+      "Intro.",
+      "",
+      "Removed para.",
+      "",
+      "```ts",
+      ...kept,
+      "```",
+      "",
+      "Removed too.",
+      "",
+    ].join("\n");
+    const after = ["Intro.", "", "```ts", "new();", ...kept, "```", ""].join(
+      "\n",
+    );
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-line-type="change-addition">new();</div>
+       <div data-line="2" data-alt-line="1" data-line-type="context">k1();</div>
+       <div data-line="3" data-alt-line="2" data-line-type="context">k2();</div>
+       <div data-line="4" data-alt-line="3" data-line-type="context">k3();</div>`,
+    );
+    const [above, below] = container.querySelectorAll("p.spec-del-structure");
+    // The block's last row is no removed content, but the end, at the start
+    // of the paragraph removed below, is.
+    expect(anchor(ends(above?.firstChild, 0, below, 0))).toMatchObject({
+      lineStart: 3,
+      colStart: 1,
+      baseline: true,
+    });
+  });
+
+  it("anchors a drag from the version shown to the start of a paragraph removed below an edited block to the version shown", async () => {
+    const before = [
+      "Intro.",
+      "",
+      "```ts",
+      "old();",
+      "keep();",
+      "gone();",
+      "```",
+      "",
+      "Removed too.",
+      "",
+    ].join("\n");
+    const after = ["Intro.", "", "```ts", "new();", "keep();", "```", ""].join(
+      "\n",
+    );
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-line-type="change-deletion">old();</div>
+       <div data-line="1" data-line-type="change-addition">new();</div>
+       <div data-line="2" data-alt-line="2" data-line-type="context">keep();</div>
+       <div data-line="3" data-line-type="change-deletion">gone();</div>`,
+    );
+    const intro = textAt(container, "p[data-loc]", "Intro.");
+    const below = container.querySelector("p.spec-del-structure");
+    // The end moves out of the removed paragraph to just before it, where
+    // the version shown has no text to take it as.
+    const selected = anchor(ends(intro.node, intro.at, below, 0));
+    expect(selected).toMatchObject({ lineStart: 1 });
+    expect(selected?.baseline).toBeUndefined();
+  });
+
+  it("anchors a drag from a row to a paragraph opening with removed words to the version shown", async () => {
+    const before =
+      "Intro.\n\n```ts\nold();\nkeep();\n```\n\nGone words stay.\n";
+    const after = "Intro.\n\n```ts\nnew();\nkeep();\n```\n\nstay.\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    const shadow = drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-line-type="change-deletion">old();</div>
+       <div data-line="1" data-line-type="change-addition">new();</div>
+       <div data-line="2" data-alt-line="2" data-line-type="context">keep();</div>`,
+    );
+    const keep = shadow.querySelectorAll("[data-line]")[2]?.firstChild;
+    const below = textAt(container, "p[data-loc]", "stay.").node.parentNode;
+    // The paragraph opens with its removed words: the version shown has no
+    // text there to take the end as.
+    expect(below?.firstChild?.textContent).toBe("Gone words");
+    const selected = anchor(ends(keep, 2, below, 0));
+    expect(selected).toMatchObject({ lineStart: 3 });
+    expect(selected?.baseline).toBeUndefined();
+  });
+
+  it("anchors an end beside a block removed whole, at text of the version shown, to the block's rows", async () => {
+    const before = "Intro.\n\n```ts\nold();\nmore();\n```\n\nOutro.\n";
+    const after = "Intro.\n\nOutro.\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-old-loc].markdown-fence",
+    );
+    const wrapper = container.querySelector("[data-old-loc].markdown-fence");
+    const shadow = drawRows(
+      wrapper,
+      `<div data-line="1">old();</div><div data-line="2">more();</div>`,
+    );
+    const old = shadow.querySelector("[data-line='1']")?.firstChild;
+    const more = shadow.querySelector("[data-line='2']")?.firstChild;
+    const intro = textAt(container, "p[data-loc]", "Intro.");
+    const outro = textAt(container, "p[data-loc]", "Outro.");
+    // Down to the start of the paragraph below and up from the end of the
+    // one above, on its text and on its element: on the baseline, to the
+    // rows selected.
+    for (const node of [outro.node, outro.node.parentNode]) {
+      expect(anchor(ends(more, 0, node, 0))).toEqual({
+        lineStart: 5,
+        lineEnd: 5,
+        colStart: 1,
+        colEnd: 7,
+        baseline: true,
+      });
+    }
+    const above = intro.node.parentNode;
+    for (const [node, at] of [
+      [intro.node, "Intro.".length],
+      [above, above?.childNodes.length ?? 0],
+    ] as const) {
+      expect(anchor(ends(node, at, old, 3))).toEqual({
+        lineStart: 4,
+        lineEnd: 4,
+        colStart: 1,
+        colEnd: 3,
+        baseline: true,
+      });
+    }
+    // In the gap after the block, with no text there: the whole block.
+    const gap = wrapper?.parentNode;
+    if (!wrapper || !gap) throw new Error("no block");
+    const after_ = [...gap.childNodes].indexOf(wrapper as ChildNode) + 1;
+    const whole = {
+      lineStart: 3,
+      lineEnd: 6,
+      colStart: null,
+      colEnd: null,
+      baseline: true,
+    };
+    expect(anchor(ends(more, 0, gap, after_))).toEqual(whole);
+    // On the line feed there.
+    const feed = gap.childNodes[after_];
+    expect(feed?.textContent).toBe("\n");
+    expect(anchor(ends(more, 0, feed, 0))).toEqual(whole);
+  });
+
+  it("keeps an end beside a patch removed whole, at text of the version shown, in the block", async () => {
+    const before = [
+      "Intro.",
+      "",
+      "```patch",
+      "--- a/a.txt",
+      "+++ b/a.txt",
+      "@@ -1,1 +1,1 @@",
+      "-old words",
+      "+new words",
+      "```",
+      "",
+      "Outro.",
+      "",
+    ].join("\n");
+    const after = ["Intro.", "", "Outro.", ""].join("\n");
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-old-loc].markdown-fence",
+    );
+    // A patch's view draws only the rows in sight and folds files away: the
+    // last row drawn here is not the block's last line.
+    const shadow = drawRows(
+      container.querySelector("[data-old-loc].markdown-fence"),
+      `<pre data-diff=""><div data-line="1" data-line-type="change-deletion">old words</div></pre>`,
+    );
+    const old = shadow.querySelector("[data-line]")?.firstChild;
+    const outro = textAt(container, "p[data-loc]", "Outro.");
+    expect(anchor(ends(old, 0, outro.node, 0))).toEqual({
+      lineStart: 3,
+      lineEnd: 9,
+      colStart: null,
+      colEnd: null,
+      baseline: true,
+    });
+  });
+
+  it.each([
+    [
+      "an indented block",
+      "Intro.\n\n    old();\n\nOutro.\n",
+      "Intro.\n\nOutro.\n",
+      { lineStart: 3, lineEnd: 3, colStart: 5, colEnd: 7 },
+    ],
+    [
+      "a fence the document ends in, unclosed",
+      "Intro.\n\n```ts\nold();",
+      "Intro.\n",
+      { lineStart: 4, lineEnd: 4, colStart: 1, colEnd: 3 },
+    ],
+  ])(
+    "anchors an end beside %s of one line, removed whole, to its row",
+    async (_name, before, after, row) => {
+      // Neither stamp has a marker on each side of the code.
+      const { container, anchor } = await compared(
+        before,
+        after,
+        "[data-old-loc].markdown-fence",
+      );
+      const shadow = drawRows(
+        container.querySelector("[data-old-loc].markdown-fence"),
+        `<div data-line="1">old();</div>`,
+      );
+      const old = shadow.querySelector("[data-line='1']")?.firstChild;
+      const intro = textAt(container, "p[data-loc]", "Intro.");
+      expect(anchor(ends(intro.node, "Intro.".length, old, 3))).toEqual({
+        ...row,
+        baseline: true,
+      });
+    },
+  );
+
+  it("anchors a drag across an empty block removed whole to that block", async () => {
+    const before = "Intro.\n\n```ts\n```\n\nOutro.\n";
+    const after = "Intro.\n\nOutro.\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-old-loc].markdown-fence",
+    );
+    // pierre draws an empty block as one row that names no line.
+    drawRows(
+      container.querySelector("[data-old-loc].markdown-fence"),
+      `<div data-line="1"></div>`,
+    );
+    const intro = textAt(container, "p[data-loc]", "Intro.");
+    const outro = textAt(container, "p[data-loc]", "Outro.");
+    const above = intro.node.parentNode;
+    for (const [from, at, to] of [
+      [intro.node, "Intro.".length, outro.node],
+      [above, above?.childNodes.length ?? 0, outro.node.parentNode],
+    ] as const) {
+      expect(anchor(ends(from, at, to, 0))).toEqual({
+        lineStart: 3,
+        lineEnd: 4,
+        colStart: null,
+        colEnd: null,
+        baseline: true,
+      });
+    }
+  });
+
+  it("keeps a start above a block removed whole that opens the document on the whole block", async () => {
+    const before = "```ts\nold();\nmore();\n```\n\nOutro.\n";
+    const after = "Outro.\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-old-loc].markdown-fence",
+    );
+    const wrapper = container.querySelector("[data-old-loc].markdown-fence");
+    const shadow = drawRows(
+      wrapper,
+      `<div data-line="1">old();</div><div data-line="2">more();</div>`,
+    );
+    const old = shadow.querySelector("[data-line='1']")?.firstChild;
+    const top = wrapper?.parentNode;
+    // Nothing comes before the block: no text to take the start as.
+    expect(top?.firstChild).toBe(wrapper);
+    expect(anchor(ends(top, 0, old, 3))).toEqual({
+      lineStart: 1,
+      lineEnd: 4,
+      colStart: null,
+      colEnd: null,
+      baseline: true,
+    });
+  });
+
+  it("ends a baseline anchor down from an edited block before the markup that opens a heading removed below it", async () => {
+    const before = [
+      "Intro.",
+      "",
+      "```ts",
+      "old();",
+      "keep();",
+      "gone();",
+      "```",
+      "",
+      "## Removed head",
+      "",
+    ].join("\n");
+    const after = ["Intro.", "", "```ts", "new();", "keep();", "```", ""].join(
+      "\n",
+    );
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    const shadow = drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-line-type="change-deletion">old();</div>
+       <div data-line="1" data-line-type="change-addition">new();</div>
+       <div data-line="2" data-alt-line="2" data-line-type="context">keep();</div>
+       <div data-line="3" data-line-type="change-deletion">gone();</div>`,
+    );
+    const gone = [...shadow.querySelectorAll("[data-line]")][3]?.firstChild;
+    const head = container.querySelector("h2.spec-del-structure");
+    // On the heading's text and on its element: not into its line's `## `.
+    for (const node of [head?.firstChild, head]) {
+      const selected = anchor(ends(gone, 0, node, 0));
+      expect(selected).toMatchObject({
+        lineStart: 6,
+        colStart: 1,
+        baseline: true,
+      });
+      expect(selected?.lineEnd).toBeLessThan(9);
+    }
   });
 
   it("starts a baseline anchor past the indent of an edited block's context row", async () => {

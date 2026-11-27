@@ -9,10 +9,12 @@ import {
   LINE_TYPE_ATTR,
   offsetInRow,
   rowAt,
+  rowText,
   trimLineEnd,
 } from "./pierre-rows.ts";
 import {
   CODE_CONTENT_START_ATTR,
+  FENCE_PATCH_ATTR,
   OLD_LINE_ATTR,
   parseSourceLoc,
   SOURCE_LINE_ATTR,
@@ -463,6 +465,8 @@ export function sourceOffsetInBlock(
   const at = aligned.offsets.get(node);
   if (at === undefined) return null;
   const rendered = aligned.inserted.has(node) ? at : at + offset;
+  const lines = linesEdge(index, aligned.segments, rendered, edge);
+  if (lines !== null) return lines;
   const source = sourceOffsetOfRendered(aligned.segments, rendered, edge);
   return edge === "start"
     ? pastPrefix(index, aligned.segments, source)
@@ -546,6 +550,37 @@ function pastPrefix(
   const after = at + ending;
   const next = segments.find((segment) => segment.end > after);
   return next !== undefined && next.start > after ? next.start : at;
+}
+
+/**
+ * Where an end at the very start of a block's text, or a start at its very
+ * end, maps: to the start of the line that text starts on, or to the end of
+ * the line it ends on. Such an endpoint selects none of the block, and the
+ * markup between its text and the edge of its lines, a heading's `## `, a
+ * quote's `> `, a link's `](…)`, is no more selected than the text is.
+ * `endsOnContent` moves most such endpoints onto content, but keeps one
+ * beside a code block. Null for any other endpoint.
+ */
+function linesEdge(
+  index: SegmentIndex,
+  segments: SourceSegment[],
+  rendered: number,
+  edge: "start" | "end",
+): number | null {
+  const first = segments[0];
+  const last = segments.at(-1);
+  if (first === undefined || last === undefined) return null;
+  if (edge === "end") {
+    if (rendered !== 0) return null;
+    return index.lineStarts[lineColAt(index, first.start).line - 1] ?? null;
+  }
+  const length = segments.reduce(
+    (sum, segment) => sum + segment.text.length,
+    0,
+  );
+  if (rendered !== length) return null;
+  const { line } = lineColAt(index, Math.max(first.start, last.end - 1));
+  return (index.lineStarts[line] ?? index.source.length + 1) - 1;
 }
 
 /**
@@ -1039,8 +1074,15 @@ export function beside(el: Element, side: "before" | "after"): Point {
  * Text takes the endpoint onto its first or last character that is not
  * whitespace; an image or a shadow host, beside it. A code block keeps a
  * text endpoint where it is, at the edge of the prose next to the block,
- * which already maps to columns; an element endpoint goes just inside the
- * block's wrapper, whose own stamp then bounds the anchor.
+ * which maps to the edge of that prose's lines (`linesEdge`), and so it
+ * keeps an element endpoint that names the same place as such a text
+ * endpoint, taken as that one (`textEndpointAt`): Chromium ends a drag out
+ * of a block at the start of the next block's element, where WebKit and
+ * Firefox end it in that block's text. Beside a block a comparison put back,
+ * such an endpoint in the version shown goes onto the edge of the block's
+ * rows instead, so that the selection stays in the removed content it
+ * selects. Any other element endpoint goes just inside the block's wrapper,
+ * whose own stamp then bounds the anchor.
  *
  * With `old`, a compared document's removed text and structure count as
  * content too (`OLD_WALK`), so that an end can move onto removed text the
@@ -1071,6 +1113,69 @@ export function endsOnContent(
   };
 }
 
+/**
+ * The text endpoint at the place an element endpoint names: the start of the
+ * text right after it, or the end of the text right before it, found by going
+ * down into the node on that side, never into a box. Null for an endpoint in
+ * a code block, which names no place beside one, and where that is no text
+ * other than whitespace, or lies in what the walk skips or in no block.
+ */
+function textEndpointAt(
+  at: Point,
+  side: "after" | "before",
+  walk: Walk,
+): Point | null {
+  if (at.node instanceof Element && at.node.closest(walk.code) !== null) {
+    return null;
+  }
+  let n: Node | null =
+    at.node.childNodes[side === "after" ? at.offset : at.offset - 1] ?? null;
+  while (n instanceof Element && !isBox(n, walk)) {
+    n = side === "after" ? n.firstChild : n.lastChild;
+  }
+  if (!(n instanceof Text) || !/\S/.test(n.data)) return null;
+  const near = n.parentElement;
+  if (near?.closest(walk.skip) != null || near?.closest(walk.block) == null) {
+    return null;
+  }
+  return { node: n, offset: side === "after" ? 0 : n.data.length };
+}
+
+/**
+ * Whether `at`, beside the code block `box` a comparison put back, lies in
+ * the version shown: taken there, it would take the end out of the removed
+ * content the selection selects.
+ */
+function leavesRemoved(box: Element, at: Point): boolean {
+  return (
+    box.matches(OLD_CODE_BLOCK) &&
+    elementNear(at.node)?.closest(DELETED_CONTENT) == null
+  );
+}
+
+/**
+ * The edge of the rows of a code block a comparison put back: the start of
+ * its first row, or the end of its last. Null where those rows need not show
+ * the block's own first and last lines: before pierre has drawn any, for an
+ * empty block, whose rows show no text, and for a patch, whose view draws
+ * only the rows in sight and folds whole files away.
+ */
+function rowEdge(box: Element, side: "before" | "after"): Point | null {
+  if (box.hasAttribute(FENCE_PATCH_ATTR)) return null;
+  const rows = [...box.querySelectorAll("diffs-container")].flatMap((host) => [
+    ...(host.shadowRoot?.querySelectorAll("[data-line]") ?? []),
+  ]);
+  if (rows.every((row) => rowText(row) === "")) return null;
+  const row = side === "before" ? rows[0] : rows.at(-1);
+  if (row === undefined) return null;
+  return { node: row, offset: side === "before" ? 0 : row.childNodes.length };
+}
+
+/** Whether `at` lies in text holding nothing but whitespace. */
+function onBlank(at: Point): boolean {
+  return at.node instanceof Text && !/\S/.test(at.node.data);
+}
+
 function startOn(content: Content, start: Point, walk: Walk): Point {
   if (content.kind === "text") {
     return {
@@ -1081,7 +1186,12 @@ function startOn(content: Content, start: Point, walk: Walk): Point {
   if (!content.el.matches(walk.code)) {
     return beside(content.el, "before");
   }
-  return start.node instanceof Text ? start : { node: content.el, offset: 0 };
+  const text =
+    start.node instanceof Text ? start : textEndpointAt(start, "before", walk);
+  const inside = { node: content.el, offset: 0 };
+  if (text === null) return inside;
+  if (!leavesRemoved(content.el, text)) return text;
+  return (onBlank(text) ? null : rowEdge(content.el, "before")) ?? inside;
 }
 
 function endOn(content: Content, end: Point, walk: Walk): Point {
@@ -1094,9 +1204,12 @@ function endOn(content: Content, end: Point, walk: Walk): Point {
   if (!content.el.matches(walk.code)) {
     return beside(content.el, "after");
   }
-  return end.node instanceof Text
-    ? end
-    : { node: content.el, offset: content.el.childNodes.length };
+  const inside = { node: content.el, offset: content.el.childNodes.length };
+  const text =
+    end.node instanceof Text ? end : textEndpointAt(end, "after", walk);
+  if (text === null) return inside;
+  if (!leavesRemoved(content.el, text)) return text;
+  return (onBlank(text) ? null : rowEdge(content.el, "after")) ?? inside;
 }
 
 /**
