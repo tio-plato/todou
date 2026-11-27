@@ -7,7 +7,15 @@ import {
 } from "@testing-library/react";
 import type { SpecCommentItem } from "@todou/shared";
 import { useState } from "react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import {
   AnnotatedMarkdown,
   type DisplayedAnnotation,
@@ -737,12 +745,64 @@ async function drawInBox(wrapper: Element, rows: string): Promise<Element> {
   return box;
 }
 
-/** Scroll `box`, and let the layout that schedules run. */
-async function scrollIn(box: Element): Promise<void> {
-  await act(async () => {
-    fireEvent.scroll(box);
-    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+/**
+ * Let `box` scroll as a browser's does through all but its 100px of
+ * `scrollHeight`, which starts at 400: in happy-dom every element measures
+ * 0, so none scrolls. Its `scrollTop` is the test's to set.
+ */
+function scrollable(box: Element): { scrollHeight: number } {
+  const size = { scrollHeight: 400 };
+  Object.defineProperties(box, {
+    scrollHeight: { configurable: true, get: () => size.scrollHeight },
+    clientHeight: { configurable: true, get: () => 100 },
   });
+  return size;
+}
+
+/**
+ * Scroll `box`, and read each chip's top and count in the same task, before
+ * any frame and anything React queued: what a browser paints with the rows
+ * the scroll moved.
+ */
+function scrollIn(
+  box: Element,
+  view: Pick<RenderResult, "queryAllByRole">,
+): ReturnType<typeof chipsOf> {
+  let chips: ReturnType<typeof chipsOf> = [];
+  act(() => {
+    fireEvent.scroll(box);
+    chips = chipsOf(view);
+  });
+  return chips;
+}
+
+/**
+ * Where `chip` is drawn with its box scrolled to `scrollTop`, as a browser
+ * runs the animation of `keyframes` on a timeline of the box's scroll range,
+ * `range`: the keyframes spread over that range by their offsets, the chip
+ * moves in a straight line from one to the next, and where two share an
+ * offset, the later holds from it on.
+ */
+function drawnAt(
+  chip: HTMLElement,
+  keyframes: Keyframe[],
+  range: number,
+  scrollTop: number,
+): number {
+  const progress = scrollTop / range;
+  const moves = keyframes.map(({ offset, transform }) => ({
+    at: offset ?? 0,
+    by: Number(/^translateY\((.+)px\)$/.exec(String(transform))?.[1]),
+  }));
+  const from = moves.findLastIndex(({ at }) => at <= progress);
+  const a = moves[from];
+  if (a === undefined) throw new Error(`no keyframe at ${progress}`);
+  const b = moves[from + 1];
+  const by =
+    b === undefined
+      ? a.by
+      : a.by + ((b.by - a.by) * (progress - a.at)) / (b.at - a.at);
+  return Number.parseFloat(chip.style.top) + by;
 }
 
 describe("chips on code rows", () => {
@@ -1119,23 +1179,114 @@ describe("chips on code rows", () => {
     const [wrapper] = wrappers;
     if (wrapper === undefined) throw new Error("no fence");
     const box = await drawInBox(wrapper, patchRows());
+    // A box that scrolls, in a browser with no ScrollTimeline: the page
+    // moves the chip itself.
+    scrollable(box);
     await waitFor(() => expect(chipsOf(view)).toEqual([["260px", 1]]));
     // Flush with the box's foot at 296, the row is still in it.
     scroll = 16;
-    await scrollIn(box);
-    expect(chipsOf(view)).toEqual([["276px", 1]]);
+    expect(scrollIn(box, view)).toEqual([["276px", 1]]);
     scroll = -40;
-    await scrollIn(box);
-    expect(chipsOf(view)).toEqual([["220px", 1]]);
+    expect(scrollIn(box, view)).toEqual([["220px", 1]]);
     // Scrolled out above the block's top, the chip stays there, where it
     // hangs once pierre drops the row.
     scroll = -100;
-    await scrollIn(box);
-    expect(chipsOf(view)).toEqual([["192px", 1]]);
+    expect(scrollIn(box, view)).toEqual([["192px", 1]]);
     // Past the box's foot at 296, a chip's height above it.
     scroll = 40;
-    await scrollIn(box);
-    expect(chipsOf(view)).toEqual([["274px", 1]]);
+    expect(scrollIn(box, view)).toEqual([["274px", 1]]);
+  });
+
+  it("hands a patch row's chip to the browser to move with its box", async () => {
+    class Timeline {
+      source: Element;
+      constructor({ source }: { source: Element }) {
+        this.source = source;
+      }
+    }
+    vi.stubGlobal("ScrollTimeline", Timeline);
+    const animate = vi.fn(
+      (_keyframes: Keyframe[], _options: KeyframeAnimationOptions) => ({
+        cancel: vi.fn(),
+      }),
+    );
+    Object.defineProperty(Element.prototype, "animate", {
+      configurable: true,
+      value: animate,
+    });
+    onTestFinished(() => {
+      Reflect.deleteProperty(Element.prototype, "animate");
+    });
+    // The row is at 260 with the box scrolled to 100, and moves up as far as
+    // the box scrolls past that.
+    let box: Element | undefined;
+    layOutRows(undefined, {
+      box: PATCH_BOX,
+      scrolled: () => 100 - (box?.scrollTop ?? 100),
+    });
+    const { view, wrappers } = await renderDocument(PATCH_FENCE, [
+      wholeLines("comment", 15, 15),
+    ]);
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    box = await drawInBox(wrapper, patchRows());
+    box.scrollTop = 100;
+    // A box that cannot scroll leaves its chip to the page.
+    await waitFor(() => expect(chipsOf(view)).toEqual([["260px", 1]]));
+    expect(animate).not.toHaveBeenCalled();
+    // Given 300px to scroll through, the box takes the chip along from that
+    // same top on.
+    const size = scrollable(box);
+    expect(scrollIn(box, view)).toEqual([["260px", 1]]);
+    const chip = view.getByRole("button", {
+      name: /^\d+ comments?$/,
+    });
+    expect(animate).toHaveBeenCalledOnce();
+    expect(animate.mock.contexts[0]).toBe(chip);
+    const [keyframes, options] = animate.mock.calls[0] ?? [];
+    if (keyframes === undefined) throw new Error("no keyframes");
+    expect(options?.timeline).toBeInstanceOf(Timeline);
+    expect((options?.timeline as Timeline | undefined)?.source).toBe(box);
+    // Beside the row while it is in the box; at the block's top once it is
+    // scrolled out above; a chip's height above the box's foot at 296 while
+    // the row's foot is past it, and beside the row again from where its
+    // foot meets the box's.
+    const drawn = (scrollTop: number) =>
+      drawnAt(chip, keyframes, 300, scrollTop);
+    expect(drawn(100)).toBeCloseTo(260);
+    expect(drawn(140)).toBeCloseTo(220);
+    expect(drawn(200)).toBeCloseTo(192);
+    expect(drawn(80)).toBeCloseTo(274);
+    expect(drawn(84)).toBeCloseTo(276);
+    // Only scrolling: the page leaves the chip, and its animation, alone.
+    box.scrollTop = 140;
+    expect(scrollIn(box, view)).toEqual([["260px", 1]]);
+    expect(animate).toHaveBeenCalledOnce();
+    expect(animate.mock.results[0]?.value.cancel).not.toHaveBeenCalled();
+    // The box's range grows to 400: the animation is made again for it.
+    size.scrollHeight = 500;
+    scrollIn(box, view);
+    expect(animate.mock.results[0]?.value.cancel).toHaveBeenCalled();
+    expect(animate).toHaveBeenCalledTimes(2);
+    const [regrown] = animate.mock.calls[1] ?? [];
+    if (regrown === undefined) throw new Error("no keyframes");
+    expect(drawnAt(chip, regrown, 400, 140)).toBeCloseTo(220);
+    expect(drawnAt(chip, regrown, 400, 200)).toBeCloseTo(192);
+    // The rows move to a box of their own, as long and scrolled as far: the
+    // chip goes along with that box, not the one gone from the page.
+    const again = document.createElement("div");
+    again.style.overflowY = "auto";
+    scrollable(again).scrollHeight = 500;
+    again.scrollTop = 140;
+    again.append(...box.childNodes);
+    box.replaceWith(again);
+    box = again;
+    scrollIn(again, view);
+    expect(animate.mock.results[1]?.value.cancel).toHaveBeenCalled();
+    expect(animate).toHaveBeenCalledTimes(3);
+    expect(
+      (animate.mock.calls[2]?.[1].timeline as Timeline | undefined)?.source,
+    ).toBe(again);
   });
 
   it("hangs a patch line pierre has not drawn at its box's foot only when every drawn row comes before it", async () => {
