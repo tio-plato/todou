@@ -972,8 +972,12 @@ export function beside(el: Element, side: "before" | "after"): Point {
  * Text takes the endpoint onto its first or last character that is not
  * whitespace; an image or a shadow host, beside it. A code block keeps a
  * text endpoint where it is, at the edge of the prose next to the block,
- * which already maps to columns; an element endpoint goes just inside the
- * block's wrapper, whose own stamp then bounds the anchor.
+ * which already maps to columns, and so it keeps an element endpoint that
+ * names the same place as such a text endpoint, taken as that one
+ * (`textEndpointAt`): Chromium ends a drag out of a block at the start of
+ * the next block's element, where WebKit and Firefox end it in that block's
+ * text. Any other element endpoint goes just inside the block's wrapper,
+ * whose own stamp then bounds the anchor.
  *
  * With `old`, a compared document's removed text and structure count as
  * content too (`OLD_WALK`), so that an end can move onto removed text the
@@ -1004,6 +1008,27 @@ export function endsOnContent(
   };
 }
 
+/**
+ * The text endpoint at the place an element endpoint names: the start of the
+ * text right after it, or the end of the text right before it, found by going
+ * down into the node on that side, never into a box. Null where that is no
+ * text other than whitespace, or lies in what the walk skips.
+ */
+function textEndpointAt(
+  at: Point,
+  side: "after" | "before",
+  walk: Walk,
+): Point | null {
+  let n: Node | null =
+    at.node.childNodes[side === "after" ? at.offset : at.offset - 1] ?? null;
+  while (n instanceof Element && !isBox(n, walk)) {
+    n = side === "after" ? n.firstChild : n.lastChild;
+  }
+  if (!(n instanceof Text) || !/\S/.test(n.data)) return null;
+  if (n.parentElement?.closest(walk.skip) != null) return null;
+  return { node: n, offset: side === "after" ? 0 : n.data.length };
+}
+
 function startOn(content: Content, start: Point, walk: Walk): Point {
   if (content.kind === "text") {
     return {
@@ -1014,7 +1039,10 @@ function startOn(content: Content, start: Point, walk: Walk): Point {
   if (!content.el.matches(walk.code)) {
     return beside(content.el, "before");
   }
-  return start.node instanceof Text ? start : { node: content.el, offset: 0 };
+  if (start.node instanceof Text) return start;
+  return (
+    textEndpointAt(start, "before", walk) ?? { node: content.el, offset: 0 }
+  );
 }
 
 function endOn(content: Content, end: Point, walk: Walk): Point {
@@ -1027,9 +1055,13 @@ function endOn(content: Content, end: Point, walk: Walk): Point {
   if (!content.el.matches(walk.code)) {
     return beside(content.el, "after");
   }
-  return end.node instanceof Text
-    ? end
-    : { node: content.el, offset: content.el.childNodes.length };
+  if (end.node instanceof Text) return end;
+  return (
+    textEndpointAt(end, "after", walk) ?? {
+      node: content.el,
+      offset: content.el.childNodes.length,
+    }
+  );
 }
 
 /**

@@ -2444,6 +2444,41 @@ describe("column anchors at the edges of code rows", () => {
     );
     if (into === null) throw new Error("no anchor");
     expect(cut(lines, into)).toBe("const");
+    // The same two drags with the paragraph's end on its element, where
+    // Chromium puts it: at the start of the one below, at the end of the
+    // one above.
+    const below = outro?.parentNode;
+    const downToElement = anchorForSelection(
+      container,
+      index,
+      ends(last, 6, below, 0),
+    );
+    if (downToElement === null) throw new Error("no anchor");
+    expect(cut(lines, downToElement)).toBe("charlie = 3;");
+    const above = intro?.parentNode;
+    const intoFromElement = anchorForSelection(
+      container,
+      index,
+      ends(above, above?.childNodes.length ?? 0, first, 5),
+    );
+    if (intoFromElement === null) throw new Error("no anchor");
+    expect(cut(lines, intoFromElement)).toBe("const");
+  });
+
+  it("keeps a fence's lines for an element end in the gap after it", () => {
+    const source = `Intro words.\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n\nOutro words.\n`;
+    const { container, shadow, index } = fenceWithRows(source, TOKEN_ROWS);
+    const last = shadow.querySelector("[data-line='3'] span")?.firstChild;
+    const wrapper = container.querySelector("[data-loc-content-start]");
+    const gap = wrapper?.parentNode;
+    if (!wrapper || !gap) throw new Error("no fence");
+    const at = [...gap.childNodes].indexOf(wrapper as ChildNode) + 1;
+    // Only the line feed between two blocks is at that place, no text to
+    // take the end as.
+    expect(gap.childNodes[at]?.textContent).toBe("\n");
+    expect(
+      anchorForSelection(container, index, ends(last, 6, gap, at)),
+    ).toEqual({ lineStart: 3, lineEnd: 7, colStart: null, colEnd: null });
   });
 
   it("reaches a patch row that names no single line", () => {
@@ -3302,6 +3337,129 @@ describe("anchoring a compared document", () => {
     expect(
       quoted(before, anchor(ends(para.node, para.at, below.node, below.at))),
     ).toBe(["Removed para.", "", "```ts", ...kept].join("\n"));
+  });
+
+  it("anchors an element end beside an edited block to the baseline as the text end there", async () => {
+    const before = [
+      "Intro.",
+      "",
+      "Removed para.",
+      "",
+      "```ts",
+      "old();",
+      "keep();",
+      "gone();",
+      "```",
+      "",
+      "Removed too.",
+      "",
+    ].join("\n");
+    const after = ["Intro.", "", "```ts", "new();", "keep();", "```", ""].join(
+      "\n",
+    );
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    const shadow = drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-line-type="change-deletion">old();</div>
+       <div data-line="1" data-line-type="change-addition">new();</div>
+       <div data-line="2" data-alt-line="2" data-line-type="context">keep();</div>
+       <div data-line="3" data-line-type="change-deletion">gone();</div>`,
+    );
+    const rows = [...shadow.querySelectorAll("[data-line]")];
+    const [old, gone] = [rows[0], rows[3]].map((row) => row?.firstChild);
+    const [above, below] = container.querySelectorAll("p.spec-del-structure");
+    // From the last row to the start of the paragraph removed below, on its
+    // element, as Chromium ends such a drag: on the baseline, from that row.
+    expect(anchor(ends(gone, 0, below, 0))).toMatchObject({
+      lineStart: 8,
+      colStart: 1,
+      baseline: true,
+    });
+    // From the end of the paragraph removed above, on its element, into the
+    // first row: on the baseline, up to that row.
+    expect(
+      anchor(ends(above, above?.childNodes.length ?? 0, old, 3)),
+    ).toMatchObject({ lineEnd: 6, colEnd: 3, baseline: true });
+  });
+
+  it("anchors an element end below an edited block whose last line is unchanged to the baseline", async () => {
+    const kept = ["k1();", "k2();", "k3();"];
+    const before = [
+      "Intro.",
+      "",
+      "Removed para.",
+      "",
+      "```ts",
+      ...kept,
+      "```",
+      "",
+      "Removed too.",
+      "",
+    ].join("\n");
+    const after = ["Intro.", "", "```ts", "new();", ...kept, "```", ""].join(
+      "\n",
+    );
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-line-type="change-addition">new();</div>
+       <div data-line="2" data-alt-line="1" data-line-type="context">k1();</div>
+       <div data-line="3" data-alt-line="2" data-line-type="context">k2();</div>
+       <div data-line="4" data-alt-line="3" data-line-type="context">k3();</div>`,
+    );
+    const [above, below] = container.querySelectorAll("p.spec-del-structure");
+    // The block's last row is no removed content, but the end, at the start
+    // of the paragraph removed below, is.
+    expect(anchor(ends(above?.firstChild, 0, below, 0))).toMatchObject({
+      lineStart: 3,
+      colStart: 1,
+      baseline: true,
+    });
+  });
+
+  it("anchors a drag from the version shown to the start of a paragraph removed below an edited block to the version shown", async () => {
+    const before = [
+      "Intro.",
+      "",
+      "```ts",
+      "old();",
+      "keep();",
+      "gone();",
+      "```",
+      "",
+      "Removed too.",
+      "",
+    ].join("\n");
+    const after = ["Intro.", "", "```ts", "new();", "keep();", "```", ""].join(
+      "\n",
+    );
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-line-type="change-deletion">old();</div>
+       <div data-line="1" data-line-type="change-addition">new();</div>
+       <div data-line="2" data-alt-line="2" data-line-type="context">keep();</div>
+       <div data-line="3" data-line-type="change-deletion">gone();</div>`,
+    );
+    const intro = textAt(container, "p[data-loc]", "Intro.");
+    const below = container.querySelector("p.spec-del-structure");
+    // The end moves out of the removed paragraph to just before it, where
+    // the version shown has no text to take it as.
+    const selected = anchor(ends(intro.node, intro.at, below, 0));
+    expect(selected).toMatchObject({ lineStart: 1 });
+    expect(selected?.baseline).toBeUndefined();
   });
 
   it("starts a baseline anchor past the indent of an edited block's context row", async () => {
