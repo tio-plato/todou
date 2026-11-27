@@ -288,6 +288,30 @@ describe("quotableSelection", () => {
     ).toBe("tw");
   });
 
+  it("cuts a word after a lone CR soft break to its characters", async () => {
+    const { a } = await renderTwo(
+      comment(1, "> eta\r> theta iota\n"),
+      comment(2, B),
+    );
+    const text = textWith(a, "theta");
+    const at = text.data.indexOf("theta");
+    expect(
+      quoted(quotableSelection(select(text, at, text, at + 5), document)),
+    ).toBe("theta");
+  });
+
+  it("cuts a word out of a body whose line breaks are all lone CRs", async () => {
+    // Counted by `\n`, every block of such a body is on its one line.
+    const { a } = await renderTwo(
+      comment(1, "> eta\r> theta iota\r\r```\rnu\rxi\r```\r\romicron pi\r"),
+      comment(2, B),
+    );
+    const text = textWith(a, "omicron");
+    expect(quoted(quotableSelection(select(text, 0, text, 7), document))).toBe(
+      "omicron",
+    );
+  });
+
   it("anchors a word before a fold on an item's second line to its columns", async () => {
     // A message's line break cuts its text apart, into pieces with no
     // position: the fold after `xx` is part of that line all the same.

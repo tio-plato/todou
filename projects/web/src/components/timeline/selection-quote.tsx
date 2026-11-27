@@ -16,6 +16,7 @@ import { createPortal } from "react-dom";
 import type { AnchorRange } from "@/components/spec/selection-entry.tsx";
 import { useQuoteReply } from "@/components/timeline/quote-reply.tsx";
 import { Button } from "@/components/ui/button";
+import { withLineFeeds } from "@/lib/markdown-processor.ts";
 import { quoteOfSelection } from "@/lib/quote-markdown.ts";
 import {
   cutsQuote,
@@ -195,11 +196,12 @@ function endsInShadowOf(ends: SelectionEndpoints, body: Element): boolean {
 function anchorIn(el: Element, ends: SelectionEndpoints): QuotedPart | null {
   const shown = BODIES.get(el);
   if (shown === undefined) return null;
-  shown.index ??= buildSegmentIndex(shown.source);
+  // Read as `MarkdownView` renders a message, so its lines are the ones on
+  // the page.
+  const source = withLineFeeds(shown.source);
+  shown.index ??= buildSegmentIndex(source);
   const anchor = anchorForSelection(el, shown.index, ends);
-  return anchor === null
-    ? null
-    : { el, source: shown.source, part: shown.part, anchor };
+  return anchor === null ? null : { el, source, part: shown.part, anchor };
 }
 
 /**

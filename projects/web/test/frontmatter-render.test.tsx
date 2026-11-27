@@ -27,10 +27,16 @@ async function mount(
     slug,
     client,
     preview = false,
-  }: { slug?: string; client?: QueryClient; preview?: boolean } = {},
+    document = false,
+  }: {
+    slug?: string;
+    client?: QueryClient;
+    preview?: boolean;
+    document?: boolean;
+  } = {},
 ): Promise<HTMLElement> {
   const { container } = renderWithProviders(
-    <MarkdownView slug={slug} preview={preview}>
+    <MarkdownView slug={slug} preview={preview} document={document}>
       {source}
     </MarkdownView>,
     client ?? testQueryClient(),
@@ -150,10 +156,12 @@ describe("frontmatter rendering", () => {
     ]);
   });
 
-  it("ends the fields at the closing fence past a lone \\r", async () => {
-    // A lone `\r` ends no line of the source: a field's value keeps it.
+  it("ends a file's fields at the closing fence past a lone \\r", async () => {
+    // A lone `\r` ends no line of a document's source: a field's value
+    // keeps it.
     const container = await mount(
       "---\ntitle: a\rb\nstatus: x\n---\n\nBody.\n",
+      { document: true },
     );
     expect(fieldsOf(container)).toEqual([
       ["title", "a\rb"],

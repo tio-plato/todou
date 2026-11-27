@@ -20,11 +20,18 @@ vi.mock("@pierre/diffs/react", () => ({
   useWorkerPool: () => undefined,
 }));
 
-async function mount(source: string, collapseLongFences?: boolean) {
+async function mount(
+  source: string,
+  {
+    collapseLongFences,
+    document = false,
+  }: { collapseLongFences?: boolean; document?: boolean } = {},
+) {
   const { container } = renderWithProviders(
     <MarkdownView
       rehypePlugins={[rehypeSourceLines]}
       collapseLongFences={collapseLongFences}
+      document={document}
     >
       {source}
     </MarkdownView>,
@@ -67,7 +74,7 @@ describe("fence frames (T-706)", () => {
   });
 
   it("leaves a long fence whole where collapsing is off", async () => {
-    const container = await mount(LONG, false);
+    const container = await mount(LONG, { collapseLongFences: false });
     expect(container.querySelector(".fence-scroll")).toBeNull();
     expect(screen.queryByRole("button", { name: "Expand" })).toBeNull();
   });
@@ -99,11 +106,24 @@ describe("fence frames (T-706)", () => {
     expect(wrapper?.querySelector(".fence-head")).not.toBeNull();
   });
 
-  it("counts the stamps' lines by line feeds past a lone \\r", async () => {
-    // micromark ends a line at a lone `\r` as well; the source's lines, and
+  it("keeps a CRLF message's lines past a diff's \\r\\r\\n line ends", async () => {
+    // A CRLF file's patch pasted into a CRLF body: each of its lines ends
+    // in the file's own `\r`, then the body's CRLF.
+    const md = "intro\r\n\r\n```diff\r\n-a\r\r\n+b\r\r\n```\r\n\r\nafter\r\n";
+    const container = await mount(md);
+    const wrapper = container.querySelector("div.markdown-fence");
+    expect(wrapper?.getAttribute("data-loc")).toBe("3-6");
+    const after = [...container.querySelectorAll("p[data-loc]")].find(
+      (p) => p.textContent === "after",
+    );
+    expect(after?.getAttribute("data-loc")).toBe("8-8");
+  });
+
+  it("counts a file's stamped lines by line feeds past a lone \\r", async () => {
+    // micromark ends a line at a lone `\r` as well; a document's lines, and
     // the server's, end at `\n` alone.
     const md = "intro\rmore\n\n```text\nalpha\rbeta\n```\n\nafter\n";
-    const container = await mount(md);
+    const container = await mount(md, { document: true });
     const wrapper = container.querySelector("div.markdown-fence");
     expect(wrapper?.getAttribute("data-loc")).toBe("3-5");
     expect(wrapper?.getAttribute("data-loc-content-start")).toBe("4");
