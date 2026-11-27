@@ -22,6 +22,7 @@ import {
   HoverCardTrigger,
 } from "@/components/ui/hover-card.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
+import { useReadFailure } from "@/lib/use-read-failure.ts";
 import { cn } from "@/lib/utils";
 
 /**
@@ -163,38 +164,61 @@ export function TemplatePreview({ template }: { template: UsableTemplate }) {
  * `HoverCardContent` renders nothing until the card opens, so hooks out at
  * the trigger would send four reads for every project the list draws. The
  * line comes from the single-project read; listed projects do not carry it.
+ *
+ * A failed read goes through `useReadFailure`, as the app's other reads do:
+ * a transient one keeps what was read under a notice, a refused one replaces
+ * it with the error. No Retry: nothing in the card takes focus, and hovering
+ * the row again rereads.
  */
 function ProjectPreview({ slug }: { slug: string }) {
   const statuses = useQuery(statusesQuery(slug));
   const project = useQuery(projectQuery(slug));
   const settings = useQuery(insightsSettingsQuery(slug));
   const labels = useQuery(labelsQuery(slug));
-  if (
-    statuses.data !== undefined &&
-    project.data !== undefined &&
-    settings.data !== undefined &&
-    labels.data !== undefined
-  ) {
+  const statusRows = statuses.data;
+  const projectRow = project.data;
+  const chartSettings = settings.data;
+  const labelRows = labels.data;
+  const hasContent =
+    statusRows !== undefined &&
+    projectRow !== undefined &&
+    chartSettings !== undefined &&
+    labelRows !== undefined;
+  const { replace, notice } = useReadFailure(
+    [statuses, project, settings, labels].map((read) =>
+      read.isError ? read.error : null,
+    ),
+    hasContent,
+    [
+      statusesQuery(slug).queryKey,
+      projectQuery(slug).queryKey,
+      insightsSettingsQuery(slug).queryKey,
+      labelsQuery(slug).queryKey,
+    ],
+  );
+  if (replace) {
+    return <p className="text-sm text-destructive">{replace}</p>;
+  }
+  if (!hasContent) {
     return (
-      <SetPreview
-        statuses={withChartRoles(statuses.data, settings.data)}
-        lineStatusId={project.data.block_clear_status_id ?? null}
-        labels={labels.data}
-      />
+      <div className="space-y-1.5">
+        <Skeleton className="h-3 w-full" />
+        <Skeleton className="h-3 w-4/5" />
+      </div>
     );
   }
-  // Only a read with nothing to show: a cached one whose reread failed still
-  // has its data, and an error then would hide a preview it can draw.
-  const failed = [statuses, project, settings, labels].find(
-    (read) => read.data === undefined && read.error !== null,
-  );
-  if (failed?.error) {
-    return <p className="text-sm text-destructive">{failed.error.message}</p>;
-  }
   return (
-    <div className="space-y-1.5">
-      <Skeleton className="h-3 w-full" />
-      <Skeleton className="h-3 w-4/5" />
+    <div className="space-y-3">
+      {notice && (
+        <p role="status" className="text-sm text-amber-800 dark:text-amber-200">
+          Couldn't refresh this project ({notice}) — showing saved data.
+        </p>
+      )}
+      <SetPreview
+        statuses={withChartRoles(statusRows, chartSettings)}
+        lineStatusId={projectRow.block_clear_status_id ?? null}
+        labels={labelRows}
+      />
     </div>
   );
 }

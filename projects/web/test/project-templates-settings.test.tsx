@@ -28,6 +28,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { prefsQuery } from "../src/api/prefs.ts";
 import {
   labelsQuery,
+  projectQuery,
   projectsQuery,
   projectTemplatesQuery,
 } from "../src/api/queries.ts";
@@ -180,7 +181,7 @@ function fakeServer({
   templates = TEMPLATES as ProjectTemplate[],
 } = {}) {
   const calls: Call[] = [];
-  const failing = new Set<string>();
+  const failing = new Map<string, number>();
   const stored = new Map(templates.map((t) => [t.ref, structuredClone(t)]));
   const waiting: Array<() => void> = [];
   let prefs = PREFS;
@@ -241,8 +242,11 @@ function fakeServer({
       return json(200, prefs);
     }
     if (path === "/me/prefs" && method === "GET") return json(200, prefs);
-    if (failing.has(path)) {
-      return json(500, { error: { code: "internal", message: "read failed" } });
+    const failure = failing.get(path);
+    if (failure !== undefined) {
+      return json(failure, {
+        error: { code: "internal", message: "read failed" },
+      });
     }
     const read = TODOU_READS[path];
     if (read !== undefined && method === "GET") return json(200, read);
@@ -264,8 +268,8 @@ function fakeServer({
     },
     /** The templates as a GET would answer now. */
     list: () => [...stored.values()],
-    /** From now on, answer `path` with a 500. */
-    fail: (path: string) => failing.add(path),
+    /** From now on, answer `path` with `status`, 500 unless given. */
+    fail: (path: string, status = 500) => failing.set(path, status),
   };
 }
 
@@ -1054,7 +1058,24 @@ describe("the New template dialog", () => {
     expect(todou.getAttribute("aria-selected")).toBe("false");
   });
 
-  it("keeps a project's preview when a reread of it fails", async () => {
+  it("shows the error when a project's first read fails", async () => {
+    const server = fakeServer();
+    // One read of the four: the others' data must not count as a preview.
+    server.fail("/projects/todou/labels");
+    const { dialog } = await openDialog();
+    fireEvent.click(dialog.getByRole("button", { name: "Project" }));
+    hover(
+      within(dialog.getByRole("option", { name: /todou/ })).getAllByText(
+        "todou",
+      )[0] as HTMLElement,
+    );
+    const card = await previewCard();
+    await within(card).findByText("read failed");
+    expect(within(card).queryByText("Doing")).toBeNull();
+    expect(card.querySelectorAll("[title]")).toHaveLength(0);
+  });
+
+  it("keeps a project's preview, saying a reread of it failed", async () => {
     const server = fakeServer();
     const client = testQueryClient();
     const { dialog } = await openDialog(client);
@@ -1096,7 +1117,52 @@ describe("the New template dialog", () => {
         chip.getAttribute("title"),
       ),
     ).toEqual(["area:web", "kind:bug"]);
-    expect(within(card).queryByText("read failed")).toBeNull();
+    // Not by role: the status list's dnd-kit announcer is a status as well.
+    // Found rather than got: the query flips to error before its observers
+    // hear of it.
+    await within(card).findByText(/read failed/);
+  });
+
+  it("replaces a project's preview with the error when a reread of it is refused", async () => {
+    const server = fakeServer();
+    const client = testQueryClient();
+    const { dialog } = await openDialog(client);
+    fireEvent.click(dialog.getByRole("button", { name: "Project" }));
+    const name = within(
+      dialog.getByRole("option", { name: /todou/ }),
+    ).getAllByText("todou")[0] as HTMLElement;
+    hover(name);
+    await within(await previewCard()).findByText("kind:", { exact: false });
+    fireEvent.pointerOut(name, {
+      pointerType: "mouse",
+      bubbles: true,
+      relatedTarget: document.body,
+    });
+    await waitFor(() =>
+      expect(
+        document.querySelectorAll("[data-slot='hover-card-content']"),
+      ).toHaveLength(0),
+    );
+
+    // The project is reread as the card opens again, and it is gone.
+    server.fail("/projects/todou", 404);
+    await act(() =>
+      client.invalidateQueries({ queryKey: projectQuery("todou").queryKey }),
+    );
+    hover(name);
+    const card = await previewCard();
+    await waitFor(() =>
+      expect(client.getQueryState(projectQuery("todou").queryKey)?.status).toBe(
+        "error",
+      ),
+    );
+    expect(
+      server.calls.filter((c) => c.path === "/projects/todou"),
+    ).toHaveLength(2);
+    // Waited for: the query flips to error before its observers hear of it.
+    await waitFor(() => expect(within(card).queryByText("Doing")).toBeNull());
+    expect(card.querySelectorAll("[title]")).toHaveLength(0);
+    expect(within(card).getByText("read failed")).toBeTruthy();
   });
 
   it("says a project must be picked before Create", async () => {
