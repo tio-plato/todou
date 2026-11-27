@@ -47,7 +47,10 @@ Cases:
                        scrolls and lands a click where ↓ lands; its tooltip
                        covers an open comment popover; the outline opens a
                        folded heading it jumps to and marks the section past
-                       the reading line.
+                       the reading line. At the top of the page the strip is
+                       not under the toolbar, and once the toolbar stops the
+                       whole strip is in the window, with file comments above
+                       the card and after they go.
 
 Usage:
   node scripts/browser-layout-smoke.mjs

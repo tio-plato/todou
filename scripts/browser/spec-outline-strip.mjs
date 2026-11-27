@@ -180,11 +180,36 @@ export async function seedSpecOutlineFixture(serverPort) {
   };
 }
 
-/** Before the app loads: the reader's draft, and whether folding is on. */
-function setupSource(fixture, fold) {
+/**
+ * `count` file-level drafts, a few lines each, which stand in the File
+ * comments box above the card.
+ */
+function fileDrafts(path, version, count) {
+  return Array.from({ length: count }, (_, i) => ({
+    id: `file-draft-${i + 1}`,
+    anchor: {
+      path,
+      version,
+      line_start: null,
+      line_end: null,
+      col_start: null,
+      col_end: null,
+    },
+    quote: "",
+    body: [1, 2, 3, 4]
+      .map((line) => `File comment ${i + 1}, line ${line}.`)
+      .join("\n"),
+  }));
+}
+
+/**
+ * Before the app loads: the reader's draft and any `extraDrafts`, and whether
+ * folding is on.
+ */
+function setupSource(fixture, fold, extraDrafts = []) {
   return `(() => {
     try {
-      localStorage.setItem(${JSON.stringify(fixture.draftKey)}, ${JSON.stringify(JSON.stringify(fixture.drafts))});
+      localStorage.setItem(${JSON.stringify(fixture.draftKey)}, ${JSON.stringify(JSON.stringify([...fixture.drafts, ...extraDrafts]))});
       localStorage.setItem("todou-spec-fold", ${JSON.stringify(fold ? "on" : "off")});
     } catch {}
   })()`;
@@ -313,6 +338,16 @@ function probeSource() {
       const b = bar(), toolbar = document.querySelector("div[data-header-follow]");
       return b && toolbar ? { bar: box(b), toolbar: box(toolbar), innerHeight } : null;
     };
+    /** The File comments box above the card, while it is there. */
+    const fileComments = () => [...document.querySelectorAll("main h3")]
+      .find((el) => el.textContent.trim() === "File comments")?.parentElement ?? null;
+    /** Discards every draft in the File comments box; how many it pressed. */
+    const discardFileComments = () => {
+      const buttons = [...(fileComments()?.querySelectorAll("button") ?? [])]
+        .filter((el) => el.textContent.trim() === "Discard");
+      for (const button of buttons) button.click();
+      return buttons.length;
+    };
     const settle = async () => {
       let last = null, same = 0;
       for (let frames = 0; frames < 600 && same < 6; frames += 1) {
@@ -410,7 +445,7 @@ function probeSource() {
       }
       return pick;
     };
-    window.__specOutline = { ready, layout, ticks, band, settle, restingFor, end, chipCenter, popover, tooltip, hits, rowCenter, current, expectedCurrent, folded, headingTop, stops: () => stops().length };
+    window.__specOutline = { ready, layout, ticks, band, fileCommentsShown: () => fileComments() !== null, discardFileComments, settle, restingFor, end, chipCenter, popover, tooltip, hits, rowCenter, current, expectedCurrent, folded, headingTop, stops: () => stops().length };
   })()`;
 }
 
@@ -448,12 +483,20 @@ async function pressEscape(page) {
     });
 }
 
-async function openPage({ context, stack, fixture, fault, viewport, fold }) {
+async function openPage({
+  context,
+  stack,
+  fixture,
+  fault,
+  viewport,
+  fold,
+  extraDrafts = [],
+}) {
   const page = await context.newPage({
     viewport: { ...viewport, deviceScaleFactor: 1 },
     cookie: fixture.cookie,
     scripts: [
-      setupSource(fixture, fold),
+      setupSource(fixture, fold, extraDrafts),
       probeSource(),
       faultSource(fault),
     ].filter(Boolean),
@@ -465,6 +508,70 @@ async function openPage({ context, stack, fixture, fault, viewport, fold }) {
   await evaluate(page, () => document.fonts.ready.then(() => true));
   await settle(page);
   return page;
+}
+
+/**
+ * Check 0, whatever stands above the card (`when` says what): at the top of
+ * the page the strip is not under the toolbar, and once the toolbar has
+ * stopped the whole strip is in the window.
+ */
+async function checkStripInWindow(page, width, when) {
+  const failures = [];
+  await evaluate(page, () => window.scrollTo(0, 0));
+  await settle(page);
+  const atTop = await evaluate(page, () => window.__specOutline.band());
+  if (atTop === null)
+    return [
+      failure("spec-strip-missing", `${when}: no bar or no toolbar`, width),
+    ];
+  if (atTop.bar.top < atTop.toolbar.bottom - EPSILON)
+    failures.push(
+      failure(
+        "strip-under-toolbar",
+        `${when}: at the top of the page the bar starts at ${atTop.bar.top}, the toolbar ends at ${atTop.toolbar.bottom}`,
+        width,
+      ),
+    );
+  // How far the page scrolls before the toolbar stops.
+  await evaluate(page, () =>
+    window.scrollTo(0, window.__specOutline.end() / 2),
+  );
+  await settle(page);
+  const stuck = await evaluate(page, () => window.__specOutline.band());
+  if (stuck === null)
+    return [
+      ...failures,
+      failure(
+        "spec-strip-missing",
+        `${when}: mid-page, no bar or no toolbar`,
+        width,
+      ),
+    ];
+  const travel = Math.max(0, atTop.toolbar.bottom - stuck.toolbar.bottom);
+  await evaluate(page, (y) => window.scrollTo(0, y), Math.ceil(travel));
+  await settle(page);
+  const stopped = await evaluate(page, () => window.__specOutline.band());
+  if (stopped === null)
+    return [
+      ...failures,
+      failure(
+        "spec-strip-missing",
+        `${when}: scrolled ${Math.ceil(travel)}px, no bar or no toolbar`,
+        width,
+      ),
+    ];
+  if (
+    stopped.bar.top < stopped.toolbar.bottom - EPSILON ||
+    stopped.bar.bottom > stopped.innerHeight + EPSILON
+  )
+    failures.push(
+      failure(
+        "strip-below-window",
+        `${when}: scrolled ${Math.ceil(travel)}px, the bar runs ${stopped.bar.top}–${stopped.bar.bottom} under a toolbar ending at ${stopped.toolbar.bottom}, in a window ${stopped.innerHeight}px tall`,
+        width,
+      ),
+    );
+  return failures;
 }
 
 /** Checks 1–6, on an unfolded document. */
@@ -758,6 +865,8 @@ async function runPass({ browser, stack, fixture, fault, label }) {
   try {
     for (const viewport of VIEWPORTS) {
       for (const fold of [false, true]) {
+        // The unfolded page opens with file comments above the card, and
+        // goes on without them.
         const page = await openPage({
           context,
           stack,
@@ -765,11 +874,47 @@ async function runPass({ browser, stack, fixture, fault, label }) {
           fault,
           viewport,
           fold,
+          extraDrafts: fold
+            ? []
+            : fileDrafts(PATH, fixture.drafts[0].anchor.version, 3),
         });
         try {
-          const found = fold
-            ? await checkOutline(page, viewport.width)
-            : await checkStrip(page, viewport.width);
+          const found = [];
+          if (fold) found.push(...(await checkOutline(page, viewport.width)));
+          else {
+            found.push(
+              ...(await checkStripInWindow(
+                page,
+                viewport.width,
+                "file comments",
+              )),
+            );
+            const discarded = await evaluate(page, () =>
+              window.__specOutline.discardFileComments(),
+            );
+            if (discarded !== 3)
+              found.push(
+                failure(
+                  "fixture-file-comments",
+                  `discarded ${discarded} file comments, not 3`,
+                  viewport.width,
+                ),
+              );
+            await waitFor(
+              page,
+              "the File comments box to go",
+              () => !window.__specOutline.fileCommentsShown(),
+              5_000,
+            );
+            found.push(
+              ...(await checkStripInWindow(
+                page,
+                viewport.width,
+                "file comments gone",
+              )),
+              ...(await checkStrip(page, viewport.width)),
+            );
+          }
           failures.push(...found);
           if (FAULT_CSS[fault])
             injected += (await evaluate(
