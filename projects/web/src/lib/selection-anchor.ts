@@ -125,6 +125,10 @@ type BlockAlignment = {
   /** Text nodes the renderer inserted, which take no room there. */
   inserted: Set<Node>;
   atoms: Atom[];
+  /** Where each atom stands in the joined text, as one character. */
+  atomAt: Map<Element, number>;
+  /** The lines of the blocks nested in this one, merged. */
+  nested: Array<{ start: number; end: number }>;
 };
 
 /** What an atom stands for in the joined text: one character. */
@@ -304,10 +308,10 @@ function alignBlock(
   // a span that is not its element's own: `remarkIssueRefs` cuts a project
   // autolink out of a text node, and when that node's pieces cannot be found
   // every piece gets the whole node's position.
-  return (
+  const aligned =
     lineUp(index, own, itemsOf(block, own, false)) ??
-    lineUp(index, own, itemsOf(block, own, true))
-  );
+    lineUp(index, own, itemsOf(block, own, true));
+  return aligned === null ? null : { ...aligned, nested };
 }
 
 /**
@@ -380,7 +384,7 @@ function lineUp(
   index: SegmentIndex,
   own: SourceSegment[],
   { items, atoms }: { items: Node[]; atoms: Atom[] },
-): BlockAlignment | null {
+): Omit<BlockAlignment, "nested"> | null {
   const cut =
     atoms.length === 0
       ? { segments: own, placeholders: new Set<SourceSegment>() }
@@ -396,10 +400,12 @@ function lineUp(
   }
   const offsets = new Map<Node, number>();
   const inserted = new Set<Node>();
+  const placed = new Map<Element, number>();
   let at = 0;
   for (const item of items) {
     if (item.nodeType !== Node.TEXT_NODE) {
       if (!atomAt.includes(at)) return null;
+      placed.set(item as Element, at);
       at += 1;
       continue;
     }
@@ -413,7 +419,9 @@ function lineUp(
     else if (/\S/.test(data)) return null;
     else inserted.add(item);
   }
-  return at === joined.length ? { segments, offsets, inserted, atoms } : null;
+  return at === joined.length
+    ? { segments, offsets, inserted, atoms, atomAt: placed }
+    : null;
 }
 
 /**
@@ -441,6 +449,12 @@ function sourceOffsetOfEndpoint(
  * the element endpoints `endsOnContent` leaves — beside an image or a
  * shadow host, or inside an atom such as a document card — and any other
  * keeps the line anchor.
+ *
+ * An endpoint on the outer edge of a run of the block's own text maps to the
+ * edge of that run's lines before anything else (`outerEdge`, `linesEdge`).
+ * One in a blank the renderer inserted with no run on its far side, only a
+ * nested block or the block's edge, gives up: no place in the joined text
+ * names it, as none names an element endpoint between two nested blocks.
  */
 export function sourceOffsetInBlock(
   index: SegmentIndex,
@@ -451,6 +465,12 @@ export function sourceOffsetInBlock(
 ): number | null {
   const aligned = alignBlock(index, block);
   if (aligned === null) return null;
+  if (aligned.inserted.has(node) && !bordersRun(node, block.stamp, edge)) {
+    return null;
+  }
+  const outer = outerEdge(aligned, node, offset, edge);
+  const lines = outer === null ? null : linesEdge(index, aligned, outer, edge);
+  if (lines !== null) return lines;
   // What an element endpoint has on its side: a start looks ahead.
   const next =
     node.nodeType === Node.TEXT_NODE
@@ -465,8 +485,6 @@ export function sourceOffsetInBlock(
   const at = aligned.offsets.get(node);
   if (at === undefined) return null;
   const rendered = aligned.inserted.has(node) ? at : at + offset;
-  const lines = linesEdge(index, aligned.segments, rendered, edge);
-  if (lines !== null) return lines;
   const source = sourceOffsetOfRendered(aligned.segments, rendered, edge);
   return edge === "start"
     ? pastPrefix(index, aligned.segments, source)
@@ -553,40 +571,170 @@ function pastPrefix(
 }
 
 /**
- * Where an end at the very start of a block's text, or a start at its very
- * end, maps: to the start or the end of the line that text starts or ends on
- * as the page shows it, ended by a line ending of any kind (`lineEndingAt`)
- * rather than by the `\n` alone that numbers the anchor's lines. Such an
- * endpoint selects none of the block, and the markup between its text and
- * the edge of its lines, a heading's `## `, a quote's `> `, a link's `](…)`,
- * is no more selected than the text is. `endsOnContent` moves most such
- * endpoints onto content, but keeps one beside a code block. Null for any
- * other endpoint.
+ * Where in a block's joined text an endpoint sits when it sits on the outer
+ * side of what holds it, selecting none of that: an end at the very start of
+ * a text node or of an atom, a start at the very end of one, either in a
+ * blank the renderer inserted, and an element endpoint with an atom on its
+ * far side, an end before it or a start after it. Null for any other
+ * endpoint, and for one inside an atom's shadow root.
+ */
+function outerEdge(
+  aligned: BlockAlignment,
+  node: Node,
+  offset: number,
+  edge: "start" | "end",
+): number | null {
+  const text = aligned.offsets.get(node);
+  if (text !== undefined) {
+    if (aligned.inserted.has(node)) return text;
+    if (edge === "end") return offset === 0 ? text : null;
+    const length = node.nodeValue?.length ?? 0;
+    return offset === length ? text + length : null;
+  }
+  const far =
+    node.nodeType === Node.TEXT_NODE
+      ? undefined
+      : node.childNodes[edge === "end" ? offset : offset - 1];
+  const atom = aligned.atoms.find((a) => a.el === far || a.el.contains(node));
+  const at = atom === undefined ? undefined : aligned.atomAt.get(atom.el);
+  if (atom === undefined || at === undefined) return null;
+  if (atom.el !== far) {
+    // Inside the atom: outer only with none of its text on the near side.
+    const near = document.createRange();
+    near.selectNodeContents(atom.el);
+    if (edge === "end") near.setEnd(node, offset);
+    else near.setStart(node, offset);
+    if (/\S/.test(near.toString())) return null;
+  }
+  return edge === "end" ? at : at + 1;
+}
+
+/**
+ * Whether the first node on the far side of blank text `node`, after it for
+ * an end or before it for a start, belongs to a run of its block's own text,
+ * rather than being a block nested in it (stamped with `stamp`) or the
+ * block's edge. Blanks, and what `alignBlock` leaves out (`INJECTED`), are
+ * passed over. A blank between two nested blocks takes the same place in the
+ * joined text as one beside a run, and would map alike.
+ */
+function bordersRun(node: Node, stamp: string, edge: "start" | "end"): boolean {
+  const step = (n: Node) =>
+    edge === "end" ? n.nextSibling : n.previousSibling;
+  for (let far = step(node); far !== null; far = step(far)) {
+    if (far instanceof Text) {
+      if (/\S/.test(far.data)) return true;
+    } else if (far instanceof Element && !far.matches(INJECTED)) {
+      return !far.hasAttribute(stamp);
+    }
+  }
+  return false;
+}
+
+/**
+ * Where an end at the very start of a run of a block's own text, or a start
+ * at its very end, maps: to the start of the line the run starts on, or to
+ * the end of the line it ends on, moved past the lines around it that show
+ * nothing (`edgeOfLines`). A run is the block's text between its edges and
+ * the blocks nested in it. Such an endpoint selects none of the run, and the
+ * markup around it, a heading's `## ` or setext underline, a fold's tags, a
+ * quote's `>`, a link's `](…)`, is no more selected than the text is.
+ * `endsOnContent` moves most such endpoints onto content, but keeps one
+ * beside a code block. Null for any other place.
  */
 function linesEdge(
   index: SegmentIndex,
-  segments: SourceSegment[],
+  { segments, nested }: BlockAlignment,
   rendered: number,
   edge: "start" | "end",
 ): number | null {
-  const first = segments[0];
-  const last = segments.at(-1);
-  if (first === undefined || last === undefined) return null;
-  const { source } = index;
-  if (edge === "end") {
-    if (rendered !== 0) return null;
-    let at = first.start;
-    while (at > 0 && lineEndingAt(source, at - 1) === 0) at--;
-    return at;
+  // Whether a nested block lies between lines `after` and `before`.
+  const apart = (after: number, before: number) =>
+    nested.some((loc) => loc.start > after && loc.end < before);
+  let from = 0;
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
+    if (segment === undefined) continue;
+    const to = from + segment.text.length;
+    if (edge === "end" && from === rendered) {
+      const prev = segments[i - 1];
+      if (prev !== undefined && !apart(prev.endLine, segment.line)) return null;
+      return edgeOfLines(index, segment.start, edge);
+    }
+    if (edge === "start" && to === rendered) {
+      const next = segments[i + 1];
+      if (next !== undefined && !apart(segment.endLine, next.line)) return null;
+      return edgeOfLines(index, Math.max(segment.start, segment.end - 1), edge);
+    }
+    from = to;
   }
-  const length = segments.reduce(
-    (sum, segment) => sum + segment.text.length,
-    0,
+  return null;
+}
+
+/**
+ * The line holding source offset `at` as the page shows it: from its first
+ * character to the first character of the line ending that ends it, of any
+ * kind (`lineEndingAt`), or to the end of the source. The `\n` the anchor's
+ * lines are numbered by alone does not end the line a lone `\r` ends.
+ */
+function lineAround(
+  index: SegmentIndex,
+  at: number,
+): { start: number; end: number } {
+  const { source } = index;
+  // The `\n` of a `\r\n` belongs to the line its `\r` ends.
+  const from = at > 0 && lineEndingAt(source, at - 1) === 2 ? at - 1 : at;
+  let start = from;
+  while (start > 0 && lineEndingAt(source, start - 1) === 0) start--;
+  let end = from;
+  while (end < source.length && lineEndingAt(source, end) === 0) end++;
+  return { start, end };
+}
+
+/**
+ * Whether the line `[start, end]`, its line ending included, shows nothing
+ * on the page: no text or code lies on it. Such a line holds only markup and
+ * blanks: a setext underline, a fold's tags, a quote's `>`, a blank line.
+ */
+function showsNothing(
+  index: SegmentIndex,
+  { start, end }: { start: number; end: number },
+): boolean {
+  const meets = (s: { start: number; end: number }) =>
+    s.start <= end && s.end > start;
+  return !(
+    index.segments.some(meets) ||
+    index.blocks.some((b) => b.type === "code" && meets(b))
   );
-  if (rendered !== length) return null;
-  let at = Math.max(first.start, last.end - 1);
-  while (at < source.length && lineEndingAt(source, at) === 0) at++;
-  return at;
+}
+
+/**
+ * The start of the line holding `at`, for an end, or the end of it, for a
+ * start, moved past the lines before or after it that show nothing
+ * (`showsNothing`). `columnsOfOffsets` steps past line endings and what code
+ * rows hide, but not past markup on a line of its own.
+ */
+export function edgeOfLines(
+  index: SegmentIndex,
+  at: number,
+  edge: "start" | "end",
+): number {
+  const line = lineAround(index, at);
+  if (edge === "end") {
+    let { start } = line;
+    for (let prev = lineAround(index, start - 1); start > 0; ) {
+      if (!showsNothing(index, prev)) break;
+      start = prev.start;
+      prev = lineAround(index, start - 1);
+    }
+    return start;
+  }
+  let { end } = line;
+  while (end < index.source.length) {
+    const next = lineAround(index, end + lineEndingAt(index.source, end));
+    if (!showsNothing(index, next)) break;
+    end = next.end;
+  }
+  return end;
 }
 
 /**
@@ -1122,30 +1270,59 @@ export function endsOnContent(
 
 /**
  * The text endpoint at the place an element endpoint names: the start of the
- * text right after it, or the end of the text right before it, found by going
- * down into the node on that side, never into a box. Null for an endpoint in
- * a code block, which names no place beside one, and where that is no text
- * other than whitespace, or lies in what the walk skips or in no block.
+ * first text after it, or the end of the last text before it, found by
+ * walking the nodes on that side in document order (`nodeAfter`,
+ * `nodeBefore`), never into a box. Blank text and elements holding nothing
+ * are passed over. An image stops the walk, and the point beside it is
+ * taken. In the element holding the code block `box`, only the node right
+ * beside the endpoint is walked: past it lie other blocks. Null for an
+ * endpoint in a code block, which names no place beside one, and where the
+ * walk first meets some other box, or text in what the walk skips or in no
+ * block.
  */
 function textEndpointAt(
   at: Point,
   side: "after" | "before",
   walk: Walk,
+  box: Element,
 ): Point | null {
-  if (at.node instanceof Element && at.node.closest(walk.code) !== null) {
+  const root = at.node;
+  if (!(root instanceof Element) || root.closest(walk.code) !== null) {
     return null;
   }
-  let n: Node | null =
-    at.node.childNodes[side === "after" ? at.offset : at.offset - 1] ?? null;
-  while (n instanceof Element && !isBox(n, walk)) {
-    n = side === "after" ? n.firstChild : n.lastChild;
+  const next = root.childNodes[side === "after" ? at.offset : at.offset - 1];
+  if (next === undefined) return null;
+  const within = root.contains(box) ? next : root;
+  for (
+    let node: Node | null = side === "after" ? next : lastWithin(next, walk);
+    node !== null && within.contains(node);
+    node =
+      side === "after"
+        ? nodeAfter(root, node, true, walk)
+        : nodeBefore(root, node, walk)
+  ) {
+    if (node instanceof Text) {
+      if (!/\S/.test(node.data)) continue;
+      const near = node.parentElement;
+      if (
+        near?.closest(walk.skip) != null ||
+        near?.closest(walk.block) == null
+      ) {
+        return null;
+      }
+      return { node, offset: side === "after" ? 0 : node.data.length };
+    }
+    if (!(node instanceof Element)) continue;
+    if (node.matches(walk.skip)) return null;
+    if (isBox(node, walk)) {
+      return node.matches(walk.code) ||
+        !node.hasAttribute(SOURCE_SPAN_ATTR) ||
+        node.closest(walk.block) === null
+        ? null
+        : beside(node, side === "after" ? "before" : "after");
+    }
   }
-  if (!(n instanceof Text) || !/\S/.test(n.data)) return null;
-  const near = n.parentElement;
-  if (near?.closest(walk.skip) != null || near?.closest(walk.block) == null) {
-    return null;
-  }
-  return { node: n, offset: side === "after" ? 0 : n.data.length };
+  return null;
 }
 
 /**
@@ -1204,7 +1381,9 @@ function startOn(content: Content, start: Point, walk: Walk): Point {
     return beside(content.el, "before");
   }
   const text =
-    start.node instanceof Text ? start : textEndpointAt(start, "before", walk);
+    start.node instanceof Text
+      ? start
+      : textEndpointAt(start, "before", walk, content.el);
   const inside = { node: content.el, offset: 0 };
   if (text === null) return inside;
   if (!leavesRemoved(content.el, text, "before")) return text;
@@ -1223,7 +1402,9 @@ function endOn(content: Content, end: Point, walk: Walk): Point {
   }
   const inside = { node: content.el, offset: content.el.childNodes.length };
   const text =
-    end.node instanceof Text ? end : textEndpointAt(end, "after", walk);
+    end.node instanceof Text
+      ? end
+      : textEndpointAt(end, "after", walk, content.el);
   if (text === null) return inside;
   if (!leavesRemoved(content.el, text, "after")) return text;
   return (onBlank(text) ? null : rowEdge(content.el, "after")) ?? inside;

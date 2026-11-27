@@ -2863,17 +2863,60 @@ describe("column anchors at the edges of code rows", () => {
     ).toEqual({ lineStart: 3, lineEnd: 7, colStart: null, colEnd: null });
   });
 
-  it("keeps a fence's lines for an element end at a quote below it", () => {
-    const source = `Intro words.\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n\n> Outro words\n`;
-    const { container, shadow, index } = fenceWithRows(source, TOKEN_ROWS);
-    const last = shadow.querySelector("[data-line='3'] span")?.firstChild;
-    const quote = container.querySelector("blockquote");
-    // The quote opens with a line feed inside its own stamped element: no
-    // text there to take the end as.
-    expect(quote?.firstChild?.textContent).toBe("\n");
-    expect(
-      anchorForSelection(container, index, ends(last, 6, quote, 0)),
-    ).toEqual({ lineStart: 3, lineEnd: 7, colStart: null, colEnd: null });
+  it.each([
+    ["a list", "- Outro words\n- More", "ul"],
+    ["a loose list item", "- Outro words\n\n- More", "li"],
+    ["a quote", "> Outro words", "blockquote"],
+    [
+      "a fold",
+      "<details>\n<summary>Outro words</summary>\n\nBody.\n\n</details>",
+      "details",
+    ],
+    ["a task list item", "- [ ] Outro words", "li"],
+    [
+      "a picture",
+      "![](https://img.example/a.png) Outro words",
+      "p:last-of-type",
+    ],
+  ])(
+    "ends a selection down from a fence before %s whose element opens with no text",
+    (_name, next, selector) => {
+      const source = `Intro words.\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n\n${next}\n`;
+      const { container, shadow, index, lines } = fenceWithRows(
+        source,
+        TOKEN_ROWS,
+      );
+      const last = shadow.querySelector("[data-line='3'] span")?.firstChild;
+      const element = container.querySelector(selector);
+      // A line feed, a checkbox or a picture comes before the element's
+      // text, where Chromium can end the drag.
+      expect(element?.firstChild?.textContent?.trim()).toBe("");
+      const down = anchorForSelection(
+        container,
+        index,
+        ends(last, 6, element, 0),
+      );
+      if (down === null) throw new Error("no anchor");
+      expect(cut(lines, down)).toBe("charlie = 3;");
+    },
+  );
+
+  it("starts a selection into a fence past a picture that closes the paragraph above", () => {
+    const source = `Intro ![](https://img.example/a.png)\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n`;
+    const { container, shadow, index, lines } = fenceWithRows(
+      source,
+      TOKEN_ROWS,
+    );
+    const first = shadow.querySelector("[data-line='1'] span")?.firstChild;
+    const above = container.querySelector("p[data-loc]");
+    expect(above?.lastChild).toBeInstanceOf(HTMLImageElement);
+    const into = anchorForSelection(
+      container,
+      index,
+      ends(above, above?.childNodes.length ?? 0, first, 5),
+    );
+    if (into === null) throw new Error("no anchor");
+    expect(cut(lines, into)).toBe("const");
   });
 
   it("keeps the columns of a text end beside a fence pierre has not drawn", () => {
@@ -2904,6 +2947,11 @@ describe("column anchors at the edges of code rows", () => {
     ["a table", "| Outro | words |\n|---|---|\n| a | b |", "\n"],
     ["bold words", "**Outro** words.", "\n"],
     ["a link", "[Outro](https://example.com) words.", "\n"],
+    [
+      "a fold",
+      "<details>\n<summary>Outro words</summary>\n\nBody.\n\n</details>",
+      "\n",
+    ],
   ])(
     "ends a selection down from a fence before the markup that opens %s",
     (_name, next, eol) => {
@@ -3012,6 +3060,204 @@ describe("column anchors at the edges of code rows", () => {
       expect(cut(source.split("\n"), onStage.mock.calls[0]?.[0])).toBe(
         "```ts\rconst alpha = 1;\rconst bravo = 2;\r```",
       );
+    },
+  );
+
+  it("leaves a setext heading's underline out of a selection into a fence", () => {
+    const source = `Intro words\n===========\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n`;
+    const { container, shadow, index, lines } = fenceWithRows(
+      source,
+      TOKEN_ROWS,
+    );
+    const first = shadow.querySelector("[data-line='1'] span")?.firstChild;
+    const heading = container.querySelector("h1");
+    const words = heading?.firstChild;
+    if (!(words instanceof Text)) throw new Error("no heading");
+    for (const [node, at] of [
+      [words, words.length],
+      [heading, heading?.childNodes.length ?? 0],
+    ] as const) {
+      const into = anchorForSelection(
+        container,
+        index,
+        ends(node, at, first, 5),
+      );
+      if (into === null) throw new Error("no anchor");
+      expect(cut(lines, into)).toBe("const");
+    }
+  });
+
+  it("leaves a quote's lines of a lone > out of a selection crossing a fence in it", () => {
+    const fence = [`\`\`\`ts`, ...CODE_ROWS, "```"];
+    const source = `> Intro words.\n>\n${fence.map((l) => `> ${l}`).join("\n")}\n>\n> Outro words.\n`;
+    const { container, shadow, index, lines } = fenceWithRows(
+      source,
+      TOKEN_ROWS,
+    );
+    const first = shadow.querySelector("[data-line='1'] span")?.firstChild;
+    const last = shadow.querySelector("[data-line='3'] span")?.firstChild;
+    const [intro, outro] = container.querySelectorAll("blockquote p");
+    const introText = intro?.firstChild;
+    if (!(introText instanceof Text) || !outro) throw new Error("no quote");
+    for (const [node, at] of [
+      [outro.firstChild, 0],
+      [outro, 0],
+    ] as const) {
+      const down = anchorForSelection(
+        container,
+        index,
+        ends(last, 6, node, at),
+      );
+      if (down === null) throw new Error("no anchor");
+      expect(cut(lines, down)).toBe("charlie = 3;");
+    }
+    for (const [node, at] of [
+      [introText, introText.length],
+      [intro, intro?.childNodes.length ?? 0],
+    ] as const) {
+      const into = anchorForSelection(
+        container,
+        index,
+        ends(node, at, first, 5),
+      );
+      if (into === null) throw new Error("no anchor");
+      expect(cut(lines, into)).toBe("const");
+    }
+  });
+
+  it("leaves a footnote reference at the edge of the block beside a fence out", () => {
+    const fence = `\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\``;
+    // The reference closes the paragraph above, then opens the one below.
+    const above = fenceWithRows(
+      `Intro words[^1]\n\n${fence}\n\n[^1]: A note.\n`,
+      TOKEN_ROWS,
+    );
+    const first = above.shadow.querySelector(
+      "[data-line='1'] span",
+    )?.firstChild;
+    const paragraph = above.container.querySelector("p[data-loc]");
+    const closing = paragraph?.querySelector("sup a")?.firstChild;
+    if (!(closing instanceof Text)) throw new Error("no reference");
+    for (const [node, at] of [
+      [closing, closing.length],
+      [paragraph, paragraph?.childNodes.length ?? 0],
+    ] as const) {
+      const into = anchorForSelection(
+        above.container,
+        above.index,
+        ends(node, at, first, 5),
+      );
+      if (into === null) throw new Error("no anchor");
+      expect(cut(above.lines, into)).toBe("const");
+    }
+    cleanup();
+    const below = fenceWithRows(
+      `Intro words.\n\n${fence}\n\n[^1] outro words.\n\n[^1]: A note.\n`,
+      TOKEN_ROWS,
+    );
+    const last = below.shadow.querySelector("[data-line='3'] span")?.firstChild;
+    const next = below.container.querySelectorAll("p[data-loc]")[1];
+    const opening = next?.querySelector("sup a")?.firstChild;
+    for (const [node, at] of [
+      [opening, 0],
+      [next, 0],
+    ] as const) {
+      const down = anchorForSelection(
+        below.container,
+        below.index,
+        ends(last, 6, node, at),
+      );
+      if (down === null) throw new Error("no anchor");
+      expect(cut(below.lines, down)).toBe("charlie = 3;");
+    }
+  });
+
+  it("anchors a drag between a compact list item's text and a fence nested in it to the rows", () => {
+    const fence = [`\`\`\`ts`, ...CODE_ROWS, "```"];
+    const source = `- foo\n${fence.map((l) => `  ${l}`).join("\n")}\n  bar\n`;
+    const { container, shadow, index, lines } = fenceWithRows(
+      source,
+      TOKEN_ROWS,
+    );
+    const first = shadow.querySelector("[data-line='1'] span")?.firstChild;
+    const last = shadow.querySelector("[data-line='3'] span")?.firstChild;
+    const item = container.querySelector("li");
+    const [foo, bar] = [item?.firstChild, item?.lastChild];
+    // The item's own text runs on both sides of the fence.
+    expect([foo?.textContent, bar?.textContent]).toEqual(["foo", "bar"]);
+    // The renderer's line feeds around the fence, where Chromium can put an
+    // end as well.
+    const [, before, , after] = item?.childNodes ?? [];
+    expect([before?.textContent, after?.textContent]).toEqual(["\n", "\n"]);
+    const count = item?.childNodes.length ?? 0;
+    for (const [node, at] of [
+      [bar, 0],
+      [item, count - 1],
+      [after, 0],
+    ] as const) {
+      const down = anchorForSelection(
+        container,
+        index,
+        ends(last, 6, node, at),
+      );
+      if (down === null) throw new Error("no anchor");
+      expect(cut(lines, down)).toBe("charlie = 3;");
+    }
+    for (const [node, at] of [
+      [foo, 3],
+      [item, 1],
+      [before, 1],
+    ] as const) {
+      const into = anchorForSelection(
+        container,
+        index,
+        ends(node, at, first, 5),
+      );
+      if (into === null) throw new Error("no anchor");
+      expect(cut(lines, into)).toBe("const");
+    }
+  });
+
+  it.each([
+    ["after it", true, false],
+    ["before it", false, false],
+    ["after it, a chip in between", true, true],
+  ])(
+    "names no heading a drag never reached from a blank between it and a fence in a list item, the heading %s",
+    (_name, down, chip) => {
+      const fence = [`\`\`\`ts`, ...CODE_ROWS, "```"].map((l) => `  ${l}`);
+      const rows = down ? [...fence, "  ## Head"] : ["  ## Head", ...fence];
+      const source = `- foo\n${rows.join("\n")}\n  bar\n`;
+      const { container, shadow, index, lines } = fenceWithRows(
+        source,
+        TOKEN_ROWS,
+      );
+      const heading = container.querySelector("li h2");
+      // The renderer's line feed between the heading and the fence.
+      const blank = down ? heading?.previousSibling : heading?.nextSibling;
+      expect(blank?.textContent).toBe("\n");
+      if (chip) {
+        const ui = document.createElement("button");
+        ui.setAttribute("data-annotation-ui", "");
+        ui.textContent = "1";
+        heading?.before(ui);
+      }
+      const line = down ? 5 : 4;
+      const row = shadow.querySelector(`[data-line='${down ? 3 : 1}'] span`);
+      const anchor = anchorForSelection(
+        container,
+        index,
+        down
+          ? ends(row?.firstChild, 6, blank, 0)
+          : ends(blank, 1, row?.firstChild, 5),
+      );
+      if (anchor === null) throw new Error("no anchor");
+      // The selected row, and no column naming the heading.
+      expect(anchor.lineStart).toBeLessThanOrEqual(line);
+      expect(anchor.lineEnd).toBeGreaterThanOrEqual(line);
+      if (anchor.colStart !== null) {
+        expect(cut(lines, anchor)).not.toContain("Head");
+      }
     },
   );
 
@@ -4380,6 +4626,78 @@ describe("anchoring a compared document", () => {
         baseline: true,
       });
       expect(selected?.lineEnd).toBeLessThan(9);
+    }
+  });
+
+  it("ends a baseline anchor down from an edited block before a heading that opens with removed words", async () => {
+    const before = [
+      "Intro.",
+      "",
+      "```ts",
+      "old();",
+      "keep();",
+      "gone();",
+      "```",
+      "",
+      "## Old Outro",
+      "",
+    ].join("\n");
+    const after = [
+      "Intro.",
+      "",
+      "```ts",
+      "new();",
+      "keep();",
+      "```",
+      "",
+      "## Outro",
+      "",
+    ].join("\n");
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    const shadow = drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-line-type="change-deletion">old();</div>
+       <div data-line="1" data-line-type="change-addition">new();</div>
+       <div data-line="2" data-alt-line="2" data-line-type="context">keep();</div>
+       <div data-line="3" data-line-type="change-deletion">gone();</div>`,
+    );
+    const gone = [...shadow.querySelectorAll("[data-line]")][3]?.firstChild;
+    const head = container.querySelector("h2[data-loc]");
+    const removed = head?.querySelector(".spec-del")?.firstChild;
+    expect(head?.firstChild).toBe(removed?.parentNode);
+    for (const node of [removed, head]) {
+      expect(quoted(before, anchor(ends(gone, 0, node, 0)))).toBe("gone();");
+    }
+  });
+
+  it("starts a baseline anchor into an edited block past removed words that close the paragraph above", async () => {
+    const before = "Intro words old\n\n```ts\nold();\nkeep();\n```\n";
+    const after = "Intro words\n\n```ts\nnew();\nkeep();\n```\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    const shadow = drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-line-type="change-deletion">old();</div>
+       <div data-line="1" data-line-type="change-addition">new();</div>
+       <div data-line="2" data-alt-line="2" data-line-type="context">keep();</div>`,
+    );
+    const old = shadow.querySelector("[data-line]")?.firstChild;
+    const paragraph = container.querySelector("p[data-loc]");
+    const removed = paragraph?.querySelector(".spec-del")?.firstChild;
+    if (!(removed instanceof Text)) throw new Error("no removed words");
+    expect(paragraph?.lastChild).toBe(removed.parentNode);
+    for (const [node, at] of [
+      [removed, removed.length],
+      [paragraph, paragraph?.childNodes.length ?? 0],
+    ] as const) {
+      expect(quoted(before, anchor(ends(node, at, old, 3)))).toBe("old");
     }
   });
 
