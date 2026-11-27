@@ -13,6 +13,7 @@ import {
 } from "./pierre-rows.ts";
 import {
   CODE_CONTENT_START_ATTR,
+  FENCE_PATCH_ATTR,
   OLD_LINE_ATTR,
   parseSourceLoc,
   SOURCE_LINE_ATTR,
@@ -1085,16 +1086,28 @@ function leavesRemoved(box: Element, at: Point): boolean {
 }
 
 /**
- * The edge of a code block's rows: the start of its first row, or the end
- * of its last. Null before pierre has drawn any.
+ * The edge of the rows of a code block a comparison put back: the start of
+ * its first row, or the end of its last. Null where those rows need not show
+ * the block's own first and last lines: before pierre has drawn any, for an
+ * empty block, whose one row names no line, and for a patch, whose view
+ * draws only the rows in sight and folds whole files away.
  */
 function rowEdge(box: Element, side: "before" | "after"): Point | null {
+  const loc = parseSourceLoc(box.getAttribute(OLD_LINE_ATTR));
+  // A fence's own lines run between the lines of its two markers.
+  if (loc === null || loc.end - loc.start < 2) return null;
+  if (box.hasAttribute(FENCE_PATCH_ATTR)) return null;
   const rows = [...box.querySelectorAll("diffs-container")].flatMap((host) => [
     ...(host.shadowRoot?.querySelectorAll("[data-line]") ?? []),
   ]);
   const row = side === "before" ? rows[0] : rows.at(-1);
   if (row === undefined) return null;
   return { node: row, offset: side === "before" ? 0 : row.childNodes.length };
+}
+
+/** Whether `at` lies in text holding nothing but whitespace. */
+function onBlank(at: Point): boolean {
+  return at.node instanceof Text && !/\S/.test(at.node.data);
 }
 
 function startOn(content: Content, start: Point, walk: Walk): Point {
@@ -1109,10 +1122,10 @@ function startOn(content: Content, start: Point, walk: Walk): Point {
   }
   const text =
     start.node instanceof Text ? start : textEndpointAt(start, "before", walk);
-  if (text === null) return { node: content.el, offset: 0 };
-  return leavesRemoved(content.el, text)
-    ? (rowEdge(content.el, "before") ?? { node: content.el, offset: 0 })
-    : text;
+  const inside = { node: content.el, offset: 0 };
+  if (text === null) return inside;
+  if (!leavesRemoved(content.el, text)) return text;
+  return (onBlank(text) ? null : rowEdge(content.el, "before")) ?? inside;
 }
 
 function endOn(content: Content, end: Point, walk: Walk): Point {
@@ -1129,9 +1142,8 @@ function endOn(content: Content, end: Point, walk: Walk): Point {
   const text =
     end.node instanceof Text ? end : textEndpointAt(end, "after", walk);
   if (text === null) return inside;
-  return leavesRemoved(content.el, text)
-    ? (rowEdge(content.el, "after") ?? inside)
-    : text;
+  if (!leavesRemoved(content.el, text)) return text;
+  return (onBlank(text) ? null : rowEdge(content.el, "after")) ?? inside;
 }
 
 /**

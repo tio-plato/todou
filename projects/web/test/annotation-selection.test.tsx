@@ -2525,6 +2525,26 @@ describe("column anchors at the edges of code rows", () => {
     ).toEqual({ lineStart: 3, lineEnd: 7, colStart: null, colEnd: null });
   });
 
+  it("keeps the columns of a text end beside a fence pierre has not drawn", () => {
+    const source = `Intro words.\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n\nOutro words.\n`;
+    const view = render(
+      <QueryClientProvider client={testQueryClient()}>
+        <MarkdownView rehypePlugins={[rehypeSourceLines]}>
+          {source}
+        </MarkdownView>
+      </QueryClientProvider>,
+    );
+    const index = buildSegmentIndex(source);
+    const [intro, outro] = [
+      ...view.container.querySelectorAll("p[data-loc]"),
+    ].map((p) => p.firstChild);
+    // With no rows, the block's text is what the page shows: the selection
+    // maps to columns as any text does.
+    expect(
+      anchorForSelection(view.container, index, ends(intro, 0, outro, 0)),
+    ).toMatchObject({ lineStart: 1, colStart: 1 });
+  });
+
   it.each([
     ["a heading", "## Outro words", "\n"],
     ["a heading, in a CRLF body", "## Outro words", "\r\n"],
@@ -3651,9 +3671,108 @@ describe("anchoring a compared document", () => {
     const gap = wrapper?.parentNode;
     if (!wrapper || !gap) throw new Error("no block");
     const after_ = [...gap.childNodes].indexOf(wrapper as ChildNode) + 1;
-    expect(anchor(ends(more, 0, gap, after_))).toEqual({
+    const whole = {
       lineStart: 3,
       lineEnd: 6,
+      colStart: null,
+      colEnd: null,
+      baseline: true,
+    };
+    expect(anchor(ends(more, 0, gap, after_))).toEqual(whole);
+    // On the line feed there.
+    const feed = gap.childNodes[after_];
+    expect(feed?.textContent).toBe("\n");
+    expect(anchor(ends(more, 0, feed, 0))).toEqual(whole);
+  });
+
+  it("keeps an end beside a patch removed whole, at text of the version shown, in the block", async () => {
+    const before = [
+      "Intro.",
+      "",
+      "```patch",
+      "--- a/a.txt",
+      "+++ b/a.txt",
+      "@@ -1,1 +1,1 @@",
+      "-old words",
+      "+new words",
+      "```",
+      "",
+      "Outro.",
+      "",
+    ].join("\n");
+    const after = ["Intro.", "", "Outro.", ""].join("\n");
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-old-loc].markdown-fence",
+    );
+    // A patch's view draws only the rows in sight and folds files away: the
+    // last row drawn here is not the block's last line.
+    const shadow = drawRows(
+      container.querySelector("[data-old-loc].markdown-fence"),
+      `<pre data-diff=""><div data-line="1" data-line-type="change-deletion">old words</div></pre>`,
+    );
+    const old = shadow.querySelector("[data-line]")?.firstChild;
+    const outro = textAt(container, "p[data-loc]", "Outro.");
+    expect(anchor(ends(old, 0, outro.node, 0))).toEqual({
+      lineStart: 3,
+      lineEnd: 9,
+      colStart: null,
+      colEnd: null,
+      baseline: true,
+    });
+  });
+
+  it("anchors a drag across an empty block removed whole to that block", async () => {
+    const before = "Intro.\n\n```ts\n```\n\nOutro.\n";
+    const after = "Intro.\n\nOutro.\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-old-loc].markdown-fence",
+    );
+    // pierre draws an empty block as one row that names no line.
+    drawRows(
+      container.querySelector("[data-old-loc].markdown-fence"),
+      `<div data-line="1"></div>`,
+    );
+    const intro = textAt(container, "p[data-loc]", "Intro.");
+    const outro = textAt(container, "p[data-loc]", "Outro.");
+    const above = intro.node.parentNode;
+    for (const [from, at, to] of [
+      [intro.node, "Intro.".length, outro.node],
+      [above, above?.childNodes.length ?? 0, outro.node.parentNode],
+    ] as const) {
+      expect(anchor(ends(from, at, to, 0))).toEqual({
+        lineStart: 3,
+        lineEnd: 4,
+        colStart: null,
+        colEnd: null,
+        baseline: true,
+      });
+    }
+  });
+
+  it("keeps a start above a block removed whole that opens the document on the whole block", async () => {
+    const before = "```ts\nold();\nmore();\n```\n\nOutro.\n";
+    const after = "Outro.\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-old-loc].markdown-fence",
+    );
+    const wrapper = container.querySelector("[data-old-loc].markdown-fence");
+    const shadow = drawRows(
+      wrapper,
+      `<div data-line="1">old();</div><div data-line="2">more();</div>`,
+    );
+    const old = shadow.querySelector("[data-line='1']")?.firstChild;
+    const top = wrapper?.parentNode;
+    // Nothing comes before the block: no text to take the start as.
+    expect(top?.firstChild).toBe(wrapper);
+    expect(anchor(ends(top, 0, old, 3))).toEqual({
+      lineStart: 1,
+      lineEnd: 4,
       colStart: null,
       colEnd: null,
       baseline: true,
