@@ -465,7 +465,7 @@ export function sourceOffsetInBlock(
 ): number | null {
   const aligned = alignBlock(index, block);
   if (aligned === null) return null;
-  if (aligned.inserted.has(node) && !bordersRun(node, block.stamp, edge)) {
+  if (aligned.inserted.has(node) && !bordersRun(block, node, edge)) {
     return null;
   }
   const outer = outerEdge(aligned, node, offset, edge);
@@ -610,18 +610,37 @@ function outerEdge(
 }
 
 /**
- * Whether the node on the far side of blank text `node`, after it for an end
- * or before it for a start, other blanks passed over, is a run of its block's
- * own text, rather than a block nested in it (stamped with `stamp`) or the
- * block's edge. Blanks sharing one place in the joined text, a blank between
- * two nested blocks and one beside a run would map alike.
+ * Whether the first node on the far side of blank text `node` in `block`,
+ * after it for an end or before it for a start, belongs to a run of the
+ * block's own text, rather than being a block nested in it or the block's
+ * edge. Blanks, and what `alignBlock` leaves out (`INJECTED`), are passed
+ * over. A blank between two nested blocks takes the same place in the joined
+ * text as one beside a run, and would map alike.
  */
-function bordersRun(node: Node, stamp: string, edge: "start" | "end"): boolean {
-  const step = (n: Node) =>
-    edge === "end" ? n.nextSibling : n.previousSibling;
-  let far = step(node);
-  while (far instanceof Text && !/\S/.test(far.data)) far = step(far);
-  return far !== null && !(far instanceof Element && far.hasAttribute(stamp));
+function bordersRun(
+  { el, stamp }: ColumnBlock,
+  node: Node,
+  edge: "start" | "end",
+): boolean {
+  const step = (n: Node): Node | null => {
+    for (
+      let at: Node | null = n;
+      at !== null && at !== el;
+      at = at.parentNode
+    ) {
+      const next = edge === "end" ? at.nextSibling : at.previousSibling;
+      if (next !== null) return next;
+    }
+    return null;
+  };
+  for (let far = step(node); far !== null; far = step(far)) {
+    if (far instanceof Text) {
+      if (/\S/.test(far.data)) return true;
+    } else if (far instanceof Element && !far.matches(INJECTED)) {
+      return !far.hasAttribute(stamp);
+    }
+  }
+  return false;
 }
 
 /**

@@ -3212,23 +3212,31 @@ describe("column anchors at the edges of code rows", () => {
     }
   });
 
-  it("names no heading a drag never reached from a blank between it and a fence in a list item", () => {
-    const fence = [`\`\`\`ts`, ...CODE_ROWS, "```"].map((l) => `  ${l}`);
-    // The heading comes after the fence, then before it.
-    for (const [rows, down] of [
-      [[...fence, "  ## Head"], true],
-      [["  ## Head", ...fence], false],
-    ] as const) {
+  it.each([
+    ["after it", true, false],
+    ["before it", false, false],
+    ["after it, a chip in between", true, true],
+  ])(
+    "names no heading a drag never reached from a blank between it and a fence in a list item, the heading %s",
+    (_name, down, chip) => {
+      const fence = [`\`\`\`ts`, ...CODE_ROWS, "```"].map((l) => `  ${l}`);
+      const rows = down ? [...fence, "  ## Head"] : ["  ## Head", ...fence];
       const source = `- foo\n${rows.join("\n")}\n  bar\n`;
       const { container, shadow, index, lines } = fenceWithRows(
         source,
         TOKEN_ROWS,
       );
-      const item = container.querySelector("li");
-      const heading = item?.querySelector("h2");
+      const heading = container.querySelector("li h2");
       // The renderer's line feed between the heading and the fence.
       const blank = down ? heading?.previousSibling : heading?.nextSibling;
       expect(blank?.textContent).toBe("\n");
+      if (chip) {
+        const ui = document.createElement("button");
+        ui.setAttribute("data-annotation-ui", "");
+        ui.textContent = "1";
+        heading?.before(ui);
+      }
+      const line = down ? 5 : 4;
       const row = shadow.querySelector(`[data-line='${down ? 3 : 1}'] span`);
       const anchor = anchorForSelection(
         container,
@@ -3238,12 +3246,14 @@ describe("column anchors at the edges of code rows", () => {
           : ends(blank, 1, row?.firstChild, 5),
       );
       if (anchor === null) throw new Error("no anchor");
+      // The selected row, and no column naming the heading.
+      expect(anchor.lineStart).toBeLessThanOrEqual(line);
+      expect(anchor.lineEnd).toBeGreaterThanOrEqual(line);
       if (anchor.colStart !== null) {
         expect(cut(lines, anchor)).not.toContain("Head");
       }
-      cleanup();
-    }
-  });
+    },
+  );
 
   it("reaches a patch row that names no single line", () => {
     const source = `Some prose.\n\n\`\`\`patch\n${[
