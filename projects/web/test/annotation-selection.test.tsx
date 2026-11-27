@@ -2512,6 +2512,19 @@ describe("column anchors at the edges of code rows", () => {
     ).toEqual({ lineStart: 3, lineEnd: 7, colStart: null, colEnd: null });
   });
 
+  it("keeps a fence's lines for an element end at a quote below it", () => {
+    const source = `Intro words.\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n\n> Outro words\n`;
+    const { container, shadow, index } = fenceWithRows(source, TOKEN_ROWS);
+    const last = shadow.querySelector("[data-line='3'] span")?.firstChild;
+    const quote = container.querySelector("blockquote");
+    // The quote opens with a line feed inside its own stamped element: no
+    // text there to take the end as.
+    expect(quote?.firstChild?.textContent).toBe("\n");
+    expect(
+      anchorForSelection(container, index, ends(last, 6, quote, 0)),
+    ).toEqual({ lineStart: 3, lineEnd: 7, colStart: null, colEnd: null });
+  });
+
   it.each([
     ["a heading", "## Outro words", "\n"],
     ["a heading, in a CRLF body", "## Outro words", "\r\n"],
@@ -3564,6 +3577,31 @@ describe("anchoring a compared document", () => {
     // the version shown has no text to take it as.
     const selected = anchor(ends(intro.node, intro.at, below, 0));
     expect(selected).toMatchObject({ lineStart: 1 });
+    expect(selected?.baseline).toBeUndefined();
+  });
+
+  it("anchors a drag from a row to a paragraph opening with removed words to the version shown", async () => {
+    const before =
+      "Intro.\n\n```ts\nold();\nkeep();\n```\n\nGone words stay.\n";
+    const after = "Intro.\n\n```ts\nnew();\nkeep();\n```\n\nstay.\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    const shadow = drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-line-type="change-deletion">old();</div>
+       <div data-line="1" data-line-type="change-addition">new();</div>
+       <div data-line="2" data-alt-line="2" data-line-type="context">keep();</div>`,
+    );
+    const keep = shadow.querySelectorAll("[data-line]")[2]?.firstChild;
+    const below = textAt(container, "p[data-loc]", "stay.").node.parentNode;
+    // The paragraph opens with its removed words: the version shown has no
+    // text there to take the end as.
+    expect(below?.firstChild?.textContent).toBe("Gone words");
+    const selected = anchor(ends(keep, 2, below, 0));
+    expect(selected).toMatchObject({ lineStart: 3 });
     expect(selected?.baseline).toBeUndefined();
   });
 
