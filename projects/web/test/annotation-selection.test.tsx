@@ -4580,6 +4580,78 @@ describe("anchoring a compared document", () => {
     }
   });
 
+  it("ends a baseline anchor down from an edited block before a heading that opens with removed words", async () => {
+    const before = [
+      "Intro.",
+      "",
+      "```ts",
+      "old();",
+      "keep();",
+      "gone();",
+      "```",
+      "",
+      "## Old Outro",
+      "",
+    ].join("\n");
+    const after = [
+      "Intro.",
+      "",
+      "```ts",
+      "new();",
+      "keep();",
+      "```",
+      "",
+      "## Outro",
+      "",
+    ].join("\n");
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    const shadow = drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-line-type="change-deletion">old();</div>
+       <div data-line="1" data-line-type="change-addition">new();</div>
+       <div data-line="2" data-alt-line="2" data-line-type="context">keep();</div>
+       <div data-line="3" data-line-type="change-deletion">gone();</div>`,
+    );
+    const gone = [...shadow.querySelectorAll("[data-line]")][3]?.firstChild;
+    const head = container.querySelector("h2[data-loc]");
+    const removed = head?.querySelector(".spec-del")?.firstChild;
+    expect(head?.firstChild).toBe(removed?.parentNode);
+    for (const node of [removed, head]) {
+      expect(quoted(before, anchor(ends(gone, 0, node, 0)))).toBe("gone();");
+    }
+  });
+
+  it("starts a baseline anchor into an edited block past removed words that close the paragraph above", async () => {
+    const before = "Intro words old\n\n```ts\nold();\nkeep();\n```\n";
+    const after = "Intro words\n\n```ts\nnew();\nkeep();\n```\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    const shadow = drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-line-type="change-deletion">old();</div>
+       <div data-line="1" data-line-type="change-addition">new();</div>
+       <div data-line="2" data-alt-line="2" data-line-type="context">keep();</div>`,
+    );
+    const old = shadow.querySelector("[data-line]")?.firstChild;
+    const paragraph = container.querySelector("p[data-loc]");
+    const removed = paragraph?.querySelector(".spec-del")?.firstChild;
+    if (!(removed instanceof Text)) throw new Error("no removed words");
+    expect(paragraph?.lastChild).toBe(removed.parentNode);
+    for (const [node, at] of [
+      [removed, removed.length],
+      [paragraph, paragraph?.childNodes.length ?? 0],
+    ] as const) {
+      expect(quoted(before, anchor(ends(node, at, old, 3)))).toBe("old");
+    }
+  });
+
   it("starts a baseline anchor past the indent of an edited block's context row", async () => {
     const before =
       "- item text\n\n  ```ts\n  keep();\n  drop1();\n  mid();\n  drop2();\n  ```\n";

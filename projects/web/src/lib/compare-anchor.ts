@@ -17,6 +17,7 @@ import {
   anchorForSelection,
   beside,
   DELETED_CONTENT,
+  edgeOfLines,
   endsOnContent,
   hiddenInRows,
   OLD_CODE_BLOCK,
@@ -203,16 +204,45 @@ function oldEnd(
     };
   }
   const before = textBefore(el, point);
-  const offset = el.hasAttribute(OLD_FLAT_ATTR)
-    ? sourceOffsetOfText(
-        baseline,
-        Number(el.getAttribute(OLD_FLAT_ATTR)) + before,
-        edge,
-      )
-    : Number(el.getAttribute(OLD_SOURCE_ATTR)) + before;
+  const flat = el.hasAttribute(OLD_FLAT_ATTR)
+    ? Number(el.getAttribute(OLD_FLAT_ATTR)) + before
+    : null;
+  const offset =
+    flat === null
+      ? Number(el.getAttribute(OLD_SOURCE_ATTR)) + before
+      : (textEdge(baseline, flat, edge) ??
+        sourceOffsetOfText(baseline, flat, edge));
   return offset === null
     ? NOWHERE
     : { offset, lines: lineOfOffset(baseline, offset, edge) };
+}
+
+/**
+ * Where an end at the very start of a baseline block's text, or a start at
+ * its very end, maps, the block's first or last segment found by the end's
+ * place in the flattened text: to the start of the line that segment starts
+ * on or the end of the line it ends on, past the lines around it that show
+ * nothing (`edgeOfLines`), as `linesEdge` maps one in a block put back whole.
+ * The markup on those lines is no more selected than the text is. Null for
+ * any other place.
+ */
+function textEdge(
+  baseline: SegmentIndex,
+  flat: number,
+  edge: "start" | "end",
+): number | null {
+  const { segments } = baseline;
+  const i = segments.findIndex((s) =>
+    edge === "end" ? s.at === flat : s.at + s.text.length === flat,
+  );
+  const segment = segments[i];
+  if (segment === undefined) return null;
+  if (segments[edge === "end" ? i - 1 : i + 1]?.group === segment.group) {
+    return null;
+  }
+  const at =
+    edge === "end" ? segment.start : Math.max(segment.start, segment.end - 1);
+  return edgeOfLines(baseline, at, edge);
 }
 
 /**
