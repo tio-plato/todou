@@ -1011,21 +1011,28 @@ export function endsOnContent(
 /**
  * The text endpoint at the place an element endpoint names: the start of the
  * text right after it, or the end of the text right before it, found by going
- * down into the node on that side, never into a box. Null where that is no
- * text other than whitespace, or lies in what the walk skips.
+ * down into the node on that side, never into a box. Null for an endpoint in
+ * a code block, which names no place beside one, and where that is no text
+ * other than whitespace, or lies in what the walk skips or in no block.
  */
 function textEndpointAt(
   at: Point,
   side: "after" | "before",
   walk: Walk,
 ): Point | null {
+  if (at.node instanceof Element && at.node.closest(walk.code) !== null) {
+    return null;
+  }
   let n: Node | null =
     at.node.childNodes[side === "after" ? at.offset : at.offset - 1] ?? null;
   while (n instanceof Element && !isBox(n, walk)) {
     n = side === "after" ? n.firstChild : n.lastChild;
   }
   if (!(n instanceof Text) || !/\S/.test(n.data)) return null;
-  if (n.parentElement?.closest(walk.skip) != null) return null;
+  const near = n.parentElement;
+  if (near?.closest(walk.skip) != null || near?.closest(walk.block) == null) {
+    return null;
+  }
   return { node: n, offset: side === "after" ? 0 : n.data.length };
 }
 
