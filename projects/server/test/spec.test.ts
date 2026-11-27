@@ -187,6 +187,39 @@ describe.each(PLACEMENTS)("spec T-23 (%s placement)", (placement) => {
     expect(info.versions).toHaveLength(1);
   });
 
+  it("stores lone-\\r line breaks as \\n in a file with no \\n", async () => {
+    const { number } = await createIssue();
+    const files = [
+      // A card ref in code stays as written.
+      { path: "mac.md", body: `# Mac\r\r~~~\rsee #${number}\r~~~\r` },
+      // A CRLF file's patch in a CRLF body: its hunk line ends `\r\r\n`,
+      // and the first `\r` is the patched file's own.
+      { path: "crlf.md", body: "# Patch\r\n\r\n```diff\r\n+new\r\r\n```\r\n" },
+    ];
+    expect((await push(number, { files })).status).toBe(200);
+    const stored = await json(
+      await t.app.request(`/api/projects/${slug}/issues/${number}/spec/files`, {
+        headers: headers(),
+      }),
+    );
+    expect(
+      Object.fromEntries(
+        stored.files.map((f: { path: string; body: string }) => [
+          f.path,
+          f.body,
+        ]),
+      ),
+    ).toEqual({
+      "mac.md": `# Mac\n\n~~~\nsee #${number}\n~~~\n`,
+      "crlf.md": files[1]?.body,
+    });
+    // The same files again are the version already stored.
+    expect(await json(await push(number, { files }))).toMatchObject({
+      unchanged: true,
+      version: 1,
+    });
+  });
+
   it("the push cursor starts after the push's own event", async () => {
     const { number } = await createIssue();
     const pushed = await json(await push(number, { files: V1 }));
