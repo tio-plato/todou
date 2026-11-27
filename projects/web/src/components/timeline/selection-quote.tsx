@@ -61,7 +61,8 @@ const BODY: QuotePart = { kind: "body" };
  * The ref for a quotable body's element: it hands the element on to `ref`,
  * the one `useQuoteTarget` gives, and records the markdown the element
  * renders. That is `MarkdownView`'s own input, which for an action line is
- * not the stored body; a selection's columns count in it.
+ * not the stored body; a selection's lines and columns count in it as
+ * `MarkdownView` reads it (`anchorIn`).
  */
 export function useQuotableBody(
   ref: (el: HTMLElement | null) => void,
