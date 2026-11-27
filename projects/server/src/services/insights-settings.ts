@@ -11,6 +11,7 @@ import type { UserRow } from "../auth/pat.ts";
 import type { AppContext } from "../bootstrap.ts";
 import type { Db } from "../db/driver.ts";
 import { insightsSettings, statuses } from "../db/project-schema.ts";
+import { sqlStateOf } from "../db/sql-state.ts";
 import { ConflictError, DomainError, NotFoundError } from "../errors.ts";
 import { requireCapability, routeInfoOf } from "./access.ts";
 
@@ -170,17 +171,6 @@ function validateCompleteMapping(
     });
   }
   return supplied;
-}
-
-function sqlStateOf(error: unknown): string | undefined {
-  let cursor: unknown = error;
-  for (let depth = 0; depth < 5; depth += 1) {
-    if (typeof cursor !== "object" || cursor === null) return undefined;
-    const candidate = cursor as { code?: unknown; cause?: unknown };
-    if (typeof candidate.code === "string") return candidate.code;
-    cursor = candidate.cause;
-  }
-  return undefined;
 }
 
 export type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];

@@ -73,35 +73,45 @@ running is done. The queue is a session-level lock, so todou needs a direct
 connection to every database it migrates, not one through a
 transaction-pooling proxy such as PgBouncer: `database.system` and, under
 dedicated placement, every project database, which todou also migrates when
-it creates a project.
+it creates a project. A migration runs at READ COMMITTED whatever isolation
+level the database or the role sets as default, and one that deadlocks with
+an older version still writing, as in a rolling deploy, rolls back whole and
+runs again a second later in the same process; the fifth deadlock in a row
+fails it.
 
-Project migrations 0013 and 0026 are the ones that change existing data
-rather than only its shape. 0013 renames stored attachment filenames so that
-no two on one card collide; see [Relabelling attachment links after the
-filename migration](#relabelling-attachment-links-after-the-filename-migration).
-0026 takes out of the trash the tombstones a delete used to mark when it
-reached a moved card at its old address or raced the move, which nothing can
-restore any more.
+Project migrations 0013 and 0026 change existing data rather than only its
+shape, and so does a step that follows every migration of a project database.
+Migration 0013 renames stored attachment filenames so that no two on one card
+collide; see [Relabelling attachment links after the filename
+migration](#relabelling-attachment-links-after-the-filename-migration).
+Migration 0026 takes out of the trash the tombstones a delete used to mark
+when it reached a moved card at its old address or raced the move, which
+nothing can restore any more.
 
-The `canonical_names` migration changes existing data too: it rewrites every
-status and label name into the form the API stores: trimmed, runs of
-whitespace collapsed to one space. A name whose canonical form another status
-(or label) of the same project already holds becomes `<name> (<id>)`, and that
-suffix may take it past 60 characters: until it is shortened, the project can
-be neither saved as a template nor copied into a new project. A name that is
-all whitespace becomes `Status <id>` or `Label <id>`. Cards refer to statuses
-and labels by id, so no link goes stale and there is nothing to run. A status
-whose chart role was never chosen takes the default for its new name, so one
-that becomes `Done`, `Shipped` or `Invalid` counts as such in the charts from
-then on. On a database whose encoding is not UTF-8, only ASCII whitespace is
-trimmed. The old spellings are kept nowhere, so take a backup first if you may
-want them back. The migration runs once: a name an older version writes while
-it runs or after it, during a rolling deploy or after a rollback, keeps its
-whitespace through the next upgrade, so rename such a name by hand. With an
-older version still writing, the upgrade can also fail once, on a deadlock
-with those writes or on a database whose default isolation is repeatable read;
-all of it rolls back, and starting the server or `todou-server migrate` again
-runs it anew.
+After each migration of a project database, todou rewrites every status and
+label name that is not in the form the API stores: trimmed, runs of whitespace
+collapsed to one space, composed to Unicode NFC. A project database is
+migrated at every `todou-server migrate`, at every start with
+`database.auto_migrate = true` (under dedicated placement, when the server
+first opens it), and, under dedicated placement, when todou creates the
+project. A name already in that form is never changed. A name whose new form
+another status (or label) of the same project already holds, ignoring case,
+becomes `<name> (<id>)`, and that suffix may take it past 60 characters: until
+it is shortened, the project can be neither saved as a template nor copied
+into a new project. A name that is all whitespace becomes `Status <id>` or
+`Label <id>`. Cards refer to statuses and labels by id, so no link goes stale
+and there is nothing to run. A status whose chart role was never chosen takes
+the default for its new name, so one that becomes `Done`, `Shipped` or
+`Invalid` counts as such in the charts from then on. On a database whose
+encoding is not UTF-8, only ASCII whitespace is trimmed, and names are
+composed only on a UTF-8 database on PostgreSQL 13 or newer. The old spellings
+are kept nowhere, so take a backup first if you may want them back. As the API
+stores no other form, this only ever finds names an older version wrote:
+before the upgrade, while it still ran beside the new one, as in a rolling
+deploy, or after a rollback. Each such name is put right by the next
+migration. One whose row another session keeps locked past the
+`lock_timeout` or `statement_timeout` the role or the database sets is left
+as it is, and logged by table and id, until the migration after that.
 
 The `case_insensitive_names` migration makes a status or label name one name
 whatever its case or Unicode composition, as the API now compares them. Of the
@@ -130,10 +140,9 @@ nowhere, so take a backup first if you may want them back, and do not upgrade
 while a backup or another long transaction is reading the database: the
 migration locks the status and label tables until it commits, and from the
 moment it asks for that lock, every request that reads statuses or labels
-waits with it. With an older version still writing, the upgrade can fail once,
-as above, and runs anew when started again. Going back to an older version
-keeps the renamed names and the new indexes: it then fails with a server error
-where it would have stored a name differing from another only in case.
+waits with it. Going back to an older version keeps the renamed names and the
+new indexes: it then fails with a server error where it would have stored a
+name differing from another only in case.
 
 ### What project search needs from PostgreSQL
 

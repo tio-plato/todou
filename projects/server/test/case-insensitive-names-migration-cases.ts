@@ -1,7 +1,7 @@
 /**
  * The case_insensitive_names migration exercised against a real project
  * schema, shared by the PGlite and the real-postgres suite for the reason
- * canonical-names-migration-cases.ts gives.
+ * canonical-names-cases.ts gives.
  *
  * By the time a test app is up the migration has already run, so the names
  * an older server could store side by side no longer fit its indexes. The
