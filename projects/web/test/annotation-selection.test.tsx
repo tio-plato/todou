@@ -679,6 +679,43 @@ describe("AnnotatedMarkdown reverse mapping by block kind", () => {
       "co[ d]e",
       { lineStart: 2, lineEnd: 2, colStart: 3, colEnd: 3 },
     ],
+    [
+      // A lone CR ends a line and shows as a space; a drag from that space
+      // in Chromium starts on the CR. The anchor names "be" alone.
+      "a selection starting on a lone CR",
+      "alpha\rbeta gamma\n",
+      "alpha[\rbe]ta",
+      { lineStart: 1, lineEnd: 1, colStart: 7, colEnd: 8 },
+    ],
+    [
+      "a selection ending past a lone CR",
+      "alpha\rbeta gamma\n",
+      "[alpha\r]beta",
+      { lineStart: 1, lineEnd: 1, colStart: 1, colEnd: 5 },
+    ],
+    [
+      // Selecting from the CR names the next line's text, not the item's
+      // indent in front of it.
+      "a selection starting on a list item's lone CR",
+      "- delta\r  epsilon zeta\n",
+      "delta[\rep]silon",
+      { lineStart: 1, lineEnd: 1, colStart: 11, colEnd: 12 },
+    ],
+    [
+      // The quote's "> " opening the line after a lone CR is no text.
+      "a word on a quote's line after a lone CR",
+      "> eta\r> theta iota\n",
+      "eta\r[theta]",
+      { lineStart: 1, lineEnd: 1, colStart: 9, colEnd: 13 },
+    ],
+    [
+      // Each lone CR in the code shows as one space; the item's indent
+      // opening the last line is no code.
+      "a word of code folded at lone CRs in a list item",
+      "- a `co\rde\r  fg` b\n",
+      "co [de] fg",
+      { lineStart: 1, lineEnd: 1, colStart: 9, colEnd: 10 },
+    ],
   ])("anchors %s to its own columns", async (_name, body, pick, anchor) => {
     const { onStage, button } = await stageSelection(body, (container) =>
       bracketedIn(container, pick),

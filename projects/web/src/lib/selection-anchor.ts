@@ -27,6 +27,7 @@ import {
 import {
   columnsOfOffsets,
   lineColAt,
+  lineEndingAt,
   type SegmentIndex,
   type SourceSegment,
   segmentsInLines,
@@ -529,8 +530,8 @@ export function rangeAtSource(
 }
 
 /**
- * A start on the line ending of a line of a quote or a list item (a CRLF's
- * `\r` as well as its `\n`) begins, on the page, where the next line's text
+ * A start on the line ending of any kind (`lineEndingAt`) that ends a line of
+ * a quote or a list item begins, on the page, where the next line's text
  * does: the `> ` or the indent in between is the container's, shown nowhere,
  * and no column may name it.
  */
@@ -540,11 +541,11 @@ function pastPrefix(
   at: number | null,
 ): number | null {
   if (at === null) return at;
-  // A CRLF's `\r` ends the line as its `\n` does.
-  const newline = index.source.startsWith("\r\n", at) ? at + 1 : at;
-  if (index.source[newline] !== "\n") return at;
-  const next = segments.find((segment) => segment.end > newline + 1);
-  return next !== undefined && next.start > newline + 1 ? next.start : at;
+  const ending = lineEndingAt(index.source, at);
+  if (ending === 0) return at;
+  const after = at + ending;
+  const next = segments.find((segment) => segment.end > after);
+  return next !== undefined && next.start > after ? next.start : at;
 }
 
 /**
