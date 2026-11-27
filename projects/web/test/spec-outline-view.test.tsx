@@ -26,6 +26,7 @@ import { MePrefs } from "@todou/shared";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { api } from "../src/api/queries.ts";
 import { DELETION_CLASSES } from "../src/lib/rehype-fold-unchanged.ts";
+import { restingScrollY, usableViewport } from "../src/lib/scroll-insets.ts";
 import { parseSpecSearch } from "../src/lib/spec-search.ts";
 import { SpecViewPage } from "../src/pages/spec-view.tsx";
 import { testQueryClient } from "./render.tsx";
@@ -207,7 +208,7 @@ const ISSUE = {
   moves: [],
 } satisfies Issue;
 
-function mockSpec(prefs: Partial<MePrefsShape> = {}) {
+function mockSpec(prefs: Partial<MePrefsShape> = {}, drafts: object[] = []) {
   vi.spyOn(api, "getIssue").mockResolvedValue(ISSUE);
   vi.spyOn(api, "getMyPrefs").mockResolvedValue(MePrefs.parse(prefs));
   const info: SpecInfo = {
@@ -242,7 +243,15 @@ function mockSpec(prefs: Partial<MePrefsShape> = {}) {
     },
   );
   vi.spyOn(api, "getSpecComments").mockResolvedValue(COMMENTS);
-  localStorage.setItem("todou-spec-review:demo:1", JSON.stringify(DRAFTS));
+  localStorage.setItem(
+    "todou-spec-review:demo:1",
+    JSON.stringify([...DRAFTS, ...drafts]),
+  );
+  // As another tab's write arrives: the drafts module drops what it cached
+  // for this bucket in an earlier test.
+  window.dispatchEvent(
+    new StorageEvent("storage", { key: "todou-spec-review:demo:1" }),
+  );
   vi.spyOn(api, "getReferenceConfig").mockResolvedValue({
     format: { prefix: "T", history: [] },
     autolinks: [],
@@ -257,8 +266,12 @@ function shellHeader(height = 57): void {
   document.body.append(header);
 }
 
-async function renderSpec(search: string, prefs: Partial<MePrefsShape> = {}) {
-  mockSpec(prefs);
+async function renderSpec(
+  search: string,
+  prefs: Partial<MePrefsShape> = {},
+  drafts: object[] = [],
+) {
+  mockSpec(prefs, drafts);
   shellHeader();
   const rootRoute = createRootRoute();
   const authedRoute = createRoute({
@@ -1009,5 +1022,136 @@ describe("the change strip", () => {
     expect(tooltip()).not.toBeNull();
     fireEvent.pointerUp(document.body, { pointerId: 1, button: 0, buttons: 0 });
     await waitFor(() => expect(tooltip()).toBeNull());
+  });
+
+  /** A file-level draft, which puts the File comments box above the card. */
+  const FILE_DRAFT = {
+    id: "draft-file",
+    anchor: {
+      path: "design.md",
+      version: 2,
+      line_start: null,
+      line_end: null,
+      col_start: null,
+      col_end: null,
+    },
+    quote: "",
+    body: "a file comment",
+  };
+
+  /**
+   * The bar stuck as `stuckBar` has it, over a 1000px card that starts at
+   * 1216px, under 1000px of file comments from 200px down the window: the
+   * strip maps the 2016px from the file comments' top to the card's foot, of
+   * which only the file comments are on screen. The removal sits 100px down
+   * the card.
+   */
+  const underFileComments = async (view: { container: HTMLElement }) => {
+    const box = card(view) as HTMLElement;
+    const fileComments = box.previousElementSibling as HTMLElement;
+    expect(fileComments.textContent).toContain("File comments");
+    fileComments.getBoundingClientRect = () =>
+      ({
+        top: 200,
+        height: 1000,
+        bottom: 1200,
+        left: 0,
+        right: 900,
+      }) as DOMRect;
+    const removal = box.querySelector<HTMLElement>(
+      [...DELETION_CLASSES].map((name) => `.${name}`).join(", "),
+    ) as HTMLElement;
+    removal.getBoundingClientRect = () =>
+      ({ top: 1316, height: 20, bottom: 1336, left: 0, right: 0 }) as DOMRect;
+    const s = await stuckBar(view, 1216, 10000);
+    s.at.cardHeight = 1000;
+    await s.measure();
+    return s;
+  };
+  const MAP_TOP = 200;
+  const MAP_HEIGHT = 2016;
+
+  it("maps the file comments above the card onto the bar's top, and frames them on screen", async () => {
+    const view = await renderSpec("?v=2&file=design.md", {}, [FILE_DRAFT]);
+    await waitFor(() => expect(strip(view)).not.toBeNull());
+    const s = await underFileComments(view);
+    const bar = strip(view)?.firstElementChild as HTMLElement;
+    const height = s.barHeight();
+    expect(height).toBeGreaterThan(0);
+
+    const removal = bar.querySelector<HTMLElement>('[data-kind="del"]');
+    expect(
+      Math.abs(
+        Number.parseFloat(removal?.style.top ?? "") -
+          ((1316 - MAP_TOP) / MAP_HEIGHT) * height,
+      ),
+    ).toBeLessThan(0.5);
+    const frame = bar.querySelector<HTMLElement>("[data-spec-strip-frame]");
+    expect(Number.parseFloat(frame?.style.top ?? "")).toBe(0);
+    expect(
+      Math.abs(
+        Number.parseFloat(frame?.style.height ?? "") -
+          ((window.innerHeight - MAP_TOP) / MAP_HEIGHT) * height,
+      ),
+    ).toBeLessThan(0.5);
+  });
+
+  it("starts a drag beside the frame where a click there lands, file comments and all", async () => {
+    const view = await renderSpec("?v=2&file=design.md", {}, [FILE_DRAFT]);
+    await waitFor(() => expect(strip(view)).not.toBeNull());
+    const s = await underFileComments(view);
+    const pageEnd = 10000 - window.innerHeight;
+
+    const beside = s.at.barTop + 0.9 * s.barHeight();
+    s.press(beside);
+    s.move(beside + 10);
+    const resting = restingScrollY(
+      { top: MAP_TOP + window.scrollY + 0.9 * MAP_HEIGHT, height: 0 },
+      usableViewport(),
+    );
+    expect(s.tops()).toHaveLength(1);
+    expect(s.tops()[0]).toBeCloseTo(
+      Math.min(Math.max(resting, 0), pageEnd) +
+        (10 * MAP_HEIGHT) / s.barHeight(),
+    );
+  });
+
+  it("names no section over the file comments, and the right one below them", async () => {
+    // Nothing folds, so every heading has a box of its own.
+    localStorage.setItem("todou-spec-fold", "off");
+    const view = await renderSpec("?v=2&file=design.md", {}, [FILE_DRAFT]);
+    await waitFor(() => expect(strip(view)).not.toBeNull());
+    // Down the card: 90% down the bar is 2014px down the window, in Beta;
+    // counted from the card's top instead, it would be past Gamma.
+    const tops = [1230, 1500, 1800, 2050, 2150];
+    Object.values(LINE).forEach((line, i) => {
+      const el = headingAt(view, line) as HTMLElement;
+      const top = tops[i] ?? 0;
+      el.getBoundingClientRect = () =>
+        ({ top, height: 30, bottom: top + 30 }) as DOMRect;
+    });
+    const s = await underFileComments(view);
+    const tooltip = () =>
+      document.querySelector<HTMLElement>("[data-spec-strip-tooltip]");
+
+    s.move(s.at.barTop + 0.05 * s.barHeight());
+    expect(tooltip()).toBeNull();
+    s.move(s.at.barTop + 0.9 * s.barHeight());
+    await waitFor(() => expect(tooltip()?.textContent).toContain("Beta"));
+  });
+
+  it("runs as tall as the file comments and a short card together", async () => {
+    const view = await renderSpec("?v=2&file=design.md", {}, [FILE_DRAFT]);
+    await waitFor(() => expect(strip(view)).not.toBeNull());
+    // 284px of file comments from 100px down the window, then a 200px card:
+    // 500px to map, less than a stuck bar's height and more than the card's.
+    const box = card(view) as HTMLElement;
+    const fileComments = box.previousElementSibling as HTMLElement;
+    fileComments.getBoundingClientRect = () =>
+      ({ top: 100, height: 284, bottom: 384, left: 0, right: 900 }) as DOMRect;
+    const s = await stuckBar(view, 400, 2000);
+    s.at.cardHeight = 200;
+    await s.measure();
+    expect(s.barHeight()).toBe(500);
   });
 });

@@ -46,14 +46,31 @@ const DRAG_SLOP = 3;
 const LANDING_KINDS: readonly TickKind[] = ["stop", "del"];
 
 /**
- * The card's padding box in the viewport: what the strip's column spans, and
- * so what its scale maps onto the bar.
+ * What the strip maps onto its bar, in the viewport: from the top of the
+ * content column's first child to the foot of the card's padding box, the
+ * card's padding top less `reach`. What stands above the card, its file
+ * comments, takes the bar's top, unmarked; the strip's column starts there
+ * too.
  */
-function paddingBoxOf(card: HTMLElement): { top: number; height: number } {
+function mapOf(
+  card: HTMLElement,
+  reach: number,
+): { top: number; height: number } {
   return {
-    top: card.getBoundingClientRect().top + card.clientTop,
-    height: card.clientHeight,
+    top: card.getBoundingClientRect().top + card.clientTop - reach,
+    height: card.clientHeight + reach,
   };
+}
+
+/**
+ * How far above the card the content column's first child starts: 0 when
+ * the card is that child.
+ */
+function reachOf(card: HTMLElement, content: HTMLElement | null): number {
+  const first = content?.firstElementChild;
+  return first === null || first === undefined
+    ? 0
+    : card.getBoundingClientRect().top - first.getBoundingClientRect().top;
 }
 
 const DELETION_SELECTOR = [...DELETION_CLASSES]
@@ -64,7 +81,7 @@ const DELETION_SELECTOR = [...DELETION_CLASSES]
 type Target = HTMLElement;
 
 /**
- * Everything the strip marks, in the card's coordinates: each stop ↑↓ step
+ * Everything the strip marks, down the map from `mapTop`: each stop ↑↓ step
  * over, numbered as they number them; each deletion no stop holds, which
  * nothing else would mark; each open comment and draft at its block; and
  * each h2. Something a fold or a closed `<details>` hides is measured where
@@ -72,7 +89,7 @@ type Target = HTMLElement;
  */
 export function collectMarks(
   doc: HTMLElement,
-  cardTop: number,
+  mapTop: number,
   annotations: DisplayedAnnotation[],
   baselineAnnotations: DisplayedAnnotation[],
   oldToNew: (oldLine: number) => number,
@@ -82,7 +99,7 @@ export function collectMarks(
   const stopIndex = new Map<Target, number>();
   const measure = (kind: TickKind, el: HTMLElement, target: Target) => {
     const rect = el.getBoundingClientRect();
-    marks.push({ kind, top: rect.top - cardTop, height: rect.height, target });
+    marks.push({ kind, top: rect.top - mapTop, height: rect.height, target });
   };
   const located = (el: HTMLElement): HTMLElement | null => {
     const loc = parseSourceLoc(el.getAttribute(SOURCE_LINE_ATTR));
@@ -138,17 +155,17 @@ export function collectMarks(
   return { marks, stopIndex };
 }
 
-/** Where each section starts, down the card, in outline order. */
+/** Where each section starts, down the map, in outline order. */
 function sectionTops(
   doc: HTMLElement,
-  cardTop: number,
+  mapTop: number,
   headings: OutlineHeading[],
 ): Array<number | null> {
   const byLine = headingsByLine(doc);
   return headings.map(({ line }) => {
     const el = byLine.get(line);
     const shown = el === undefined ? null : shownFor(doc, el, line);
-    return shown === null ? null : shown.getBoundingClientRect().top - cardTop;
+    return shown === null ? null : shown.getBoundingClientRect().top - mapTop;
   });
 }
 
@@ -156,7 +173,10 @@ type Layout = {
   ticks: Tick<Target>[];
   stopIndex: Map<Target, number>;
   sections: Array<number | null>;
-  cardHeight: number;
+  /** What the strip maps: what stands above the card, then the card. */
+  mapHeight: number;
+  /** How much of that stands above the card. */
+  reach: number;
   stripHeight: number;
 };
 
@@ -164,13 +184,15 @@ const NO_LAYOUT: Layout = {
   ticks: [],
   stopIndex: new Map(),
   sections: [],
-  cardHeight: 0,
+  mapHeight: 0,
+  reach: 0,
   stripHeight: 0,
 };
 
 function sameLayout(a: Layout, b: Layout): boolean {
   return (
-    a.cardHeight === b.cardHeight &&
+    a.mapHeight === b.mapHeight &&
+    a.reach === b.reach &&
     a.stripHeight === b.stripHeight &&
     a.ticks.length === b.ticks.length &&
     a.ticks.every((tick, i) => {
@@ -213,8 +235,9 @@ const PAINT: ReadonlyArray<readonly [TickKind, string]> = [
 /**
  * The card's right border, drawn as a map of the whole file from lg up:
  * its changes, its open comments and drafts, its h2s and a frame
- * around what is on screen, at their places down the file. The bar stays in
- * view while the card scrolls past, and a click on it goes where it points.
+ * around what is on screen, at their places down the file. What stands
+ * above the card, its file comments, is on the map too, blank. The bar stays
+ * in view while the card scrolls past, and a click on it goes where it points.
  *
  * Hidden from assistive tech: the outline and ↑↓ reach everything it does.
  */
@@ -235,7 +258,10 @@ export function SpecChangeStrip({
 }: {
   /** The card whose right border this is. */
   cardRef: RefObject<HTMLElement | null>;
-  /** The page's content, whose size changes say the card's may have. */
+  /**
+   * The page's content, whose size changes say the card's may have; the
+   * strip's map starts at the top of its first child.
+   */
   contentRef: RefObject<HTMLElement | null>;
   /** The toolbar's bottom: what lies above it is not on screen. */
   stickyTop: number;
@@ -268,11 +294,13 @@ export function SpecChangeStrip({
     /** Where the page is dragged from. */
     from: number;
     /** The scale at the press, which holds for the whole drag. */
-    cardHeight: number;
+    mapHeight: number;
     stripHeight: number;
   } | null>(null);
   /** The bar's height as last measured, for the frame between measurements. */
   const stripHeightRef = useRef(0);
+  /** `reach` as last measured, for the frames and presses between. */
+  const reachRef = useRef(0);
   /** Ends the watch for a release off the bar that the last press began. */
   const pressWatch = useRef<AbortController | null>(null);
   useEffect(() => () => pressWatch.current?.abort(), []);
@@ -284,14 +312,15 @@ export function SpecChangeStrip({
       const card = cardRef.current;
       const doc = renderedDocumentIn(card);
       if (card === null || doc === null) return;
-      const box = paddingBoxOf(card);
       // Where things lie down the card only changes when something changes
       // size; a scroll alone moves the frame and nothing else.
+      if (resized) reachRef.current = reachOf(card, contentRef.current);
+      const box = mapOf(card, reachRef.current);
       if (resized) {
         // Fixed for a given window and toolbar: once stuck, the bar runs from
         // `gap` below the toolbar to `gap` above the window's foot, as the
-        // file rail does; until it sticks it rides lower with the card, its
-        // foot below the window. Never taller than the card it runs down.
+        // file rail does; until it sticks it rides at the top of its column,
+        // which is the content column's top. Never taller than what it maps.
         const stripHeight = Math.max(
           0,
           Math.min(window.innerHeight - stickyTop - 2 * gap, box.height),
@@ -309,7 +338,8 @@ export function SpecChangeStrip({
           ticks: layoutTicks(marks, box.height, stripHeight),
           stopIndex,
           sections: sectionTops(doc, box.top, headings),
-          cardHeight: box.height,
+          mapHeight: box.height,
+          reach: reachRef.current,
           stripHeight,
         };
         setLayout((prev) => (sameLayout(prev, next) ? prev : next));
@@ -335,28 +365,34 @@ export function SpecChangeStrip({
     ],
   );
 
-  /** The bar's y under the pointer, and the section it falls in. */
+  /**
+   * The bar's y under the pointer, and the section it falls in: none over
+   * what stands above the card.
+   */
   const pointAt = (clientY: number) => {
     const bar = barRef.current;
     if (bar === null) return null;
     const box = bar.getBoundingClientRect();
     const y = clientY - box.top;
-    const down = stripToDocument(y, layout.cardHeight, layout.stripHeight);
-    let section = 0;
-    layout.sections.forEach((at, i) => {
-      if (at !== null && at <= down) section = i;
-    });
+    const down = stripToDocument(y, layout.mapHeight, layout.stripHeight);
+    let section: number | null = null;
+    if (down >= layout.reach) {
+      section = 0;
+      layout.sections.forEach((at, i) => {
+        if (at !== null && at <= down) section = i;
+      });
+    }
     return { y, down, section, left: box.left };
   };
 
   /**
-   * Where the page rests with a point of the card in the middle of what the
+   * Where the page rests with a point of the map in the middle of what the
    * toolbar leaves, by the rule ↑↓ land by.
    */
   const restingFor = (down: number): number | null => {
     const card = cardRef.current;
     if (card === null) return null;
-    const pageY = paddingBoxOf(card).top + window.scrollY + down;
+    const pageY = mapOf(card, reachRef.current).top + window.scrollY + down;
     return restingScrollY({ top: pageY, height: 0 }, usableViewport());
   };
 
@@ -377,8 +413,12 @@ export function SpecChangeStrip({
     <div
       aria-hidden
       data-spec-strip=""
-      className="absolute top-0 bottom-0 select-none"
-      style={{ right: -(STRIP_WIDTH + 1) / 2, width: STRIP_WIDTH }}
+      className="absolute bottom-0 select-none"
+      style={{
+        top: -layout.reach,
+        right: -(STRIP_WIDTH + 1) / 2,
+        width: STRIP_WIDTH,
+      }}
     >
       <div
         ref={barRef}
@@ -416,7 +456,7 @@ export function SpecChangeStrip({
               resting === null
                 ? window.scrollY
                 : Math.min(Math.max(resting, 0), pageEnd),
-            cardHeight: layout.cardHeight,
+            mapHeight: layout.mapHeight,
             stripHeight: layout.stripHeight,
           };
           // Without the capture, a release off the bar never reaches it, and
@@ -440,7 +480,7 @@ export function SpecChangeStrip({
         onPointerMove={(event) => {
           const at = pointAt(event.clientY);
           setHover(
-            at === null
+            at === null || at.section === null
               ? null
               : {
                   y: event.clientY,
@@ -471,7 +511,7 @@ export function SpecChangeStrip({
               pressed.from +
               stripToDocument(
                 event.clientY - pressed.startY,
-                pressed.cardHeight,
+                pressed.mapHeight,
                 pressed.stripHeight,
               ),
             behavior: "instant",
