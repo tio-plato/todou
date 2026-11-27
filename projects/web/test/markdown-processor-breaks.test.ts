@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   MARKDOWN_SYNTAX_PLUGINS,
   MESSAGE_SYNTAX_PLUGINS,
+  withLineFeeds,
 } from "../src/lib/markdown-processor.ts";
 
 function hast(markdown: string, syntax: PluggableList): Root {
@@ -72,5 +73,16 @@ describe("single newlines (T-702)", () => {
     expect(soft.position).toBeUndefined();
     const [hard] = breaks(hast("a  \nb", MESSAGE_SYNTAX_PLUGINS));
     expect(hard.position).toBeDefined();
+  });
+});
+
+describe("a message's lone CRs written as line feeds", () => {
+  it("keeps a long run of CRs before a line feed in time that grows with it", () => {
+    // As long as a comment may be: tried again from each of its CRs, the
+    // run took seconds to find that it ends in a line feed.
+    const source = `${"\r".repeat(65_535)}\n`;
+    const began = performance.now();
+    expect(withLineFeeds(source)).toBe(source);
+    expect(performance.now() - began).toBeLessThan(1000);
   });
 });

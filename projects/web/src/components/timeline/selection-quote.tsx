@@ -16,6 +16,7 @@ import { createPortal } from "react-dom";
 import type { AnchorRange } from "@/components/spec/selection-entry.tsx";
 import { useQuoteReply } from "@/components/timeline/quote-reply.tsx";
 import { Button } from "@/components/ui/button";
+import { withLineFeeds } from "@/lib/markdown-processor.ts";
 import { quoteOfSelection } from "@/lib/quote-markdown.ts";
 import {
   cutsQuote,
@@ -60,7 +61,8 @@ const BODY: QuotePart = { kind: "body" };
  * The ref for a quotable body's element: it hands the element on to `ref`,
  * the one `useQuoteTarget` gives, and records the markdown the element
  * renders. That is `MarkdownView`'s own input, which for an action line is
- * not the stored body; a selection's columns count in it.
+ * not the stored body; a selection's lines and columns count in it as
+ * `MarkdownView` reads it (`anchorIn`).
  */
 export function useQuotableBody(
   ref: (el: HTMLElement | null) => void,
@@ -195,11 +197,12 @@ function endsInShadowOf(ends: SelectionEndpoints, body: Element): boolean {
 function anchorIn(el: Element, ends: SelectionEndpoints): QuotedPart | null {
   const shown = BODIES.get(el);
   if (shown === undefined) return null;
-  shown.index ??= buildSegmentIndex(shown.source);
+  // Read as `MarkdownView` renders a message, so its lines are the ones on
+  // the page.
+  const source = withLineFeeds(shown.source);
+  shown.index ??= buildSegmentIndex(source);
   const anchor = anchorForSelection(el, shown.index, ends);
-  return anchor === null
-    ? null
-    : { el, source: shown.source, part: shown.part, anchor };
+  return anchor === null ? null : { el, source, part: shown.part, anchor };
 }
 
 /**

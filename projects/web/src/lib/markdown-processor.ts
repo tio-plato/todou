@@ -45,6 +45,28 @@ export const MESSAGE_SYNTAX_PLUGINS: PluggableList = [
   ...MARKDOWN_SYNTAX_PLUGINS,
   remarkBreaks,
 ];
+
+/**
+ * A message's text with each lone `\r` written as `\n`. CommonMark ends a
+ * line at a lone `\r` as at `\n`, so the markdown means the same; only the
+ * line numbers change, and they then agree with the line feeds everything
+ * after this counts by. A run of `\r` right before a `\n` stays: a CRLF, and
+ * the `\r\r\n` a CRLF file's lines end in when it is pasted into a CRLF
+ * message, where a code block draws that `\r` as part of its line. The
+ * length stays, so every offset does.
+ *
+ * Messages and quotes only. A document — a spec file, an attached `.md` —
+ * keeps its lone `\r`s: annotations anchor to its lines, which have to stay
+ * the server's, counted by `\n` alone.
+ */
+export function withLineFeeds(text: string): string {
+  // Each run is matched whole, with the `\n` after it if there is one: a
+  // lookahead after `\r+` would try the run again from each of its `\r`s.
+  return text.replace(/\r+\n?/g, (run) =>
+    run.endsWith("\n") ? run : "\n".repeat(run.length),
+  );
+}
+
 const processor = unified().use(remarkParse).use(MARKDOWN_SYNTAX_PLUGINS);
 
 /**

@@ -34,6 +34,7 @@ import { FENCE_COLLAPSE_LINES, fenceTitle } from "@/lib/fence-meta.ts";
 import {
   MARKDOWN_SYNTAX_PLUGINS,
   MESSAGE_SYNTAX_PLUGINS,
+  withLineFeeds,
 } from "@/lib/markdown-processor.ts";
 import { rehypeBlockBreaks } from "@/lib/rehype-block-breaks.ts";
 import { SWAP_ALT_ATTR, SWAP_SRC_ATTR } from "@/lib/rehype-decorations.ts";
@@ -619,7 +620,9 @@ export const MarkdownViewWithPlugins = memo(function MarkdownViewWithPlugins({
         rehypePlugins={rehypePasses}
         components={components}
       >
-        {children}
+        {/* A message reads each lone `\r` as `\n`, a document as it is:
+            see `withLineFeeds`. */}
+        {document ? children : withLineFeeds(children)}
       </Markdown>
     </div>
   );

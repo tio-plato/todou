@@ -1,7 +1,7 @@
 import type { Code, Nodes } from "mdast";
 import { toMarkdown } from "mdast-util-to-markdown";
 import type { AnchorRange } from "@/components/spec/selection-entry.tsx";
-import { parseMarkdown } from "./markdown-processor.ts";
+import { parseMarkdown, withLineFeeds } from "./markdown-processor.ts";
 import { splitRaw } from "./rehype-details.ts";
 import {
   codeSpanPieces,
@@ -19,10 +19,11 @@ import {
 
 /**
  * Every line prefixed. Blank lines become a bare `>` so the whole passage
- * stays one quote block instead of breaking into several at the gaps.
+ * stays one quote block instead of breaking into several at the gaps. A lone
+ * `\r` ends a line here as it does in markdown and in the comment box.
  */
 export function blockquote(body: string): string {
-  return body
+  return withLineFeeds(body)
     .trimEnd()
     .split("\n")
     .map((line) => (line.trim() === "" ? ">" : `> ${line}`))

@@ -19,10 +19,16 @@ vi.mock("@pierre/diffs/react", () => ({
 /** Mount one markdown body and wait for the router to hand it over. */
 async function mount(
   source: string,
-  { stamped = false }: { stamped?: boolean } = {},
+  {
+    stamped = false,
+    document = false,
+  }: { stamped?: boolean; document?: boolean } = {},
 ): Promise<HTMLElement> {
   const { container } = renderWithProviders(
-    <MarkdownView rehypePlugins={stamped ? [rehypeSourceLines] : undefined}>
+    <MarkdownView
+      rehypePlugins={stamped ? [rehypeSourceLines] : undefined}
+      document={document}
+    >
       {source}
     </MarkdownView>,
   );
@@ -294,12 +300,12 @@ describe("source-line stamps around a fold", () => {
   });
 
   // micromark ends a line at a lone `\r`, and the fold cut out of the HTML
-  // counts its lines by `\n`: a body with CR line ends alone is one line to
+  // counts its lines by `\n`: a file with CR line ends alone is one line to
   // both, as it is to the server.
-  it("stamps a fold in a CR-only body's quote on its quote's lines", async () => {
+  it("stamps a fold in a CR-only file's quote on its quote's lines", async () => {
     const container = await mount(
       "> <div>x</div>\r> <details><summary>S</summary>B</details>\r",
-      { stamped: true },
+      { stamped: true, document: true },
     );
     expect(
       container.querySelector("blockquote")?.getAttribute("data-loc"),
