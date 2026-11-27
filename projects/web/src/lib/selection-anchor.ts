@@ -23,6 +23,7 @@ import {
 import {
   columnsOfOffsets,
   lineColAt,
+  lineEndingAt,
   type SegmentIndex,
   type SourceSegment,
   segmentsInLines,
@@ -463,18 +464,22 @@ export function sourceOffsetInBlock(
 }
 
 /**
- * A start on the newline that ends a line of a quote or a list item begins,
- * on the page, where the next line's text does: the `> ` or the indent in
- * between is the container's, shown nowhere, and no column may name it.
+ * A start on the line ending of any kind (`lineEndingAt`) that ends a line of
+ * a quote or a list item begins, on the page, where the next line's text
+ * does: the `> ` or the indent in between is the container's, shown nowhere,
+ * and no column may name it.
  */
 function pastPrefix(
   index: SegmentIndex,
   segments: SourceSegment[],
   at: number | null,
 ): number | null {
-  if (at === null || index.source[at] !== "\n") return at;
-  const next = segments.find((segment) => segment.end > at + 1);
-  return next !== undefined && next.start > at + 1 ? next.start : at;
+  if (at === null) return at;
+  const ending = lineEndingAt(index.source, at);
+  if (ending === 0) return at;
+  const after = at + ending;
+  const next = segments.find((segment) => segment.end > after);
+  return next !== undefined && next.start > after ? next.start : at;
 }
 
 /**

@@ -238,6 +238,19 @@ const ESCAPE_OR_REFERENCE =
 /** What a continuation line may open with that is not its text. */
 const CONTINUATION_PREFIX = /[> \t]/;
 
+/**
+ * The length of the line ending that starts at `offset` of `source`: 2 for
+ * a CRLF, 1 for a line feed or a lone `\r`, 0 where none starts. Markdown
+ * ends a line at all three, so lining a selection up with the page steps
+ * past each of them, while lines are still numbered by `\n` alone
+ * (`lineStartsOf`).
+ */
+export function lineEndingAt(source: string, offset: number): 0 | 1 | 2 {
+  if (source[offset] === "\n") return 1;
+  if (source[offset] !== "\r") return 0;
+  return source[offset + 1] === "\n" ? 2 : 1;
+}
+
 /** A line ending, or part of one, as `trimLines` finds them. */
 function isLineEnding(char: string | undefined): boolean {
   return char === "\n" || char === "\r";
@@ -261,14 +274,15 @@ function isLineEnding(char: string | undefined): boolean {
  *   decodes to, and those written beside the line break `&#10;` stands for.
  *
  * Every other character is copied from the source to the value, and runs of
- * them are exact pieces; a newline ends the one it is in. Null when the two
- * do not line up — the caller then keeps the node whole, as before.
+ * them are exact pieces; a line ending of any kind (`lineEndingAt`) ends the
+ * one it is in. Null when the two do not line up — the caller then keeps the
+ * node whole, as before.
  *
  * A continuation line's prefix is not skipped greedily: a paragraph line
  * indented four or more spaces is no quote, and its text may open with `>`.
  * The prefix is the shortest run of `>`, blanks and tabs after which the rest
- * of the line lines up, through the source newline that ends it or to the end
- * of the value. A shorter run that takes a container's `>` for text stops
+ * of the line lines up, through the source line ending that ends it or to the
+ * end of the value. A shorter run that takes a container's `>` for text stops
  * lining up within the line, so that check is what keeps a quote's marker out
  * of the text. The runs tried end at the line's start, past each `>` of the
  * run the line opens with, and at the end of that run (`prefixEnds`).
@@ -326,7 +340,7 @@ function prefixEnds(source: string, from: number, end: number): number[] {
 
 /**
  * One line of a text node read by `textLinePieces`, and where it stopped:
- * past the source newline that ends it, or at the end of the value.
+ * past the source line ending that ends it, or at the end of the value.
  */
 type TextLine = {
   pieces: TextPiece[];
@@ -337,8 +351,8 @@ type TextLine = {
 
 /**
  * `source` from `from` lined up with `value` from `at`, by the rules of
- * `textPieces`, up to and including the first newline the two share, or to
- * the end of `value`. Null when they stop reading alike first.
+ * `textPieces`, up to and including the first line ending the two share, or
+ * to the end of `value`. Null when they stop reading alike first.
  */
 function textLinePieces(
   source: string,
@@ -398,9 +412,12 @@ function textLinePieces(
         runStart = i;
         runAt = j;
       }
+      // A line feed or a lone `\r` ends the line; a CRLF's `\r` does not,
+      // the `\n` copied after it does.
+      const endsLine = lineEndingAt(source, i) === 1;
       i++;
       j++;
-      if (char === "\n") {
+      if (endsLine) {
         closeRun();
         return { pieces, i, j, newline: true };
       }
@@ -501,7 +518,7 @@ function codeLinePieces(
 /**
  * The content of a code span, `source[from, to)`, lined up with `shown` as a
  * whole, line by line. A line ending shows as one space and is a piece of its
- * own, `\r\n` included, so the offsets after it stay right.
+ * own, `\r\n` and a lone `\r` included, so the offsets after it stay right.
  *
  * What a continuation line opens with — a quote's `>`, an item's indent — is
  * in no piece, but it is not skipped greedily the way `textPieces` skips it:
@@ -521,13 +538,7 @@ function codeContentPieces(
   let j = 0;
   for (let first = true; ; first = false) {
     let lineEnd = i;
-    while (
-      lineEnd < to &&
-      source[lineEnd] !== "\n" &&
-      !(source[lineEnd] === "\r" && source[lineEnd + 1] === "\n")
-    ) {
-      lineEnd++;
-    }
+    while (lineEnd < to && lineEndingAt(source, lineEnd) === 0) lineEnd++;
     const last = lineEnd >= to;
     let line: { pieces: TextPiece[]; j: number } | null = null;
     for (let p = i; p <= lineEnd && line === null; p++) {
@@ -542,7 +553,7 @@ function codeContentPieces(
     pieces.push(...line.pieces);
     j = line.j;
     if (last) return pieces;
-    const ending = source[lineEnd] === "\r" ? 2 : 1;
+    const ending = lineEndingAt(source, lineEnd);
     pieces.push({
       text: " ",
       start: lineEnd,
@@ -568,9 +579,9 @@ function codeContentPieces(
  * from each end of code that starts and ends with one (or with a line
  * ending) and is not all spaces; the content is read that way first, and as
  * the code itself when that does not line up. Null when neither does, and
- * the caller keeps the span whole, as before. Two known shapes do not: a
- * lone `\r` for a line ending, and a continuation line whose container
- * prefix ends in a tab, which the value holds as the blanks it expands to.
+ * the caller keeps the span whole, as before. One known shape does not: a
+ * continuation line whose container prefix ends in a tab, which the value
+ * holds as the blanks it expands to.
  */
 export function codeSpanPieces(
   source: string,
@@ -1431,7 +1442,8 @@ export type SourceColumns = {
  * server measures lines without their newline. Both ends therefore step off
  * a newline they landed on, which makes a selection starting at a line end
  * mean column 1 of the next line rather than one past the end of this one.
- * The `\r` of a CRLF line ending is part of it: the page shows none.
+ * The `\r` of a CRLF and a lone `\r` are line endings as well
+ * (`lineEndingAt`): the page shows neither as text of its own.
  *
  * `hidden` names any other offsets the reader could not have selected: the
  * part of a code line in front of what its row shows. Both ends step off
@@ -1446,9 +1458,7 @@ export function columnsOfOffsets(
 ): SourceColumns | null {
   if (end <= start) return null;
   const skip = (offset: number) =>
-    text.source[offset] === "\n" ||
-    (text.source[offset] === "\r" && text.source[offset + 1] === "\n") ||
-    hidden(offset);
+    lineEndingAt(text.source, offset) > 0 || hidden(offset);
   let first = start;
   let last = end - 1;
   while (first < last && skip(first)) first++;
