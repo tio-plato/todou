@@ -2867,6 +2867,11 @@ describe("column anchors at the edges of code rows", () => {
     ["a list", "- Outro words\n- More", "ul"],
     ["a loose list item", "- Outro words\n\n- More", "li"],
     ["a quote", "> Outro words", "blockquote"],
+    [
+      "a fold",
+      "<details>\n<summary>Outro words</summary>\n\nBody.\n\n</details>",
+      "details",
+    ],
     ["a task list item", "- [ ] Outro words", "li"],
   ])(
     "ends a selection down from a fence before %s whose element opens with no text",
@@ -2919,6 +2924,11 @@ describe("column anchors at the edges of code rows", () => {
     ["a table", "| Outro | words |\n|---|---|\n| a | b |", "\n"],
     ["bold words", "**Outro** words.", "\n"],
     ["a link", "[Outro](https://example.com) words.", "\n"],
+    [
+      "a fold",
+      "<details>\n<summary>Outro words</summary>\n\nBody.\n\n</details>",
+      "\n",
+    ],
   ])(
     "ends a selection down from a fence before the markup that opens %s",
     (_name, next, eol) => {
@@ -3029,6 +3039,68 @@ describe("column anchors at the edges of code rows", () => {
       );
     },
   );
+
+  it("leaves a setext heading's underline out of a selection into a fence", () => {
+    const source = `Intro words\n===========\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n`;
+    const { container, shadow, index, lines } = fenceWithRows(
+      source,
+      TOKEN_ROWS,
+    );
+    const first = shadow.querySelector("[data-line='1'] span")?.firstChild;
+    const heading = container.querySelector("h1");
+    const words = heading?.firstChild;
+    if (!(words instanceof Text)) throw new Error("no heading");
+    for (const [node, at] of [
+      [words, words.length],
+      [heading, heading?.childNodes.length ?? 0],
+    ] as const) {
+      const into = anchorForSelection(
+        container,
+        index,
+        ends(node, at, first, 5),
+      );
+      if (into === null) throw new Error("no anchor");
+      expect(cut(lines, into)).toBe("const");
+    }
+  });
+
+  it("leaves a quote's lines of a lone > out of a selection crossing a fence in it", () => {
+    const fence = [`\`\`\`ts`, ...CODE_ROWS, "```"];
+    const source = `> Intro words.\n>\n${fence.map((l) => `> ${l}`).join("\n")}\n>\n> Outro words.\n`;
+    const { container, shadow, index, lines } = fenceWithRows(
+      source,
+      TOKEN_ROWS,
+    );
+    const first = shadow.querySelector("[data-line='1'] span")?.firstChild;
+    const last = shadow.querySelector("[data-line='3'] span")?.firstChild;
+    const [intro, outro] = container.querySelectorAll("blockquote p");
+    const introText = intro?.firstChild;
+    if (!(introText instanceof Text) || !outro) throw new Error("no quote");
+    for (const [node, at] of [
+      [outro.firstChild, 0],
+      [outro, 0],
+    ] as const) {
+      const down = anchorForSelection(
+        container,
+        index,
+        ends(last, 6, node, at),
+      );
+      if (down === null) throw new Error("no anchor");
+      expect(cut(lines, down)).toBe("charlie = 3;");
+    }
+    for (const [node, at] of [
+      [introText, introText.length],
+      [intro, intro?.childNodes.length ?? 0],
+    ] as const) {
+      const into = anchorForSelection(
+        container,
+        index,
+        ends(node, at, first, 5),
+      );
+      if (into === null) throw new Error("no anchor");
+      expect(cut(lines, into)).toBe("const");
+    }
+  });
 
   it("reaches a patch row that names no single line", () => {
     const source = `Some prose.\n\n\`\`\`patch\n${[

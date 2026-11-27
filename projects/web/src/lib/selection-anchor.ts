@@ -554,14 +554,13 @@ function pastPrefix(
 
 /**
  * Where an end at the very start of a block's text, or a start at its very
- * end, maps: to the start or the end of the line that text starts or ends on
- * as the page shows it, ended by a line ending of any kind (`lineEndingAt`)
- * rather than by the `\n` alone that numbers the anchor's lines. Such an
- * endpoint selects none of the block, and the markup between its text and
- * the edge of its lines, a heading's `## `, a quote's `> `, a link's `](…)`,
- * is no more selected than the text is. `endsOnContent` moves most such
- * endpoints onto content, but keeps one beside a code block. Null for any
- * other endpoint.
+ * end, maps: to the start of the line that text starts on, or to the end of
+ * the line it ends on, moved past the lines around it that show nothing
+ * (`edgeOfLines`). Such an endpoint selects none of the block, and the
+ * markup around its text, a heading's `## ` or setext underline, a fold's
+ * tags, a quote's `>`, a link's `](…)`, is no more selected than the text
+ * is. `endsOnContent` moves most such endpoints onto content, but keeps one
+ * beside a code block. Null for any other endpoint.
  */
 function linesEdge(
   index: SegmentIndex,
@@ -572,21 +571,83 @@ function linesEdge(
   const first = segments[0];
   const last = segments.at(-1);
   if (first === undefined || last === undefined) return null;
-  const { source } = index;
   if (edge === "end") {
     if (rendered !== 0) return null;
-    let at = first.start;
-    while (at > 0 && lineEndingAt(source, at - 1) === 0) at--;
-    return at;
+    return edgeOfLines(index, first.start, edge);
   }
   const length = segments.reduce(
     (sum, segment) => sum + segment.text.length,
     0,
   );
   if (rendered !== length) return null;
-  let at = Math.max(first.start, last.end - 1);
-  while (at < source.length && lineEndingAt(source, at) === 0) at++;
-  return at;
+  return edgeOfLines(index, Math.max(first.start, last.end - 1), edge);
+}
+
+/**
+ * The line holding source offset `at` as the page shows it: from its first
+ * character to the first character of the line ending that ends it, of any
+ * kind (`lineEndingAt`), or to the end of the source. The `\n` the anchor's
+ * lines are numbered by alone does not end the line a lone `\r` ends.
+ */
+function lineAround(
+  index: SegmentIndex,
+  at: number,
+): { start: number; end: number } {
+  const { source } = index;
+  // The `\n` of a `\r\n` belongs to the line its `\r` ends.
+  const from = at > 0 && lineEndingAt(source, at - 1) === 2 ? at - 1 : at;
+  let start = from;
+  while (start > 0 && lineEndingAt(source, start - 1) === 0) start--;
+  let end = from;
+  while (end < source.length && lineEndingAt(source, end) === 0) end++;
+  return { start, end };
+}
+
+/**
+ * Whether the line `[start, end]`, its line ending included, shows nothing
+ * on the page: no text or code lies on it. Such a line holds only markup and
+ * blanks: a setext underline, a fold's tags, a quote's `>`, a blank line.
+ */
+function showsNothing(
+  index: SegmentIndex,
+  { start, end }: { start: number; end: number },
+): boolean {
+  const meets = (s: { start: number; end: number }) =>
+    s.start <= end && s.end > start;
+  return !(
+    index.segments.some(meets) ||
+    index.blocks.some((b) => b.type === "code" && meets(b))
+  );
+}
+
+/**
+ * The start of the line holding `at`, for an end, or the end of it, for a
+ * start, moved past the lines before or after it that show nothing
+ * (`showsNothing`). `columnsOfOffsets` steps past line endings and what code
+ * rows hide, but not past markup on a line of its own.
+ */
+export function edgeOfLines(
+  index: SegmentIndex,
+  at: number,
+  edge: "start" | "end",
+): number {
+  const line = lineAround(index, at);
+  if (edge === "end") {
+    let { start } = line;
+    for (let prev = lineAround(index, start - 1); start > 0; ) {
+      if (!showsNothing(index, prev)) break;
+      start = prev.start;
+      prev = lineAround(index, start - 1);
+    }
+    return start;
+  }
+  let { end } = line;
+  while (end < index.source.length) {
+    const next = lineAround(index, end + lineEndingAt(index.source, end));
+    if (!showsNothing(index, next)) break;
+    end = next.end;
+  }
+  return end;
 }
 
 /**
