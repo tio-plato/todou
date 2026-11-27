@@ -460,6 +460,8 @@ export function sourceOffsetInBlock(
   const at = aligned.offsets.get(node);
   if (at === undefined) return null;
   const rendered = aligned.inserted.has(node) ? at : at + offset;
+  const lines = linesEdge(index, aligned.segments, rendered, edge);
+  if (lines !== null) return lines;
   const source = sourceOffsetOfRendered(aligned.segments, rendered, edge);
   return edge === "start"
     ? pastPrefix(index, aligned.segments, source)
@@ -479,6 +481,37 @@ function pastPrefix(
   if (at === null || index.source[at] !== "\n") return at;
   const next = segments.find((segment) => segment.end > at + 1);
   return next !== undefined && next.start > at + 1 ? next.start : at;
+}
+
+/**
+ * Where an end at the very start of a block's text, or a start at its very
+ * end, maps: to the start of the line that text starts on, or to the end of
+ * the line it ends on. Such an endpoint selects none of the block, and the
+ * markup between its text and the edge of its lines, a heading's `## `, a
+ * quote's `> `, a link's `](…)`, is no more selected than the text is.
+ * `endsOnContent` moves most such endpoints onto content, but keeps one
+ * beside a code block. Null for any other endpoint.
+ */
+function linesEdge(
+  index: SegmentIndex,
+  segments: SourceSegment[],
+  rendered: number,
+  edge: "start" | "end",
+): number | null {
+  const first = segments[0];
+  const last = segments.at(-1);
+  if (first === undefined || last === undefined) return null;
+  if (edge === "end") {
+    if (rendered !== 0) return null;
+    return index.lineStarts[lineColAt(index, first.start).line - 1] ?? null;
+  }
+  const length = segments.reduce(
+    (sum, segment) => sum + segment.text.length,
+    0,
+  );
+  if (rendered !== length) return null;
+  const { line } = lineColAt(index, Math.max(first.start, last.end - 1));
+  return (index.lineStarts[line] ?? index.source.length + 1) - 1;
 }
 
 /**
@@ -972,12 +1005,12 @@ export function beside(el: Element, side: "before" | "after"): Point {
  * Text takes the endpoint onto its first or last character that is not
  * whitespace; an image or a shadow host, beside it. A code block keeps a
  * text endpoint where it is, at the edge of the prose next to the block,
- * which already maps to columns, and so it keeps an element endpoint that
- * names the same place as such a text endpoint, taken as that one
- * (`textEndpointAt`): Chromium ends a drag out of a block at the start of
- * the next block's element, where WebKit and Firefox end it in that block's
- * text. Any other element endpoint goes just inside the block's wrapper,
- * whose own stamp then bounds the anchor.
+ * which maps to the edge of that prose's lines (`linesEdge`), and so it
+ * keeps an element endpoint that names the same place as such a text
+ * endpoint, taken as that one (`textEndpointAt`): Chromium ends a drag out
+ * of a block at the start of the next block's element, where WebKit and
+ * Firefox end it in that block's text. Any other element endpoint goes just
+ * inside the block's wrapper, whose own stamp then bounds the anchor.
  *
  * With `old`, a compared document's removed text and structure count as
  * content too (`OLD_WALK`), so that an end can move onto removed text the

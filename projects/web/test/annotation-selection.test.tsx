@@ -2512,6 +2512,80 @@ describe("column anchors at the edges of code rows", () => {
     ).toEqual({ lineStart: 3, lineEnd: 7, colStart: null, colEnd: null });
   });
 
+  it.each([
+    ["a heading", "## Outro words", "\n"],
+    ["a heading, in a CRLF body", "## Outro words", "\r\n"],
+    ["a list item", "- Outro words", "\n"],
+    ["a quote", "> Outro words", "\n"],
+    ["a table", "| Outro | words |\n|---|---|\n| a | b |", "\n"],
+    ["bold words", "**Outro** words.", "\n"],
+    ["a link", "[Outro](https://example.com) words.", "\n"],
+  ])(
+    "ends a selection down from a fence before the markup that opens %s",
+    (_name, next, eol) => {
+      const source =
+        `Intro words.\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n\n${next}\n`.replaceAll(
+          "\n",
+          eol,
+        );
+      const { container, shadow, index, lines } = fenceWithRows(
+        source,
+        TOKEN_ROWS,
+      );
+      const last = shadow.querySelector("[data-line='3'] span")?.firstChild;
+      const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+      let outro = walker.nextNode();
+      while (outro !== null && !outro.textContent?.startsWith("Outro")) {
+        outro = walker.nextNode();
+      }
+      if (outro === null) throw new Error("no next block");
+      // On the text, as WebKit and Firefox end such a drag, and on the element
+      // holding it, as Chromium does: either way, no `## `, `- `, `> `, `| `,
+      // `**` or `[` of the next line.
+      for (const [node, at] of [
+        [outro, 0],
+        [outro.parentNode, 0],
+      ] as const) {
+        const down = anchorForSelection(
+          container,
+          index,
+          ends(last, 6, node, at),
+        );
+        if (down === null) throw new Error("no anchor");
+        expect(cut(lines, down)).toBe("charlie = 3;");
+      }
+    },
+  );
+
+  it.each([
+    ["bold words", "Intro **words**"],
+    ["a link", "Intro [words](https://example.com)"],
+  ])(
+    "starts a selection into a fence past the markup that closes %s",
+    (_name, prev) => {
+      const source = `${prev}\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n\nOutro words.\n`;
+      const { container, shadow, index, lines } = fenceWithRows(
+        source,
+        TOKEN_ROWS,
+      );
+      const first = shadow.querySelector("[data-line='1'] span")?.firstChild;
+      const words = container.querySelector("strong, a")?.firstChild;
+      if (!(words instanceof Text)) throw new Error("no closing markup");
+      for (const [node, at] of [
+        [words, words.length],
+        [words.parentNode, words.parentNode?.childNodes.length ?? 0],
+      ] as const) {
+        const into = anchorForSelection(
+          container,
+          index,
+          ends(node, at, first, 5),
+        );
+        if (into === null) throw new Error("no anchor");
+        expect(cut(lines, into)).toBe("const");
+      }
+    },
+  );
+
   it("reaches a patch row that names no single line", () => {
     const source = `Some prose.\n\n\`\`\`patch\n${[
       "diff --git a/a.txt b/a.txt",
@@ -3491,6 +3565,48 @@ describe("anchoring a compared document", () => {
     const selected = anchor(ends(intro.node, intro.at, below, 0));
     expect(selected).toMatchObject({ lineStart: 1 });
     expect(selected?.baseline).toBeUndefined();
+  });
+
+  it("ends a baseline anchor down from an edited block before the markup that opens a heading removed below it", async () => {
+    const before = [
+      "Intro.",
+      "",
+      "```ts",
+      "old();",
+      "keep();",
+      "gone();",
+      "```",
+      "",
+      "## Removed head",
+      "",
+    ].join("\n");
+    const after = ["Intro.", "", "```ts", "new();", "keep();", "```", ""].join(
+      "\n",
+    );
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    const shadow = drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-line-type="change-deletion">old();</div>
+       <div data-line="1" data-line-type="change-addition">new();</div>
+       <div data-line="2" data-alt-line="2" data-line-type="context">keep();</div>
+       <div data-line="3" data-line-type="change-deletion">gone();</div>`,
+    );
+    const gone = [...shadow.querySelectorAll("[data-line]")][3]?.firstChild;
+    const head = container.querySelector("h2.spec-del-structure");
+    // On the heading's text and on its element: not into its line's `## `.
+    for (const node of [head?.firstChild, head]) {
+      const selected = anchor(ends(gone, 0, node, 0));
+      expect(selected).toMatchObject({
+        lineStart: 6,
+        colStart: 1,
+        baseline: true,
+      });
+      expect(selected?.lineEnd).toBeLessThan(9);
+    }
   });
 
   it("starts a baseline anchor past the indent of an edited block's context row", async () => {
