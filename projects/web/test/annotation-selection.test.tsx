@@ -3185,10 +3185,15 @@ describe("column anchors at the edges of code rows", () => {
     const [foo, bar] = [item?.firstChild, item?.lastChild];
     // The item's own text runs on both sides of the fence.
     expect([foo?.textContent, bar?.textContent]).toEqual(["foo", "bar"]);
+    // The renderer's line feeds around the fence, where Chromium can put an
+    // end as well.
+    const [, before, , after] = item?.childNodes ?? [];
+    expect([before?.textContent, after?.textContent]).toEqual(["\n", "\n"]);
     const count = item?.childNodes.length ?? 0;
     for (const [node, at] of [
       [bar, 0],
       [item, count - 1],
+      [after, 0],
     ] as const) {
       const down = anchorForSelection(
         container,
@@ -3201,6 +3206,7 @@ describe("column anchors at the edges of code rows", () => {
     for (const [node, at] of [
       [foo, 3],
       [item, 1],
+      [before, 1],
     ] as const) {
       const into = anchorForSelection(
         container,
