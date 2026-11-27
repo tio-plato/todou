@@ -554,12 +554,14 @@ function pastPrefix(
 
 /**
  * Where an end at the very start of a block's text, or a start at its very
- * end, maps: to the start of the line that text starts on, or to the end of
- * the line it ends on. Such an endpoint selects none of the block, and the
- * markup between its text and the edge of its lines, a heading's `## `, a
- * quote's `> `, a link's `](…)`, is no more selected than the text is.
- * `endsOnContent` moves most such endpoints onto content, but keeps one
- * beside a code block. Null for any other endpoint.
+ * end, maps: to the start or the end of the line that text starts or ends on
+ * as the page shows it, ended by a line ending of any kind (`lineEndingAt`)
+ * rather than by the `\n` alone that numbers the anchor's lines. Such an
+ * endpoint selects none of the block, and the markup between its text and
+ * the edge of its lines, a heading's `## `, a quote's `> `, a link's `](…)`,
+ * is no more selected than the text is. `endsOnContent` moves most such
+ * endpoints onto content, but keeps one beside a code block. Null for any
+ * other endpoint.
  */
 function linesEdge(
   index: SegmentIndex,
@@ -570,17 +572,21 @@ function linesEdge(
   const first = segments[0];
   const last = segments.at(-1);
   if (first === undefined || last === undefined) return null;
+  const { source } = index;
   if (edge === "end") {
     if (rendered !== 0) return null;
-    return index.lineStarts[lineColAt(index, first.start).line - 1] ?? null;
+    let at = first.start;
+    while (at > 0 && lineEndingAt(source, at - 1) === 0) at--;
+    return at;
   }
   const length = segments.reduce(
     (sum, segment) => sum + segment.text.length,
     0,
   );
   if (rendered !== length) return null;
-  const { line } = lineColAt(index, Math.max(first.start, last.end - 1));
-  return (index.lineStarts[line] ?? index.source.length + 1) - 1;
+  let at = Math.max(first.start, last.end - 1);
+  while (at < source.length && lineEndingAt(source, at) === 0) at++;
+  return at;
 }
 
 /**

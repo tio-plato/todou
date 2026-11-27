@@ -2970,6 +2970,51 @@ describe("column anchors at the edges of code rows", () => {
     },
   );
 
+  // A lone `\r` ends a line on the page as `\n` does, but the anchor's lines
+  // are numbered by `\n` alone: the `\n` line of the paragraph below starts
+  // before the fence, or the one of the paragraph above runs on through it.
+  // pierre draws no rows for code holding a lone `\r`, and the mocked
+  // CodeView none at all, so the anchor takes the fence as written, as it
+  // does for a fence without rows in an LF body. The bold words keep their
+  // `**` on the edge of the line, where only the line's edge leaves it out.
+  // The last paragraph's text starts on the line ending its code span opens
+  // with, a line that starts at the code span's backtick.
+  it.each([
+    [
+      "below",
+      "Intro **words**\n\r```ts\rconst alpha = 1;\rconst bravo = 2;\r```\r\r**Outro** words.\n",
+      "[]Outro",
+    ],
+    [
+      "above",
+      "Intro **words**\r\r```ts\rconst alpha = 1;\rconst bravo = 2;\r```\n\n**Outro** words.\n",
+      "[]Outro",
+    ],
+    [
+      "below, which opens on a line ending",
+      "Intro **words**\n\r```ts\rconst alpha = 1;\rconst bravo = 2;\r```\r\r`\rOutro` words.\n",
+      "[] Outro",
+    ],
+  ])(
+    "anchors a drag across a fence to the fence where it shares a line feed line with the paragraph %s",
+    async (_name, source, end) => {
+      const { onStage, button } = await stageSelection(source, (container) => {
+        const intro = bracketedIn(container, "words[]");
+        const outro = bracketedIn(container, end);
+        return {
+          node: intro.node,
+          from: intro.from,
+          endNode: outro.node,
+          to: outro.from,
+        };
+      });
+      fireEvent.click(button);
+      expect(cut(source.split("\n"), onStage.mock.calls[0]?.[0])).toBe(
+        "```ts\rconst alpha = 1;\rconst bravo = 2;\r```",
+      );
+    },
+  );
+
   it("reaches a patch row that names no single line", () => {
     const source = `Some prose.\n\n\`\`\`patch\n${[
       "diff --git a/a.txt b/a.txt",
