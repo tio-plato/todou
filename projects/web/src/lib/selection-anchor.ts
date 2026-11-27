@@ -452,6 +452,9 @@ function sourceOffsetOfEndpoint(
  *
  * An endpoint on the outer edge of a run of the block's own text maps to the
  * edge of that run's lines before anything else (`outerEdge`, `linesEdge`).
+ * One in a blank the renderer inserted with no run on its far side, only a
+ * nested block or the block's edge, gives up: no place in the joined text
+ * names it, as none names an element endpoint between two nested blocks.
  */
 export function sourceOffsetInBlock(
   index: SegmentIndex,
@@ -462,6 +465,9 @@ export function sourceOffsetInBlock(
 ): number | null {
   const aligned = alignBlock(index, block);
   if (aligned === null) return null;
+  if (aligned.inserted.has(node) && !bordersRun(node, block.stamp, edge)) {
+    return null;
+  }
   const outer = outerEdge(aligned, node, offset, edge);
   const lines = outer === null ? null : linesEdge(index, aligned, outer, edge);
   if (lines !== null) return lines;
@@ -601,6 +607,21 @@ function outerEdge(
     if (/\S/.test(near.toString())) return null;
   }
   return edge === "end" ? at : at + 1;
+}
+
+/**
+ * Whether the node on the far side of blank text `node`, after it for an end
+ * or before it for a start, other blanks passed over, is a run of its block's
+ * own text, rather than a block nested in it (stamped with `stamp`) or the
+ * block's edge. Blanks sharing one place in the joined text, a blank between
+ * two nested blocks and one beside a run would map alike.
+ */
+function bordersRun(node: Node, stamp: string, edge: "start" | "end"): boolean {
+  const step = (n: Node) =>
+    edge === "end" ? n.nextSibling : n.previousSibling;
+  let far = step(node);
+  while (far instanceof Text && !/\S/.test(far.data)) far = step(far);
+  return far !== null && !(far instanceof Element && far.hasAttribute(stamp));
 }
 
 /**

@@ -3212,6 +3212,39 @@ describe("column anchors at the edges of code rows", () => {
     }
   });
 
+  it("names no heading a drag never reached from a blank between it and a fence in a list item", () => {
+    const fence = [`\`\`\`ts`, ...CODE_ROWS, "```"].map((l) => `  ${l}`);
+    // The heading comes after the fence, then before it.
+    for (const [rows, down] of [
+      [[...fence, "  ## Head"], true],
+      [["  ## Head", ...fence], false],
+    ] as const) {
+      const source = `- foo\n${rows.join("\n")}\n  bar\n`;
+      const { container, shadow, index, lines } = fenceWithRows(
+        source,
+        TOKEN_ROWS,
+      );
+      const item = container.querySelector("li");
+      const heading = item?.querySelector("h2");
+      // The renderer's line feed between the heading and the fence.
+      const blank = down ? heading?.previousSibling : heading?.nextSibling;
+      expect(blank?.textContent).toBe("\n");
+      const row = shadow.querySelector(`[data-line='${down ? 3 : 1}'] span`);
+      const anchor = anchorForSelection(
+        container,
+        index,
+        down
+          ? ends(row?.firstChild, 6, blank, 0)
+          : ends(blank, 1, row?.firstChild, 5),
+      );
+      if (anchor === null) throw new Error("no anchor");
+      if (anchor.colStart !== null) {
+        expect(cut(lines, anchor)).not.toContain("Head");
+      }
+      cleanup();
+    }
+  });
+
   it("reaches a patch row that names no single line", () => {
     const source = `Some prose.\n\n\`\`\`patch\n${[
       "diff --git a/a.txt b/a.txt",
