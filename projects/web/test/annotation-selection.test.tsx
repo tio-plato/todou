@@ -3723,6 +3723,41 @@ describe("anchoring a compared document", () => {
     });
   });
 
+  it.each([
+    [
+      "an indented block",
+      "Intro.\n\n    old();\n\nOutro.\n",
+      "Intro.\n\nOutro.\n",
+      { lineStart: 3, lineEnd: 3, colStart: 5, colEnd: 7 },
+    ],
+    [
+      "a fence the document ends in, unclosed",
+      "Intro.\n\n```ts\nold();",
+      "Intro.\n",
+      { lineStart: 4, lineEnd: 4, colStart: 1, colEnd: 3 },
+    ],
+  ])(
+    "anchors an end beside %s of one line, removed whole, to its row",
+    async (_name, before, after, row) => {
+      // Neither stamp has a marker on each side of the code.
+      const { container, anchor } = await compared(
+        before,
+        after,
+        "[data-old-loc].markdown-fence",
+      );
+      const shadow = drawRows(
+        container.querySelector("[data-old-loc].markdown-fence"),
+        `<div data-line="1">old();</div>`,
+      );
+      const old = shadow.querySelector("[data-line='1']")?.firstChild;
+      const intro = textAt(container, "p[data-loc]", "Intro.");
+      expect(anchor(ends(intro.node, "Intro.".length, old, 3))).toEqual({
+        ...row,
+        baseline: true,
+      });
+    },
+  );
+
   it("anchors a drag across an empty block removed whole to that block", async () => {
     const before = "Intro.\n\n```ts\n```\n\nOutro.\n";
     const after = "Intro.\n\nOutro.\n";
