@@ -60,8 +60,13 @@ export const MESSAGE_SYNTAX_PLUGINS: PluggableList = [
  * the server's, counted by `\n` alone.
  */
 export function withLineFeeds(text: string): string {
-  return text.replace(/\r+(?![\r\n])/g, (run) => "\n".repeat(run.length));
+  // Each run is matched whole, with the `\n` after it if there is one: a
+  // lookahead after `\r+` would try the run again from each of its `\r`s.
+  return text.replace(/\r+\n?/g, (run) =>
+    run.endsWith("\n") ? run : "\n".repeat(run.length),
+  );
 }
+
 const processor = unified().use(remarkParse).use(MARKDOWN_SYNTAX_PLUGINS);
 
 /**
