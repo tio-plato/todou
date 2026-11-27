@@ -2873,6 +2873,11 @@ describe("column anchors at the edges of code rows", () => {
       "details",
     ],
     ["a task list item", "- [ ] Outro words", "li"],
+    [
+      "a picture",
+      "![](https://img.example/a.png) Outro words",
+      "p:last-of-type",
+    ],
   ])(
     "ends a selection down from a fence before %s whose element opens with no text",
     (_name, next, selector) => {
@@ -2895,6 +2900,24 @@ describe("column anchors at the edges of code rows", () => {
       expect(cut(lines, down)).toBe("charlie = 3;");
     },
   );
+
+  it("starts a selection into a fence past a picture that closes the paragraph above", () => {
+    const source = `Intro ![](https://img.example/a.png)\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n`;
+    const { container, shadow, index, lines } = fenceWithRows(
+      source,
+      TOKEN_ROWS,
+    );
+    const first = shadow.querySelector("[data-line='1'] span")?.firstChild;
+    const above = container.querySelector("p[data-loc]");
+    expect(above?.lastChild).toBeInstanceOf(HTMLImageElement);
+    const into = anchorForSelection(
+      container,
+      index,
+      ends(above, above?.childNodes.length ?? 0, first, 5),
+    );
+    if (into === null) throw new Error("no anchor");
+    expect(cut(lines, into)).toBe("const");
+  });
 
   it("keeps the columns of a text end beside a fence pierre has not drawn", () => {
     const source = `Intro words.\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n\nOutro words.\n`;
@@ -3099,6 +3122,53 @@ describe("column anchors at the edges of code rows", () => {
       );
       if (into === null) throw new Error("no anchor");
       expect(cut(lines, into)).toBe("const");
+    }
+  });
+
+  it("leaves a footnote reference at the edge of the block beside a fence out", () => {
+    const fence = `\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\``;
+    // The reference closes the paragraph above, then opens the one below.
+    const above = fenceWithRows(
+      `Intro words[^1]\n\n${fence}\n\n[^1]: A note.\n`,
+      TOKEN_ROWS,
+    );
+    const first = above.shadow.querySelector(
+      "[data-line='1'] span",
+    )?.firstChild;
+    const paragraph = above.container.querySelector("p[data-loc]");
+    const closing = paragraph?.querySelector("sup a")?.firstChild;
+    if (!(closing instanceof Text)) throw new Error("no reference");
+    for (const [node, at] of [
+      [closing, closing.length],
+      [paragraph, paragraph?.childNodes.length ?? 0],
+    ] as const) {
+      const into = anchorForSelection(
+        above.container,
+        above.index,
+        ends(node, at, first, 5),
+      );
+      if (into === null) throw new Error("no anchor");
+      expect(cut(above.lines, into)).toBe("const");
+    }
+    cleanup();
+    const below = fenceWithRows(
+      `Intro words.\n\n${fence}\n\n[^1] outro words.\n\n[^1]: A note.\n`,
+      TOKEN_ROWS,
+    );
+    const last = below.shadow.querySelector("[data-line='3'] span")?.firstChild;
+    const next = below.container.querySelectorAll("p[data-loc]")[1];
+    const opening = next?.querySelector("sup a")?.firstChild;
+    for (const [node, at] of [
+      [opening, 0],
+      [next, 0],
+    ] as const) {
+      const down = anchorForSelection(
+        below.container,
+        below.index,
+        ends(last, 6, node, at),
+      );
+      if (down === null) throw new Error("no anchor");
+      expect(cut(below.lines, down)).toBe("charlie = 3;");
     }
   });
 

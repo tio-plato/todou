@@ -125,6 +125,8 @@ type BlockAlignment = {
   /** Text nodes the renderer inserted, which take no room there. */
   inserted: Set<Node>;
   atoms: Atom[];
+  /** Where each atom stands in the joined text, as one character. */
+  atomAt: Map<Element, number>;
   /** The lines of the blocks nested in this one, merged. */
   nested: Array<{ start: number; end: number }>;
 };
@@ -398,10 +400,12 @@ function lineUp(
   }
   const offsets = new Map<Node, number>();
   const inserted = new Set<Node>();
+  const placed = new Map<Element, number>();
   let at = 0;
   for (const item of items) {
     if (item.nodeType !== Node.TEXT_NODE) {
       if (!atomAt.includes(at)) return null;
+      placed.set(item as Element, at);
       at += 1;
       continue;
     }
@@ -415,7 +419,9 @@ function lineUp(
     else if (/\S/.test(data)) return null;
     else inserted.add(item);
   }
-  return at === joined.length ? { segments, offsets, inserted, atoms } : null;
+  return at === joined.length
+    ? { segments, offsets, inserted, atoms, atomAt: placed }
+    : null;
 }
 
 /**
@@ -560,9 +566,11 @@ function pastPrefix(
 
 /**
  * Where in a block's joined text an endpoint sits when it sits on the outer
- * side of the text node holding it, selecting none of it: an end at its very
- * start, a start at its very end, or either in a blank the renderer
- * inserted. Null for any other endpoint.
+ * side of what holds it, selecting none of that: an end at the very start of
+ * a text node or of an atom, a start at the very end of one, either in a
+ * blank the renderer inserted, and an element endpoint with an atom on its
+ * far side, an end before it or a start after it. Null for any other
+ * endpoint, and for one inside an atom's shadow root.
  */
 function outerEdge(
   aligned: BlockAlignment,
@@ -571,11 +579,28 @@ function outerEdge(
   edge: "start" | "end",
 ): number | null {
   const text = aligned.offsets.get(node);
-  if (text === undefined) return null;
-  if (aligned.inserted.has(node)) return text;
-  if (edge === "end") return offset === 0 ? text : null;
-  const length = node.nodeValue?.length ?? 0;
-  return offset === length ? text + length : null;
+  if (text !== undefined) {
+    if (aligned.inserted.has(node)) return text;
+    if (edge === "end") return offset === 0 ? text : null;
+    const length = node.nodeValue?.length ?? 0;
+    return offset === length ? text + length : null;
+  }
+  const far =
+    node.nodeType === Node.TEXT_NODE
+      ? undefined
+      : node.childNodes[edge === "end" ? offset : offset - 1];
+  const atom = aligned.atoms.find((a) => a.el === far || a.el.contains(node));
+  const at = atom === undefined ? undefined : aligned.atomAt.get(atom.el);
+  if (atom === undefined || at === undefined) return null;
+  if (atom.el !== far) {
+    // Inside the atom: outer only with none of its text on the near side.
+    const near = document.createRange();
+    near.selectNodeContents(atom.el);
+    if (edge === "end") near.setEnd(node, offset);
+    else near.setStart(node, offset);
+    if (/\S/.test(near.toString())) return null;
+  }
+  return edge === "end" ? at : at + 1;
 }
 
 /**
@@ -1221,10 +1246,11 @@ export function endsOnContent(
  * first text after it, or the end of the last text before it, found by
  * walking the nodes on that side in document order (`nodeAfter`,
  * `nodeBefore`), never into a box. Blank text and elements holding nothing
- * are passed over. In the element holding the code block `box`, only the
- * node right beside the endpoint is walked: past it lie other blocks. Null
- * for an endpoint in a code block, which names no place beside one, and
- * where the walk first meets a box, or text in what the walk skips or in no
+ * are passed over. An image stops the walk, and the point beside it is
+ * taken. In the element holding the code block `box`, only the node right
+ * beside the endpoint is walked: past it lie other blocks. Null for an
+ * endpoint in a code block, which names no place beside one, and where the
+ * walk first meets some other box, or text in what the walk skips or in no
  * block.
  */
 function textEndpointAt(
@@ -1259,11 +1285,14 @@ function textEndpointAt(
       }
       return { node, offset: side === "after" ? 0 : node.data.length };
     }
-    if (
-      node instanceof Element &&
-      (node.matches(walk.skip) || isBox(node, walk))
-    ) {
-      return null;
+    if (!(node instanceof Element)) continue;
+    if (node.matches(walk.skip)) return null;
+    if (isBox(node, walk)) {
+      return node.matches(walk.code) ||
+        !node.hasAttribute(SOURCE_SPAN_ATTR) ||
+        node.closest(walk.block) === null
+        ? null
+        : beside(node, side === "after" ? "before" : "after");
     }
   }
   return null;
