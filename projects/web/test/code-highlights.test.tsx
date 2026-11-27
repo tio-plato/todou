@@ -1230,7 +1230,11 @@ describe("chips on code rows", () => {
     const [wrapper] = wrappers;
     if (wrapper === undefined) throw new Error("no fence");
     box = await drawInBox(wrapper, patchRows());
-    // 300px of range, scrolled to 100.
+    // A box that cannot scroll leaves its chip to the page.
+    await waitFor(() => expect(chipsOf(view)).toEqual([["260px", 1]]));
+    expect(animate).not.toHaveBeenCalled();
+    // Given 300px to scroll through, and scrolled to 100, the box takes the
+    // chip along from that same top on.
     const size = scrollable(box);
     box.scrollTop = 100;
     expect(scrollIn(box, view)).toEqual([["260px", 1]]);
