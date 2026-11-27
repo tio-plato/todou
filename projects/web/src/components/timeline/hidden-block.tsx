@@ -25,7 +25,9 @@ export function HiddenBlock({
   onReveal: () => void;
 }) {
   return (
-    <TimelineRule className="my-1" data-testid="hidden-block">
+    // Padding, not margin: a top margin collapses through the run's unit,
+    // which then starts 4px lower than the comment that replaces it on reveal.
+    <TimelineRule className="py-1" data-testid="hidden-block">
       <span>
         {count} hidden comment{count === 1 ? "" : "s"}
       </span>
