@@ -50,10 +50,10 @@ import {
   useCodeHighlights,
 } from "@/lib/code-highlights.ts";
 import {
+  baselineRowSource,
   type CodeRowSource,
   codeBodyLines,
   codeRowSource,
-  oldCodeRowSource,
 } from "@/lib/code-rows.ts";
 import {
   type CompareAnchor,
@@ -191,13 +191,13 @@ function oldRunOf(el: Element): OldRun {
 }
 
 /**
- * Where an annotation on the baseline was put back, found by its baseline
- * position as `blockForLine` finds a current one's block, and never by how
- * it was painted, which another annotation over the same text, or a block
- * marked whole, leaves without a key of its own: the first run of removed
- * text one of its `spans` covers, else the innermost block put back whole
- * on the first of its lines one reaches, else the first code row of the
- * baseline on its lines. Null when none of it was put back.
+ * Where an annotation on the baseline shows, found by its baseline position
+ * as `blockForLine` finds a current one's block, and never by how it was
+ * painted, which another annotation over the same text, or a block marked
+ * whole, leaves without a key of its own: the first run of removed text one
+ * of its `spans` covers, else the innermost block put back whole on the
+ * first of its lines one reaches, else the first code row showing one of
+ * its baseline lines. Null when none of it shows.
  */
 function baselinePlace(
   annotation: DisplayedAnnotation,
@@ -476,7 +476,8 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
   annotations: DisplayedAnnotation[];
   /**
    * Annotations on the compare baseline, at its lines and columns: they hang
-   * on the removed content the comparison puts back of it. Pass a stable
+   * on what the comparison shows of it, the removed content it puts back
+   * and the context rows of a code block edited in place. Pass a stable
    * reference, as for `annotations`.
    */
   baselineAnnotations?: DisplayedAnnotation[];
@@ -627,7 +628,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       return [...container.querySelectorAll(CODE_WRAPPERS)].flatMap((wrapper) =>
         [...wrapper.querySelectorAll("diffs-container")].flatMap((host) =>
           [...(host.shadowRoot?.querySelectorAll("[data-line]") ?? [])]
-            .map((row) => oldCodeRowSource(baselineIndex, fenceBaselines, row))
+            .map((row) => baselineRowSource(baselineIndex, fenceBaselines, row))
             .filter((source) => source !== null),
         ),
       );
@@ -686,11 +687,11 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       if (at < 0) continue;
       grouped.set(at, [...(grouped.get(at) ?? []), annotation]);
     }
-    // An annotation on the baseline hangs where its text was put back: on
-    // the current block a removed word or a deleted code row sits in,
-    // sharing that block's chip, or on a restored block, a marker or a
-    // removed table row, with a chip of its own. One with none of its text
-    // put back hangs nowhere.
+    // An annotation on the baseline hangs where its text shows: on the
+    // current block a removed word, a deleted code row or a context row of
+    // an edited block sits in, sharing that block's chip, or on a restored
+    // block, a marker or a removed table row, with a chip of its own. One
+    // with none of its text shown hangs nowhere.
     const holders = [...container.querySelectorAll<HTMLElement>(OLD_HOLDER)];
     const oldGrouped = new Map<number, DisplayedAnnotation[]>();
     if (baselineIndex !== null && baselineAnnotations.length > 0) {
@@ -841,9 +842,10 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       const wholeLines = annotations.filter(
         (a) => (a.colStart ?? null) === null,
       );
-      // The baseline's own rows, which annotations on it paint the same way:
-      // every row of a block put back whole, the deleted rows of an edited
-      // one. `oldCodeRowSource` places them in the baseline.
+      // The rows showing lines of the baseline, which annotations on it
+      // paint the same way: every row of a block put back whole, the
+      // deleted and the context rows of an edited one. `baselineRowSource`
+      // places them in the baseline.
       const old =
         baselineIndex === null || fenceBaselines === undefined
           ? null
@@ -936,7 +938,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
             if (old !== null && oldHere.length + oldWholeHere.length > 0) {
               paintRow(
                 row,
-                oldCodeRowSource(old.index, old.fences, row),
+                baselineRowSource(old.index, old.fences, row),
                 oldHere,
                 oldWholeHere,
                 wanted,
