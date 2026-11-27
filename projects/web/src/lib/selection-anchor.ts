@@ -1157,8 +1157,8 @@ function leavesRemoved(box: Element, at: Point): boolean {
  * The edge of the rows of a code block a comparison put back: the start of
  * its first row, or the end of its last. Null where those rows need not show
  * the block's own first and last lines: before pierre has drawn any, for an
- * empty block, whose one row shows no line, and for a patch, whose view
- * draws only the rows in sight and folds whole files away.
+ * empty block, whose rows show no text, and for a patch, whose view draws
+ * only the rows in sight and folds whole files away.
  */
 function rowEdge(box: Element, side: "before" | "after"): Point | null {
   if (box.hasAttribute(FENCE_PATCH_ATTR)) return null;
