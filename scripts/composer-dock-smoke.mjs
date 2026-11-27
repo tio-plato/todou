@@ -8,8 +8,10 @@
  * while the page shrinks and grows again above it, for the scroll-to-bottom
  * button showing on a scroll down and only then, and for the New messages pill
  * staying above whatever floats at the bottom, clickable, however tall the
- * composer grows, and landing on the first comment that arrived, and for
- * following a new comment only from the end of the conversation.
+ * composer grows, and landing on the first comment that arrived, for
+ * following a new comment only from the end of the conversation, and for
+ * revealing a hidden run mid-card leaving every comment above it in place,
+ * with the revealed comment starting where the run was.
  * Usage: node scripts/composer-dock-smoke.mjs [--keep] [--help]
  * Requires the same installed dependencies, Node 24+, flock and CHROMIUM
  * (default /usr/bin/chromium) as the other browser smokes.
@@ -58,6 +60,9 @@ sending their own comment from up there, and one moved off the end with no
 input stay where they are, while one at the end typing a reply is followed;
 a comment longer than the screen arriving then is shown from its top, a
 short one at the end.
+Revealing a run of hidden comments mid-card, with the list's top off screen,
+leaves every comment above it where it was, and the revealed comment starts
+where the run was.
 
 --keep  Retain isolated artifacts under .tmp/ after cleanup.
 Exit codes: 0 pass, 1 assertion, 2 infrastructure error.
@@ -176,6 +181,47 @@ async function seed(stack) {
     );
     notesIds.push((result.comment ?? result).id);
   }
+  // A hidden reply below two comments taller than a phone's screen, so that
+  // the list's top is off screen when the reader reveals it mid-card. In a
+  // project of its own, so that the list the landing cases open from stays
+  // as it was.
+  const revealSlug = "composer-dock-reveal";
+  await call("POST", "/projects", {
+    slug: revealSlug,
+    name: "Reveal",
+    description: "",
+  });
+  const hidden = await call("POST", `/projects/${revealSlug}/issues`, {
+    title: "Hidden run",
+    body: "",
+  });
+  const hiddenIds = [];
+  for (const body of [
+    ...[1, 2].map((n) =>
+      Array.from(
+        { length: 12 },
+        (_, i) =>
+          `Long comment ${n}, paragraph ${i + 1}, is one whole sentence that keeps this comment taller than a phone's screen.`,
+      ).join("\n\n"),
+    ),
+    ...Array.from({ length: 6 }, (_, i) => `reply ${i + 1}`),
+  ]) {
+    const result = await call(
+      "POST",
+      `/projects/${revealSlug}/issues/${hidden.number}/comments`,
+      { body },
+    );
+    hiddenIds.push((result.comment ?? result).id);
+  }
+  const hiddenId = hiddenIds.at(-2);
+  await call(
+    "POST",
+    `/projects/${revealSlug}/issues/${hidden.number}/comments/hide`,
+    {
+      hidden: true,
+      comment_ids: [hiddenId],
+    },
+  );
   if (!cookie.includes("="))
     throw new Error("seed did not receive an auth cookie");
   return {
@@ -186,6 +232,11 @@ async function seed(stack) {
     footnote: {
       issueUrl: `${stack.webUrl}/projects/${slug}/issues/${notes.number}`,
       ids: notesIds,
+    },
+    reveal: {
+      issueUrl: `${stack.webUrl}/projects/${revealSlug}/issues/${hidden.number}`,
+      ids: hiddenIds,
+      hiddenId,
     },
     long: {
       issueUrl: `${stack.webUrl}/projects/${slug}/issues/${long.number}`,
@@ -824,6 +875,147 @@ async function footnoteCase(context, fixture) {
         back.hash === "" &&
         Math.abs(back.scrollY - before) <= 2,
       detail: { before, followed, back },
+    };
+  } finally {
+    await page.close();
+  }
+}
+
+/**
+ * The tops of the list's units, by key, and the revealed comment's unit if it
+ * has rendered: what the reader sees above a hidden run has to stay put when
+ * the run is revealed.
+ */
+function readUnits(revealed) {
+  const list = document.querySelector('[data-testid="timeline-scroll"]');
+  const tops = {};
+  for (const unit of list.querySelectorAll(":scope > [data-unit]"))
+    tops[unit.dataset.unit] = unit.getBoundingClientRect().top;
+  return {
+    tops,
+    revealedTop:
+      list
+        .querySelector(`:scope > [data-unit="${revealed}"]`)
+        ?.getBoundingClientRect().top ?? null,
+  };
+}
+
+/**
+ * Revealing a hidden run mid-card leaves every comment above it where it was,
+ * and the revealed comment starts where the run was. Only with the list's top
+ * off screen: there the reader's place is the unit pressed, which the run
+ * then hands over to the comment that replaces it.
+ */
+async function revealCase(context, fixture, viewport, label) {
+  const card = { ...fixture, ...fixture.reveal };
+  const unit = `hidden-${card.hiddenId}`;
+  const page = await openCard(context, card, viewport);
+  try {
+    const io = input(page);
+    const deadline = Date.now() + 30_000;
+    while (
+      !(await evaluate(
+        page,
+        (key) =>
+          document.querySelector(`[data-unit="${key}"]`) !== null &&
+          document.querySelector("[data-unfilled]") === null,
+        unit,
+      ))
+    ) {
+      if (Date.now() > deadline) throw new Error("hidden run never filled in");
+      await sleep(100);
+    }
+    // To 45% of the viewport, or as near as the page's end lets it come. On
+    // the phone this scroll lets go of the landing's hold; on the desktop the
+    // page is already at its end, and the press itself lets go of it.
+    await evaluate(
+      page,
+      (key) => {
+        const top = document
+          .querySelector(`[data-unit="${key}"]`)
+          .getBoundingClientRect().top;
+        window.scrollBy(0, top - window.innerHeight * 0.45);
+      },
+      unit,
+    );
+    await sleep(800);
+    const setup = await evaluate(
+      page,
+      (key) => {
+        const lead = document.querySelector("[data-list-lead]");
+        const button = [
+          ...document.querySelectorAll(`[data-unit="${key}"] button`),
+        ].find((b) => b.textContent.trim() === "Reveal");
+        const r = button?.getBoundingClientRect();
+        return {
+          leadBottom: lead?.getBoundingClientRect().bottom ?? null,
+          button: r
+            ? { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+            : null,
+        };
+      },
+      unit,
+    );
+    // With the list's top on screen the reader's place is the end of the
+    // conversation or nothing: the press would move nothing on a broken page
+    // either.
+    const unmet = [
+      ...(setup.leadBottom !== null && setup.leadBottom < 0
+        ? []
+        : [`list lead not above the viewport (${setup.leadBottom})`]),
+      ...(setup.button ? [] : ["no Reveal button in the run"]),
+    ];
+    if (unmet.length)
+      return { name: `reveal-${label}`, ok: false, detail: { unmet } };
+    const before = await evaluate(page, readUnits, `comment-${card.hiddenId}`);
+    const keys = Object.keys(before.tops);
+    const above = keys.slice(0, keys.indexOf(unit));
+    const { x, y } = setup.button;
+    if (viewport.mobile) await io.tap(x, y);
+    else await io.click(x, y);
+    const pressed = Date.now();
+    // Several times: a page that jumps and is put back later passes a last
+    // reading, and a late put-back (fonts, images, resize observers) one
+    // taken right after the press.
+    const samples = [];
+    for (const at of [50, 150, 400, 1000, 2000]) {
+      await sleep(Math.max(0, pressed + at - Date.now()));
+      const now = await evaluate(page, readUnits, `comment-${card.hiddenId}`);
+      const shifts = above.map((key) =>
+        now.tops[key] === undefined ? null : now.tops[key] - before.tops[key],
+      );
+      // The largest move either way, with its sign: down is positive.
+      samples.push({
+        at,
+        shift: shifts.includes(null)
+          ? null
+          : shifts.reduce((m, s) => (Math.abs(s) > Math.abs(m) ? s : m), 0),
+        revealedTop: now.revealedTop,
+      });
+    }
+    const worst = samples.reduce((a, b) =>
+      b.shift === null ||
+      (a.shift !== null && Math.abs(b.shift) > Math.abs(a.shift))
+        ? b
+        : a,
+    );
+    const last = samples.at(-1);
+    const revealedOff =
+      last.revealedTop === null ? null : last.revealedTop - before.tops[unit];
+    return {
+      name: `reveal-${label}`,
+      ok:
+        above.length > 0 &&
+        samples.every((s) => s.shift !== null && Math.abs(s.shift) <= 0.5) &&
+        revealedOff !== null &&
+        Math.abs(revealedOff) <= 0.5,
+      detail: {
+        above: above.length,
+        maxShift: worst.shift,
+        maxShiftAt: worst.at,
+        revealedOff,
+        shifts: samples.map((s) => `${s.at}:${s.shift}`).join(" "),
+      },
     };
   } finally {
     await page.close();
@@ -1774,6 +1966,13 @@ async function main() {
         );
       jumps.push(...(await shortCases(context, long)));
       record("jump", jumps);
+      const reveals = [];
+      for (const [viewport, label] of [
+        [PHONE, "phone"],
+        [DESKTOP, "desktop"],
+      ])
+        reveals.push(await revealCase(context, fixture, viewport, label));
+      record("reveal", reveals);
       // Last: each viewport posts a comment, and the anchors above count on
       // the seeded one being the card's last.
       const pills = [];
