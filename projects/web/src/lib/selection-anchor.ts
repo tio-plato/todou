@@ -125,6 +125,8 @@ type BlockAlignment = {
   /** Text nodes the renderer inserted, which take no room there. */
   inserted: Set<Node>;
   atoms: Atom[];
+  /** The lines of the blocks nested in this one, merged. */
+  nested: Array<{ start: number; end: number }>;
 };
 
 /** What an atom stands for in the joined text: one character. */
@@ -304,10 +306,10 @@ function alignBlock(
   // a span that is not its element's own: `remarkIssueRefs` cuts a project
   // autolink out of a text node, and when that node's pieces cannot be found
   // every piece gets the whole node's position.
-  return (
+  const aligned =
     lineUp(index, own, itemsOf(block, own, false)) ??
-    lineUp(index, own, itemsOf(block, own, true))
-  );
+    lineUp(index, own, itemsOf(block, own, true));
+  return aligned === null ? null : { ...aligned, nested };
 }
 
 /**
@@ -380,7 +382,7 @@ function lineUp(
   index: SegmentIndex,
   own: SourceSegment[],
   { items, atoms }: { items: Node[]; atoms: Atom[] },
-): BlockAlignment | null {
+): Omit<BlockAlignment, "nested"> | null {
   const cut =
     atoms.length === 0
       ? { segments: own, placeholders: new Set<SourceSegment>() }
@@ -441,6 +443,9 @@ function sourceOffsetOfEndpoint(
  * the element endpoints `endsOnContent` leaves — beside an image or a
  * shadow host, or inside an atom such as a document card — and any other
  * keeps the line anchor.
+ *
+ * An endpoint on the outer edge of a run of the block's own text maps to the
+ * edge of that run's lines before anything else (`outerEdge`, `linesEdge`).
  */
 export function sourceOffsetInBlock(
   index: SegmentIndex,
@@ -451,6 +456,9 @@ export function sourceOffsetInBlock(
 ): number | null {
   const aligned = alignBlock(index, block);
   if (aligned === null) return null;
+  const outer = outerEdge(aligned, node, offset, edge);
+  const lines = outer === null ? null : linesEdge(index, aligned, outer, edge);
+  if (lines !== null) return lines;
   // What an element endpoint has on its side: a start looks ahead.
   const next =
     node.nodeType === Node.TEXT_NODE
@@ -465,8 +473,6 @@ export function sourceOffsetInBlock(
   const at = aligned.offsets.get(node);
   if (at === undefined) return null;
   const rendered = aligned.inserted.has(node) ? at : at + offset;
-  const lines = linesEdge(index, aligned.segments, rendered, edge);
-  if (lines !== null) return lines;
   const source = sourceOffsetOfRendered(aligned.segments, rendered, edge);
   return edge === "start"
     ? pastPrefix(index, aligned.segments, source)
@@ -553,34 +559,63 @@ function pastPrefix(
 }
 
 /**
- * Where an end at the very start of a block's text, or a start at its very
- * end, maps: to the start of the line that text starts on, or to the end of
- * the line it ends on, moved past the lines around it that show nothing
- * (`edgeOfLines`). Such an endpoint selects none of the block, and the
- * markup around its text, a heading's `## ` or setext underline, a fold's
- * tags, a quote's `>`, a link's `](…)`, is no more selected than the text
- * is. `endsOnContent` moves most such endpoints onto content, but keeps one
- * beside a code block. Null for any other endpoint.
+ * Where in a block's joined text an endpoint sits when it sits on the outer
+ * side of the text node holding it, selecting none of it: an end at its very
+ * start, a start at its very end, or either in a blank the renderer
+ * inserted. Null for any other endpoint.
+ */
+function outerEdge(
+  aligned: BlockAlignment,
+  node: Node,
+  offset: number,
+  edge: "start" | "end",
+): number | null {
+  const text = aligned.offsets.get(node);
+  if (text === undefined) return null;
+  if (aligned.inserted.has(node)) return text;
+  if (edge === "end") return offset === 0 ? text : null;
+  const length = node.nodeValue?.length ?? 0;
+  return offset === length ? text + length : null;
+}
+
+/**
+ * Where an end at the very start of a run of a block's own text, or a start
+ * at its very end, maps: to the start of the line the run starts on, or to
+ * the end of the line it ends on, moved past the lines around it that show
+ * nothing (`edgeOfLines`). A run is the block's text between its edges and
+ * the blocks nested in it. Such an endpoint selects none of the run, and the
+ * markup around it, a heading's `## ` or setext underline, a fold's tags, a
+ * quote's `>`, a link's `](…)`, is no more selected than the text is.
+ * `endsOnContent` moves most such endpoints onto content, but keeps one
+ * beside a code block. Null for any other place.
  */
 function linesEdge(
   index: SegmentIndex,
-  segments: SourceSegment[],
+  { segments, nested }: BlockAlignment,
   rendered: number,
   edge: "start" | "end",
 ): number | null {
-  const first = segments[0];
-  const last = segments.at(-1);
-  if (first === undefined || last === undefined) return null;
-  if (edge === "end") {
-    if (rendered !== 0) return null;
-    return edgeOfLines(index, first.start, edge);
+  // Whether a nested block lies between lines `after` and `before`.
+  const apart = (after: number, before: number) =>
+    nested.some((loc) => loc.start > after && loc.end < before);
+  let from = 0;
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
+    if (segment === undefined) continue;
+    const to = from + segment.text.length;
+    if (edge === "end" && from === rendered) {
+      const prev = segments[i - 1];
+      if (prev !== undefined && !apart(prev.endLine, segment.line)) return null;
+      return edgeOfLines(index, segment.start, edge);
+    }
+    if (edge === "start" && to === rendered) {
+      const next = segments[i + 1];
+      if (next !== undefined && !apart(segment.endLine, next.line)) return null;
+      return edgeOfLines(index, Math.max(segment.start, segment.end - 1), edge);
+    }
+    from = to;
   }
-  const length = segments.reduce(
-    (sum, segment) => sum + segment.text.length,
-    0,
-  );
-  if (rendered !== length) return null;
-  return edgeOfLines(index, Math.max(first.start, last.end - 1), edge);
+  return null;
 }
 
 /**

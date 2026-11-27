@@ -3102,6 +3102,46 @@ describe("column anchors at the edges of code rows", () => {
     }
   });
 
+  it("anchors a drag between a compact list item's text and a fence nested in it to the rows", () => {
+    const fence = [`\`\`\`ts`, ...CODE_ROWS, "```"];
+    const source = `- foo\n${fence.map((l) => `  ${l}`).join("\n")}\n  bar\n`;
+    const { container, shadow, index, lines } = fenceWithRows(
+      source,
+      TOKEN_ROWS,
+    );
+    const first = shadow.querySelector("[data-line='1'] span")?.firstChild;
+    const last = shadow.querySelector("[data-line='3'] span")?.firstChild;
+    const item = container.querySelector("li");
+    const [foo, bar] = [item?.firstChild, item?.lastChild];
+    // The item's own text runs on both sides of the fence.
+    expect([foo?.textContent, bar?.textContent]).toEqual(["foo", "bar"]);
+    const count = item?.childNodes.length ?? 0;
+    for (const [node, at] of [
+      [bar, 0],
+      [item, count - 1],
+    ] as const) {
+      const down = anchorForSelection(
+        container,
+        index,
+        ends(last, 6, node, at),
+      );
+      if (down === null) throw new Error("no anchor");
+      expect(cut(lines, down)).toBe("charlie = 3;");
+    }
+    for (const [node, at] of [
+      [foo, 3],
+      [item, 1],
+    ] as const) {
+      const into = anchorForSelection(
+        container,
+        index,
+        ends(node, at, first, 5),
+      );
+      if (into === null) throw new Error("no anchor");
+      expect(cut(lines, into)).toBe("const");
+    }
+  });
+
   it("reaches a patch row that names no single line", () => {
     const source = `Some prose.\n\n\`\`\`patch\n${[
       "diff --git a/a.txt b/a.txt",
