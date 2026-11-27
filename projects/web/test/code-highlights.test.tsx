@@ -643,12 +643,35 @@ async function drawInBox(wrapper: Element, rows: string): Promise<Element> {
   return box;
 }
 
-/** Scroll `box`, and let the layout that schedules run. */
-async function scrollIn(box: Element): Promise<void> {
-  await act(async () => {
-    fireEvent.scroll(box);
-    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+/**
+ * Let `box` scroll as a browser's does through all but its 100px of
+ * `scrollHeight`, which starts at 400: in happy-dom every element measures
+ * 0, so none scrolls. Its `scrollTop` is the test's to set.
+ */
+function scrollable(box: Element): { scrollHeight: number } {
+  const size = { scrollHeight: 400 };
+  Object.defineProperties(box, {
+    scrollHeight: { configurable: true, get: () => size.scrollHeight },
+    clientHeight: { configurable: true, get: () => 100 },
   });
+  return size;
+}
+
+/**
+ * Scroll `box`, and read each chip's top and count in the same task, before
+ * any frame and anything React queued: what a browser paints with the rows
+ * the scroll moved.
+ */
+function scrollIn(
+  box: Element,
+  view: Pick<RenderResult, "queryAllByRole">,
+): ReturnType<typeof chipsOf> {
+  let chips: ReturnType<typeof chipsOf> = [];
+  act(() => {
+    fireEvent.scroll(box);
+    chips = chipsOf(view);
+  });
+  return chips;
 }
 
 describe("chips on code rows", () => {
@@ -931,23 +954,22 @@ describe("chips on code rows", () => {
     const [wrapper] = wrappers;
     if (wrapper === undefined) throw new Error("no fence");
     const box = await drawInBox(wrapper, patchRows());
+    // A box that scrolls, in a browser with no ScrollTimeline: the page
+    // moves the chip itself.
+    scrollable(box);
     await waitFor(() => expect(chipsOf(view)).toEqual([["260px", 1]]));
     // Flush with the box's foot at 296, the row is still in it.
     scroll = 16;
-    await scrollIn(box);
-    expect(chipsOf(view)).toEqual([["276px", 1]]);
+    expect(scrollIn(box, view)).toEqual([["276px", 1]]);
     scroll = -40;
-    await scrollIn(box);
-    expect(chipsOf(view)).toEqual([["220px", 1]]);
+    expect(scrollIn(box, view)).toEqual([["220px", 1]]);
     // Scrolled out above the block's top, the chip stays there, where it
     // hangs once pierre drops the row.
     scroll = -100;
-    await scrollIn(box);
-    expect(chipsOf(view)).toEqual([["192px", 1]]);
+    expect(scrollIn(box, view)).toEqual([["192px", 1]]);
     // Past the box's foot at 296, a chip's height above it.
     scroll = 40;
-    await scrollIn(box);
-    expect(chipsOf(view)).toEqual([["274px", 1]]);
+    expect(scrollIn(box, view)).toEqual([["274px", 1]]);
   });
 
   it("hangs a patch line pierre has not drawn at its box's foot only when every drawn row comes before it", async () => {

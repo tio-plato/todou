@@ -11,6 +11,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import type Markdown from "react-markdown";
 import {
   COMMENT_HEADER_ACTION,
@@ -1422,11 +1423,10 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     // So does whatever changes the document's height with no resize: a
     // mermaid diagram taking its source's place, pierre drawing a block, an
     // image or a font arriving; and pierre drawing its rows again, which
-    // need not change any height, while chips hang by those rows; and a
-    // patch's files scrolling in their own box, which moves the rows chips
-    // hang by there and nothing else. Folded into one layout per frame. The
-    // wash a layout toggles changes the height once more, or has pierre draw
-    // again, and the next layout toggles nothing, so it settles there.
+    // need not change any height, while chips hang by those rows. Folded
+    // into one layout per frame. The wash a layout toggles changes the
+    // height once more, or has pierre draw again, and the next layout
+    // toggles nothing, so it settles there.
     const container = containerRef.current;
     let frame: number | null = null;
     const schedule = () => {
@@ -1441,15 +1441,19 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       observer.observe(container);
     }
     container?.addEventListener(CODE_RENDERED_EVENT, schedule);
-    // `scroll` does not bubble, so the capture phase hears it; and only a
-    // patch's, as a table or a block of code scrolling sideways moves no
-    // chip.
+    // A patch's files scrolling in their own box move the rows chips hang
+    // by there, and nothing else: laid out and committed in the scroll
+    // event's own task, so the chips move in the frame the rows do. State set
+    // in a frame callback renders in a task after it, once that frame is
+    // painted. `scroll` does not bubble, so the capture phase hears it; and
+    // only a patch's, as a table or a block of code scrolling sideways moves
+    // no chip.
     const scrolled = (event: Event) => {
       if (
         event.target instanceof Element &&
         event.target.closest(`[${FENCE_PATCH_ATTR}]`) !== null
       ) {
-        schedule();
+        flushSync(layout);
       }
     };
     container?.addEventListener("scroll", scrolled, {
