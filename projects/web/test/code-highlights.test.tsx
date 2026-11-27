@@ -251,6 +251,20 @@ const EDITED_ROWS = `
   <div data-line="2" data-line-type="change-deletion"><span>const b = 2;</span></div>
   <div data-line="2" data-line-type="change-addition"><span>const b = 3;</span></div>`;
 
+/**
+ * A list item's block edited in place: v1 keep/drop1/mid/drop2 on lines
+ * 4–7, v2 keep/mid on lines 4–5. pierre numbers a context row on the
+ * version shown and keeps the baseline's number as `data-alt-line`.
+ */
+const ITEM_BEFORE =
+  "- item text\n\n  ```ts\n  keep();\n  drop1();\n  mid();\n  drop2();\n  ```\n";
+const ITEM_AFTER = "- item text\n\n  ```ts\n  keep();\n  mid();\n  ```\n";
+const ITEM_ROWS = `
+  <div data-line="1" data-alt-line="1" data-line-type="context"><span>keep();</span></div>
+  <div data-line="2" data-line-type="change-deletion"><span>drop1();</span></div>
+  <div data-line="2" data-alt-line="3" data-line-type="context"><span>mid();</span></div>
+  <div data-line="4" data-line-type="change-deletion"><span>drop2();</span></div>`;
+
 describe("code highlights in the rendered view", () => {
   it("marks a deleted row and a current one in the same block", async () => {
     stubHighlights();
@@ -281,6 +295,68 @@ describe("code highlights in the rendered view", () => {
     if (wrapper === undefined) throw new Error("no fence");
     await drawRows(wrapper, EDITED_ROWS);
     expect(texts(registry, "spec-comment")).toEqual(["b = 2"]);
+  });
+
+  it("paints a context row a baseline draft's columns cover", async () => {
+    const registry = stubHighlights();
+    // v1's L5:3–L6:8 is "drop1();⏎  mid();": a deleted row, then a context row.
+    const draft: DisplayedAnnotation = { ...onLine("draft", 5, 3, 8), end: 6 };
+    const { wrappers } = await renderDocument(ITEM_AFTER, [], {
+      baselineBody: ITEM_BEFORE,
+      baselineAnnotations: [draft],
+    });
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    await drawRows(wrapper, ITEM_ROWS);
+    expect(texts(registry, "spec-draft")).toEqual(["drop1();", "mid();"]);
+  });
+
+  it("stacks both versions' whole-line notes on a context row as on one version", async () => {
+    stubHighlights();
+    // keep: a v2 comment and a v1 draft; mid: a v2 draft and a v1 comment.
+    // Whichever version paints a row first, a comment outranks a draft.
+    const { wrappers } = await renderDocument(
+      ITEM_AFTER,
+      [wholeLines("comment", 4, 4), wholeLines("draft", 5, 5)],
+      {
+        baselineBody: ITEM_BEFORE,
+        baselineAnnotations: [
+          wholeLines("draft", 4, 5),
+          wholeLines("comment", 6, 7),
+        ],
+      },
+    );
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    const shadow = await drawRows(wrapper, ITEM_ROWS);
+    expect(lineMarks(shadow)).toEqual([
+      "comment",
+      "draft",
+      "comment",
+      "comment",
+    ]);
+  });
+
+  it("hangs a baseline note that only a context row shows", async () => {
+    stubHighlights();
+    // v1's line 6 is "mid();", which no deleted row shows.
+    const { view, wrappers } = await renderDocument(ITEM_AFTER, [], {
+      baselineBody: ITEM_BEFORE,
+      baselineAnnotations: [wholeLines("comment", 6, 6)],
+    });
+    const [wrapper] = wrappers;
+    if (wrapper === undefined) throw new Error("no fence");
+    await drawRows(wrapper, ITEM_ROWS);
+    // Chips are laid out again on a resize; happy-dom reports no other.
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
+    const chips = await view.findAllByRole("button", {
+      name: /^\d+ comments?$/,
+    });
+    expect(chips.map((chip) => chip.getAttribute("aria-label"))).toEqual([
+      "1 comment",
+    ]);
   });
 
   it("marks the row of a restored code block a baseline comment covers", async () => {

@@ -313,9 +313,10 @@ export function oldCodeRowSource(
  * edited in place too, which shows a line of either version. pierre numbers
  * such a row on the version shown and keeps the baseline's number as
  * `data-alt-line`; a row without one shows a baseline line no-one can name.
- * A context row is not removed content, which is what `oldCodeRowSource`
- * tells its callers, so only what the baseline hides from a selection asks
- * this.
+ * Annotations on the baseline ask this where they paint and where their
+ * chips hang, and so does what the baseline hides from a selection. A
+ * context row is not removed content, though: whether a row is, which
+ * decides the version a selection anchors to, `oldCodeRowSource` tells.
  */
 export function baselineRowSource(
   baseline: SegmentIndex,
