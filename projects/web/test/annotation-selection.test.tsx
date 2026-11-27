@@ -3953,6 +3953,61 @@ describe("anchoring a compared document", () => {
     expect(selected?.baseline).toBeUndefined();
   });
 
+  it("anchors an end beside a block removed whole, at text of the version shown, to the block's rows", async () => {
+    const before = "Intro.\n\n```ts\nold();\nmore();\n```\n\nOutro.\n";
+    const after = "Intro.\n\nOutro.\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-old-loc].markdown-fence",
+    );
+    const wrapper = container.querySelector("[data-old-loc].markdown-fence");
+    const shadow = drawRows(
+      wrapper,
+      `<div data-line="1">old();</div><div data-line="2">more();</div>`,
+    );
+    const old = shadow.querySelector("[data-line='1']")?.firstChild;
+    const more = shadow.querySelector("[data-line='2']")?.firstChild;
+    const intro = textAt(container, "p[data-loc]", "Intro.");
+    const outro = textAt(container, "p[data-loc]", "Outro.");
+    // Down to the start of the paragraph below and up from the end of the
+    // one above, on its text and on its element: on the baseline, to the
+    // rows selected.
+    for (const node of [outro.node, outro.node.parentNode]) {
+      expect(anchor(ends(more, 0, node, 0))).toEqual({
+        lineStart: 5,
+        lineEnd: 5,
+        colStart: 1,
+        colEnd: 7,
+        baseline: true,
+      });
+    }
+    const above = intro.node.parentNode;
+    for (const [node, at] of [
+      [intro.node, "Intro.".length],
+      [above, above?.childNodes.length ?? 0],
+    ] as const) {
+      expect(anchor(ends(node, at, old, 3))).toEqual({
+        lineStart: 4,
+        lineEnd: 4,
+        colStart: 1,
+        colEnd: 3,
+        baseline: true,
+      });
+    }
+    // In the gap after the block, with no text there: the whole block.
+    const gap = wrapper?.parentNode;
+    if (!wrapper || !gap) throw new Error("no block");
+    const after_ = [...gap.childNodes].indexOf(wrapper as ChildNode) + 1;
+    expect(anchor(ends(more, 0, gap, after_))).toEqual({
+      lineStart: 3,
+      lineEnd: 6,
+      colStart: null,
+      colEnd: null,
+      baseline: true,
+    });
+  });
+
   it("ends a baseline anchor down from an edited block before the markup that opens a heading removed below it", async () => {
     const before = [
       "Intro.",
