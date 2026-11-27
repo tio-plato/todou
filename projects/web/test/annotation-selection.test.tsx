@@ -2863,18 +2863,33 @@ describe("column anchors at the edges of code rows", () => {
     ).toEqual({ lineStart: 3, lineEnd: 7, colStart: null, colEnd: null });
   });
 
-  it("keeps a fence's lines for an element end at a quote below it", () => {
-    const source = `Intro words.\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n\n> Outro words\n`;
-    const { container, shadow, index } = fenceWithRows(source, TOKEN_ROWS);
-    const last = shadow.querySelector("[data-line='3'] span")?.firstChild;
-    const quote = container.querySelector("blockquote");
-    // The quote opens with a line feed inside its own stamped element: no
-    // text there to take the end as.
-    expect(quote?.firstChild?.textContent).toBe("\n");
-    expect(
-      anchorForSelection(container, index, ends(last, 6, quote, 0)),
-    ).toEqual({ lineStart: 3, lineEnd: 7, colStart: null, colEnd: null });
-  });
+  it.each([
+    ["a list", "- Outro words\n- More", "ul"],
+    ["a loose list item", "- Outro words\n\n- More", "li"],
+    ["a quote", "> Outro words", "blockquote"],
+    ["a task list item", "- [ ] Outro words", "li"],
+  ])(
+    "ends a selection down from a fence before %s whose element opens with no text",
+    (_name, next, selector) => {
+      const source = `Intro words.\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n\n${next}\n`;
+      const { container, shadow, index, lines } = fenceWithRows(
+        source,
+        TOKEN_ROWS,
+      );
+      const last = shadow.querySelector("[data-line='3'] span")?.firstChild;
+      const element = container.querySelector(selector);
+      // A line feed, a checkbox or a picture comes before the element's
+      // text, where Chromium can end the drag.
+      expect(element?.firstChild?.textContent?.trim()).toBe("");
+      const down = anchorForSelection(
+        container,
+        index,
+        ends(last, 6, element, 0),
+      );
+      if (down === null) throw new Error("no anchor");
+      expect(cut(lines, down)).toBe("charlie = 3;");
+    },
+  );
 
   it("keeps the columns of a text end beside a fence pierre has not drawn", () => {
     const source = `Intro words.\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n\nOutro words.\n`;

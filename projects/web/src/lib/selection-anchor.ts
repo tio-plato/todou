@@ -1122,30 +1122,55 @@ export function endsOnContent(
 
 /**
  * The text endpoint at the place an element endpoint names: the start of the
- * text right after it, or the end of the text right before it, found by going
- * down into the node on that side, never into a box. Null for an endpoint in
- * a code block, which names no place beside one, and where that is no text
- * other than whitespace, or lies in what the walk skips or in no block.
+ * first text after it, or the end of the last text before it, found by
+ * walking the nodes on that side in document order (`nodeAfter`,
+ * `nodeBefore`), never into a box. Blank text and elements holding nothing
+ * are passed over. In the element holding the code block `box`, only the
+ * node right beside the endpoint is walked: past it lie other blocks. Null
+ * for an endpoint in a code block, which names no place beside one, and
+ * where the walk first meets a box, or text in what the walk skips or in no
+ * block.
  */
 function textEndpointAt(
   at: Point,
   side: "after" | "before",
   walk: Walk,
+  box: Element,
 ): Point | null {
-  if (at.node instanceof Element && at.node.closest(walk.code) !== null) {
+  const root = at.node;
+  if (!(root instanceof Element) || root.closest(walk.code) !== null) {
     return null;
   }
-  let n: Node | null =
-    at.node.childNodes[side === "after" ? at.offset : at.offset - 1] ?? null;
-  while (n instanceof Element && !isBox(n, walk)) {
-    n = side === "after" ? n.firstChild : n.lastChild;
+  const next = root.childNodes[side === "after" ? at.offset : at.offset - 1];
+  if (next === undefined) return null;
+  const within = root.contains(box) ? next : root;
+  for (
+    let node: Node | null = side === "after" ? next : lastWithin(next, walk);
+    node !== null && within.contains(node);
+    node =
+      side === "after"
+        ? nodeAfter(root, node, true, walk)
+        : nodeBefore(root, node, walk)
+  ) {
+    if (node instanceof Text) {
+      if (!/\S/.test(node.data)) continue;
+      const near = node.parentElement;
+      if (
+        near?.closest(walk.skip) != null ||
+        near?.closest(walk.block) == null
+      ) {
+        return null;
+      }
+      return { node, offset: side === "after" ? 0 : node.data.length };
+    }
+    if (
+      node instanceof Element &&
+      (node.matches(walk.skip) || isBox(node, walk))
+    ) {
+      return null;
+    }
   }
-  if (!(n instanceof Text) || !/\S/.test(n.data)) return null;
-  const near = n.parentElement;
-  if (near?.closest(walk.skip) != null || near?.closest(walk.block) == null) {
-    return null;
-  }
-  return { node: n, offset: side === "after" ? 0 : n.data.length };
+  return null;
 }
 
 /**
@@ -1204,7 +1229,9 @@ function startOn(content: Content, start: Point, walk: Walk): Point {
     return beside(content.el, "before");
   }
   const text =
-    start.node instanceof Text ? start : textEndpointAt(start, "before", walk);
+    start.node instanceof Text
+      ? start
+      : textEndpointAt(start, "before", walk, content.el);
   const inside = { node: content.el, offset: 0 };
   if (text === null) return inside;
   if (!leavesRemoved(content.el, text, "before")) return text;
@@ -1223,7 +1250,9 @@ function endOn(content: Content, end: Point, walk: Walk): Point {
   }
   const inside = { node: content.el, offset: content.el.childNodes.length };
   const text =
-    end.node instanceof Text ? end : textEndpointAt(end, "after", walk);
+    end.node instanceof Text
+      ? end
+      : textEndpointAt(end, "after", walk, content.el);
   if (text === null) return inside;
   if (!leavesRemoved(content.el, text, "after")) return text;
   return (onBlank(text) ? null : rowEdge(content.el, "after")) ?? inside;
