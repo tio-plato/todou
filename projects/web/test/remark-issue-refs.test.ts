@@ -112,8 +112,9 @@ describe("remarkIssueRefs keeps the source span on every piece", () => {
   });
 
   it("gives every piece the whole node when its pieces cannot be found", () => {
-    // A bare CR ends the quote's line: the `> ` after it lines up nowhere.
-    const source = "> 见\r> T-161 的做法。\n";
+    // micromark shows a NUL as U+FFFD, which no character of the source
+    // lines up with.
+    const source = "见\u0000 T-161 的做法。\n";
     const original = firstParagraph(plain.runSync(plain.parse(source)) as Root);
     const children = firstParagraph(
       linkified.runSync(linkified.parse(source), source) as Root,
