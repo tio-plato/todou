@@ -4123,6 +4123,50 @@ describe("anchoring a compared document", () => {
     ).toBe("old();\nkeep();\ngone();");
   });
 
+  it.each([
+    [
+      "first",
+      "Intro.\n\n```ts\nold();\nkeep();\n```\n\nOutro.\n",
+      `<div data-line="1" data-line-type="change-deletion">old();</div>
+       <div data-line="1" data-alt-line="2" data-line-type="context">keep();</div>`,
+      { lineStart: 4, lineEnd: 4, colStart: 1, colEnd: 3, baseline: true },
+    ],
+    [
+      "last",
+      "Intro.\n\n```ts\nkeep();\ngone();\n```\n\nOutro.\n",
+      `<div data-line="1" data-alt-line="1" data-line-type="context">keep();</div>
+       <div data-line="2" data-line-type="change-deletion">gone();</div>`,
+      { lineStart: 5, lineEnd: 5, colStart: 1, colEnd: 7, baseline: true },
+    ],
+  ])(
+    "anchors an end beside an edited block whose %s row alone is a deletion to that row",
+    async (side, before, rows, want) => {
+      const after = "Intro.\n\n```ts\nkeep();\n```\n\nOutro.\n";
+      const { container, anchor } = await compared(
+        before,
+        after,
+        "[data-loc-content-start]",
+      );
+      const shadow = drawRows(
+        container.querySelector("[data-loc-content-start]"),
+        rows,
+      );
+      const deleted = shadow.querySelector(
+        "[data-line-type='change-deletion']",
+      )?.firstChild;
+      const intro = textAt(container, "p[data-loc]", "Intro.").node;
+      const outro = textAt(container, "p[data-loc]", "Outro.").node;
+      // Up from the end of the paragraph above into the first row, as far as
+      // `old`, or down from the start of the last row to the paragraph below:
+      // the row on the block's other side is a row of the version shown.
+      const selected =
+        side === "first"
+          ? ends(intro, "Intro.".length, deleted, 3)
+          : ends(deleted, 0, outro, 0);
+      expect(anchor(selected)).toEqual(want);
+    },
+  );
+
   it("keeps an end beside a patch removed whole, at text of the version shown, in the block", async () => {
     const before = [
       "Intro.",
