@@ -2832,6 +2832,37 @@ describe("column anchors at the edges of code rows", () => {
     ).toEqual({ lineStart: 3, lineEnd: 7, colStart: null, colEnd: null });
   });
 
+  it("keeps a fence's lines for an element end at the next fence", () => {
+    const source = `Intro words.\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n\n\`\`\`ts\nnext();\n\`\`\`\n`;
+    const { container, shadow, index } = fenceWithRows(source, TOKEN_ROWS);
+    const last = shadow.querySelector("[data-line='3'] span")?.firstChild;
+    const next = container.querySelectorAll("[data-loc-content-start]")[1];
+    const gap = next?.parentNode;
+    if (!next || !gap) throw new Error("no second fence");
+    const lines = { lineStart: 3, lineEnd: 7, colStart: null, colEnd: null };
+    // Just before the next fence and just inside it, the place is that
+    // fence's, with no text there to take the end as.
+    const before = [...gap.childNodes].indexOf(next as ChildNode);
+    expect(
+      anchorForSelection(container, index, ends(last, 6, gap, before)),
+    ).toEqual(lines);
+    expect(
+      anchorForSelection(container, index, ends(last, 6, next, 0)),
+    ).toEqual(lines);
+  });
+
+  it("keeps a fence's lines for an element end before text no source line holds", () => {
+    const source = `Intro words[^1].\n\n\`\`\`ts\n${CODE_ROWS.join("\n")}\n\`\`\`\n\n[^1]: A note.\n`;
+    const { container, shadow, index } = fenceWithRows(source, TOKEN_ROWS);
+    const last = shadow.querySelector("[data-line='3'] span")?.firstChild;
+    const footnotes = container.querySelector("section[data-footnotes]");
+    if (footnotes === null) throw new Error("no footnotes");
+    // The section opens with a heading for screen readers, on no line.
+    expect(
+      anchorForSelection(container, index, ends(last, 6, footnotes, 0)),
+    ).toEqual({ lineStart: 3, lineEnd: 7, colStart: null, colEnd: null });
+  });
+
   it("reaches a patch row that names no single line", () => {
     const source = `Some prose.\n\n\`\`\`patch\n${[
       "diff --git a/a.txt b/a.txt",
