@@ -163,8 +163,15 @@ type Chip = {
    * with a `+` for each chip already going on under that key.
    */
   blockKey: string;
+  /**
+   * Where the chip hangs. One that follows a box as it scrolls (`follow`)
+   * hangs where the layout that made it measured, the box scrolled where it
+   * was then; its animation moves it from there along `follow`'s path, and
+   * the two together are where it is drawn.
+   */
   top: number;
   items: DisplayedAnnotation[];
+  follow?: Follow;
 };
 
 /** An annotation as the decorations see it: its slice of the source. */
@@ -318,6 +325,86 @@ function scrollBox(wrapper: Element, row: Element): Element {
     if (overflowY === "auto" || overflowY === "scroll") return el;
   }
   return wrapper;
+}
+
+/**
+ * How a chip moves as the box `box` scrolls: points of the box's scroll
+ * position and the chip's top there, the top going in a straight line from
+ * one point to the next. The last is the box scrolled as far as it goes.
+ */
+type Follow = { box: Element; path: [number, number][] };
+
+/**
+ * What a row of a patch fence hangs its chip by: the row is `h` tall, its
+ * block's top is at `head`, the foot of the box it scrolls in at `foot`,
+ * and a chip is `tall`.
+ */
+type PatchRow = { h: number; head: number; foot: number; tall: number };
+
+/**
+ * Where the chip of a row of a patch fence hangs with the row's top at `y`:
+ * beside the row, but no lower than a chip's height above the box's foot
+ * while the row reaches past it, and no higher than the block's top: where
+ * the chip stays once pierre drops the row, by `belowRows` or by the block.
+ */
+function patchRowTop(y: number, { h, head, foot, tall }: PatchRow): number {
+  let top = y;
+  if (y + h > foot) top = Math.min(top, foot - tall);
+  return Math.max(top, head);
+}
+
+/**
+ * How the chip `patchRowTop` hangs moves as the box scrolls through its
+ * `range`: the row's top is at `y0` with the box scrolled to 0, and higher
+ * by as much as the box scrolls. The path turns where the row's top meets
+ * the block's, where it is a chip's height above the box's foot, and where
+ * the row's foot meets the box's. The chip jumps there, from a chip's
+ * height above the foot to the row, so that point comes twice, the one
+ * before the jump first: an animation takes the later of two keyframes at
+ * one offset from that offset on.
+ */
+function patchRowPath(
+  y0: number,
+  range: number,
+  row: PatchRow,
+): [number, number][] {
+  const { h, head, foot, tall } = row;
+  const meets = y0 - (foot - h);
+  const turns: [number, number][] = [
+    [y0 - head, patchRowTop(head, row)],
+    [y0 - (foot - tall), patchRowTop(foot - tall, row)],
+    [meets, Math.max(head, Math.min(foot - h, foot - tall))],
+    [meets, patchRowTop(foot - h, row)],
+  ];
+  const path: [number, number][] = [
+    [0, patchRowTop(y0, row)],
+    ...turns.filter(([at]) => at > 0 && at <= range),
+    [range, patchRowTop(y0 - range, row)],
+  ];
+  return path.sort(([a], [b]) => a - b);
+}
+
+/**
+ * Whether the chip `was` hangs as `now` does: at the same top, or both
+ * following one box along one path, wherever the box was scrolled to when
+ * each was measured, as the browser moves it along that path in between.
+ * Points within a hundredth of a pixel are one: each layout measures the
+ * row and the box's scroll position afresh, and they round a little apart.
+ * A chip that starts or stops following has changed, at any top.
+ */
+function hangsAlike(was: Chip, now: Chip): boolean {
+  if (was.follow === undefined || now.follow === undefined) {
+    return was.follow === now.follow && was.top === now.top;
+  }
+  const path = now.follow.path;
+  return (
+    was.follow.box === now.follow.box &&
+    was.follow.path.length === path.length &&
+    was.follow.path.every(([at, top], i) => {
+      const [nowAt, nowTop] = path[i] ?? [Number.NaN, Number.NaN];
+      return Math.abs(at - nowAt) < 0.01 && Math.abs(top - nowTop) < 0.01;
+    })
+  );
 }
 
 /** Runs of removed text, which say where in the baseline they start. */
@@ -902,14 +989,18 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       el: HTMLElement;
       top: number;
       items: DisplayedAnnotation[];
+      follow?: Follow;
     };
     const places = new Map<string, Place>();
     const jumps = new Map<
       string,
       { block: HTMLElement; row: HTMLElement | null }
     >();
-    /** A place inside a block: a row of code, or a line of text. */
-    type Line = { key: string; top: number };
+    /**
+     * A place inside a block: a row of code, or a line of text; and how a
+     * chip there moves as a box scrolls, where the browser moves it.
+     */
+    type Line = { key: string; top: number; follow?: Follow };
     const hang = (
       annotation: DisplayedAnnotation,
       block: { key: string; el: HTMLElement; old: boolean },
@@ -929,6 +1020,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
           // what gets measured moves when the reader shuts a fold over it.
           top: line?.top ?? chipTop(containerRect, visibleAnchor(block.el)),
           items: [annotation],
+          follow: line?.follow,
         });
       }
       jumps.set(annotation.key, { block: block.el, row });
@@ -939,27 +1031,32 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       wide,
       Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
     );
-    // The foot of each patch fence's box, found once a layout, and only
-    // where asked.
-    const feet = new Map<Element, number>();
-    const footOf = (wrapper: HTMLElement, row: HTMLElement) => {
-      let foot = feet.get(wrapper);
-      if (foot === undefined) {
-        foot =
-          scrollBox(wrapper, row).getBoundingClientRect().bottom -
-          containerRect.top;
-        feet.set(wrapper, foot);
+    // Each patch fence's box, its foot and how far it scrolls, found once a
+    // layout, and only where asked.
+    const boxes = new Map<
+      Element,
+      { box: Element; foot: number; range: number }
+    >();
+    const boxOf = (wrapper: HTMLElement, row: HTMLElement) => {
+      let found = boxes.get(wrapper);
+      if (found === undefined) {
+        const box = scrollBox(wrapper, row);
+        found = {
+          box,
+          foot: box.getBoundingClientRect().bottom - containerRect.top,
+          range: box.scrollHeight - box.clientHeight,
+        };
+        boxes.set(wrapper, found);
       }
-      return foot;
+      return found;
     };
     /**
      * A row of code as a place, keyed `prefix` and its source line; none
      * under a shut fold, where every row measures 0 and the chip follows the
-     * fold up to its header, as its block's would. In a patch fence a row
-     * reaching past its box's foot hangs no lower than a chip's height above
-     * that foot, and one scrolled out above hangs no higher than the block's
-     * top: where the chip stays once pierre drops the row, by `belowRows` or
-     * by the block.
+     * fold up to its header, as its block's would. In a patch fence the chip
+     * keeps to the box the row scrolls in, as `patchRowTop` says; and where
+     * the browser can move it with the box, as the box scrolls, it does, in
+     * the frame the rows move, however busy the page.
      */
     const rowLine = (
       prefix: string,
@@ -968,15 +1065,22 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
     ): Line | null => {
       if (visibleAnchor(wrapper) !== wrapper) return null;
       const rect = row.getBoundingClientRect();
-      let top = rect.top - containerRect.top;
-      if (wrapper.hasAttribute(FENCE_PATCH_ATTR)) {
-        const foot = footOf(wrapper, row);
-        if (rect.bottom - containerRect.top > foot) {
-          top = Math.min(top, foot - tall);
-        }
-        top = Math.max(top, chipTop(containerRect, wrapper));
+      const key = `${prefix}${source.line}`;
+      const y = rect.top - containerRect.top;
+      if (!wrapper.hasAttribute(FENCE_PATCH_ATTR)) return { key, top: y };
+      const { box, foot, range } = boxOf(wrapper, row);
+      const at = {
+        h: rect.height,
+        head: chipTop(containerRect, wrapper),
+        foot,
+        tall,
+      };
+      const top = patchRowTop(y, at);
+      if (typeof ScrollTimeline !== "function" || range <= 0) {
+        return { key, top };
       }
-      return { key: `${prefix}${source.line}`, top };
+      const path = patchRowPath(y + box.scrollTop, range, at);
+      return { key, top, follow: { box, path } };
     };
     /**
      * The first row, in document order, that shows one of an annotation's
@@ -1019,7 +1123,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
       return first === undefined ||
         drawn.some(({ source: { line } }) => line !== null && line >= start)
         ? null
-        : { key, top: footOf(wrapper, first.row) - tall };
+        : { key, top: boxOf(wrapper, first.row).foot - tall };
     };
     // Each text block lined up once a layout, and only where asked, with
     // what `firstLine` measures its first line by: the box its later lines
@@ -1267,7 +1371,12 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
           above.items = [...above.items, ...place.items];
           continue;
         }
-        kept.push({ blockKey: place.key, top: place.top, items: place.items });
+        kept.push({
+          blockKey: place.key,
+          top: place.top,
+          items: place.items,
+          follow: place.follow,
+        });
       }
       (group[0]?.old ? oldChips : next).push(...kept);
     }
@@ -1393,7 +1502,7 @@ export const AnnotatedMarkdown = memo(function AnnotatedMarkdown({
           key === fresh.blockKey ? fresh : { ...fresh, blockKey: key };
         const old = before.get(chip.blockKey);
         return old !== undefined &&
-          old.top === chip.top &&
+          hangsAlike(old, chip) &&
           old.items.length === chip.items.length &&
           old.items.every((item, j) => item === chip.items[j])
           ? old
@@ -1799,6 +1908,26 @@ const AnnotationChip = memo(function AnnotationChip({
   popoverLayer: HTMLElement | null;
 }) {
   const draftCount = chip.items.filter((i) => i.kind === "draft").length;
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  // A chip that follows a box as it scrolls is the browser's to move, on the
+  // box's scroll timeline. Its keyframes go from the chip's own top, which
+  // the layout that made it measured with the box scrolled where it was
+  // then. `transform` is theirs alone: below `sm` the chip's sideways shift
+  // is `translate`, which adds to it.
+  useLayoutEffect(() => {
+    const follow = chip.follow;
+    const el = triggerRef.current;
+    if (follow === undefined || el === null) return;
+    const range = follow.path.at(-1)?.[0] ?? 0;
+    const animation = el.animate(
+      follow.path.map(([at, top]) => ({
+        offset: at / range,
+        transform: `translateY(${top - chip.top}px)`,
+      })),
+      { timeline: new ScrollTimeline({ source: follow.box }), fill: "both" },
+    );
+    return () => animation.cancel();
+  }, [chip.follow, chip.top]);
   const locate = (item: DisplayedAnnotation) => (
     <button
       type="button"
@@ -1809,7 +1938,6 @@ const AnnotationChip = memo(function AnnotationChip({
       {labelOf(item)}
     </button>
   );
-  const triggerRef = useRef<HTMLButtonElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [alignOffset, setAlignOffset] = useState(0);
