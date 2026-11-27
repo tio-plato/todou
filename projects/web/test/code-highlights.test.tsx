@@ -1042,13 +1042,13 @@ describe("chips on code rows", () => {
     const [wrapper] = wrappers;
     if (wrapper === undefined) throw new Error("no fence");
     box = await drawInBox(wrapper, patchRows());
+    box.scrollTop = 100;
     // A box that cannot scroll leaves its chip to the page.
     await waitFor(() => expect(chipsOf(view)).toEqual([["260px", 1]]));
     expect(animate).not.toHaveBeenCalled();
-    // Given 300px to scroll through, and scrolled to 100, the box takes the
-    // chip along from that same top on.
+    // Given 300px to scroll through, the box takes the chip along from that
+    // same top on.
     const size = scrollable(box);
-    box.scrollTop = 100;
     expect(scrollIn(box, view)).toEqual([["260px", 1]]);
     const chip = view.getByRole("button", {
       name: /comment\(s\) on this block/,
@@ -1084,6 +1084,21 @@ describe("chips on code rows", () => {
     if (regrown === undefined) throw new Error("no keyframes");
     expect(drawnAt(chip, regrown, 400, 140)).toBeCloseTo(220);
     expect(drawnAt(chip, regrown, 400, 200)).toBeCloseTo(192);
+    // The rows move to a box of their own, as long and scrolled as far: the
+    // chip goes along with that box, not the one gone from the page.
+    const again = document.createElement("div");
+    again.style.overflowY = "auto";
+    scrollable(again).scrollHeight = 500;
+    again.scrollTop = 140;
+    again.append(...box.childNodes);
+    box.replaceWith(again);
+    box = again;
+    scrollIn(again, view);
+    expect(animate.mock.results[1]?.value.cancel).toHaveBeenCalled();
+    expect(animate).toHaveBeenCalledTimes(3);
+    expect(
+      (animate.mock.calls[2]?.[1].timeline as Timeline | undefined)?.source,
+    ).toBe(again);
   });
 
   it("hangs a patch line pierre has not drawn at its box's foot only when every drawn row comes before it", async () => {
