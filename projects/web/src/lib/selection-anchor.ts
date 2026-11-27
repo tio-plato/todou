@@ -1079,10 +1079,11 @@ export function beside(el: Element, side: "before" | "after"): Point {
  * endpoint, taken as that one (`textEndpointAt`): Chromium ends a drag out
  * of a block at the start of the next block's element, where WebKit and
  * Firefox end it in that block's text. Beside a block a comparison put back,
- * such an endpoint in the version shown goes onto the edge of the block's
- * rows instead, so that the selection stays in the removed content it
- * selects. Any other element endpoint goes just inside the block's wrapper,
- * whose own stamp then bounds the anchor.
+ * or beside one edited in place whose row on that side is a deletion, such
+ * an endpoint in the version shown goes onto the edge of the block's rows
+ * instead, so that the selection stays in the removed content it selects.
+ * Any other element endpoint goes just inside the block's wrapper, whose own
+ * stamp then bounds the anchor.
  *
  * With `old`, a compared document's removed text and structure count as
  * content too (`OLD_WALK`), so that an end can move onto removed text the
@@ -1142,21 +1143,31 @@ function textEndpointAt(
 }
 
 /**
- * Whether `at`, beside the code block `box` a comparison put back, lies in
- * the version shown: taken there, it would take the end out of the removed
- * content the selection selects.
+ * Whether `at`, on `side` of the code block `box`, lies in the version shown
+ * while the block's row on that side is removed content: any row of a block
+ * a comparison put back, or a deletion row of one edited in place. Taken
+ * there, it would take the end out of the removed content the selection
+ * selects. A patch's own deletion rows are lines of the version shown, and
+ * `rowEdge` gives none of a patch's rows.
  */
-function leavesRemoved(box: Element, at: Point): boolean {
+function leavesRemoved(
+  box: Element,
+  at: Point,
+  side: "before" | "after",
+): boolean {
+  if (elementNear(at.node)?.closest(DELETED_CONTENT) != null) return false;
+  if (box.matches(OLD_CODE_BLOCK)) return true;
+  const row = rowEdge(box, side)?.node;
   return (
-    box.matches(OLD_CODE_BLOCK) &&
-    elementNear(at.node)?.closest(DELETED_CONTENT) == null
+    row instanceof Element &&
+    row.getAttribute(LINE_TYPE_ATTR) === DELETION_LINE_TYPE
   );
 }
 
 /**
- * The edge of the rows of a code block a comparison put back: the start of
- * its first row, or the end of its last. Null where those rows need not show
- * the block's own first and last lines: before pierre has drawn any, for an
+ * The edge of the rows pierre drew in a code block: the start of its first
+ * row, or the end of its last. Null where those rows need not show the
+ * block's own first and last lines: before pierre has drawn any, for an
  * empty block, whose rows show no text, and for a patch, whose view draws
  * only the rows in sight and folds whole files away.
  */
@@ -1190,7 +1201,7 @@ function startOn(content: Content, start: Point, walk: Walk): Point {
     start.node instanceof Text ? start : textEndpointAt(start, "before", walk);
   const inside = { node: content.el, offset: 0 };
   if (text === null) return inside;
-  if (!leavesRemoved(content.el, text)) return text;
+  if (!leavesRemoved(content.el, text, "before")) return text;
   return (onBlank(text) ? null : rowEdge(content.el, "before")) ?? inside;
 }
 
@@ -1208,7 +1219,7 @@ function endOn(content: Content, end: Point, walk: Walk): Point {
   const text =
     end.node instanceof Text ? end : textEndpointAt(end, "after", walk);
   if (text === null) return inside;
-  if (!leavesRemoved(content.el, text)) return text;
+  if (!leavesRemoved(content.el, text, "after")) return text;
   return (onBlank(text) ? null : rowEdge(content.el, "after")) ?? inside;
 }
 

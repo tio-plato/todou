@@ -4071,6 +4071,102 @@ describe("anchoring a compared document", () => {
     expect(anchor(ends(more, 0, feed, 0))).toEqual(whole);
   });
 
+  it("anchors an end beside an edited block, at text of the version shown, to the deleted row at that edge", async () => {
+    const before = "Intro.\n\n```ts\nold();\nkeep();\ngone();\n```\n\nOutro.\n";
+    const after = "Intro.\n\n```ts\nnew();\nkeep();\n```\n\nOutro.\n";
+    const { container, anchor } = await compared(
+      before,
+      after,
+      "[data-loc-content-start]",
+    );
+    // The block's first row and its last are deletions.
+    const shadow = drawRows(
+      container.querySelector("[data-loc-content-start]"),
+      `<div data-line="1" data-line-type="change-deletion">old();</div>
+       <div data-line="1" data-line-type="change-addition">new();</div>
+       <div data-line="2" data-alt-line="2" data-line-type="context">keep();</div>
+       <div data-line="3" data-line-type="change-deletion">gone();</div>`,
+    );
+    const rows = [...shadow.querySelectorAll("[data-line]")];
+    const [old, gone] = [rows[0], rows[3]].map((row) => row?.firstChild);
+    const intro = textAt(container, "p[data-loc]", "Intro.");
+    const outro = textAt(container, "p[data-loc]", "Outro.");
+    // Down to the start of the paragraph below and up from the end of the
+    // one above, on its text and on its element: on the baseline, to the
+    // rows selected.
+    for (const node of [outro.node, outro.node.parentNode]) {
+      expect(anchor(ends(gone, 0, node, 0))).toEqual({
+        lineStart: 6,
+        lineEnd: 6,
+        colStart: 1,
+        colEnd: 7,
+        baseline: true,
+      });
+    }
+    const above = intro.node.parentNode;
+    for (const [node, at] of [
+      [intro.node, "Intro.".length],
+      [above, above?.childNodes.length ?? 0],
+    ] as const) {
+      expect(anchor(ends(node, at, old, 3))).toEqual({
+        lineStart: 4,
+        lineEnd: 4,
+        colStart: 1,
+        colEnd: 3,
+        baseline: true,
+      });
+    }
+    // From the end of the paragraph above to the start of the one below: as
+    // a drag from the first row's start to the end of the last.
+    expect(
+      quoted(before, anchor(ends(intro.node, "Intro.".length, outro.node, 0))),
+    ).toBe("old();\nkeep();\ngone();");
+  });
+
+  it.each([
+    [
+      "first",
+      "Intro.\n\n```ts\nold();\nkeep();\n```\n\nOutro.\n",
+      `<div data-line="1" data-line-type="change-deletion">old();</div>
+       <div data-line="1" data-alt-line="2" data-line-type="context">keep();</div>`,
+      { lineStart: 4, lineEnd: 4, colStart: 1, colEnd: 3, baseline: true },
+    ],
+    [
+      "last",
+      "Intro.\n\n```ts\nkeep();\ngone();\n```\n\nOutro.\n",
+      `<div data-line="1" data-alt-line="1" data-line-type="context">keep();</div>
+       <div data-line="2" data-line-type="change-deletion">gone();</div>`,
+      { lineStart: 5, lineEnd: 5, colStart: 1, colEnd: 7, baseline: true },
+    ],
+  ])(
+    "anchors an end beside an edited block whose %s row alone is a deletion to that row",
+    async (side, before, rows, want) => {
+      const after = "Intro.\n\n```ts\nkeep();\n```\n\nOutro.\n";
+      const { container, anchor } = await compared(
+        before,
+        after,
+        "[data-loc-content-start]",
+      );
+      const shadow = drawRows(
+        container.querySelector("[data-loc-content-start]"),
+        rows,
+      );
+      const deleted = shadow.querySelector(
+        "[data-line-type='change-deletion']",
+      )?.firstChild;
+      const intro = textAt(container, "p[data-loc]", "Intro.").node;
+      const outro = textAt(container, "p[data-loc]", "Outro.").node;
+      // Up from the end of the paragraph above into the first row, as far as
+      // `old`, or down from the start of the last row to the paragraph below:
+      // the row on the block's other side is a row of the version shown.
+      const selected =
+        side === "first"
+          ? ends(intro, "Intro.".length, deleted, 3)
+          : ends(deleted, 0, outro, 0);
+      expect(anchor(selected)).toEqual(want);
+    },
+  );
+
   it("keeps an end beside a patch removed whole, at text of the version shown, in the block", async () => {
     const before = [
       "Intro.",
